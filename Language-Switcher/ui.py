@@ -10,5 +10,12 @@ class LanguageSwitcherPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("language_switcher.switch_to_chinese", text="English")
-        layout.operator("language_switcher.switch_to_english", text="Chinese")
+        current_language = bpy.context.preferences.view.language
+        if current_language == "en_US":
+            layout.operator(
+                "language_switcher.switch_to_chinese", text="Switch to Chinese"
+            )
+        else:
+            layout.operator(
+                "language_switcher.switch_to_english", text="Switch to English"
+            )
