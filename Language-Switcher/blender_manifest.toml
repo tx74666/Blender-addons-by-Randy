@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "language_switcher"
+version = "1.0.0"
+name = "Language Switcher"
+tagline = "Switch between English and chinese"
+maintainer = "Randy Goodman <pixelrebelz@gmail.com>"
+type = "add-on"
+
+tags = ["3D View"]
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later",]
+copyright = ["2002-2025 Randy Goodman",]
