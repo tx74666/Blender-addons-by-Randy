@@ -2118,6 +2118,12 @@ def test_auto_align_target_all_constraint_spaces_and_rollback():
         settings.selected_limb = selected_limb
         if bpy.ops.character_designer.limb_ik_build_selected() != {"FINISHED"}:
             raise AssertionError(settings.last_message)
+        initial = limb_ik._validate_inventory(armature)
+        if not all(rig["auto_align"] for rig in initial["rigs"].values()):
+            raise AssertionError(f"{build_method} {selected_limb}: new rig did not default to Auto")
+        # This regression exercises both transitions starting from explicit Manual.
+        if bpy.ops.character_designer.limb_ik_auto_align_target(action="DISABLE") != {"FINISHED"}:
+            raise AssertionError(settings.last_message)
         kind, side = limb_ik.SELECTED_LIMBS[selected_limb]
         inventory = limb_ik._validate_inventory(armature)
         rig = inventory["rigs"][(kind, side)]
@@ -2161,7 +2167,7 @@ def test_auto_align_target_all_constraint_spaces_and_rollback():
             or end_rotation.mute
             or not auto_offset_rotation.mute
         ):
-            raise AssertionError(f"{build_method} {selected_limb}: new rig did not start in Manual mode")
+            raise AssertionError(f"{build_method} {selected_limb}: explicit Manual mode was not applied")
         if bpy.ops.character_designer.limb_ik_auto_align_target(action="ENABLE") != {"FINISHED"}:
             raise AssertionError(f"{build_method} {selected_limb}: enabling Auto failed: {settings.last_message}")
         inventory_after = limb_ik._validate_inventory(armature)
@@ -2235,6 +2241,8 @@ def test_auto_align_target_all_constraint_spaces_and_rollback():
     _result, settings = analyze(armature)
     settings.selected_limb = "LEFT_ARM"
     if bpy.ops.character_designer.limb_ik_build_selected() != {"FINISHED"}:
+        raise AssertionError(settings.last_message)
+    if bpy.ops.character_designer.limb_ik_auto_align_target(action="DISABLE") != {"FINISHED"}:
         raise AssertionError(settings.last_message)
     rig = limb_ik._validate_inventory(armature)["rigs"][("ARM", "L")]
     target = armature.pose.bones[rig["target"].name]
@@ -2345,6 +2353,8 @@ def test_auto_align_target_refuses_locked_animated_or_driven_state():
     _result, settings = analyze(armature)
     settings.selected_limb = "LEFT_ARM"
     if bpy.ops.character_designer.limb_ik_build_selected() != {"FINISHED"}:
+        raise AssertionError(settings.last_message)
+    if bpy.ops.character_designer.limb_ik_auto_align_target(action="DISABLE") != {"FINISHED"}:
         raise AssertionError(settings.last_message)
     rig = limb_ik._validate_inventory(armature)["rigs"][("ARM", "L")]
     target = armature.pose.bones[rig["target"].name]

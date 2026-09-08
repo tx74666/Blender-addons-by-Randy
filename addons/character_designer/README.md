@@ -1,7 +1,67 @@
-# Character Designer 0.42.1
+# Character Designer 0.43.2
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
+
+Workflow principle: generated bindings and setups should remain editable and
+provide an explicit remove/restore path. Preserve the artist's original state
+and unrelated data; support saving/reopening where restoration depends on a backup.
+
+Version 0.43.2 simplifies binding around the selected mesh. **Character Setup**
+shows Main Rig and, on the Weight page, Body Weight Source. There is no clothing
+inventory or role registration step. Select a mesh, choose **Surface Transfer**
+(Nearest Face Interpolated, the default) or **Automatic Weights**, then click
+**Bind Weights**. Hair and Skirt keep their source and custom binding controls in
+their dedicated pages. Previously saved references and restore records remain valid.
+
+Version 0.43.1 added **Character Setup** and **Weight > Quick Bind** with a saved
+**Restore Previous Binding** action. The first binding keeps the prior deform
+weights and binding state on the mesh object, including across saving/reopening.
+Repeated Quick Bind retains that first baseline. Restore returns an originally
+unbound mesh to an unbound state while retaining its modeling/helper groups.
+Vertex positions can still be edited; topology/index changes require restoring
+before remeshing because old per-vertex weights cannot be mapped safely by index.
+
+Version 0.43.0 introduced **Character Setup** and **Weight > Quick Bind**.
+Set **Main Rig** and the already weighted **Body Weight Source** once. References
+and previously remembered meshes are saved in the blend file and survive object
+renaming. Hair and Skirt use the saved main rig when their explicit override is
+empty and remember their sources through their dedicated setup tools.
+
+In Object Mode, select the mesh to bind and choose **Surface Transfer**
+to transfer body weights, or **Automatic Weights** for Blender's bone heat solver.
+Both operate on the active mesh, replace only the main rig's deform groups,
+normalize weights, retain modeling/helper groups, and add or reuse its Armature
+modifier. Geometry, UVs, shape keys, parent transforms and existing modifiers remain
+intact. New Armature modifiers go after Mirror and before Subdivision. Calculation
+uses Basis geometry and enabled Mirrors, independent of the current pose and shape
+key values; other geometric modifiers are not sampled. Enabled Mirrors must have
+Vertex Groups enabled to flip left/right weights correctly.
+
+Binding supports Undo and restores previous weights on calculation/write failure.
+Locked deform groups, conflicting armatures, disabled or masked Armature modifiers,
+shared target meshes and incomplete weight coverage are reported before committing.
+Registered Hair and Skirt meshes use their dedicated binding tools. Automatic
+Weights is a starting point and can fail on complex footwear; use nearest face
+transfer when the body is a suitable source, then paint the desired ankle/toe blend.
+
+Version 0.42.3 adds **Rig > Limb IK > Simplify Bone Collections** for the selected
+armature. Run it once to replace the old subdivisions with **Original**, **Controls**,
+and **Animation**. Animation is the default visible group: each built IK limb uses
+its controls and visible Pole guides; unbuilt limbs, torso, fingers, eyes and toes
+keep their original bones. Build, Rebuild and Remove refresh this choice automatically.
+The internal helpers retain their rig-owned visibility and selection rules.
+Hair uses one **Hair** group, and an attached independent skirt armature uses one
+**Skirt** group with its internal bones hidden. Armatures are not merged.
+Organization supports Undo and preserves bone transforms, animation, constraints,
+weights and shape keys. The layout survives saving/reopening without a runtime handler.
+New artist-created groups are preserved during later automatic refreshes; conflicting
+group names require explicit organization again rather than silent replacement.
+
+Version 0.42.2 enables **Auto Align** by default on newly built Limb IK rigs,
+for both Stable and Direct methods. Saving/reopening and Rebuild preserve the
+existing mode, including explicitly selected Manual mode. Existing rigs that
+have Auto Align disabled can be enabled once and saved to retain that choice.
 
 Version 0.42.1 consistently highlights removal actions in red: **Remove Skirt
 Setup**, forearm calibration **Remove**, and legacy hair **Cleanup Generated
@@ -182,7 +242,7 @@ workflow above for current binding and removal.
 2. Press **Select Hair Strands** and inspect the highlighted geometry.
 3. Set **Bones per Strand** (default 4) and press **Generate Hair Bones**.
    Blender enters Pose Mode with the new hair bones selected. Rotate a bone
-   to bend its strand; the chains appear in the **Hair Controls** collection.
+   to bend its strand; the chains appear in the **Hair** collection.
 
 Discovery follows complete surface bands and stops at irregular welded root
 junctions. Closed tube sections and open hair cards are supported; the number

@@ -15,6 +15,7 @@ if str(ADDONS_ROOT) not in sys.path:
 import character_designer
 from character_designer import (
     animation,
+    character_setup,
     delta_symmetry,
     forearm_twist,
     limb_ik,
@@ -43,6 +44,8 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         raise AssertionError(f"Could not switch to CDesigner page {page}")
 
     actual = {
+        "quick_bind": character_setup.CHARACTERDESIGNER_PT_quick_bind.poll(bpy.context),
+        "character_setup": character_setup.CHARACTERDESIGNER_PT_character_setup.poll(bpy.context),
         "animation": animation.CHARACTERDESIGNER_PT_animation.poll(bpy.context),
         "weight_tools": selected_bone_weights.CHARACTERDESIGNER_PT_weight_tools.poll(
             bpy.context
@@ -65,6 +68,8 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "clothing": skirt.CHARACTERDESIGNER_PT_skirt_setup.poll(bpy.context),
     }
     expected = {
+        "quick_bind": weight,
+        "character_setup": page in {UI_PAGE_WEIGHT, UI_PAGE_HAIR, UI_PAGE_CLOTHING, UI_PAGE_RIG},
         "animation": motion,
         "weight_tools": weight,
         "weight_symmetry": weight,
@@ -219,6 +224,7 @@ def assert_compact_limb_ik_panel():
         "character_designer.limb_ik_auto_align_target",
         "character_designer.limb_ik_rebuild",
         "character_designer.limb_ik_remove",
+        "character_designer.simplify_bone_collections",
     )
     old_armature = settings.armature
     settings.armature = None

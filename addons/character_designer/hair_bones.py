@@ -23,6 +23,10 @@ def _binding():
     return importlib.import_module(__package__ + ".hair_bones_binding")
 
 
+def _setup():
+    return importlib.import_module(__package__ + ".character_setup")
+
+
 def _source(context):
     obj = context.active_object
     if obj:
@@ -43,7 +47,7 @@ def _source(context):
         except ValueError:
             pass
     settings = _settings(context)
-    return settings.source if settings else None
+    return (settings.source if settings else None) or _setup().role_source(context, "HAIR")
 
 
 def _settings(context):
@@ -76,8 +80,9 @@ def _bind(operator, context):
         source = _source(context)
         obj, plans = _groups().build_plans(context, source=source)
         result = _binding().bind_hair(context, obj, plans, bone_count=settings.bone_count,
-                                      armature=settings.target_armature)
+                                      armature=_setup().preferred_rig(context, settings.target_armature))
         settings.source = obj
+        _setup().remember_asset(context, obj, "HAIR")
     except (ValueError, RuntimeError) as exc:
         _report(operator, context, str(exc), error=True)
         return {"CANCELLED"}
@@ -90,7 +95,7 @@ class CharacterDesignerHairBonesState(PropertyGroup):
     source: PointerProperty(type=bpy.types.Object, name="Source Mesh", options={"SKIP_SAVE"})
     target_armature: PointerProperty(
         type=bpy.types.Object, name="Character Rig", poll=_armature_poll,
-        description="Character armature to receive the hair bones; leave empty to detect it automatically",
+        description="Optional override; otherwise use the saved Main Rig or detect the character automatically",
     )
     bone_count: IntProperty(
         name="Bones per Chain",
@@ -120,6 +125,7 @@ class CHARACTERDESIGNER_OT_select_hair_strands(Operator):
             obj, plans = select_strands(context)
             _groups().capture_plans(obj, plans)
             _settings(context).source = obj
+            _setup().remember_asset(context, obj, "HAIR")
         except (ValueError, RuntimeError) as exc:
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
@@ -281,8 +287,10 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
             layout.prop(settings, "target_armature")
             target = None
             try:
-                target, head = _binding().resolve_target(context, source, armature=settings.target_armature)
-                layout.label(text=f"Rig: {target.name}", icon="ARMATURE_DATA")
+                preferred = _setup().preferred_rig(context, settings.target_armature)
+                target, head = _binding().resolve_target(context, source, armature=preferred)
+                label = "Main Rig" if preferred is not None and settings.target_armature is None else "Rig"
+                layout.label(text=f"{label}: {target.name}", icon="ARMATURE_DATA")
                 layout.label(text=f"Head: {getattr(head, 'name', head)}", icon="BONE_DATA")
             except (ValueError, RuntimeError) as exc:
                 layout.label(text=str(exc), icon="INFO")

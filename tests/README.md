@@ -10,6 +10,10 @@ $blenderExe = 'D:\Blender5.2\blender.exe'
 $selectedTests = @(
     'test_addons_together_blender.py'
     'test_ui_pages_blender.py'
+    'test_limb_ik_blender.py'
+    'test_limb_ik_auto_align_default_blender.py'
+    'test_bone_collections_blender.py'
+    'test_accessory_bone_collections_blender.py'
     'test_animation_import_blender.py'
     'test_animation_retarget_blender.py'
     'test_forearm_twist_addon_enable_blender.py'
@@ -33,6 +37,9 @@ foreach ($testName in $selectedTests) {
 
 每项在独立的临时 Blender 场景中运行；不要在工作中的实时场景里执行测试脚本。
 Animation 测试验证独立 BVH 预览、身体动作转移、坐标/缩放及原 Action 的保存与恢复。
+Limb IK 测试验证新建默认 Auto Align 开启，以及保存重开和 Rebuild 保留开启或手动关闭状态。
+集合测试覆盖原生/控制骨的逐肢体切换、保存重开、Build/Rebuild/Remove、失败恢复，
+以及 Hair/Skirt 单组、旧裙子集合迁移和烘焙副本的可见性。
 `python tests/test_animation_runtime.py` 单独验证外部进程协议与输出路径检查，无需 GPU。
 真实 Kimodo 生成测试和 X 动作副本留在本机运行环境及 X 的 `outputs/animation` 中。
 测试覆盖共同启用/卸载、Forearm 注册、裙子创建/回滚/碰撞体/烘焙、头发镜像的左右独立控制和中央单链。
@@ -53,3 +60,13 @@ Animation 测试验证独立 BVH 预览、身体动作转移、坐标/缩放及�
 私人角色模型、真实场景验收脚本及实时 GUI 测试保留在 Blender 项目中。
 RR Helper 此前使用 Builder6 的完整导出对比属于历史验证，见
 [升级记录](../docs/releases/RRHelper_0.2.5_upgrade_20260908.md)。
+# Quick binding and saved character references
+
+`test_quick_bind_blender.py` verifies native nearest-face interpolation and bone
+heat, normalized deform-only weights, mirrored side assignment and deformation,
+unchanged mesh/shape-key/helper data, modifier reuse, and rollback on failure.
+It also checks first-bind backup persistence, repeated recalculation, restoration
+after saving/reopening, later unrelated edits, and refusal after incompatible topology changes.
+`test_character_setup_accessories_blender.py` verifies saved references across
+rename, reload and add-on registration, multiple Hair meshes, explicit overrides,
+and Hair/Skirt binding through the saved main rig.

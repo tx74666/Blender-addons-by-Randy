@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 42, 1),
+    "version": (0, 43, 2),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -61,6 +61,8 @@ from .spline_ik_setup import (
     CharacterDesignerSplineIKState,
 )
 from .selected_bone_weights import SELECTED_BONE_WEIGHT_CLASSES
+from .bone_collections import BONE_COLLECTION_CLASSES
+from .character_setup import CHARACTER_SETUP_CLASSES, CharacterDesignerSetup
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
 from .animation import (
@@ -8337,10 +8339,12 @@ CLASSES = (
     CHARACTERDESIGNER_OT_refresh_addon,
     CHARACTERDESIGNER_OT_set_ui_page,
     CHARACTERDESIGNER_PT_main,
+    *CHARACTER_SETUP_CLASSES,
     *HAIR_BONES_CLASSES,
     *SKIRT_CLASSES,
     *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
+    *BONE_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
@@ -8413,6 +8417,11 @@ def _validate_registration_integrity():
                 f"PointerProperty {property_name} targets a stale or incorrect type"
             )
 
+    setup_property = bpy.types.Scene.bl_rna.properties.get("character_designer_setup")
+    if (setup_property is None or setup_property.type != "POINTER"
+            or setup_property.fixed_type != CharacterDesignerSetup.bl_rna):
+        errors.append("missing or stale Scene character setup")
+
     if errors:
         details = "; ".join(errors)
         raise RuntimeError(f"Character Designer registration is inconsistent: {details}.")
@@ -8440,6 +8449,7 @@ def register():
     hair_bones_registered = hasattr(bpy.types.WindowManager, "character_designer_hair_bones")
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
     animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
+    setup_registered = hasattr(bpy.types.Scene, "character_designer_setup")
     registration_state = (
         centerline_registered,
         delta_registered,
@@ -8450,6 +8460,7 @@ def register():
         hair_bones_registered,
         skirt_registered,
         animation_registered,
+        setup_registered,
     )
     if all(registration_state):
         _validate_registration_integrity()
@@ -8465,10 +8476,13 @@ def register():
 
     registered = []
     added_properties = []
+    added_setup = False
     try:
         for cls in CLASSES:
             bpy.utils.register_class(cls)
             registered.append(cls)
+        bpy.types.Scene.character_designer_setup = PointerProperty(type=CharacterDesignerSetup)
+        added_setup = True
         bpy.types.WindowManager.character_designer = PointerProperty(
             type=CharacterDesignerState,
             options={"SKIP_SAVE"},
@@ -8528,6 +8542,8 @@ def register():
         unregister_reference_view_handlers()
         _unregister_workspace_filter_guard()
         _unregister_source_watch()
+        if added_setup and hasattr(bpy.types.Scene, "character_designer_setup"):
+            del bpy.types.Scene.character_designer_setup
         for property_name in reversed(added_properties):
             if hasattr(bpy.types.WindowManager, property_name):
                 delattr(bpy.types.WindowManager, property_name)
@@ -8549,6 +8565,8 @@ def unregister():
     unregister_reference_view_handlers()
     _unregister_workspace_filter_guard()
     _unregister_source_watch()
+    if hasattr(bpy.types.Scene, "character_designer_setup"):
+        del bpy.types.Scene.character_designer_setup
     if hasattr(bpy.types.WindowManager, "character_designer_skirt"):
         del bpy.types.WindowManager.character_designer_skirt
     if hasattr(bpy.types.WindowManager, "character_designer_animation"):

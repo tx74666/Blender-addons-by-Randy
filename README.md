@@ -5,10 +5,21 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.42.1 | [character_designer](addons/character_designer) | [character_designer-0.42.1.zip](dist/character_designer-0.42.1.zip) |
+| Character Designer | 0.43.1 | [character_designer](addons/character_designer) | [character_designer-0.43.1.zip](dist/character_designer-0.43.1.zip) |
 
 两个插件独立安装，也可以同时启用。RR Helper 的内部模块名保留为
 `random_realm_builder_exporter`，便于更新原来的安装。
+
+Character Designer 0.43.2 精简绑定界面：**Character Setup** 只显示主骨架和身体权重源，不列配件清单。选中网格，在 **Weight → Quick Bind** 选择 **Surface Transfer**（最近面插值，默认）或 **Automatic Weights**，点击 **Bind Weights**。头发和裙子使用各自页面的专用绑定。**Restore Previous Binding** 保留首次绑定前的状态，多次重算和保存重开后仍可恢复；原先未绑定则恢复为未绑定。已有引用和恢复记录继续有效。
+
+Character Designer 0.42.3 新增 **Rig → Limb IK → Simplify Bone Collections**，
+把当前骨架整理为 **Original / Controls / Animation**。Animation 有控制骨时使用
+控制骨，否则保留原生骨；Build、Rebuild、Remove 后自动更新。头发统一为 **Hair**，
+独立裙子骨架统一为 **Skirt**，不再细分出一长串集合。
+
+Character Designer 0.42.2 将新建 Limb IK 的 **Auto Align** 默认设为开启，
+Stable 和 Direct 两种方式一致。保存重开及 Rebuild 保留已有状态，包括手动关闭；
+旧 Rig 若处于关闭状态，开启一次并保存即可。
 
 Character Designer 0.42.1 将裙子移除、前臂校准移除、旧头发副本清理统一为红色，
 与已有的头发解绑、Limb IK / Spline IK 移除按钮保持一致。

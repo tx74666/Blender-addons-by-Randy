@@ -23,6 +23,10 @@ def _physics():
     return importlib.import_module(__package__ + ".skirt_physics")
 
 
+def _setup():
+    return importlib.import_module(__package__ + ".character_setup")
+
+
 def _settings(context):
     return getattr(context.window_manager, "character_designer_skirt", None)
 
@@ -33,7 +37,7 @@ def _source(context):
     if source is not None:
         return source
     settings = _settings(context)
-    return settings.source if settings is not None else None
+    return (settings.source if settings is not None else None) or _setup().role_source(context, "SKIRT")
 
 
 def _record(context):
@@ -203,7 +207,7 @@ class CharacterDesignerSkirtState(PropertyGroup):
                                   options={"SKIP_SAVE"})
     armature: PointerProperty(type=bpy.types.Object, name="Character Rig", poll=_armature_only,
                               options={"SKIP_SAVE"},
-                              description="Optional override; otherwise detect the character rig")
+                              description="Optional override; otherwise use the saved Main Rig or detect the character rig")
     parent_bone: StringProperty(name="Pelvis Bone", options={"SKIP_SAVE"},
                                 description="Optional override; otherwise detect the pelvis bone")
     use_scene_range: BoolProperty(name="Use Scene Frame Range", default=True,
@@ -236,7 +240,8 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
             settings.source = source
             record = _rig().build_skirt(
                 context, source, chain_count=settings.chain_count,
-                segment_count=settings.segment_count, armature=settings.armature,
+                segment_count=settings.segment_count,
+                armature=_setup().preferred_rig(context, settings.armature),
                 parent_bone=settings.parent_bone,
             )
             built = True
@@ -244,6 +249,7 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
                 _physics().add_physics(context, source)
             _rig().select_controls(context, source)
             record = _rig().read_record(source) or record
+            _setup().remember_asset(context, source, "SKIRT")
         except (ValueError, RuntimeError) as exc:
             # Existing artist work must survive a failed attempt to add physics.
             if built and not had_setup:
@@ -627,6 +633,9 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
         else:
             layout.label(text="Select an open skirt mesh.", icon="INFO")
             layout.prop(settings, "source")
+        preferred = _setup().preferred_rig(context, settings.armature)
+        if preferred is not None and settings.armature is None:
+            layout.label(text=f"Main Rig: {preferred.name}", icon="ARMATURE_DATA")
         if not _idle(context):
             layout.label(text="Baking every frame in order…", icon="TIME")
             layout.label(text=settings.last_message)
@@ -642,8 +651,8 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             if settings.show_attachment:
                 col = layout.column(align=True)
                 col.prop(settings, "armature")
-                if settings.armature is not None:
-                    col.prop_search(settings, "parent_bone", settings.armature.data, "bones")
+                if preferred is not None:
+                    col.prop_search(settings, "parent_bone", preferred.data, "bones")
                 else:
                     col.prop(settings, "parent_bone")
                 col.label(text="Leave blank for automatic detection.")

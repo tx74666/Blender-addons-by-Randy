@@ -24,7 +24,7 @@ OWNER_KEY = "character_designer_hair_bones_owner"
 SOURCE_KEY = "character_designer_hair_bones_source"
 SIGNATURE_KEY = "character_designer_hair_bones_signature"
 OWNER_VALUE = "hair_bones_v1"
-COLLECTION_NAME = "Hair Controls"
+COLLECTION_NAME = "Hair"
 EPSILON = 1.0e-8
 
 
@@ -662,6 +662,9 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
     if not new:
         try:
             _select_chains(context, armature, tuple(name for chain in selected_chains for name in chain["bones"]))
+            for collection in armature.data.collections_all:
+                if collection.get(OWNER_KEY) == OWNER_VALUE:
+                    collection.name = COLLECTION_NAME
         except Exception:
             _restore_context(context, obj, state)
             raise
@@ -723,7 +726,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
             _mode(context, armature, "OBJECT")
         finally:
             armature.data.use_mirror_x = mirror
-        collection = next((c for c in armature.data.collections if c.get(OWNER_KEY) == OWNER_VALUE), None)
+        collection = next((c for c in armature.data.collections_all if c.get(OWNER_KEY) == OWNER_VALUE), None)
         if collection is None:
             collection = armature.data.collections.new(COLLECTION_NAME)
             created_collection = collection
@@ -792,6 +795,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         _mirror_preflight(obj, armature, parent_bone, updated, created_modifier or modifier)
         _select_chains(context, armature, tuple(name for chain in selected_chains for name in chain["bones"]))
         context.view_layer.update()
+        collection.name = COLLECTION_NAME
         return {"armature": armature, "chains": tuple(selected_chains), "created": len(new),
                 "reused": len(plans) - len(new), "parent_bone": parent_bone,
                 "rig_created": created_rig is not None, "modifier_created": created_modifier is not None}

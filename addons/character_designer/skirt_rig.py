@@ -22,6 +22,7 @@ OWNER_KEY = "character_designer_skirt_owner"
 RIG_KEY = "character_designer_skirt_armature"
 SOURCE_KEY = "character_designer_skirt_source"
 PARENT_KEY = "character_designer_skirt_original_parent"
+BONE_COLLECTION_NAME = "Skirt"
 
 
 class SkirtRigError(ValueError):
@@ -92,6 +93,70 @@ def read_record(obj):
         if isinstance(error, SkirtRigError):
             raise
         raise SkirtRigError("The skirt setup record is unreadable. Undo the previous change.") from None
+
+
+def _bone_collection_layout(record):
+    controls = record["controls"]
+    control_names = {controls[level] for level in ("waist", "mid", "hem")}
+    control_names.update(name for entry in controls["chains"] for name in entry.values())
+    deform_names = {name for chain in record["chains"] for name in chain["def"]}
+    mechanism_names = {name for chain in record["chains"] for layer in ("manual", "phys") for name in chain[layer]}
+    return control_names, deform_names, mechanism_names
+
+
+def migrate_skirt_bone_collections(armature):
+    """Collapse a verified generated skirt's legacy display groups only.
+
+    Rig objects, bone transforms, constraints, weights and unrelated collections
+    are untouched. Non-owned armatures are ignored; edited ownership is rejected
+    before any collection or visibility changes.
+    """
+    if armature is None or armature.type != "ARMATURE" or not armature.get(OWNER_KEY):
+        return False
+    source = armature.get(SOURCE_KEY)
+    if source is None or source.type != "MESH" or source.get(RIG_KEY) is not armature:
+        raise SkirtRigError("The skirt rig's source ownership is incomplete.")
+    record = read_record(source)
+    if (record is None or source.get(OWNER_KEY) != record["owner"]
+            or armature.data.get(OWNER_KEY) != record["owner"] or armature.data.users != 1):
+        raise SkirtRigError("The skirt rig's bone ownership is incomplete or shared.")
+    if armature.mode == "EDIT":
+        raise SkirtRigError("Leave Edit Mode before organizing skirt bone collections.")
+    try:
+        controls, deform, mechanism = _bone_collection_layout(record)
+    except (KeyError, TypeError):
+        raise SkirtRigError("The skirt control record is incomplete.") from None
+    owned_names = controls | deform | mechanism
+    if owned_names != set(armature.data.bones.keys()):
+        raise SkirtRigError("The skirt rig's bones were edited; restore its generated layout before organizing it.")
+    collections = armature.data.collections
+    grouped = [item for item in armature.data.collections_all if item.get(OWNER_KEY) == record["owner"]]
+    if len(grouped) > 1:
+        raise SkirtRigError("The skirt bone collection ownership is ambiguous.")
+    target = grouped[0] if grouped else None
+    if target is not None:
+        if set(target.bones.keys()) != owned_names or target.children:
+            raise SkirtRigError("The skirt bone collection was edited; restore it before organizing it.")
+        return False
+    legacy = []
+    for title, names in (("Skirt Controls", controls), ("Skirt Deform", deform),
+                         ("Skirt Mechanism", mechanism)):
+        item = collections.get(title)
+        if (item is None or item.get(OWNER_KEY) or item.children or item.parent
+                or set(item.bones.keys()) != names):
+            raise SkirtRigError("The legacy skirt bone collections were edited; restore them before organizing them.")
+        legacy.append(item)
+    target = collections.new(BONE_COLLECTION_NAME)
+    target[OWNER_KEY] = record["owner"]
+    target.is_visible = legacy[0].is_visible
+    for name in owned_names:
+        bone = armature.data.bones[name]
+        target.assign(bone)
+        if name not in controls:
+            bone.hide = True
+    for item in legacy:
+        collections.remove(item)
+    return True
 
 
 def find_source(context):
@@ -407,13 +472,13 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
                     (deform_names if layer == "def" else mechanism_names).append(name)
             record["chains"].append(chain)
         bpy.ops.object.mode_set(mode="OBJECT")
-        for title, names, visible in (("Skirt Controls", control_names, True),
-                                     ("Skirt Deform", deform_names, False),
-                                     ("Skirt Mechanism", mechanism_names, False)):
-            bone_collection = data.collections.new(title)
+        bone_collection = data.collections.new(BONE_COLLECTION_NAME)
+        bone_collection[OWNER_KEY] = owner
+        for names, hidden in ((control_names, False), (deform_names, True), (mechanism_names, True)):
             for name in names:
-                bone_collection.assign(data.bones[name])
-            bone_collection.is_visible = visible
+                bone = data.bones[name]
+                bone_collection.assign(bone)
+                bone.hide = hidden
         for name in control_names:
             pose = rig.pose.bones[name]
             pose.rotation_mode = "XYZ"
@@ -554,9 +619,9 @@ def select_controls(context, obj, level="ALL"):
     for bone in rig.pose.bones:
         bone.select = bone.name == wanted
     rig.data.bones.active = rig.data.bones[wanted]
-    controls = rig.data.collections.get("Skirt Controls")
-    if controls:
-        controls.is_visible = True
+    for collection in rig.data.bones[wanted].collections:
+        collection.is_visible = True
+    rig.data.bones[wanted].hide = False
     return rig
 
 

@@ -20,6 +20,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Euler, Matrix, Vector
 
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_RIG, active_ui_page
+from . import bone_collections as bone_groups
 
 
 OWNER_KEY = "character_designer_owner"
@@ -38,6 +39,7 @@ POLE_CONFIGURED_DIRECTION_KEY = "character_designer_limb_ik_configured_pole_dire
 DIRECT_REST_KEY = "character_designer_limb_ik_direct_rest"
 SOURCE_WIDGETS_KEY = "character_designer_limb_ik_source_widgets"
 AUTO_ALIGN_KEY = "character_designer_limb_ik_auto_align"
+DEFAULT_AUTO_ALIGN = True
 TARGET_ROTATION_VERSION_KEY = "character_designer_limb_ik_target_rotation_version"
 CONTROL_VISUAL_DEFAULT_KEY = "character_designer_limb_ik_control_visual_default"
 CONTROL_SHAPE_STYLE_KEY = "character_designer_limb_ik_control_shape_style"
@@ -210,7 +212,7 @@ class LimbPlan:
     configured_pole_direction: Vector | None = None
     persist_pole_direction: bool = True
     preserve_pole_angle: bool = False
-    auto_align: bool = False
+    auto_align: bool = DEFAULT_AUTO_ALIGN
 
 
 def _is_enhanced_schema(schema):
@@ -6558,6 +6560,14 @@ def _remove_owned(context, armature, *, refuse_dependencies=True):
     return {"constraints": removed_constraints, "bones": removed_bones, "widgets": len(widget_objects)}
 
 
+def _finish_collection_edit(operator, armature, previous, error):
+    if armature is not None and previous is not None:
+        try:
+            bone_groups.finish_rig_edit(armature, previous, failed=error is not None)
+        except Exception as exc:
+            operator.report({"WARNING"}, f"Bone groups could not refresh: {exc}")
+
+
 def _execute_build(operator, context, scope):
     settings = _settings(context)
     armature = None
@@ -6566,9 +6576,11 @@ def _execute_build(operator, context, scope):
     built = ()
     error = None
     master_state = None
+    collection_snapshot = None
     schema = CURRENT_SCHEMA
     try:
         armature = _require_active_armature(context, settings)
+        collection_snapshot = bone_groups.capture_managed_layout(armature)
         snapshot = _capture_context(context, armature)
         master_state = _neutralize_existing_master(context, armature)
         if scope == "SELECTED":
@@ -6613,6 +6625,7 @@ def _execute_build(operator, context, scope):
                 error = LimbIKError(f"Context restoration failed, so the generated rig was rolled back: {restore_exc}.{suffix}")
             elif error is None:
                 error = LimbIKError(f"Limb IK context restoration failed: {restore_exc}")
+    _finish_collection_edit(operator, armature, collection_snapshot, error)
     if error is not None:
         message = str(error)
         level = "ERROR" if "rollback" in message.lower() or "restoration" in message.lower() else "WARNING"
@@ -6719,8 +6732,10 @@ class CHARACTERDESIGNER_OT_limb_ik_remove(Operator):
         error = None
         removal_attempted = False
         master_state = None
+        collection_snapshot = None
         try:
             armature = _require_active_armature(context, settings, analyzed=False)
+            collection_snapshot = bone_groups.capture_managed_layout(armature)
             context_snapshot = _capture_context(context, armature)
             inventory = _validate_inventory(armature)
             _removal_resources(context, armature, inventory)
@@ -6766,6 +6781,7 @@ class CHARACTERDESIGNER_OT_limb_ik_remove(Operator):
                         error = LimbIKError(f"Context restoration failed after Remove, and rig recovery also failed: {recovery_exc}")
                 elif error is None:
                     error = restore_exc
+        _finish_collection_edit(self, armature, collection_snapshot, error)
         if error is not None:
             message = str(error)
             level = "ERROR" if "Recovery also failed" in message or "recovery also failed" in message else "WARNING"
@@ -6794,8 +6810,10 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
         error = None
         removal_attempted = False
         master_state = None
+        collection_snapshot = None
         try:
             armature = _require_active_armature(context, settings)
+            collection_snapshot = bone_groups.capture_managed_layout(armature)
             context_snapshot = _capture_context(context, armature)
             inventory = _validate_inventory(armature)
             rig_keys = sorted(inventory["rigs"])
@@ -7055,6 +7073,7 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
                         error = LimbIKError(f"Rebuild context restoration failed, and old-rig recovery also failed: {recovery_exc}")
                 elif error is None:
                     error = restore_exc
+        _finish_collection_edit(self, armature, collection_snapshot, error)
         if error is not None:
             message = str(error)
             _set_status(settings, "ERROR", message)
@@ -8168,6 +8187,7 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         remove = row.row(align=True)
         remove.alert = _active_has_owned_side_rig(context)
         remove.operator("character_designer.limb_ik_remove", text="Remove Generated Rig", icon="TRASH")
+        layout.operator("character_designer.simplify_bone_collections", icon="GROUP_BONE")
 
 
 class CHARACTERDESIGNER_PT_limb_ik_target_rotation(Panel):
