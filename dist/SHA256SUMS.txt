@@ -1,0 +1,2 @@
+e65b5a7af1996bf4cbcc0f640eb22d765aa5fdd417735de87046d25cd9704c94  character_designer-0.40.2.zip
+6b6b1728c5c8f3aca1a302fc22360fc17b905bd537531cbef35e13ccedfd305d  rr_helper-0.2.5.zip

@@ -1,3 +1,12 @@
 
 /Release
 /Function
+
+# Local development and Blender caches
+__pycache__/
+*.py[cod]
+*.blend1
+*.blend2
+*.blend@
+.codex-backups/
+.pytest_cache/
