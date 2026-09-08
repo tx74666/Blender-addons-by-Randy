@@ -699,7 +699,9 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
                 layout.operator("character_designer.skirt_preview_bake", icon="PLAY")
             layout.label(text="Clear and rebake after pose or collider edits.", icon="INFO")
         layout.separator()
-        layout.operator("character_designer.remove_skirt_setup", icon="TRASH")
+        remove_row = layout.row()
+        remove_row.alert = True
+        remove_row.operator("character_designer.remove_skirt_setup", icon="TRASH")
 
 
 def stop_skirt_runtime():

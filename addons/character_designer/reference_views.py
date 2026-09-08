@@ -21,7 +21,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Matrix, Vector
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_REFERENCE, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
 
 
 REFERENCE_SCHEMA = "blackunity.cdesigner.reference-view-set"
@@ -1470,7 +1470,7 @@ class CHARACTERDESIGNER_PT_reference_views(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_REFERENCE
+        return active_ui_page(context) == UI_PAGE_MISC
 
     def draw(self, context):
         layout = self.layout

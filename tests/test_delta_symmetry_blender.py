@@ -971,8 +971,8 @@ def test_delta_panel_exposes_only_the_two_clear_runtime_toggles():
     source = inspect.getsource(delta_symmetry.CHARACTERDESIGNER_PT_delta_symmetry.draw)
     if "Use Selected Centerline" in source:
         raise AssertionError("The centerline-only setup label returned")
-    if "Set Symmetry" not in source:
-        raise AssertionError("The automatic Set Symmetry action is not exposed")
+    if "Build Symmetry" not in source:
+        raise AssertionError("The automatic Build Symmetry action is not exposed")
     if "character_designer.delta_select_opposite" in source:
         raise AssertionError("The old manual Select Opposite button returned")
     if "row.alert" in source or "_draw_status" in source:

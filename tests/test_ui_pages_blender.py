@@ -14,6 +14,7 @@ if str(ADDONS_ROOT) not in sys.path:
 
 import character_designer
 from character_designer import (
+    animation,
     delta_symmetry,
     forearm_twist,
     limb_ik,
@@ -21,21 +22,20 @@ from character_designer import (
     selected_bone_weights,
     skirt,
     spline_ik_setup,
-    weight_flow,
     weight_symmetry,
 )
 from character_designer.ui_constants import (
+    UI_PAGE_ANIMATION,
     UI_PAGE_CLOTHING,
     UI_PAGE_HAIR,
-    UI_PAGE_MODELING,
-    UI_PAGE_REFERENCE,
+    UI_PAGE_MISC,
     UI_PAGE_RIG,
     UI_PAGE_WEIGHT,
 )
 
 
 def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference=False,
-                     clothing=False):
+                     clothing=False, motion=False):
     settings = bpy.context.window_manager.character_designer
     limb_settings = bpy.context.window_manager.character_designer_limb_ik
     result = bpy.ops.character_designer.set_ui_page(page=page)
@@ -43,10 +43,10 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         raise AssertionError(f"Could not switch to CDesigner page {page}")
 
     actual = {
+        "animation": animation.CHARACTERDESIGNER_PT_animation.poll(bpy.context),
         "weight_tools": selected_bone_weights.CHARACTERDESIGNER_PT_weight_tools.poll(
             bpy.context
         ),
-        "weight_flow": weight_flow.CHARACTERDESIGNER_PT_weight_flow.poll(bpy.context),
         "weight_symmetry": weight_symmetry.CHARACTERDESIGNER_PT_weight_symmetry.poll(
             bpy.context
         ),
@@ -65,8 +65,8 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "clothing": skirt.CHARACTERDESIGNER_PT_skirt_setup.poll(bpy.context),
     }
     expected = {
+        "animation": motion,
         "weight_tools": weight,
-        "weight_flow": weight,
         "weight_symmetry": weight,
         "modeling": modeling,
         "rig": rig,
@@ -359,6 +359,10 @@ def assert_compact_limb_ik_panel():
 def main():
     character_designer.register()
     try:
+        if hasattr(bpy.types, "CHARACTERDESIGNER_PT_weight_flow") or hasattr(
+            bpy.types, "CHARACTER_DESIGNER_OT_weight_flow"
+        ):
+            raise AssertionError("The removed Weight Flow feature is still registered")
         settings = bpy.context.window_manager.character_designer
         if settings.ui_page != UI_PAGE_HAIR:
             raise AssertionError("Hair must be the default CDesigner page")
@@ -371,9 +375,9 @@ def main():
             UI_PAGE_HAIR,
             UI_PAGE_WEIGHT,
             UI_PAGE_RIG,
-            UI_PAGE_MODELING,
-            UI_PAGE_REFERENCE,
             UI_PAGE_CLOTHING,
+            UI_PAGE_ANIMATION,
+            UI_PAGE_MISC,
         )
         if identifiers != expected_identifiers:
             raise AssertionError(f"Unexpected CDesigner pages: {identifiers}")
@@ -427,9 +431,9 @@ def main():
         assert_only_page(UI_PAGE_HAIR)
         assert_only_page(UI_PAGE_WEIGHT, weight=True)
         assert_only_page(UI_PAGE_RIG, rig=True)
-        assert_only_page(UI_PAGE_MODELING, modeling=True)
-        assert_only_page(UI_PAGE_REFERENCE, reference=True)
         assert_only_page(UI_PAGE_CLOTHING, clothing=True)
+        assert_only_page(UI_PAGE_ANIMATION, motion=True)
+        assert_only_page(UI_PAGE_MISC, modeling=True, reference=True)
         print("PASS CDesigner UI Pages 3 tests")
     finally:
         character_designer.unregister()

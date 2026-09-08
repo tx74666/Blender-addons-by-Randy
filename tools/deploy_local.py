@@ -33,6 +33,8 @@ def main():
     parser.add_argument("--blender-version", default="5.2")
     parser.add_argument("--addons-dir", type=Path, help="Override Blender's destination add-ons folder")
     parser.add_argument("--project-addons", type=Path, help="Also update an X project Character Designer copy")
+    parser.add_argument("--module", action="append", choices=tuple(PACKAGES),
+                        help="Deploy/check only this module; repeat to select several")
     parser.add_argument("--check", action="store_true", help="Report differences without writing")
     args = parser.parse_args()
     if args.addons_dir is None:
@@ -41,8 +43,9 @@ def main():
         addons = Path(os.environ["APPDATA"]) / "Blender Foundation" / "Blender" / args.blender_version / "scripts" / "addons"
     else:
         addons = args.addons_dir
-    jobs = [(module, addons / module) for module in PACKAGES]
-    if args.project_addons:
+    selected_modules = tuple(dict.fromkeys(args.module or PACKAGES))
+    jobs = [(module, addons / module) for module in selected_modules]
+    if args.project_addons and "character_designer" in selected_modules:
         jobs.append(("character_designer", args.project_addons / "character_designer"))
 
     plans = []
@@ -50,6 +53,14 @@ def main():
         source = ROOT / "addons" / module
         if target.resolve() == source.resolve():
             raise ValueError(f"Destination is the canonical source itself: {target}")
+        if (target / "__init__.py").is_file():
+            installed_version = tuple(map(int, version_of(target).split(".")))
+            source_version = tuple(map(int, version_of(source).split(".")))
+            if installed_version > source_version:
+                raise ValueError(
+                    f"Installed {module} {version_of(target)} is newer than the canonical "
+                    f"{version_of(source)}; select the intended --module or reconcile its source first."
+                )
         files = shipped_files(source)
         for relative, path in files.items():
             if relative.suffix == ".py":

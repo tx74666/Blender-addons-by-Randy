@@ -5,10 +5,27 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.40.2 | [character_designer](addons/character_designer) | [character_designer-0.40.2.zip](dist/character_designer-0.40.2.zip) |
+| Character Designer | 0.42.1 | [character_designer](addons/character_designer) | [character_designer-0.42.1.zip](dist/character_designer-0.42.1.zip) |
 
 两个插件独立安装，也可以同时启用。RR Helper 的内部模块名保留为
 `random_realm_builder_exporter`，便于更新原来的安装。
+
+Character Designer 0.42.1 将裙子移除、前臂校准移除、旧头发副本清理统一为红色，
+与已有的头发解绑、Limb IK / Spline IK 移除按钮保持一致。
+
+Character Designer 0.42.0 新增 **Animation** 页，连接免费本地 Kimodo，支持生成、
+独立骨架预览、应用为新的身体 Action 及恢复上一 Action。模型和 Python 环境独立安装，
+不含付费插件或云端生成。见 [本地配置](docs/kimodo-local.md)。
+
+Character Designer 0.41.3 移除 **Weight Flow**，Weight 页保留 **Weight Tools**
+和 **Weight Symmetry**。日常权重平滑使用 Blender 原生工具。
+
+Character Designer 0.41.2 将 Modeling 与 Reference 合并到 **Miscellaneous**，
+并把 Delta Symmetry 面板和建立配对按钮统一命名为 **Build Symmetry**。
+
+Character Designer 0.41.0 直接在原始头发上绑定，每束骨链加入角色 Armature 的
+Head 下，不再生成网格副本或专用头发骨架。支持保存重开后移除本次绑定、恢复原权重，
+并提供旧副本清理。头皮帽完全跟随 Head；Mirror 两侧独立，中央同一束使用单链。
 
 ## 安装与使用
 

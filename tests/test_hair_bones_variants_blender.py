@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from character_designer import hair_bones_rig as rig
 from character_designer import hair_bones_variants as variants
 from test_hair_bones_rig_blender import (
-    activate, reset, make_armature, make_hair, weights, evaluated_points, assert_points,
+    activate, reset, make_armature, make_hair, weights, evaluated_points, assert_points, plain_snapshot,
 )
 
 
@@ -40,6 +40,7 @@ def source_state(source):
 
 
 def grouped(plans, n=3):
+    """An invalid retired request used only to verify rejection before mutation."""
     result = []
     for start in range(0, len(plans), n):
         members = plans[start:start + n]
@@ -106,9 +107,9 @@ def test_two_versions_independent_and_source_unchanged():
     a_pose = rig_pose(a["armature"])
     a_action = a["armature"].animation_data.action
     a_weights = weights(a["mesh"])
-    b = variants.build_variant(bpy.context, source, grouped(plans), mode="GROUPED", bone_count=3)
-    assert sum(len(chain["bones"]) for chain in b["chains"]) == 12
-    assert len(b["armature"].data.bones) == 13
+    b = variants.build_variant(bpy.context, source, plans, mode="PER_STRAND", bone_count=4)
+    assert sum(len(chain["bones"]) for chain in b["chains"]) == 48
+    assert len(b["armature"].data.bones) == 49
     assert variants.variants_for(source) == (a["collection"], b["collection"])
     assert rig_pose(a["armature"]) == a_pose and a["armature"].animation_data.action is a_action
     assert weights(a["mesh"]) == a_weights
@@ -154,7 +155,7 @@ def test_owned_source_rebinding_and_transforms():
     before_points = evaluated_points(source)
     old_reference = source.get(rig.MIRROR_KEY)
     before = source_state(source)
-    a = variants.build_variant(bpy.context, source, grouped(plans), mode="GROUPED", bone_count=3)
+    a = variants.build_variant(bpy.context, source, plans, mode="PER_STRAND", bone_count=3)
     assert_points(evaluated_points(a["mesh"]), before_points, "Fresh copy uses original rest shape with transforms")
     assert source_state(source) == before
     assert source.get(rig.MIRROR_KEY) is old_reference
@@ -163,7 +164,7 @@ def test_owned_source_rebinding_and_transforms():
     assert all(mod.mirror_object is None for mod in a["mesh"].modifiers if mod.type == "MIRROR")
     assert all(a["mesh"].vertex_groups.get(name) is None for chain in native["chains"] for name in chain["bones"])
     assert all(original_rig.data.bones.get(name) for chain in native["chains"] for name in chain["bones"])
-    assert len(a["armature"].data.bones) == 7
+    assert len(a["armature"].data.bones) == 13
     base = evaluated_points(a["mesh"])
     head = original_rig.pose.bones["spine.006"]
     head.rotation_mode = "XYZ"
@@ -226,8 +227,10 @@ def test_standalone_and_repeated_hidden_source():
     source, plans = make_hair()
     activate(source)
     a = variants.build_variant(bpy.context, source, plans, bone_count=2)
-    b = variants.build_variant(bpy.context, source, grouped(plans), mode="GROUPED", bone_count=4)
-    assert len(a["chains"]) == 2 and len(b["chains"]) == 1
+    b = variants.build_variant(bpy.context, source, plans, mode="PER_STRAND", bone_count=4)
+    assert len(a["chains"]) == len(b["chains"]) == 2
+    assert sum(len(chain["bones"]) for chain in a["chains"]) == 4
+    assert sum(len(chain["bones"]) for chain in b["chains"]) == 8
     assert not b["armature"].pose.bones[b["parent_bone"]].constraints
     assert len(variants.variants_for(source)) == 2
 
@@ -263,7 +266,7 @@ def test_failure_restores_guide_edit_and_prior_pose():
     try:
         variants.show_variant = fail
         try:
-            variants.build_variant(bpy.context, source, grouped(plans), mode="GROUPED", bone_count=3)
+            variants.build_variant(bpy.context, source, plans, mode="PER_STRAND", bone_count=4)
             assert False
         except variants.HairVariantError as exc:
             assert "Injected after" in str(exc) and "Rollback needs" not in str(exc), str(exc)
@@ -284,7 +287,7 @@ def test_failure_restores_guide_edit_and_prior_pose():
     try:
         variants.show_variant = fail
         try:
-            variants.build_variant(bpy.context, source, grouped(plans), mode="GROUPED", bone_count=3)
+            variants.build_variant(bpy.context, source, plans, mode="PER_STRAND", bone_count=4)
             assert False
         except variants.HairVariantError as exc:
             assert "Injected after" in str(exc) and "Rollback needs" not in str(exc), str(exc)
@@ -295,6 +298,67 @@ def test_failure_restores_guide_edit_and_prior_pose():
     assert not a["collection"].hide_viewport and not a["collection"].hide_render
     assert source.hide_get() and source.hide_render
     assert source_state(source) == before and database_counts() == counts
+
+
+def test_removed_grouped_generation_is_atomic():
+    reset()
+    make_armature()
+    source, plans = make_hair()
+    source.modifiers.new("Mirror", "MIRROR")
+    activate(source, "EDIT", vertices=[6, 7])
+    before, counts = plain_snapshot(source), database_counts()
+    for mode, proposed in (("GROUPED", plans), ("GROUPED", grouped(plans)),
+                           ("PER_STRAND", grouped(plans))):
+        try:
+            variants.build_variant(bpy.context, source, proposed, mode=mode, bone_count=3)
+            raise AssertionError("Removed shared-chain generation must stop before mutation")
+        except (variants.HairVariantError, rig.HairBonesRigError) as exc:
+            assert any(word in str(exc).lower() for word in ("shared", "grouped", "per strand", "per-strand")), str(exc)
+        assert plain_snapshot(source) == before and database_counts() == counts
+        assert bpy.context.mode == "EDIT_MESH" and bpy.context.object is source
+    # Direct rig service cannot bypass the public version builder's guard.
+    try:
+        rig.build_hair_bones(bpy.context, source, grouped(plans), bone_count=3)
+        raise AssertionError("Direct shared-chain plans must also be rejected")
+    except rig.HairBonesRigError as exc:
+        assert any(word in str(exc).lower() for word in ("shared", "grouped", "per strand", "per-strand")), str(exc)
+    assert plain_snapshot(source) == before and database_counts() == counts
+
+
+def test_hidden_source_layer_reports_visibility_without_mutation():
+    reset()
+    make_armature()
+    source, plans = make_hair()
+    collection = bpy.data.collections.new("Hair Hidden In View Layer")
+    bpy.context.scene.collection.children.link(collection)
+    collection.objects.link(source)
+    for old_collection in tuple(source.users_collection):
+        if old_collection is not collection:
+            old_collection.objects.unlink(source)
+    activate(source, "EDIT", vertices=[6, 7])
+    layer = bpy.context.view_layer.layer_collection.children[collection.name]
+    layer.hide_viewport = True
+    bpy.context.view_layer.update()
+    try:
+        # Blender keeps EDIT_MESH/edit_object while the hidden layer removes
+        # the source from objects_in_mode. This is not multi-object editing.
+        assert bpy.context.mode == "EDIT_MESH" and bpy.context.edit_object is source
+        assert not bpy.context.objects_in_mode and not source.visible_get()
+        before, counts = plain_snapshot(source), database_counts()
+        source_before = source_state(source)
+        try:
+            variants.build_variant(bpy.context, source, plans, bone_count=3)
+            raise AssertionError("Hidden source must stop before generating a version")
+        except variants.HairVariantError as exc:
+            assert str(exc) == "Make the source hair visible in this View Layer, then re-enter Mesh Edit Mode."
+        assert plain_snapshot(source) == before and source_state(source) == source_before
+        assert database_counts() == counts and not variants.variants_for(source)
+        assert layer.hide_viewport and not source.visible_get(), "Do not automatically reveal hidden hair"
+        assert bpy.context.mode == "EDIT_MESH" and not bpy.context.objects_in_mode
+    finally:
+        layer.hide_viewport = False
+        bpy.context.view_layer.update()
+        activate(source)
 
 
 def test_native_reopen():
@@ -349,6 +413,8 @@ def main():
                  test_transaction_and_unrelated_weights,
                  test_standalone_and_repeated_hidden_source,
                  test_failure_restores_guide_edit_and_prior_pose,
+                 test_removed_grouped_generation_is_atomic,
+                 test_hidden_source_layer_reports_visibility_without_mutation,
                  test_native_reopen):
         test()
         print("PASS", test.__name__)

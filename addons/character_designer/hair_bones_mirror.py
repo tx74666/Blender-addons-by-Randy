@@ -105,12 +105,11 @@ def preflight(obj, plans=None):
         coordinates, adjacency, boundary = _geometry(obj)
         tolerance = _tolerance(modifier, coordinates)
         for plan in plans:
-            sides = {_classification(member, coordinates, adjacency, boundary, tolerance)
-                     for member in plan.get("members", (plan,))}
-            if "C" in sides and not modifier.use_mirror_merge:
+            if "members" in plan:
+                raise _error("Each strand needs its own bone chain; shared-chain plans are no longer supported.")
+            side = _classification(plan, coordinates, adjacency, boundary, tolerance)
+            if side == "C" and not modifier.use_mirror_merge:
                 raise _error("Enable Mirror Merge so the central hair strand is joined before deformation.")
-            if "L" in sides and "R" in sides:
-                raise _error("A hair group contains both source sides of Mirror; use a clean half-mesh source.")
     return modifier
 
 
@@ -122,8 +121,7 @@ def preview_full_chain_count(obj, plans):
         return len(plans)
     coordinates, adjacency, boundary = _geometry(obj)
     tolerance = _tolerance(modifier, coordinates)
-    return sum(1 if any(_classification(member, coordinates, adjacency, boundary, tolerance) == "C"
-                        for member in plan.get("members", (plan,))) else 2 for plan in plans)
+    return sum(1 if _classification(plan, coordinates, adjacency, boundary, tolerance) == "C" else 2 for plan in plans)
 
 
 def _distances(points):
@@ -144,20 +142,6 @@ def _centered_points(member, coordinates, tolerance):
     return tuple(points)
 
 
-def _sample(points, count):
-    distances = _distances(points)
-    if distances[-1] <= 1.0e-8 or any(b - a <= 1.0e-8 for a, b in zip(distances, distances[1:])):
-        raise _error("The centered hair guide contains coincident sections; refine the source band.")
-    result, segment = [], 0
-    for index in range(count):
-        distance = distances[-1] * index / (count - 1)
-        while segment < len(points) - 2 and distance > distances[segment + 1]:
-            segment += 1
-        factor = (distance - distances[segment]) / (distances[segment + 1] - distances[segment])
-        result.append(points[segment].lerp(points[segment + 1], factor))
-    return result
-
-
 def prepare_plans(obj, plans):
     """Expand copied/validated plans; mirrored plans receive no base weights."""
     plans = tuple(plans)
@@ -169,24 +153,11 @@ def prepare_plans(obj, plans):
     result = []
     for source in plans:
         plan = copy.deepcopy(source)
-        members = plan.get("members", (plan,))
-        sides = tuple(_classification(member, coordinates, adjacency, boundary, tolerance) for member in members)
-        centered = "C" in sides
-        plan["mirror_side"] = "C" if centered else sides[0]
+        side = _classification(plan, coordinates, adjacency, boundary, tolerance)
+        centered = side == "C"
+        plan["mirror_side"] = side
         if centered:
-            if not plan.get("members"):
-                plan["centers"] = _centered_points(plan, coordinates, tolerance)
-            elif plan["root_tip_rule"] == "GROUP_GUIDE":
-                plan["centers"] = tuple(Vector((0.0, point.y, point.z)) for point in plan["centers"])
-            else:
-                count = len(plan["centers"])
-                paths = []
-                for member, side in zip(members, sides):
-                    points = (_centered_points(member, coordinates, tolerance) if side == "C" else
-                              tuple(Vector((0.0, point.y, point.z)) for point in member["centers"]))
-                    paths.append(_sample(points, count))
-                plan["centers"] = tuple(sum((path[index] for path in paths), Vector()) / len(paths)
-                                        for index in range(count))
+            plan["centers"] = _centered_points(plan, coordinates, tolerance)
             plan["distances"] = _distances(plan["centers"])
             if any(b - a <= 1.0e-8 for a, b in zip(plan["distances"], plan["distances"][1:])):
                 raise _error("The centered hair guide contains coincident sections; refine the source band.")
@@ -196,7 +167,7 @@ def prepare_plans(obj, plans):
             reflected = copy.deepcopy(plan)
             reflected["signature"] = plan["signature"] + ":mirror"
             reflected["mirror_of"] = plan["signature"]
-            reflected["mirror_side"] = "R" if sides[0] == "L" else "L"
+            reflected["mirror_side"] = "R" if side == "L" else "L"
             reflected["centers"] = tuple(Vector((-point.x, point.y, point.z)) for point in plan["centers"])
             # Reflection preserves the native arclength parameterization.
             result.append(reflected)

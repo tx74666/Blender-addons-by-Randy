@@ -242,6 +242,8 @@ def _preflight(context, source, plans, bone_count):
         raise HairVariantError("Make the source hair local before creating comparison versions.")
     if context.mode not in {"OBJECT", "EDIT_MESH", "EDIT_CURVE", "POSE"}:
         raise HairVariantError("Use Object Mode, Pose Mode, or edit the source hair mesh/group guide.")
+    if context.mode == "EDIT_MESH" and not context.objects_in_mode:
+        raise HairVariantError("Make the source hair visible in this View Layer, then re-enter Mesh Edit Mode.")
     if context.mode == "EDIT_MESH" and (context.edit_object is not source or len(context.objects_in_mode) != 1):
         raise HairVariantError("Finish editing other meshes before generating this hair version.")
     if context.mode == "EDIT_CURVE" and (len(context.objects_in_mode) != 1
@@ -381,15 +383,17 @@ def _delete_result(context, collection, mesh_data, armature_data, actions):
 def build_variant(context, source, plans, *, mode="PER_STRAND", bone_count=4):
     """Create an independent result, never overwriting a prior tuned version.
 
-    ``plans`` are fresh source-local strand/group plans.  Returns the rig service
+    ``plans`` are fresh source-local individual strand plans. Returns the rig service
     result plus ``source``, ``mesh``, ``collection`` and ``mode``.  On success the
     new version's hair controls are selected.  Errors restore mode, selection and
     visibility and remove every newly created object/datablock.
     """
     source = source_for(source)
     plans = tuple(plans)
-    if mode not in {"PER_STRAND", "GROUPED"}:
-        raise HairVariantError("Choose Per Strand or Grouped generation.")
+    if mode != "PER_STRAND":
+        raise HairVariantError("Grouped shared-chain generation is retired; generate independent strands instead.")
+    if any("members" in plan for plan in plans):
+        raise HairVariantError("Each strand needs its own bone chain; shared-chain plans are no longer supported.")
     try:
         attachment, parent, modifier, record, owned, mirrors = _preflight(context, source, plans, bone_count)
     except rig.HairBonesRigError as exc:
@@ -403,7 +407,7 @@ def build_variant(context, source, plans, *, mode="PER_STRAND", bone_count=4):
         # Flushing Edit Mode is necessary before copying Mesh and Key data.
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
-        label = "Per Strand" if mode == "PER_STRAND" else "Grouped"
+        label = "Per Strand"
         index = max((int(item.get(INDEX_KEY, 0)) for item in variants_for(source)), default=0) + 1
         collection = bpy.data.collections.new(f"{source.name} · {label} {index:02d}")
         context.scene.collection.children.link(collection)

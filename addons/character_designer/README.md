@@ -1,26 +1,83 @@
-# Character Designer 0.40.2
+# Character Designer 0.42.1
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
 
-Version 0.40.2 fixes incomplete hair controls on meshes with Mirror. New hair
-versions generate both side chains automatically. A strand joined along the
-mirror seam has one central chain controlling its complete width; touching the
-plane only at a root does not make a side strand central. For X's Hair3, seven
-captured half-mesh strands produce six left/right pairs plus one central chain:
-13 chains, or 52 hair bones at four per chain, plus the head attachment bone.
+Version 0.42.1 consistently highlights removal actions in red: **Remove Skirt
+Setup**, forearm calibration **Remove**, and legacy hair **Cleanup Generated
+Copies**, alongside the existing Hair Binding and Limb/Spline IK removal buttons.
+The red style identifies removal of generated work; existing removal checks and
+confirmation behavior remain in place.
 
-The generated copy evaluates its native Mirror before its Armature and flips
-side vertex groups to the matching left/right bones. Each side can be posed
-independently; the central strand stays one piece. Per Strand and Grouped use
-the same rule, and a group containing the central strand shares one central
-chain across both sides. Original source modifiers and older versions remain
-intact. Select an older result and press **Generate New Version** to build the
-complete controls; refreshing does not overwrite existing animation or weights.
-This complete layout currently supports one enabled Mesh-local X Mirror without
-Bisect, before other geometry modifiers. Unsupported Mirror configurations
-report a reason before creating a version; the tool does not silently generate
-half the controls or apply the source Mirror.
+Version 0.42.0 adds **Animation** to the second row of page tabs. It connects
+to a separately installed, free local Kimodo runtime. Model weights and Python
+dependencies are not bundled in the add-on ZIP. No paid Blender plug-in,
+subscription, hosted generation, or paid API is used.
+
+1. Choose **Animation**, check **Character Rig** (the selected armature or
+   CoshaRig is used when the field is empty), and describe a short motion in English.
+2. Start with **2 seconds**, then **Generate Local Motion**. Generation runs
+   outside Blender and can be cancelled. A new prompt first loads the local text
+   encoder, saves its embedding, and exits before loading the motion model.
+   Reusing the same prompt skips that encoder stage.
+3. **Import Preview** creates a separate BVH armature, preserving scene FPS and
+   playback range. **Apply as New Action** transfers body motion to the character.
+   **Restore Previous Action** switches back; the generated Action remains available.
+4. Under **Local Setup**, choose the configured Kimodo folder or reopen a previously
+   generated BVH via **Motion File**. **Open Job Folder** contains the result and logs.
+
+This first integration supports text-to-motion and conservative FK body transfer.
+Anatomical direction calibration accounts for SOMA's T Pose and CoshaRig's A Pose
+before applying motion, preserving the character's proportions and bone rolls.
+Pose anchors, paths, and automatic foot-contact correction are not exposed yet.
+Mapped bones with active constraints or drivers require a compatible retargeting
+workflow; this tool does not disable them. Hair and skirt bones are not keyed by
+the body transfer. Clothing simulation needs its normal playback/bake workflow.
+The previous Action and original unanimated pose are recorded on the new Action
+and can be restored after saving/reopening; Apply/Import also support Blender Undo.
+
+The local setup uses NVIDIA's SOMA motion model and the community NF4 text encoder.
+On 6GB GPUs, generating a new prompt can require closing other GPU-heavy apps.
+The runtime checks available memory before loading; setup alone does not guarantee
+that generation fits alongside all currently open projects. See
+[local runtime notes](../../docs/kimodo-local.md).
+
+Version 0.41.3 removes **Weight Flow**. The **Weight** page contains
+**Weight Tools** and **Weight Symmetry**. Use Blender's native weight-smoothing
+tools for local weight transitions.
+
+Version 0.41.2 combines Modeling and Reference in **Miscellaneous**. The
+modeling panel and its setup button are named **Build Symmetry**, with a
+short centerline/center-band selection hint. Its pairing and movement behavior
+are unchanged. The page grid is **Hair / Weight / Rig**, then
+**Clothing / Miscellaneous**.
+
+Version 0.41.1 highlights **Remove Hair Binding** in Blender's red alert style
+so the removal action is easy to locate.
+
+Version 0.41.0 binds the **original hair mesh** directly to the character's
+Armature. Each captured strand gets an independent chain parented to Head.
+No extra mesh, private hair rig, or attachment bone is created. The old
+Generate New Version workflow is removed from the panel. Shared procedural
+motion remains a future stage, not part of this release.
+
+The target defaults to an existing source binding, or the nearest recognizable
+humanoid Head when unbound. The panel shows the chosen rig and Head; an explicit
+Armature override is available. Equally near candidates require an explicit
+choice. Head and influencing bones must be at rest when binding; the tool
+never changes the character pose or its animation to force a bind.
+
+The complete strand capture is checked against the mesh before assigning the
+remaining root-connected cap region to Head with weight 1. Root rings are also
+Head 1; farther vertices blend through their own strand bones. Uncaptured long
+strands and ambiguous residual regions stop the operation. Nondeforming artist
+masks are preserved.
+
+Mirror remains native and precedes Armature. Both side chains are created,
+while a strand joined along the mirror seam uses one central chain. X Hair3's
+seven half-mesh captures give 13 full chains, or 52 hair bones at four per chain,
+directly under the existing Head. Initial bindings with an existing Armature
+modifier support either original Mirror order, restoring it on removal.
 
 Version 0.40.1 clarifies the skirt controls: use G / R / S on the three master
 rings, and G on the local side points. Each side point Hooks one curve point at
@@ -41,6 +98,16 @@ wire follows those native controls. Skin weights blend down the skirt and
 between adjacent directions, while the top ring remains attached to the waist.
 Repeated Create selects the existing controls; changing source geometry or bone
 counts requires removing and recreating the owned setup.
+
+**Remove Skirt Setup** reverses this tool's binding without relying on Undo:
+it restores the recorded original parent and transforms, removes the generated
+Armature modifier and weight groups, and retains the source mesh, Shape Keys,
+original weight groups, and other original modifiers. The record survives saving
+and reopening. It does not undo later mesh edits. Generated controls and their
+animation are removed after confirmation; independent baked copies remain.
+Custom external constraints or drivers linked to the generated rig need to be
+handled before removal; this skirt cleanup does not yet scan every external
+dependency. It is restoration of the recorded source binding, not a full scene snapshot.
 
 **Physics** creates one connected low-resolution cloth cage, hidden physics
 bones, and closed convex collision proxies for the pelvis and identifiable
@@ -73,57 +140,42 @@ depends on collision fitting, the input animation, and the selected frame range.
 The implementation learns from Randy's Elaina Ex1 and ProfessionalEx scenes;
 their original scripts, objects, weights, and caches are not executed or edited.
 
-The current release also adds two comparison modes in **Hair > Hair Bones**:
-**Per Strand** creates one chain per captured strand; **Grouped** creates one
-chain per saved group. A group containing one strand gives the individual
-behavior, so a final setup can mix shared back-hair groups with separate bangs.
+**Hair > Hair Bones** creates an independent chain for each captured strand.
+The default is four bones per chain, adjustable before binding.
 
 1. Enter Mesh Edit Mode on the original hair and press **Select Hair Strands**.
    Deselect everything first to discover all visible strands, or select tips
-   to limit the capture. The source mesh and captured strand boundaries stay
-   separate from every generated version.
-2. Choose **Per Strand**, set **Bones per Chain**, and **Generate New Version**
-   for an individual-chain baseline. Each generation owns a separate mesh,
-   rig, weights and animation data in a named collection. It never rebuilds
-   or replaces a previous hand-tuned result.
-3. Use **Edit Source** to return. Choose **Grouped**, select tips or interior
-   vertices on the strands that should move together, and **Group Selected**.
-   **Split Selected** returns chosen members to individual groups. Other
-   memberships are preserved. Shared root vertices alone do not select a
-   strand, so clicking a welded root cannot silently group the whole scalp.
-4. Choose a group in the list and **Edit Guide** to shape its root-to-tip path.
-   A default guide averages the member paths by normalized arc length. Each
-   strand uses its own normalized length for weighting along the shared chain,
-   allowing different tip heights and ring counts. You can generate directly
-   from the automatic guide without first creating or binding separate chains.
-5. **Generate New Version** builds all captured strands using the chosen mode.
-   The current group highlight is only for editing; it does not reduce the
-   generation scope. Use **Version / Show Version** to switch results; only
-   one version per source is visible/rendered at a time. Save comparison files
-   with Blender Save As when desired.
+   to limit discovery, then capture every strand before binding the whole mesh.
+2. Set **Bones per Chain**, check the displayed character/Head, and press
+   **Bind Hair to Character**. The original mesh remains the same object and
+   uses the character's own Armature. Rotate the selected hair bones in Pose Mode.
+3. **Remove Hair Binding** removes only recorded hair bones and their binding
+   changes, restoring pre-bind weights, parenting, Mirror settings and Armature
+   modifier order. A pre-existing binding is restored rather than erased. The
+   original geometry and shape keys remain. The record survives save/reopen.
+4. Remove before changing chain counts or topology, then use **Recapture
+   Strands** and bind again. Recapture retains old capture/guide infrastructure
+   required to read earlier files; it does not delete guide objects.
 
-Guide edits, regrouping, source vertex edits and subsequent generation leave
-older versions untouched. **Recapture Strands** clears the saved partition for
-a new selection or changed topology; it retains artist-created guides and all
-existing results. A guide belonging to a removed group becomes unused rather
-than being deleted. Returning to the source restores its original visibility.
+Old version-copy scenes remain readable, but no new copies are made by the UI.
+**Cleanup Generated Copies** deletes only verified plugin-owned version meshes,
+private rigs and Mirror helpers for the selected original source. It preserves
+and reveals the original hair. In an interactive Blender session, cleanup first
+writes a recovery file under `.character_designer_backups` beside the current
+blend file. Foreign objects in version collections, shared data and outside
+dependencies stop cleanup before deletion.
 
-Each version has its own small attachment rig following the original head,
-so both modes receive the same head motion while their hair controls remain
-independent. The extra attachment bone is separate from the displayed hair
-chain count: six complete strands without Mirror and three bones per chain use
-18 hair bones; two shared groups with three bones use six. A Mirror source also
-includes its opposite-side chains, keeping a seam-connected strand central.
-This count is not a claim about frame-time speedup.
-The native rigs continue working after saving/reopening without the add-on.
-Existing 0.38 owned hair can be used as a source; unsupported unrelated deform
-influences are reported before a comparison is created.
+Removal also stops if topology/ownership changed, or if other meshes, objects,
+constraints or drivers depend on the hair bones. Transfer or remove hair-bone
+animation/custom constraints before removing the binding; the character's
+unrelated animation is preserved. The generated native deformation works
+without the add-on; the add-on is needed for its reversible removal action.
 
 Version 0.38.0 originally added **Hair > Hair Bones**, next to the existing hair centerline
 workflow. It finds long, regular strips in a joined hair mesh and builds native
 connected FK bone chains with local, smoothly varying skin weights.
-The following 0.38 notes describe the retained in-place API; the current panel
-uses the independent **Generate New Version** workflow above.
+The following 0.38 notes are historical; use the reversible original-mesh
+workflow above for current binding and removal.
 
 1. Select the hair mesh and enter **Edit Mode**. Deselect everything to search
    the visible mesh, or select a hair tip/vertices to limit the search.
@@ -585,26 +637,16 @@ option. Its equal proportional scaling is superseded in 0.24.0 because it could
 dilute a full selected core and could not repair the spatial leakage of a
 single-bone Bone Heat solve.
 
-Version 0.22.0 reorganizes the sidebar with the same compact two-row page grid
-used by RR Helper: **Hair / Weight / Rig** and **Modeling / Reference**. The
-active page is visibly pressed, and only that tool family remains visible.
-Weight Tools and Weight Flow now share the dedicated Weight page; Delta
-Symmetry is under Modeling, Spline IK under Rig, and Reference Views under
-Reference. The page choice is session-only (`SKIP_SAVE`), so changing pages
-does not dirty or persist into `X.blend`.
+Version 0.22.0 introduced the compact two-row page grid used by RR Helper.
+The current layout is **Hair / Weight / Rig**, then **Clothing / Miscellaneous**.
+The active page is visibly pressed. Weight Tools and Weight Symmetry share Weight;
+Spline IK is under Rig, and Skirt Setup is under Clothing. **Build Symmetry**
+and **Reference Views** appear together under **Miscellaneous**. The page
+choice is session-only (`SKIP_SAVE`), so changing pages does not dirty or
+persist into `X.blend`.
 
-Version 0.21.0 adds a separate **Weight Flow** section for topology-aware,
-live-previewed weight transitions. In Weight Paint, select a non-branching
-vertex chain, a closed loop, or a complete surface region with an interior;
-then select exactly two visible Deform Pose bones. Weight Flow redistributes
-only those two groups' existing per-vertex budget, so every other Vertex Group
-remains point-for-point unchanged. Open chains interpolate by local arc length,
-closed loops relax to their budget-weighted mean, and surface interiors use
-inverse-edge-length harmonic passes while their selected boundary remains
-fixed. Linear, Smooth, and Sharp profiles, a 0–1 Strength slider, and live
-surface Iterations update the dialog Preview from the original snapshot rather
-than accumulating. OK creates one Undo step; Esc, refresh, unregister, or any
-failure restores the complete original group state.
+Version 0.21.0 introduced **Weight Flow**, a two-bone weight-transition tool.
+It was removed in version 0.41.3.
 
 Version 0.20.3 makes selected-bone weighting fail closed before it can produce
 misleading results on an unsupported half-Mesh stack. A true half Mesh must use
@@ -784,35 +826,6 @@ Subdivision may be before or after that Mirror. The tool refuses ambiguous
 Mirror stacks and shared Mesh data rather than claiming success when an opposite
 bone could not independently deform its side.
 
-## Weight Flow
-
-**Weight Flow** creates a controlled transition without using Blender's global
-Normalize or touching unrelated weights:
-
-1. Keep the bound Mesh in Weight Paint Mode and enable **Vertex Selection
-   Mask**. Select one or more complete non-branching chains, closed loops, or
-   surface regions. A surface region needs a fixed outer boundary and at least
-   one interior vertex row.
-2. Select exactly two visible Deform Pose bones. Both matching Vertex Groups
-   must already exist and be unlocked; make either one the active Vertex Group
-   so Blender can display its Preview colors.
-3. Open **Character Designer > Weight Flow** and click **Preview Weight Flow**.
-   Adjust **Profile** and **Strength**. A surface region also exposes
-   **Iterations**. Every slider change is recomputed from the captured original
-   weights rather than from the previous Preview.
-4. Press OK to apply or Esc to restore. Confirmed output is one Undo/Redo step.
-
-For each selected vertex, the sum originally owned by the two participating
-groups is treated as a fixed budget. Weight Flow only changes how that budget is
-split between them. Other groups—including locked artist groups—retain their
-exact definition, sparse membership, float weights, order, and lock state. The
-two participating groups are likewise unchanged outside the vertex selection.
-The tool does not alter parenting, object selection, the Armature or other
-modifiers, Mirror/Subdivision settings, Mesh data, or any bone Deform flag.
-Zero-budget vertices, branching selections, missing/locked participant groups,
-closed surfaces without a boundary, and shared Mesh data are refused before any
-Preview write.
-
 ## Spline IK Setup
 
 **Spline IK Setup** builds the repetitive Curve, Hook-controller, and
@@ -979,9 +992,9 @@ multiple sets require an explicit UUID-backed dropdown choice before Show,
 Hide, or Clear becomes available. This recovery does not require the original
 manifest to still exist.
 
-## Delta Symmetry
+## Build Symmetry
 
-**Delta Symmetry** links the two topological sides of an asymmetric mesh
+Open **Miscellaneous > Build Symmetry**. This tool links the two topological sides of an asymmetric mesh
 without forcing their absolute positions to become mirror images. It reflects
 only the movement delta: an X-axis local delta `(dx, dy, dz)` becomes
 `(-dx, dy, dz)` on the paired vertex, while both vertices keep their existing
@@ -991,7 +1004,7 @@ different baselines.
    chain/loop, or two adjacent center-band boundary chains. For a center band,
    both boundaries must have matching open/closed structure and edge count;
    every boundary edge must have one band face and one outer face.
-2. Choose **Local** or **World** and the reflection axis, then click **Set
+2. Choose **Local** or **World** and the reflection axis, then click **Build
    Symmetry**. The topology is detected automatically; there is no mode switch.
 3. Enable **Auto Select Opposite** in Vertex Select mode. Selecting or
    deselecting a paired vertex immediately applies the same selection state to
@@ -1195,7 +1208,7 @@ a refresh is running, or an error needs attention. Refresh validates the Python
 files and then reloads only the add-on modules; it neither saves nor reloads the
 current `.blend`, so unsaved modeling remains in Blender memory without a save
 prompt. Successful reload establishes the new source signature and the button
-disappears. Session-only live preview and Delta Symmetry capture are stopped
+disappears. Session-only live preview and symmetry capture are stopped
 safely as part of unloading the old runtime.
 
 ## Workspace Filter Guard

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 40, 2),
+    "version": (0, 42, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -63,20 +63,25 @@ from .spline_ik_setup import (
 from .selected_bone_weights import SELECTED_BONE_WEIGHT_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
+from .animation import (
+    ANIMATION_CLASSES,
+    CharacterDesignerAnimationState,
+    register_animation_runtime,
+    unregister_animation_runtime,
+)
 from .ui_constants import (
     SIDEBAR_CATEGORY,
+    UI_PAGE_ANIMATION,
     UI_PAGE_DEFAULT,
     UI_PAGE_CLOTHING,
     UI_PAGE_HAIR,
     UI_PAGE_ITEMS,
-    UI_PAGE_MODELING,
-    UI_PAGE_REFERENCE,
+    UI_PAGE_MISC,
     UI_PAGE_RIG,
     UI_PAGE_WEIGHT,
     UI_PAGES,
     active_ui_page,
 )
-from .weight_flow import WEIGHT_FLOW_CLASSES, stop_weight_flow_runtime
 from .weight_symmetry import WEIGHT_SYMMETRY_CLASSES
 from .forearm_twist import (
     FOREARM_TWIST_CLASSES,
@@ -390,7 +395,6 @@ def _reload_addon_deferred():
     try:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
         stop_delta_symmetry_runtime(clear_capture=True)
-        stop_weight_flow_runtime(restore=True)
         try:
             addon_utils.disable(module_name, default_set=False, refresh_handled=True)
         except TypeError:
@@ -8163,21 +8167,15 @@ def _draw_page_tabs(layout, active_page):
     _draw_page_tab(first_row, active_page, UI_PAGE_RIG, "Rig", "CONSTRAINT_BONE")
 
     second_row = tab_box.row(align=True)
-    _draw_page_tab(
-        second_row,
-        active_page,
-        UI_PAGE_MODELING,
-        "Modeling",
-        "MOD_MIRROR",
-    )
-    _draw_page_tab(
-        second_row,
-        active_page,
-        UI_PAGE_REFERENCE,
-        "Reference",
-        "IMAGE_DATA",
-    )
     _draw_page_tab(second_row, active_page, UI_PAGE_CLOTHING, "Clothing", "MOD_CLOTH")
+    _draw_page_tab(second_row, active_page, UI_PAGE_ANIMATION, "Animation", "ACTION")
+    _draw_page_tab(
+        second_row,
+        active_page,
+        UI_PAGE_MISC,
+        "Miscellaneous",
+        "TOOL_SETTINGS",
+    )
 
 
 def _draw_refresh_action(layout):
@@ -8341,9 +8339,9 @@ CLASSES = (
     CHARACTERDESIGNER_PT_main,
     *HAIR_BONES_CLASSES,
     *SKIRT_CLASSES,
+    *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
-    *WEIGHT_FLOW_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
     *FOREARM_TWIST_CLASSES,
@@ -8356,6 +8354,7 @@ _WINDOW_MANAGER_POINTER_TYPES = (
     ("character_designer", CharacterDesignerState),
     ("character_designer_hair_bones", CharacterDesignerHairBonesState),
     ("character_designer_skirt", CharacterDesignerSkirtState),
+    ("character_designer_animation", CharacterDesignerAnimationState),
     ("character_designer_delta", CharacterDesignerDeltaState),
     ("character_designer_limb_ik", CharacterDesignerLimbIKState),
     ("character_designer_forearm_twist", CharacterDesignerForearmTwistState),
@@ -8440,6 +8439,7 @@ def register():
     forearm_twist_registered = hasattr(bpy.types.WindowManager, "character_designer_forearm_twist")
     hair_bones_registered = hasattr(bpy.types.WindowManager, "character_designer_hair_bones")
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
+    animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
     registration_state = (
         centerline_registered,
         delta_registered,
@@ -8449,9 +8449,11 @@ def register():
         forearm_twist_registered,
         hair_bones_registered,
         skirt_registered,
+        animation_registered,
     )
     if all(registration_state):
         _validate_registration_integrity()
+        register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
         register_forearm_twist_runtime()
@@ -8482,6 +8484,11 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_skirt")
+        bpy.types.WindowManager.character_designer_animation = PointerProperty(
+            type=CharacterDesignerAnimationState,
+            options={"SKIP_SAVE"},
+        )
+        added_properties.append("character_designer_animation")
         bpy.types.WindowManager.character_designer_delta = PointerProperty(
             type=CharacterDesignerDeltaState,
             options={"SKIP_SAVE"},
@@ -8507,6 +8514,7 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_references")
+        register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
         register_forearm_twist_runtime()
@@ -8514,6 +8522,7 @@ def register():
         _register_source_watch()
     except Exception:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
+        unregister_animation_runtime()
         unregister_forearm_twist_runtime()
         unregister_limb_ik_viewport_handler()
         unregister_reference_view_handlers()
@@ -8531,17 +8540,19 @@ def register():
 
 
 def unregister():
+    unregister_animation_runtime()
     stop_skirt_runtime()
     unregister_forearm_twist_runtime()
     _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
     stop_delta_symmetry_runtime(clear_capture=True)
-    stop_weight_flow_runtime(restore=True)
     unregister_limb_ik_viewport_handler()
     unregister_reference_view_handlers()
     _unregister_workspace_filter_guard()
     _unregister_source_watch()
     if hasattr(bpy.types.WindowManager, "character_designer_skirt"):
         del bpy.types.WindowManager.character_designer_skirt
+    if hasattr(bpy.types.WindowManager, "character_designer_animation"):
+        del bpy.types.WindowManager.character_designer_animation
     if hasattr(bpy.types.WindowManager, "character_designer_hair_bones"):
         del bpy.types.WindowManager.character_designer_hair_bones
     if hasattr(bpy.types.WindowManager, "character_designer_references"):

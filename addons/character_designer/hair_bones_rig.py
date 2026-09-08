@@ -258,7 +258,7 @@ def _resolve_rig(context, obj, armature, parent_bone, record):
     return armature, parent_bone, modifier
 
 
-def _mirror_preflight(obj, armature, parent_bone, record, modifier):
+def _mirror_preflight(obj, armature, parent_bone, record, modifier, *, full_mirror_build=False):
     mirrors = tuple(m for m in obj.modifiers if m.type == "MIRROR")
     reference = obj.get(MIRROR_KEY)
     if record and record.get("mirror_layout") == "BEFORE_ARMATURE_X":
@@ -294,7 +294,8 @@ def _mirror_preflight(obj, armature, parent_bone, record, modifier):
         if (not modifier.show_viewport or not modifier.show_render or not modifier.use_vertex_groups
                 or modifier.use_bone_envelopes or modifier.vertex_group or modifier.use_multi_modifier):
             raise HairBonesRigError("The existing Armature modifier must use ordinary, unmasked vertex-group deformation.")
-        if any(tuple(obj.modifiers).index(m) < tuple(obj.modifiers).index(modifier) for m in mirrors):
+        if (not (full_mirror_build and record is None)
+                and any(tuple(obj.modifiers).index(m) < tuple(obj.modifiers).index(modifier) for m in mirrors)):
             raise HairBonesRigError("The hair Armature must precede Mirror before adding shared strand controls.")
     return mirrors
 
@@ -393,38 +394,19 @@ def _plan_copy(plans, snapshot, bone_count):
     try:
         if isinstance(bone_count, bool) or int(bone_count) != bone_count or not 1 <= bone_count <= 12:
             raise HairBonesRigError("Bone Count must be between 1 and 12.")
-        result, all_members = [], []
+        result = []
         for plan in plans:
             if "members" in plan:
-                members = tuple(_native_plan_copy(member, snapshot) for member in plan["members"])
-                if not members:
-                    raise HairBonesRigError("A hair group must contain at least one strand.")
-                centers = tuple(Vector(point) for point in plan["centers"])
-                vertices = {index for member in members for index in member["vertices"]}
-                if set(plan["vertices"]) != vertices:
-                    raise HairBonesRigError("The hair group vertex domain does not match its members.")
-                if not plan.get("direction_confirmable", False):
-                    raise HairBonesRigError("Confirm this group's root-to-tip guide before generating bones.")
-                copied = {"signature": str(plan["signature"]), "layers": (), "members": members,
-                          "centers": centers, "distances": _distances(centers),
-                          "vertices": tuple(sorted(vertices)), "count": int(bone_count),
-                          "group_id": str(plan.get("group_id", "")),
-                          "group_name": str(plan.get("group_name", "")),
-                          "root_tip_rule": str(plan.get("root_tip_rule", "GROUP_GUIDE"))}
-            else:
-                copied = _native_plan_copy(plan, snapshot)
-                copied["count"] = min(int(bone_count), len(copied["centers"]) - 1)
-            for member in _members(copied):
-                for earlier in all_members:
-                    if member["signature"] == earlier["signature"]:
-                        raise HairBonesRigError("Each hair strand can belong to only one generated chain.")
-                    overlap = set(member["vertices"]) & set(earlier["vertices"])
-                    if overlap and not (overlap.issubset(member["layers"][0])
-                                        and overlap.issubset(earlier["layers"][0])):
-                        raise HairBonesRigError("Hair bands may share root vertices, but not their inner sections.")
-                all_members.append(member)
+                raise HairBonesRigError("Each strand needs its own bone chain; shared-chain plans are no longer supported.")
+            copied = _native_plan_copy(plan, snapshot)
+            copied["count"] = min(int(bone_count), len(copied["centers"]) - 1)
             if not copied["signature"] or any(item["signature"] == copied["signature"] for item in result):
                 raise HairBonesRigError("Hair bands have duplicate or invalid identities.")
+            for earlier in result:
+                overlap = set(copied["vertices"]) & set(earlier["vertices"])
+                if overlap and not (overlap.issubset(copied["layers"][0])
+                                    and overlap.issubset(earlier["layers"][0])):
+                    raise HairBonesRigError("Hair bands may share root vertices, but not their inner sections.")
             copied["requested_count"] = int(bone_count)
             result.append(copied)
         if not result:
@@ -617,7 +599,7 @@ def _select_chains(context, armature, names):
 
 
 def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent_bone="", mirror_controls=False):
-    """Build/select per-strand or shared FK chains as one atomic batch.
+    """Build/select independent per-strand FK chains as one atomic batch.
 
     Return ``armature``, ``chains`` (signature/bones/created dictionaries),
     integer ``created``/``reused``, ``parent_bone`` and creation flags.
@@ -640,7 +622,8 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         _validate_object(context, armature, armature=True)
     if obj.parent is not None and obj.parent is not armature:
         raise HairBonesRigError("Hair must be unparented or Object-parented to its bound Armature.")
-    mirrors = _mirror_preflight(obj, armature, parent_bone, record, modifier)
+    mirrors = _mirror_preflight(obj, armature, parent_bone, record, modifier,
+                                full_mirror_build=mirror_controls)
     full_mirror = bool(mirror_controls and mirrors)
     if full_mirror:
         from . import hair_bones_mirror
@@ -691,6 +674,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
     original_world = obj.matrix_world.copy()
     old_mirror_objects = [(m, m.mirror_object) for m in mirrors]
     old_mirror_groups = [(m, m.use_mirror_vertex_groups) for m in mirrors]
+    old_modifier_order = tuple(obj.modifiers)
     created_bones, created_collection, created_modifier = [], None, None
     created_rig, created_data, old_groups, created_reference = None, None, None, None
     armature_in_front = armature.show_in_front if armature else False
@@ -763,10 +747,13 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
             created_modifier.object = armature
             created_modifier.use_vertex_groups = True
             created_modifier.use_bone_envelopes = False
+        if created_modifier is not None or full_mirror:
             # Blender may insert before a pinned last modifier rather than
-            # append. Move the actual newly-created Armature by identity.
+            # append. Move the actual Armature by identity, including an
+            # existing source binding when creating full Mirror controls.
+            target_modifier = created_modifier if created_modifier is not None else modifier
             destination = tuple(obj.modifiers).index(mirrors[0]) + 1 if full_mirror else 0
-            current_index = tuple(obj.modifiers).index(created_modifier)
+            current_index = tuple(obj.modifiers).index(target_modifier)
             if current_index < destination:
                 destination -= 1
             obj.modifiers.move(current_index, destination)
@@ -794,15 +781,6 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
                      "centers": [list(point) for point in plan["centers"]],
                      "rest": [_bone_state(armature.data.bones[name]) for name in plan["names"]],
                      "root_tip_rule": plan["root_tip_rule"]}
-            if plan.get("members"):
-                updated["version"] = max(updated["version"], 2)
-                chain["group_id"], chain["group_name"] = plan["group_id"], plan["group_name"]
-                chain["members"] = [{"signature": member["signature"],
-                                     "layers": [list(layer) for layer in member["layers"]],
-                                     "centers": [list(point) for point in member["centers"]],
-                                     "vertices": list(member["vertices"]),
-                                     "root_tip_rule": member["root_tip_rule"], "direction_confirmable": True}
-                                    for member in plan["members"]]
             if full_mirror:
                 chain["mirror_side"] = plan["mirror_side"]
                 if plan.get("mirror_of"):
@@ -829,6 +807,10 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
                 mirror.mirror_object = original
             for mirror, original in old_mirror_groups:
                 mirror.use_mirror_vertex_groups = original
+            for destination, original in enumerate(old_modifier_order):
+                current_index = tuple(obj.modifiers).index(original)
+                if current_index != destination:
+                    obj.modifiers.move(current_index, destination)
             if created_reference is not None:
                 bpy.data.objects.remove(created_reference, do_unlink=True)
             obj.parent, obj.parent_type, obj.parent_bone = old_parent[:3]

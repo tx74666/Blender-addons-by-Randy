@@ -1364,7 +1364,9 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
                 enabled = all(item.get("enabled", True) for item in records.values())
                 row = layout.row(align=True)
                 row.operator("character_designer.forearm_twist_toggle", text="Enabled" if enabled else "Disabled", depress=enabled)
-                row.operator("character_designer.forearm_twist_remove", text="Remove", icon="TRASH")
+                remove_row = row.row(align=True)
+                remove_row.alert = True
+                remove_row.operator("character_designer.forearm_twist_remove", text="Remove", icon="TRASH")
             layout.label(text="Local correction · ±120° · add-on required")
         if obj.name in _ERRORS:
             box = layout.box()

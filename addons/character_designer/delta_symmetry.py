@@ -11,7 +11,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, 
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Vector
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MODELING, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
 
 
 DELTA_TIMER_INTERVAL = 0.04
@@ -955,7 +955,7 @@ def _validate_capture(obj, bm):
     counts = (len(bm.verts), len(bm.edges), len(bm.faces))
     expected = (_CAPTURE["vertex_count"], _CAPTURE["edge_count"], _CAPTURE["face_count"])
     if counts != expected:
-        raise DeltaSymmetryError("Topology changed - rebuild the Delta Symmetry pairs.")
+        raise DeltaSymmetryError("Topology changed - rebuild the symmetry pairs.")
 
 
 def _resolve_record_object(record):
@@ -1168,7 +1168,7 @@ def _start_auto_select(context, settings):
     _validate_capture(obj, bm)
     _validate_auto_select_options(context)
     if _topology_signature(bm) != _CAPTURE["topology_signature"]:
-        raise DeltaSymmetryError("Topology changed - rebuild the Delta Symmetry pairs.")
+        raise DeltaSymmetryError("Topology changed - rebuild the symmetry pairs.")
     _AUTO_SELECT = {
         "object": obj,
         "object_name": obj.name,
@@ -1389,7 +1389,7 @@ def _start_runtime(context, settings):
     _validate_capture(obj, bm)
     _validate_runtime_options(context, obj)
     if _topology_signature(bm) != _CAPTURE["topology_signature"]:
-        raise DeltaSymmetryError("Topology changed - rebuild the Delta Symmetry pairs.")
+        raise DeltaSymmetryError("Topology changed - rebuild the symmetry pairs.")
     _refresh_capture_orientation(obj, bm, settings.coordinate_space, settings.axis)
     if _AUTO_SELECT is not None and settings.auto_select_opposite:
         _changed, ambiguous = _sync_auto_selection(obj, bm, initial=True)
@@ -1510,7 +1510,7 @@ def _delta_runtime_tick(allow_writes=False):
             or now >= _RUNTIME["next_topology_audit"]
         ):
             if _topology_signature(bm) != _CAPTURE["topology_signature"]:
-                raise DeltaSymmetryError("Topology changed - rebuild the Delta Symmetry pairs.")
+                raise DeltaSymmetryError("Topology changed - rebuild the symmetry pairs.")
             _RUNTIME["next_topology_audit"] = now + DELTA_TOPOLOGY_AUDIT_INTERVAL
         if (
             _CAPTURE.get("orientation_space") != settings.coordinate_space
@@ -1647,7 +1647,7 @@ def _orientation_updated(settings, context):
         bm.faces.index_update()
         _validate_capture(obj, bm)
         if _topology_signature(bm) != _CAPTURE["topology_signature"]:
-            raise DeltaSymmetryError("Topology changed - rebuild the Delta Symmetry pairs.")
+            raise DeltaSymmetryError("Topology changed - rebuild the symmetry pairs.")
         _refresh_capture_orientation(obj, bm, settings.coordinate_space, settings.axis)
         _set_status(settings, "SUCCESS", f"Side labels updated for {settings.coordinate_space.title()} {settings.axis}.")
     except (DeltaSymmetryError, ReferenceError, RuntimeError) as exc:
@@ -1698,7 +1698,7 @@ class CharacterDesignerDeltaState(PropertyGroup):
 
 class CHARACTERDESIGNER_OT_delta_build_pairs(Operator):
     bl_idname = "character_designer.delta_build_pairs"
-    bl_label = "Set Symmetry"
+    bl_label = "Build Symmetry"
     bl_description = (
         "Build vertex pairs from one selected centerline or two selected center-band boundaries"
     )
@@ -1748,20 +1748,20 @@ class CHARACTERDESIGNER_OT_delta_build_pairs(Operator):
 
 class CHARACTERDESIGNER_OT_delta_clear(Operator):
     bl_idname = "character_designer.delta_clear"
-    bl_label = "Clear Delta Symmetry"
+    bl_label = "Clear Symmetry"
     bl_description = "Clear the current session's centerline and pair map"
     bl_options = {"INTERNAL"}
 
     def execute(self, context):
         settings = _delta_settings(context)
         stop_delta_symmetry_runtime(clear_capture=True)
-        _set_status(settings, "INFO", "Delta Symmetry pair map cleared.")
+        _set_status(settings, "INFO", "Symmetry pair map cleared.")
         return {"FINISHED"}
 
 
 class CHARACTERDESIGNER_OT_delta_select_group(Operator):
     bl_idname = "character_designer.delta_select_group"
-    bl_label = "Select Delta Symmetry Group"
+    bl_label = "Select Symmetry Group"
     bl_description = "Select the captured negative side, centerline, or positive side"
     bl_options = {"INTERNAL"}
 
@@ -1784,7 +1784,7 @@ class CHARACTERDESIGNER_OT_delta_select_group(Operator):
                 raise DeltaSymmetryError("Build pairs for this mesh first.")
             _validate_capture(obj, bm)
             if _topology_signature(bm) != _CAPTURE["topology_signature"]:
-                raise DeltaSymmetryError("Topology changed - rebuild the Delta Symmetry pairs.")
+                raise DeltaSymmetryError("Topology changed - rebuild the symmetry pairs.")
         except (DeltaSymmetryError, ReferenceError, RuntimeError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -1805,7 +1805,7 @@ class CHARACTERDESIGNER_OT_delta_select_group(Operator):
 
 
 class CHARACTERDESIGNER_PT_delta_symmetry(Panel):
-    bl_label = "Delta Symmetry"
+    bl_label = "Build Symmetry"
     bl_idname = "CHARACTERDESIGNER_PT_delta_symmetry"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -1814,7 +1814,7 @@ class CHARACTERDESIGNER_PT_delta_symmetry(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_MODELING
+        return active_ui_page(context) == UI_PAGE_MISC
 
     def draw(self, context):
         layout = self.layout
@@ -1831,10 +1831,12 @@ class CHARACTERDESIGNER_PT_delta_symmetry(Panel):
         if not settings.captured:
             layout.operator(
                 "character_designer.delta_build_pairs",
-                text="Set Symmetry",
+                text="Build Symmetry",
                 icon="MOD_MIRROR",
             )
-            layout.label(text="Select one centerline or two band boundaries.", icon="INFO")
+            hint = layout.column(align=True)
+            hint.label(text="Select a centerline, or", icon="INFO")
+            hint.label(text="two center-band boundaries.", icon="BLANK1")
         else:
             auto_select = layout.row()
             auto_select.prop(

@@ -1,4 +1,4 @@
-"""Persistent strand partitions and optional editable guides for Hair Bones.
+"""Persistent strand captures and legacy group metadata for Hair Bones.
 
 Only source-object metadata and explicit selection/guide actions are changed.
 The partition survives reloads and coordinate edits; connectivity changes must
@@ -14,7 +14,6 @@ from contextlib import contextmanager
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
-from mathutils.geometry import interpolate_bezier
 
 from . import hair_bones_topology as topology
 
@@ -123,18 +122,24 @@ def _guides(obj, group):
                  and item.get(GUIDEGROUP_KEY) == group["id"] and item.get(GUIDE_ID_KEY) == guide_id)
 
 
-def _public_group(obj, group):
+def _public_group(obj, group, *, require_unique_guide=True):
     guides = _guides(obj, group)
-    if len(guides) > 1:
+    if len(guides) > 1 and require_unique_guide:
         raise HairGroupsError("This hair group has duplicate guides. Remove the duplicate guide before generating bones.")
     return {"id": group["id"], "name": group["name"],
-            "members": tuple(group["members"]), "guide": guides[0] if guides else None}
+            "members": tuple(group["members"]), "guide": guides[0] if len(guides) == 1 else None}
 
 
 def read_groups(obj):
     """Return list[{id, name, members: tuple[str], guide: Object | None}]."""
     data = _read(obj)
     return [] if data is None else [_public_group(obj, group) for group in data["groups"]]
+
+
+def captured_strand_count(obj):
+    """Count captured strands without requiring obsolete group guides."""
+    data = _read(obj)
+    return len(data["strands"]) if data else 0
 
 
 def clear_groups(obj):
@@ -145,14 +150,15 @@ def clear_groups(obj):
         del obj[GROUPS_KEY]
 
 
-def _native_plan(obj, bm, record):
+def _native_plan(obj, bm, record, edges=None):
     layers = tuple(tuple(layer) for layer in record["layers"])
     if len(layers) < 2 or not all(layers):
         raise HairGroupsError("A hair strand needs at least two nonempty cross-sections.")
     if any(type(index) is not int or not 0 <= index < len(bm.verts)
            for layer in layers for index in layer):
         raise HairGroupsError("The saved hair strand indices are invalid. Clear its groups and capture strands again.")
-    edges = tuple(topology._cd()._bm_edge_key(edge) for edge in bm.edges)
+    if edges is None:
+        edges = tuple(topology._cd()._bm_edge_key(edge) for edge in bm.edges)
     checked = topology._strict_plan(obj, bm, layers, edges, explicit_direction=True)
     if checked is None or checked["signature"] != record["signature"]:
         raise HairGroupsError("A captured strand no longer has valid cross-sections. Restore its shape or capture it again.")
@@ -185,6 +191,7 @@ def capture_plans(obj, plans):
         raise HairGroupsError("Select Hair Strands before capturing groups.")
     with _mesh(obj) as bm:
         data = _read(obj, bm) or {"version": 1, "topology": _topology(bm), "strands": [], "groups": []}
+        edges = tuple(topology._cd()._bm_edge_key(edge) for edge in bm.edges)
         known = {item["signature"]: item for item in data["strands"]}
         for plan in plans:
             try:
@@ -195,7 +202,7 @@ def capture_plans(obj, plans):
                           "root_tip_rule": plan.get("root_tip_rule", "CAPTURED_ROOT")}
                 assert topology._signature(record["layers"]) == record["signature"]
                 assert set(record["vertices"]) == {i for layer in record["layers"] for i in layer}
-                _native_plan(obj, bm, record)
+                _native_plan(obj, bm, record, edges)
             except (KeyError, TypeError, IndexError, AssertionError) as exc:
                 raise HairGroupsError("The selected strand data is incomplete. Select Hair Strands again.") from exc
             if record["signature"] in known:
@@ -205,12 +212,10 @@ def capture_plans(obj, plans):
             data["groups"].append({"id": uuid.uuid4().hex, "name": f"Strand {len(data['strands']):02d}",
                                    "members": [record["signature"]]})
         _validate_overlap(data["strands"])
-        # Validate public references before the single metadata commit too.
-        # A duplicate existing guide must not make capture fail after writing.
-        for group in data["groups"]:
-            _public_group(obj, group)
+        # Old group guides never determine independent strand generation.
+        # Preserve them, including missing/duplicate legacy references.
         _write(obj, data)
-    return read_groups(obj)
+    return [_public_group(obj, group, require_unique_guide=False) for group in data["groups"]]
 
 
 def selected_members(context, obj):
@@ -344,38 +349,6 @@ def _average(members, count):
     return result
 
 
-def _guide_points(obj, guide):
-    if guide.mode == "EDIT":
-        guide.update_from_editmode()
-    if guide.type != "CURVE" or len(guide.data.splines) != 1:
-        raise HairGroupsError("Use one open spline for each group guide.")
-    spline = guide.data.splines[0]
-    if spline.use_cyclic_u:
-        raise HairGroupsError("The group guide must be open, ordered from root to tip.")
-    if guide.modifiers or guide.constraints:
-        raise HairGroupsError("Apply guide modifiers and constraints before generating hair bones.")
-    if spline.type == "POLY":
-        points = tuple(Vector(point.co[:3]) for point in spline.points)
-    elif spline.type == "BEZIER":
-        if len(spline.bezier_points) < 2:
-            raise HairGroupsError("The group guide needs at least two points.")
-        points = []
-        pairs = zip(spline.bezier_points, spline.bezier_points[1:])
-        for a, b in pairs:
-            handles = (a.co, a.handle_right, b.handle_left, b.co)
-            if any(not math.isfinite(value) for point in handles for value in point):
-                raise HairGroupsError("The group guide contains a non-finite point or handle.")
-            segment = interpolate_bezier(*handles, 17)
-            points.extend(segment if not points else segment[1:])
-        points = tuple(points)
-    else:
-        raise HairGroupsError("Use a Poly or Bezier spline for the group guide.")
-    if abs(obj.matrix_world.determinant()) <= 1.0e-12:
-        raise HairGroupsError("The source hair has zero scale. Restore a nonzero scale before using its guide.")
-    transform = obj.matrix_world.inverted() @ guide.matrix_world
-    return _distances(tuple(transform @ point for point in points), "The group guide")[0]
-
-
 def _editable_collections(context):
     """Collections reached through an unhidden, unexcluded, selectable path."""
     visible = set()
@@ -410,13 +383,11 @@ def _new_guide_collection(context, obj):
 
 
 def build_plans(context, *, mode="PER_STRAND", selected_only=False, source=None):
-    """Build all captured strands/groups; selection only limits an explicit request."""
-    if mode not in {"PER_STRAND", "GROUPED"}:
-        raise HairGroupsError("Choose Per Strand or Grouped hair generation.")
+    """Rebuild independent strands, preserving old grouping metadata as data."""
+    if mode != "PER_STRAND":
+        raise HairGroupsError("Grouped shared-chain generation is retired; generate independent strands instead.")
     obj = source if source is not None else source_from_context(context)
-    # RNA parent/location/rotation edits tag evaluation but matrix_world may
-    # still contain the previous result. Sampling an unevaluated new guide can
-    # turn its identity matrix into a large false source-local displacement.
+    # Consume pending source transforms before validating world-space direction.
     context.view_layer.update()
     with _mesh(obj) as bm:
         data = _read(obj, bm)
@@ -426,35 +397,15 @@ def build_plans(context, *, mode="PER_STRAND", selected_only=False, source=None)
                     source, plans = topology.selected_strands(context)
                 except topology.HairTopologyError as exc:
                     raise HairGroupsError(str(exc)) from exc
-                if mode == "PER_STRAND":
-                    return source, plans
-            raise HairGroupsError("Select Hair Strands first to save their group boundaries.")
-        members = {record["signature"]: _native_plan(obj, bm, record) for record in data["strands"]}
+                return source, plans
+            raise HairGroupsError("Select Hair Strands first to save their boundaries.")
+        edges = tuple(topology._cd()._bm_edge_key(edge) for edge in bm.edges)
+        members = {record["signature"]: _native_plan(obj, bm, record, edges) for record in data["strands"]}
         _validate_overlap(members.values())
         selected = set(selected_members(context, obj)) if selected_only else set(members)
         if not selected:
             raise HairGroupsError("Select at least one captured strand.")
-        if mode == "PER_STRAND":
-            return obj, tuple(plan for signature, plan in members.items() if signature in selected)
-        plans = []
-        for group in data["groups"]:
-            if not selected.intersection(group["members"]):
-                continue
-            strands = tuple(members[signature] for signature in group["members"])
-            count = max(5, max(len(strand["centers"]) for strand in strands))
-            guides = _guides(obj, group)
-            if len(guides) > 1:
-                raise HairGroupsError("Remove the duplicate group guide before generating bones.")
-            if group.get("guide_id") and not guides:
-                raise HairGroupsError("A saved group guide is missing. Create its guide again or restore the deleted guide.")
-            centers = _sample(_guide_points(obj, guides[0]), count) if guides else _average(strands, count)
-            signature = "group:" + hashlib.sha256(repr(tuple(sorted(group["members"]))).encode("ascii")).hexdigest()
-            plans.append({"signature": signature, "group_id": group["id"], "group_name": group["name"],
-                          "members": strands, "centers": tuple(tuple(point) for point in centers),
-                          "vertices": tuple(sorted({i for strand in strands for i in strand["vertices"]})),
-                          "direction_confirmable": all(strand["direction_confirmable"] for strand in strands),
-                          "root_tip_rule": "GROUP_GUIDE" if guides else "GROUP_AVERAGE"})
-        return obj, tuple(plans)
+        return obj, tuple(plan for signature, plan in members.items() if signature in selected)
 
 
 def create_group_guide(context, group_id, point_count=5):

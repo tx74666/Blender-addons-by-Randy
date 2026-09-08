@@ -202,48 +202,18 @@ def test_central_chain_moves_the_whole_welded_strand():
                       "Central chain must not move either separate side strand")
 
 
-def test_grouped_central_and_side_share_one_centered_chain():
+def test_grouped_mirror_request_is_rejected_without_partial_controls():
     source, plans, original = fixture()
-    before_source, baseline = source_state(source), evaluated_points(source)
-    result = variants.build_variant(bpy.context, source, grouped(plans), mode="GROUPED", bone_count=3)
-    mesh, arm = result["mesh"], result["armature"]
-    assert source_state(source) == before_source
-    assert_points(evaluated_points(mesh), baseline, "A mixed central/side group binds without moving either half")
-    assert len(result["chains"]) == 1 and len(arm.data.bones) == 4, "One shared chain plus head attachment"
-    names = result["chains"][0]["bones"]
-    assert len(names) == 3 and all(name.endswith(".C") for name in names)
-    inverse = mesh.matrix_world.inverted()
-    for name in names:
-        bone = arm.data.bones[name]
-        assert abs((inverse @ arm.matrix_world @ bone.head_local).x) < 2e-6
-        assert abs((inverse @ arm.matrix_world @ bone.tail_local).x) < 2e-6
-    record = rig._read_records(mesh)
-    assert record["version"] == 3 and len(record["chains"]) == 1
-    assert len(record["chains"][0]["members"]) == 2
-    topology = evaluated_topology(mesh)
-    assert topology[:2] == (84, 72) and len(topology[2]) == 3
-    tip_indices = tuple(index for index, point in enumerate(baseline)
-                        if abs((inverse @ point).z - 0.8) < 1e-5)
-    assert len(tip_indices) == 12, "Both side tubes and the complete central tip must be included"
-    source_weights = weights(mesh)
-    for plan in plans:
-        for index in plan["layers"][-1]:
-            assert source_weights[index] == {names[-1]: 1.0}
-    first = arm.pose.bones[names[0]]
-    first.rotation_mode = "XYZ"
-    first.rotation_euler = (0.24, -0.18, 0.16)
-    first.location.x = 0.19
-    actual = evaluated_points(mesh)
-    last = arm.pose.bones[names[-1]]
-    delta = arm.matrix_world @ last.matrix @ last.bone.matrix_local.inverted() @ arm.matrix_world.inverted()
-    assert_points(tuple(actual[i] for i in tip_indices), tuple(delta @ baseline[i] for i in tip_indices),
-                  "Full-weight tips across the entire mirrored group share exactly one control transform")
-    assert min((actual[i] - baseline[i]).length for i in tip_indices) > 0.1
-    assert evaluated_topology(mesh) == topology, "Grouped central seam remains welded during asymmetric movement"
-    root_indices = tuple(index for index, point in enumerate(baseline)
-                         if abs((inverse @ point).z - 2.0) < 1e-5)
-    assert_points(tuple(actual[i] for i in root_indices), tuple(baseline[i] for i in root_indices),
-                  "All grouped roots remain attached to the head")
+    activate(source, "EDIT", vertices=plans[1]["vertices"])
+    before, counts = plain_snapshot(source), database_counts()
+    for mode in ("GROUPED", "PER_STRAND"):
+        try:
+            variants.build_variant(bpy.context, source, grouped(plans), mode=mode, bone_count=3)
+            raise AssertionError("A central strand and a side strand cannot share a new chain")
+        except (variants.HairVariantError, rig.HairBonesRigError) as exc:
+            assert any(word in str(exc).lower() for word in ("shared", "grouped", "per strand", "per-strand")), str(exc)
+        assert plain_snapshot(source) == before and database_counts() == counts
+        assert not variants.variants_for(source)
 
 
 def test_nonunit_mesh_and_character_transform_follow_without_jump():
@@ -377,7 +347,7 @@ print("HAIR_MIRROR_CONTROLS_NATIVE_REOPEN_OK")
 if __name__ == "__main__":
     for test in (test_both_sides_are_independent_deform_controls,
                  test_central_chain_moves_the_whole_welded_strand,
-                 test_grouped_central_and_side_share_one_centered_chain,
+                 test_grouped_mirror_request_is_rejected_without_partial_controls,
                  test_nonunit_mesh_and_character_transform_follow_without_jump,
                  test_regeneration_preserves_source_and_hand_edited_prior_version,
                  test_unsupported_multi_axis_is_atomic,
