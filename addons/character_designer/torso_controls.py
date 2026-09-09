@@ -49,6 +49,7 @@ def collection_members(armature):
 
 def validate(armature, inventory=None):
     """Validate only this optional module, without entering limb inventory again."""
+    from . import spine_ik_fk
     record = get_record(armature)
     if record is None:
         if any(b.get(OWNER_KEY) == OWNER_VALUE for b in armature.data.bones):
@@ -69,6 +70,7 @@ def validate(armature, inventory=None):
             if bone is None or not _same_rest(bone, state) or bone.use_deform != state['deform']:
                 raise _error(f"Torso source '{name}' changed; restore its original structure first.")
         own_cons = {(e['owner'], e['name']) for e in record['constraints']}
+        own_cons |= spine_ik_fk.extra_constraints(armature)
         for pb in armature.pose.bones:
             if pb.name in names | set(record['sources']):
                 if any((pb.name, c.name) not in own_cons for c in pb.constraints):
@@ -396,6 +398,9 @@ def _refuse_dependencies(armature, record):
 
 
 def remove(context, armature):
+    from . import spine_ik_fk
+    if spine_ik_fk.get_record(armature):
+        raise _error('Remove Spine IK / FK before removing Spine Controls.')
     """Match the current native pose before removing the optional controller graph."""
     from . import bone_collections
     _active(context, armature)

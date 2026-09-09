@@ -1,6 +1,6 @@
 """Small Rig / Body entry for head-following gaze controls."""
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import EnumProperty, FloatProperty, StringProperty
 from bpy.types import Operator, Panel
 
 from . import eye_controls, limb_ik
@@ -14,11 +14,15 @@ class CHARACTERDESIGNER_OT_eye_controls(Operator):
     bl_options = {'REGISTER', 'UNDO'}
     action: EnumProperty(items=(('BUILD', 'Add Eye Controls', ''),
                                 ('REMOVE', 'Remove Eye Controls', ''),
+                                ('SPACING', 'Display Spacing', 'Move the clickable outlines forward without changing the gaze'),
                                 ('SELECT', 'Select Eye Control', '')))
     bone: StringProperty(options={'SKIP_SAVE'})
     head_name: StringProperty(name='Head')
     left_name: StringProperty(name='Left Eye')
     right_name: StringProperty(name='Right Eye')
+    distance: FloatProperty(name='Forward Offset', default=0.0, min=0.0,
+        soft_max=1.0, precision=3,
+        description='Extra forward display distance in armature units; zero restores the original display positions')
 
     @classmethod
     def poll(cls, context):
@@ -26,6 +30,14 @@ class CHARACTERDESIGNER_OT_eye_controls(Operator):
                 and context.mode in {'OBJECT', 'POSE'})
 
     def invoke(self, context, _event):
+        if self.action == 'SPACING':
+            try:
+                current = eye_controls.display_spacing(context.object)
+                self.distance = current or eye_controls.recommended_display_spacing(context.object)
+            except (ValueError, RuntimeError, limb_ik.LimbIKError) as exc:
+                self.report({'WARNING'}, str(exc))
+                return {'CANCELLED'}
+            return context.window_manager.invoke_props_dialog(self, width=360)
         if self.action == 'BUILD':
             try:
                 eye_controls.resolve_eyes(context, context.object,
@@ -35,6 +47,12 @@ class CHARACTERDESIGNER_OT_eye_controls(Operator):
         return self.execute(context)
 
     def draw(self, context):
+        if self.action == 'SPACING':
+            self.layout.prop(self, 'distance')
+            self.layout.label(text='0 restores the original display positions.')
+            self.layout.label(text='Gaze and animation stay unchanged.', icon='INFO')
+            self.layout.label(text='The transform gizmo stays at the target bone.')
+            return
         self.layout.label(text='Choose the head and its two eye bones.')
         for name in ('head_name', 'left_name', 'right_name'):
             self.layout.prop_search(self, name, context.object.data, 'bones')
@@ -47,6 +65,10 @@ class CHARACTERDESIGNER_OT_eye_controls(Operator):
                                    self.left_name or None, self.right_name or None)
             elif self.action == 'REMOVE':
                 eye_controls.remove(context, rig)
+            elif self.action == 'SPACING':
+                eye_controls.set_display_spacing(context, rig, self.distance)
+                self.report({'INFO'}, 'Eye display spacing updated; gaze unchanged.')
+                return {'FINISHED'}
             else:
                 record = eye_controls.validate(rig)
                 if not record or self.bone not in record['bones'].values():
@@ -92,6 +114,8 @@ class CHARACTERDESIGNER_PT_eye_controls(Panel):
                     op = row.operator('character_designer.eye_controls', text=label)
                     op.action, op.bone = 'SELECT', record['targets'][side]
                 layout.label(text='G: aim; Alt+G: reset selected controls.', icon='INFO')
+                layout.operator('character_designer.eye_controls', text='Display Spacing...',
+                                icon='EMPTY_ARROWS').action = 'SPACING'
                 row = layout.row()
                 row.alert = True
                 row.operator('character_designer.eye_controls', text='Remove Eye Controls', icon='TRASH').action = 'REMOVE'

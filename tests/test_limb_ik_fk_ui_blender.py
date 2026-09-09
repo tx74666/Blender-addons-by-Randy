@@ -30,6 +30,7 @@ for method in ("ROLL_DECOUPLED", "DIRECT_PREROLL"):
     assert base.cancelled_result(lambda: bpy.ops.character_designer.limb_ik_remove("EXEC_DEFAULT")) == {"CANCELLED"}
     limb_ik_fk._verify(rig, before)
     assert bpy.ops.character_designer.limb_ik_fk_switch(mode="IK") == {"FINISHED"}
+    animation = rig.data.collections["Animation"]
     assert not (set(side["chain"]) & {bone.name for bone in animation.bones})
     limb_ik_fk._verify(rig, before)
     assert bpy.ops.character_designer.limb_ik_rebuild() == {"FINISHED"}

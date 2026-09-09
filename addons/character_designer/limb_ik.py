@@ -24,13 +24,16 @@ from . import bone_collections as bone_groups
 from . import limb_ik_fk
 from . import foot_controls
 from . import torso_controls
+from . import spine_ik_fk
+from . import root_control
+from . import limb_fk_visuals
 from . import eye_controls
 from . import control_colors
 
 
 OWNER_KEY = "character_designer_owner"
 OWNER_VALUE = "limb_ik"
-GENERATED_CONTROL_OWNERS = {OWNER_VALUE, foot_controls.OWNER_VALUE, torso_controls.OWNER_VALUE, eye_controls.OWNER_VALUE}
+GENERATED_CONTROL_OWNERS = {OWNER_VALUE, foot_controls.OWNER_VALUE, torso_controls.OWNER_VALUE, eye_controls.OWNER_VALUE, spine_ik_fk.OWNER_VALUE, root_control.OWNER_VALUE}
 VERSION_KEY = "character_designer_limb_ik_version"
 RIG_ID_KEY = "character_designer_limb_ik_rig_id"
 ROLE_KEY = "character_designer_limb_ik_role"
@@ -3030,6 +3033,8 @@ def _validate_inventory(armature):
             or foot_controls.RECORD_KEY in armature.data
             or torso_controls.RECORD_KEY in armature.data
             or eye_controls.RECORD_KEY in armature.data
+            or spine_ik_fk.RECORD_KEY in armature.data
+            or root_control.RECORD_KEY in armature.data
         ):
             raise LimbIKError("Orphaned Limb IK ownership data was found on this Armature.")
         return {
@@ -3326,8 +3331,8 @@ def _validate_inventory(armature):
                     raise LimbIKError(f"Limb IK rig '{rig_id}' Heel Roll limits were edited.")
         elif _is_direct_preroll_schema(schema):
             if (
-                target.parent is not None
-                or pole.parent is not None
+                (target.parent.name if target.parent else None) != root_control.allowed_parent(armature, target.name)
+                or (pole.parent.name if pole.parent else None) != root_control.allowed_parent(armature, pole.name)
                 or target.use_connect
                 or pole.use_connect
             ):
@@ -3588,7 +3593,10 @@ def _validate_inventory(armature):
     }
     foot_controls.validate(armature, inventory)
     torso_controls.validate(armature, inventory)
+    spine_ik_fk.validate(armature, inventory)
     eye_controls.validate(armature, inventory)
+    root_control.validate(armature, inventory)
+    limb_fk_visuals.validate(armature, inventory)
     return inventory
 
 
@@ -5789,6 +5797,14 @@ def _direct_source_dependency_problems(armature, chains, *, owned_constraints=()
 
 
 def _foreign_dependency_problems(armature, inventory):
+    if limb_fk_visuals.get_record(armature):
+        return ["remove FK Rings before rebuilding or removing Limb IK"]
+    if limb_fk_visuals.has_ik_size_backup(armature):
+        return ["restore IK Sizes before rebuilding or removing Limb IK"]
+    if root_control.get_record(armature):
+        return ["remove Root Control before rebuilding or removing Limb IK"]
+    if spine_ik_fk.get_record(armature):
+        return ["remove Spine IK / FK before rebuilding or removing Limb IK"]
     if eye_controls.get_record(armature):
         return ["remove Eye Controls before rebuilding or removing Limb IK"]
     if torso_controls.get_record(armature):
@@ -5908,6 +5924,8 @@ def _removal_resources(context, armature, inventory):
     expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == foot_controls.OWNER_VALUE)
     expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == torso_controls.OWNER_VALUE)
     expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == eye_controls.OWNER_VALUE)
+    expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == spine_ik_fk.OWNER_VALUE)
+    expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == root_control.OWNER_VALUE)
     if {bone.name for bone in control_collections[0].bones} != expected_bones:
         raise LimbIKError("Randy Controls contains missing or foreign bones.")
 
@@ -6639,6 +6657,14 @@ def _finish_control_colors(operator, armature, *, removed=False):
 
 
 def _require_ik_for_rig_edit(armature, inventory):
+    if limb_fk_visuals.get_record(armature):
+        raise LimbIKError("Remove FK Rings before rebuilding or removing Limb IK.")
+    if limb_fk_visuals.has_ik_size_backup(armature):
+        raise LimbIKError("Restore IK Sizes before rebuilding or removing Limb IK.")
+    if root_control.get_record(armature):
+        raise LimbIKError("Remove Root Control before rebuilding or removing Limb IK.")
+    if spine_ik_fk.get_record(armature):
+        raise LimbIKError("Remove Spine IK / FK before rebuilding or removing Limb IK.")
     if eye_controls.get_record(armature):
         raise LimbIKError("Remove Eye Controls before rebuilding or removing Limb IK.")
     if torso_controls.get_record(armature):
@@ -8327,7 +8353,7 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_control_visual(Operator):
 
 
 class CHARACTERDESIGNER_PT_limb_ik(Panel):
-    bl_label = "Limb IK"
+    bl_label = "Body Controls"
     bl_idname = "CHARACTERDESIGNER_PT_limb_ik"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -8344,6 +8370,10 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if settings is None:
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
+        from .body_controls_ui import draw_root_controls, draw_fk_visuals, draw_head_neck_visuals
+        draw_root_controls(layout, context)
+        draw_fk_visuals(layout, context)
+        draw_head_neck_visuals(layout, context)
         layout.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
         layout.prop(settings, "selected_limb", text="")
         active = context.object
@@ -8356,8 +8386,11 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                     mode = limb_ik_fk.mode_for_rig(active, rig)
                     row = layout.row(align=True)
                     for choice in ("IK", "FK"):
-                        op = row.operator("character_designer.limb_ik_fk_switch", text=choice, depress=mode == choice)
+                        label = "Match to " + choice if mode == "BLEND" else choice
+                        op = row.operator("character_designer.limb_ik_fk_switch", text=label, depress=mode == choice)
                         op.mode = choice
+                    if mode == "BLEND":
+                        layout.label(text="IK / FK mixed: targets may differ.", icon="ERROR")
                     layout.label(text="Switch keeps the current pose", icon="CON_ROTLIKE")
                     if selected_key[0] == "LEG":
                         foot_box = layout.box()

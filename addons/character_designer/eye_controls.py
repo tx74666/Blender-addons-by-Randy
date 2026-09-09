@@ -52,6 +52,13 @@ def get_record(armature):
                 or set(record['bone_states']) != set(ROLES) or set(record['widgets']) != set(ROLES)
                 or len(record['constraints']) != 2):
             raise ValueError('unsupported structure')
+        spacing = record.get('display_spacing')
+        if spacing is not None:
+            if (not math.isfinite(spacing['distance']) or spacing['distance'] < 0
+                    or set(spacing['original']) != set(ROLES)
+                    or any(len(value) != 3 or not all(math.isfinite(x) for x in value)
+                           for value in spacing['original'].values())):
+                raise ValueError('invalid display spacing')
         return record
     except (KeyError, TypeError, ValueError) as exc:
         raise _error('Eye Controls recovery data is invalid; restore a saved copy.') from exc
@@ -152,6 +159,62 @@ def _verify_pose(armature, desired):
         current = armature.pose.bones[name].matrix
         if max(abs(current[i][j] - matrix[i][j]) for i in range(4) for j in range(4)) > 4e-4:
             raise _error(f"Eye Controls could not preserve bone '{name}' in this pose; no changes kept.")
+
+
+def recommended_display_spacing(armature):
+    record = validate(armature)
+    if record is None:
+        raise _error('Add Eye Controls first.')
+    return armature.data.bones[record['head']].length * 2.0
+
+
+def display_spacing(armature):
+    record = validate(armature)
+    if record is None:
+        raise _error('Add Eye Controls first.')
+    return record.get('display_spacing', {}).get('distance', 0.0)
+
+
+def set_display_spacing(context, armature, distance):
+    """Offset clickable shapes in front of their targets without changing gaze."""
+    _active(context, armature)
+    record = validate(armature)
+    if record is None:
+        raise _error('Add Eye Controls first.')
+    if not math.isfinite(distance) or distance < 0:
+        raise _error('Display spacing must be a finite, non-negative distance.')
+    paths = {armature.pose.bones[name].path_from_id('custom_shape_translation')
+             for name in record['bones'].values()}
+    curves = [curve for action in _limb()._actions_for_id(armature)
+              for curve in _limb()._fcurves_for_action(action)]
+    if armature.animation_data:
+        curves.extend(armature.animation_data.drivers)
+    if any(curve.data_path in paths for curve in curves):
+        raise _error('Eye display positions have animation or drivers; preserve those channels first.')
+    previous = {role: list(armature.pose.bones[name].custom_shape_translation)
+                for role, name in record['bones'].items()}
+    original = record.get('display_spacing', {}).get('original', previous)
+    old_raw = armature.data[RECORD_KEY]
+    try:
+        for role, name in record['bones'].items():
+            # Generated eye targets share a backward local Y axis. Blender applies
+            # custom translation BEFORE custom rotation and shape/bone-size scale,
+            # so this moves all three outlines forward without scaling the offset.
+            offset = Vector(original[role]) + Vector((0.0, -distance, 0.0))
+            armature.pose.bones[name].custom_shape_translation = offset
+        if distance:
+            record['display_spacing'] = {'distance': distance, 'original': original}
+        else:
+            record.pop('display_spacing', None)
+        armature.data[RECORD_KEY] = json.dumps(record)
+        _update(context, armature)
+    except Exception:
+        for role, name in record['bones'].items():
+            armature.pose.bones[name].custom_shape_translation = previous[role]
+        armature.data[RECORD_KEY] = old_raw
+        _update(context, armature)
+        raise
+    return record
 
 
 def _add_widget(context, armature, record, role, width, height):
@@ -318,6 +381,8 @@ def build(context, armature, head_name=None, left_name=None, right_name=None):
         for role in ('LEFT', 'RIGHT'):
             _add_widget(context, armature, record, role, radius, radius)
         armature.data[RECORD_KEY] = json.dumps(record)
+        record = set_display_spacing(context, armature,
+                                     armature.data.bones[head_name].length * 2.0)
         _update(context, armature)
         _verify_pose(armature, desired)
         validate(armature)

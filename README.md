@@ -5,10 +5,20 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.49.0 | [character_designer](addons/character_designer) | [character_designer-0.49.0.zip](dist/character_designer-0.49.0.zip) |
+| Character Designer | 0.52.2 | [character_designer](addons/character_designer) | [character_designer-0.52.2.zip](dist/character_designer-0.52.2.zip) |
 
 两个插件独立安装，也可以同时启用。RR Helper 的内部模块名保留为
 `random_realm_builder_exporter`，便于更新原来的安装。
+
+Character Designer 0.52.2 将新建头部控制器的侧面顶部、底部转角改为圆弧，保留正面切角轮廓、脸前开口和小前向标记。只调整显示形状，保留原旋转支点、姿势与恢复功能；已有手工编辑的显示不会自动被覆盖。
+
+Character Designer 0.52.1 将新建眼睛控制器的眼罩和圆圈显示整体前移，便于从脸前选取。**Rig → Body → Eye Controls → Display Spacing** 可调整额外间距，设为 0 恢复原显示位置；数据随 blend 保存。只移动可点击的轮廓，保留视线、动画和原追踪目标，变换轴仍位于目标骨骼。
+
+Character Designer 0.52.0 在 **Rig → Body → Body Controls** 加入 **Add Head / Neck**。Head 使用脸前留空、下巴略收、带前向小标记的立体切角头框；Neck 使用开口短领圈。沿用共用 Head 与身体权重源，根据头部主体匹配比例，不包含长发。只替换原骨骼显示外形，保留旋转支点、父子关系、姿势和权重；Head／Neck 按钮选中原骨骼后用 R 旋转。恢复按钮取回原显示与颜色，形状与恢复数据随 blend 保存。
+
+Character Designer 0.51.0 在 **Rig → Body → Body Controls** 为 Direct 绑定补上可移除的 **Root · Whole Body**：一起移动原骨架与手脚 IK 输入，保留原骨骼 Rest；统一缩放用 **Root Scale**。**Add FK Rings / Remove FK Rings** 为手臂、腿的逐段 FK 提供圆环，已有自定义形状保留。**Fit IK Sizes / Restore IK Sizes** 调整默认手部与膝盖箭头比例，保留已手调的尺寸。IK／FK 继续使用匹配后的端点切换；手动混合时提示状态并同时显示两套输入。近乎伸直的手臂匹配不会再被不必要的肘部方向修正破坏。
+
+Character Designer 0.50.0 在 **Rig → Body → Spine Controls** 加入可单独移除的 **Spine IK / FK**。FK 保留整体弯曲和逐段控制；IK 用 **Chest IK** 移动／旋转胸部，**Spine Shape** 调整弯曲方向。切换先匹配当前姿势，无法保持时回滚。**Reset Spine Pose** 让整个脊柱回到相对当前 Hips 的默认姿势，避免只清零可见控制器后仍保留内部弯曲。沿用现有骨骼、权重、集合与配色。当前需在制作动画前选定控制方式，脊柱暂不支持已有动画或 Auto Key 的切换匹配。
 
 Character Designer 0.49.0 在 **Rig → Body → Eye Controls** 加入眼罩外框与左右圆圈。移动外框控制双眼，移动圆圈单独微调；自动沿用 Head 与原眼骨方向，保留接入前视线。三个控制器全选后 **Alt+G** 回到原眼骨的默认视线。眼睛继续使用现有权重；**Remove Eye Controls** 保留当前视线并恢复原生控制，支持保存重开和依赖保护。线框按角色比例生成，并沿用暗调／选中提亮配色。
 

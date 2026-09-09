@@ -242,13 +242,16 @@ def _match_toe(context, armature, rig, desired):
 
 def _rotation_error(actual, expected):
     delta = actual.to_quaternion().normalized().rotation_difference(expected.to_quaternion().normalized())
-    return min(abs(delta.angle), abs(2.0 * math.pi - delta.angle))
+    # acos(w) rounds small but meaningful rotations to zero in float32.
+    return 2.0 * math.atan2(Vector((delta.x, delta.y, delta.z)).length, abs(delta.w))
 
 
 def _pose_errors(armature, desired):
     position = rotation = scale = 0.0
     for name, matrix in desired.items():
         actual = armature.pose.bones[name].matrix
+        if not all(_limb()._matrix_is_finite(value) for value in (actual, matrix)):
+            return math.inf, math.inf, math.inf
         position = max(position, (actual.translation - matrix.translation).length)
         rotation = max(rotation, _rotation_error(actual, matrix))
         scale = max(scale, (actual.to_scale() - matrix.to_scale()).length)
@@ -311,15 +314,31 @@ def _match_pole_plane(context, armature, rig, desired):
     end = desired[rig["chain"][2]].translation
     axis = (end - start).normalized()
     wanted = _limb()._project_perpendicular(joint - start, axis)
-    if wanted.length < 1.0e-6:
-        return
+    near_straight = wanted.length < (end - start).length * 0.01
     pole = armature.pose.bones[rig["pole"].name]
+    solved = {name: desired[name] for name in rig['chain'][:2]}
     for _iteration in range(5):
-        current_joint = armature.pose.bones[rig["chain"][1]].matrix.translation
-        actual = _limb()._project_perpendicular(current_joint - start, axis)
-        if actual.length < 1.0e-8:
+        # Near a straight limb, a tiny solver position residual makes the
+        # geometric bend plane unstable. Keep an already matched rotation
+        # instead of introducing visible roll to chase that residual.
+        if all(error <= limit for error, limit in zip(_pose_errors(armature, solved),
+               (POSITION_TOLERANCE, ROTATION_TOLERANCE, SCALE_TOLERANCE))):
             break
-        angle = _limb()._signed_angle(actual, wanted, axis)
+        if near_straight:
+            # Use the upper bone's stable roll frame when elbow/knee position
+            # has too little radial separation to define a reliable plane.
+            actual_frame = armature.pose.bones[rig['chain'][0]].matrix.to_3x3()
+            wanted_frame = desired[rig['chain'][0]].to_3x3()
+            references = [(_limb()._project_perpendicular(actual_frame.col[i], axis),
+                           _limb()._project_perpendicular(wanted_frame.col[i], axis)) for i in (0, 2)]
+            actual, reference = max(references, key=lambda pair: min(pair[0].length, pair[1].length))
+        else:
+            current_joint = armature.pose.bones[rig["chain"][1]].matrix.translation
+            actual = _limb()._project_perpendicular(current_joint - start, axis)
+            reference = wanted
+        if min(actual.length, reference.length) < 1.0e-8:
+            break
+        angle = _limb()._signed_angle(actual, reference, axis)
         if abs(angle) < 1.0e-6:
             break
         matrix = pole.matrix.copy()
@@ -598,9 +617,11 @@ def _key_switch(context, armature, target, affected, old_value, pose_before):
         new_value = float(target[PROPERTY])
         if not mode_plan or not mode_plan.get("existing"):
             target[PROPERTY] = mode_plan["value"] if mode_plan else old_value
-            target.keyframe_insert(data_path='["' + PROPERTY + '"]', frame=frame - 1.0, group="IK / FK")
+            if not target.keyframe_insert(data_path='["' + PROPERTY + '"]', frame=frame - 1.0, group="IK / FK"):
+                raise _error("Could not key the previous IK/FK mode.")
             target[PROPERTY] = new_value
-        target.keyframe_insert(data_path='["' + PROPERTY + '"]', frame=frame, group="IK / FK")
+        if not target.keyframe_insert(data_path='["' + PROPERTY + '"]', frame=frame, group="IK / FK"):
+            raise _error("Could not key the IK/FK mode.")
         for name in sorted(affected):
             pb = armature.pose.bones[name]
             rotation_path = "rotation_quaternion" if pb.rotation_mode == "QUATERNION" else "rotation_axis_angle" if pb.rotation_mode == "AXIS_ANGLE" else "rotation_euler"
@@ -624,7 +645,8 @@ def _key_switch(context, armature, target, affected, old_value, pose_before):
                         if index not in existing_previous:
                             if index in plans:
                                 getattr(pb, transform_path)[index] = plans[index]["value"]
-                            pb.keyframe_insert(data_path=transform_path, index=index, frame=frame - 1.0, group=pb.name)
+                            if not pb.keyframe_insert(data_path=transform_path, index=index, frame=frame - 1.0, group=pb.name):
+                                raise _error(f"Could not key the previous transform of '{pb.name}'.")
                     pb.matrix_basis = current_basis
                 if not pb.keyframe_insert(data_path=transform_path, frame=frame, group=pb.name):
                     raise _error(f"Could not key '{pb.name}'.")

@@ -5,7 +5,7 @@ import math
 import tempfile
 
 import bpy
-from mathutils import Matrix, Euler, Vector
+from mathutils import Matrix, Euler, Vector, Quaternion
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "addons"))
@@ -135,8 +135,13 @@ def test_native_keyframes_reopen_and_driver_ownership():
     limb_ik_fk.switch_limb(bpy.context, armature, key, "IK", keyframe=True)
     paths = limb_ik_fk.owned_driver_paths(armature)
     assert len(paths) == 4
-    for frame, expected in ((9, "IK"), (10, "FK"), (15, "FK"), (20, "IK")):
-        bpy.context.scene.frame_set(frame)
+    mode_path = limb_ik_fk.property_path(armature.pose.bones[rig['target'].name])
+    mode_curve = next(curve for curve in limb_ik._fcurves_for_action(armature.animation_data.action)
+                      if curve.data_path == mode_path)
+    assert all(point.interpolation == 'CONSTANT' and point.co.y in {0.0, 1.0}
+               for point in mode_curve.keyframe_points)
+    for frame, expected in ((9, "IK"), (9.999, "IK"), (10, "FK"), (10.5, "FK"), (19.999, "FK"), (20, "IK")):
+        bpy.context.scene.frame_set(math.floor(frame), subframe=frame-math.floor(frame))
         update(armature)
         assert limb_ik_fk.mode_for_rig(armature, rig) == expected
         limb_ik_fk._verify(armature, desired)
@@ -228,6 +233,92 @@ def test_keyed_switch_preserves_moving_prior_curve():
     limb_ik_fk.switch_limb(bpy.context, armature, key, "IK", keyframe=True)
     for frame in samples:
         assert abs(mode_curve().evaluate(frame) - before[frame]) < 1.0e-6
+    # Preserve the existing fractional Bezier history, then hold its exact
+    # bookend until the new matched endpoint. Do not quantize artist keys.
+    assert abs(mode_curve().evaluate(9.75) - before[9.0]) < 1.0e-6
+    assert mode_curve().evaluate(10.0) == 1.0
+
+
+def test_blended_pose_recovery_and_refusal():
+    from character_designer import foot_controls
+    for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
+        for selected in ('LEFT_ARM', 'LEFT_LEG'):
+            for endpoint in ('FK', 'IK'):
+                armature, key, rig = build(method, selected, toes=selected == 'LEFT_LEG')
+                if selected == 'LEFT_LEG':
+                    foot_controls.build(bpy.context, armature, key, toe_name='toe.L')
+                    rig = limb_ik._validate_inventory(armature)['rigs'][key]
+                    armature.pose.bones[rig['foot_controls']['roll']].rotation_euler = (.3, .05, 0)
+                    armature.pose.bones[rig['foot_controls']['toe_control']].rotation_euler = (.15, 0, .03)
+                target = armature.pose.bones[rig['target'].name]
+                target.location += Vector((.025, -.025, .035))
+                target.rotation_euler = (.12, -.06, .03)
+                target[limb_ik_fk.PROPERTY] = .5
+                desired = snapshot(armature, rig)
+                untouched = {pb.name: pb.matrix.copy() for pb in armature.pose.bones
+                             if pb.name not in set(rig['chain']) and pb.bone.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS}
+                result = limb_ik_fk.switch_limb(bpy.context, armature, key, endpoint, keyframe=False)
+                assert result['mode'] == endpoint
+                limb_ik_fk._verify(armature, desired)
+                limb_ik_fk._verify(armature, untouched)
+    armature, key, rig = build('DIRECT_PREROLL')
+    target = armature.pose.bones[rig['target'].name]
+    armature.pose.bones[rig['chain'][0]].scale.y = 1.6
+    target[limb_ik_fk.PROPERTY] = .5
+    update(armature)
+    before = {pb.name: pb.matrix_basis.copy() for pb in armature.pose.bones}
+    try:
+        limb_ik_fk.switch_limb(bpy.context, armature, key, 'IK', keyframe=False)
+    except limb_ik.LimbIKError:
+        pass
+    else:
+        raise AssertionError('A stretched blend unexpectedly matched fixed-length IK')
+    assert target[limb_ik_fk.PROPERTY] == .5
+    assert all(max(abs(pb.matrix_basis[i][j] - before[pb.name][i][j]) for i in range(4) for j in range(4)) < 1e-6
+               for pb in armature.pose.bones)
+    desired = snapshot(armature, rig)
+    desired[rig['chain'][1]][2][1] = math.nan
+    try:
+        limb_ik_fk._verify(armature, desired)
+    except limb_ik.LimbIKError:
+        pass
+    else:
+        raise AssertionError('Non-finite match matrices must be refused')
+    small_rotation = Quaternion((0, 1, 0), .0002).to_matrix().to_4x4()
+    assert abs(limb_ik_fk._rotation_error(Matrix.Identity(4), small_rotation) - .0002) < 1e-7
+
+
+def test_false_key_insertion_rolls_back_action_and_pose():
+    for failure in ('previous_mode', 'mode', 'previous_transform'):
+        armature, key, rig = build()
+        target = armature.pose.bones[rig['target'].name]
+        target.keyframe_insert(data_path='["ik_fk"]', frame=1)
+        bpy.context.scene.frame_set(10)
+        before = {pb.name: pb.matrix_basis.copy() for pb in armature.pose.bones}
+        old_action, actions = armature.animation_data.action, set(bpy.data.actions.keys())
+        original_insert = bpy.types.PoseBone.keyframe_insert
+        def insert(pb, *args, **kwargs):
+            path = kwargs.get('data_path', args[0] if args else '')
+            frame = kwargs.get('frame')
+            if ((failure == 'previous_mode' and path == '["ik_fk"]' and frame == 9)
+                    or (failure == 'mode' and path == '["ik_fk"]' and frame == 10)
+                    or (failure == 'previous_transform' and path == 'location' and frame == 9)):
+                return False
+            return original_insert(pb, *args, **kwargs)
+        bpy.types.PoseBone.keyframe_insert = insert
+        try:
+            try:
+                limb_ik_fk.switch_limb(bpy.context, armature, key, 'FK', keyframe=True)
+            except limb_ik.LimbIKError as exc:
+                assert 'Could not key' in str(exc)
+            else:
+                raise AssertionError('A failed key insertion must cancel the switch')
+        finally:
+            bpy.types.PoseBone.keyframe_insert = original_insert
+        assert armature.animation_data.action == old_action and set(bpy.data.actions.keys()) == actions
+        assert target[limb_ik_fk.PROPERTY] == 1.0
+        assert all(max(abs(pb.matrix_basis[i][j] - before[pb.name][i][j]) for i in range(4) for j in range(4)) < 1e-6
+                   for pb in armature.pose.bones)
 
 
 def test_reverse_foot_roll_and_toe_roundtrip():
@@ -310,6 +401,7 @@ def main():
     tests = (test_roundtrip_auto, test_manual_with_parent_and_object_transforms, test_authored_fk_pose,
              test_failed_match_restores_everything, test_animation_keeps_previous_ik_roll,
              test_keyed_switch_preserves_moving_prior_curve,
+             test_blended_pose_recovery_and_refusal, test_false_key_insertion_rolls_back_action_and_pose,
              test_native_keyframes_reopen_and_driver_ownership,
              test_reverse_foot_roll_and_toe_roundtrip, test_reverse_foot_keyed_spaces_and_remove_matching)
     for test in tests:

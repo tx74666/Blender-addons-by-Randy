@@ -1,4 +1,4 @@
-# Character Designer 0.49.0
+# Character Designer 0.52.2
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
@@ -6,6 +6,81 @@ RR Helper and focuses on character-modeling tools.
 Workflow principle: generated bindings and setups should remain editable and
 provide an explicit remove/restore path. Preserve the artist's original state
 and unrelated data; support saving/reopening where restoration depends on a backup.
+
+Version 0.52.2 rounds the crown and chin corners in the head widget's side
+profile on new builds. The frontal proportions, open face, and forward marker
+remain intact. Native pivots, pose, and removal behavior are unchanged;
+existing artist-edited widgets are not automatically replaced.
+
+Version 0.52.1 moves the three eye control outlines farther in front of the face
+on new builds. **Rig > Body > Eye Controls > Display Spacing** adjusts their
+extra forward offset; zero restores their original display positions. Spacing
+and restoration data persist in the blend file. Gaze, target bones, animation,
+and weights remain unchanged; the transform gizmo stays at the actual target.
+
+Version 0.52.0 adds **Add Head / Neck** in **Rig > Body > Body Controls**.
+The Head frame is a three-dimensional, clipped-corner outline with a tapered
+chin and a small forward marker; the face remains open. Neck uses an open
+collar. Fit uses the shared Head mapping and weighted body vertices in rest
+space, excluding long hair. Without a usable body reference, proportions fall
+back to the bone. The head's native Neck parent supplies the neck control.
+
+These are local editable mesh Custom Shapes on the existing native bones.
+**Head / Neck** selects them; rotate with **R** around the original pivot.
+No bones, constraints, weights, animation or collection memberships are changed.
+The restore button returns the original displays and colors, including prior
+artist widgets. Recovery data persists in the blend file; shared or animated
+widget dependencies are checked before removing generated resources.
+
+Version 0.51.0 adds **Root · Whole Body** to **Rig > Body > Body Controls**.
+Direct rigs can add an optional root which moves native roots and every limb
+IK target/pole together, preserving native rest bones. **G/R** moves/rotates it;
+**Root Scale** applies uniform scaling. An existing Stable Master is reused.
+Remove Root preserves the current pose; animated or foreign dependencies are
+checked before changing its graph. Remove this extension before rebuilding
+the base limb rig.
+
+**Add FK Rings / Remove FK Rings** decorate the eight upper/lower limb joints
+with local, editable mesh widgets and preserve existing custom shapes.
+**Fit IK Sizes / Restore IK Sizes** reduce untouched default hand shapes to 80%
+and knee arrows to 55%; custom sizes and all display anchors are preserved.
+Remove rings and restore fitted sizes before rebuilding their limb rig.
+
+The IK/FK buttons match first and then switch between endpoints. An explicit
+partial value is still a blend of two poses, not a pinned-hand/foot guarantee.
+Both input branches stay visible in **Animation** at partial values, and
+**Match to IK / FK** offers pose-preserving recovery. Newly keyed limb switches
+use stepped mode keys; earlier artist-authored animation is not flattened.
+Spine still requires choosing the mode before animation. Chest IK and Shape
+follow Hips; this is not a separate world-space chest pin.
+
+Version 0.50.0 adds optional **Spine IK / FK** inside **Rig > Body > Spine
+Controls**. Add the extension to the existing three/four-section torso. It starts
+in FK, preserving the current pose and the original torso record. Click **IK**
+or **FK** to match the current pose before changing which controls drive the
+same native spine bones. The Animation collection shows the current controls.
+
+- **FK:** rotate Bend Spine and the individual spine sections, working upward
+  from Hips.
+- **IK:** move/rotate **Chest IK** with G/R; Blender solves the lower spine to
+  reach it. Rotate **Spine Shape** with R to adjust the curve. A perfectly
+  straight spine needs a small Shape rotation before axial compression. Targets
+  beyond the chain's reach stop at its natural length; there is no stretch.
+- **Reset Spine Pose:** restore the native neutral spine relative to the current
+  Hips, including both control branches and their internal matched posture.
+  Clearing only Chest/Shape with Alt+G/R does not clear all matched curvature.
+  Head/arms follow the reset spine naturally; their control inputs stay intact.
+- **Remove Spine IK / FK:** match the current pose back to the existing FK
+  controls and remove only the extension. Remove it before removing the base
+  Spine Controls or rebuilding Limb IK.
+
+Matching verifies all native solved bone poses and rolls back unsupported
+matches. Choose the mode before animating: matching/reset/removal currently
+refuse affected animation and Auto Key rather than silently altering keys.
+Existing limb IK/FK still supports its own animated switches. The spine graph
+uses native constraints/drivers, persists across saving/reopening, and leaves
+native rest bones and weights intact. It is a simpler endpoint IK design
+inspired by Rain's chest/shape workflow, not a transplant of Rain's B-Bone rig.
 
 Version 0.49.0 adds **Rig > Body > Eye Controls** to an existing CDesigner limb
 rig. One mask outline aims both eyes; each circle adjusts an individual eye.
@@ -788,10 +863,10 @@ bones, or foreign collection members. Stable leaves source Rest matrices
 untouched. Direct changes only the selected upper/lower Rest frames while its
 owned rig exists, records both original and applied states, and restores the
 original state on Remove. Deform-bone names, Deform flags, Meshes, modifiers,
-Vertex Groups, and weights are never rewritten by Limb IK. This release still
-omits IK/FK switching, Spine IK, generated finger-control systems, and
-shoulder/corrective deformation helpers; its finger and shoulder additions are
-selection shapes on the existing bones only.
+Vertex Groups, and weights are never rewritten by Limb IK. The original release
+described here predates the IK/FK and torso extensions documented above. Finger
+and shoulder additions remain selection shapes on the existing bones; they do
+not add a generated finger rig or corrective deformation system.
 
 Version 0.24.0 replaces proportional affected-weight scaling with **Full Auto
 Blend (Normalized)**. When enabled, all editable Deform bones on the current rig

@@ -15,7 +15,7 @@ BACKUP_KEY = '_cd_control_color_before_v1'
 DISPLAY_KEY = '_cd_control_color_display_before_v1'
 ENABLED_KEY = '_cd_control_colors_enabled'
 OWNER_KEY = 'character_designer_owner'
-OWNERS = {'limb_ik', 'foot_controls', 'torso_controls', 'eye_controls'}
+OWNERS = {'limb_ik', 'foot_controls', 'torso_controls', 'eye_controls', 'spine_ik_fk', 'root_control', 'limb_fk_visuals', 'head_neck_visuals'}
 
 # RGB values are Blender's display colors, not material/shader colors.
 # Normal stays colored against a dark viewport; selection increases brightness
@@ -50,10 +50,13 @@ def is_control(pb, *, owned_only=False):
 
 def palette_for(pb):
     rig, bone = pb.id_data, pb.bone
+    if pb.custom_shape and pb.custom_shape.get(OWNER_KEY) == 'head_neck_visuals':
+        from . import head_neck_visuals
+        return 'IRIS' if pb.custom_shape.get(head_neck_visuals.ROLE_KEY) == 'NECK' else 'LILAC'
     role = str(bone.get('character_designer_limb_ik_role', '')).upper()
     torso_role = str(bone.get('character_designer_torso_role', '')).upper()
     foot_role = str(bone.get('character_designer_foot_role', '')).upper()
-    if role == 'MASTER':
+    if role == 'MASTER' or bone.get(OWNER_KEY) == 'root_control':
         return 'HONEY'
     if _hair(pb):
         return 'MAUVE'
@@ -61,6 +64,8 @@ def palette_for(pb):
         return 'LILAC' if 'waist' in pb.name.lower() else 'MAUVE'
     if bone.get(OWNER_KEY) == 'torso_controls':
         return 'LILAC' if torso_role == 'BEND' else 'IRIS'
+    if bone.get(OWNER_KEY) == 'spine_ik_fk':
+        return 'IRIS' if 'shape' in pb.name.lower() else 'LILAC'
     side = bone.get('character_designer_limb_ik_side', bone.get('character_designer_foot_side', ''))
     if side not in {'L', 'R'}:
         tokens = re.split(r'[_.:\-\s]+', pb.name.upper())

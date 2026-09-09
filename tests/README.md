@@ -20,6 +20,13 @@ $selectedTests = @(
     'test_torso_controls_ui_blender.py'
     'test_eye_controls_blender.py'
     'test_eye_controls_ui_blender.py'
+    'test_eye_display_spacing_blender.py'
+    'test_spine_ik_fk_blender.py'
+    'test_spine_ik_fk_ui_blender.py'
+    'test_root_control_blender.py'
+    'test_limb_fk_visuals_blender.py'
+    'test_body_controls_ui_blender.py'
+    'test_head_neck_visuals_blender.py'
     'test_bone_collections_blender.py'
     'test_accessory_bone_collections_blender.py'
     'test_animation_import_blender.py'
@@ -44,6 +51,9 @@ foreach ($testName in $selectedTests) {
 ```
 
 每项在独立的临时 Blender 场景中运行；不要在工作中的实时场景里执行测试脚本。
+眼睛显示间距测试覆盖多帧动画不变、整体前移、重复设置、保存重开和原显示位置恢复。
+Head/Neck 显示测试覆盖身体权重定比例、长发排除、骨骼 Roll 和物体变换、可编辑线框、原形状／颜色／显示锚点恢复、保存重开、原生姿态动画保留，以及依赖检查和失败回滚。
+Spine IK/FK 测试覆盖三／四段脊柱、混合手脚模式与眼睛控制器共存、带姿势匹配、真实端点求解、曲率／无拉伸限制、整体清零、保存重开、动画／依赖保护和失败回滚。公开按钮测试验证模式、控制器选择、集合和移除顺序。
 Eye Controls 测试覆盖双眼与单眼视线、Head 跟随、非平行原眼骨、带姿势接入、清零、权重与原骨保留、移除、保存重开、失败回滚及动画／外部依赖保护。公开按钮测试同时验证配色、骨骼集合和基础 Rig 移除保护。
 Foot Controls 测试覆盖左右脚、Stable／Direct、脚跟／前脚掌／脚尖支点、脚趾独立运动、任意姿势添加与移除、失败回滚和依赖保护；IK／FK、集合与公开按钮测试同时覆盖新增控制器。
 Animation 测试验证独立 BVH 预览、身体动作转移、坐标/缩放及原 Action 的保存与恢复。
