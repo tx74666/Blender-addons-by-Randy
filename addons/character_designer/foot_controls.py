@@ -87,6 +87,8 @@ def validate(armature, inventory=None):
     for side, record in values.items():
         if side not in {'L', 'R'} or record.get('version') != VERSION or record.get('side') != side:
             raise _error('Foot Controls record is incomplete.')
+        if record.get('rotation_direction') not in {None, 'LEGACY', 'NATURAL'}:
+            raise _error('Foot Controls rotation direction is unsupported.')
         if inventory is not None:
             base = inventory['rigs'].get(('LEG', side))
             if base is None or base['rig_id'] != record['rig_id']:
@@ -449,6 +451,23 @@ def _driver(armature, owner, property_name, index, expression, variables):
             'expression': expression, 'variables': variables}
 
 
+def _rotation_driver_plan(side, *, natural):
+    """Signed bone rotations; legacy used scalar heel-lift and mirrored bank."""
+    if natural:
+        return (
+            ('HEEL_PIVOT', 0, 'max(roll,0)', 'roll'),
+            ('HEEL_PIVOT', 1, 'bank', 'bank'),
+            ('BALL_PIVOT', 0, 'max(min(roll,0),-0.7853981633974483)', 'roll'),
+            ('TOE_TIP_PIVOT', 0, 'min(roll+0.7853981633974483,0)', 'roll'),
+        )
+    return (
+        ('HEEL_PIVOT', 0, '-min(roll,0)', 'roll'),
+        ('HEEL_PIVOT', 1, 'bank' if side == 'L' else '-bank', 'bank'),
+        ('BALL_PIVOT', 0, '-min(max(roll,0),0.7853981633974483)', 'roll'),
+        ('TOE_TIP_PIVOT', 0, '-max(roll-0.7853981633974483,0)', 'roll'),
+    )
+
+
 def _validate_driver(armature, entry):
     animation = armature.animation_data
     curves = [c for c in animation.drivers if c.data_path == entry['path'] and c.array_index == entry['index']] if animation else []
@@ -604,6 +623,7 @@ def build(context, armature, key, toe_name=None, shoe=None):
     if any(name in armature.data.bones for name in names.values()):
         raise _error('A Foot Controls bone name already exists; rename that unrelated bone first.')
     record = {'version': VERSION, 'id': uuid.uuid4().hex, 'side': side, 'rig_id': rig['rig_id'],
+              'rotation_direction': 'NATURAL',
               'chain': list(rig['chain']), 'toe': toe.name, 'target': target.name,
               'solver': names['ANKLE_SOLVER'], 'base_solver': rig['solver_target'].name,
               'legacy_heel': rig['heel'].name if rig.get('heel') else None,
@@ -671,12 +691,8 @@ def build(context, armature, key, toe_name=None, shoe=None):
         roll = armature.pose.bones[record['roll']]
         x_path = roll.path_from_id('rotation_euler') + '[0]'
         y_path = roll.path_from_id('rotation_euler') + '[1]'
-        for role, axis, expression, variables in (
-            ('HEEL_PIVOT', 0, '-min(roll,0)', {'roll': x_path}),
-            ('HEEL_PIVOT', 1, ('bank' if side == 'L' else '-bank'), {'bank': y_path}),
-            ('BALL_PIVOT', 0, '-min(max(roll,0),0.7853981633974483)', {'roll': x_path}),
-            ('TOE_TIP_PIVOT', 0, '-max(roll-0.7853981633974483,0)', {'roll': x_path}),
-        ):
+        for role, axis, expression, variable in _rotation_driver_plan(side, natural=True):
+            variables = {variable: x_path if variable == 'roll' else y_path}
             record['drivers'].append(_driver(armature, armature.pose.bones[names[role]], 'rotation_euler', axis, expression, variables))
         space = armature.pose.bones[names['TOE_SPACE']]
         _add_constraint(record, space, 'COPY_TRANSFORMS', 'CD Foot FK Toe Space', armature,
@@ -788,6 +804,74 @@ def _refuse_foreign_dependencies(armature, record):
         obj = bpy.data.objects[entry['object']]
         if obj.data.users != 1 or tuple(obj.users_collection) != (collection,) or obj.users > 2:
             raise _error('A Foot Controls widget is shared or linked elsewhere; make that use independent before removal.')
+
+
+def update_rotation_direction(context, armature, key):
+    """Explicitly migrate unanimated legacy roll inputs without moving the foot.
+
+    The roll X input changes sign, and the right-bank Y input changes sign.
+    Matching driver expressions preserve every solved pose and the foot-anchored
+    display. Authored animation and external input readers are left untouched.
+    """
+    _active(context, armature)
+    inventory = _limb()._validate_inventory(armature)
+    record = get_record(armature, key)
+    if record is None:
+        raise _error('Add Foot Controls before updating their rotation direction.')
+    validate(armature, inventory)
+    if record.get('rotation_direction') == 'NATURAL':
+        return record
+    roll = armature.pose.bones[record['roll']]
+    if roll.rotation_mode != 'XYZ' or not all(math.isfinite(value) for value in roll.rotation_euler):
+        raise _error('Foot Roll needs its original XYZ rotation channels before updating direction.')
+    rotation_paths = {roll.path_from_id(name) for name in
+                      ('rotation_euler', 'rotation_quaternion', 'rotation_axis_angle', 'rotation_mode')}
+    if any(curve.data_path in rotation_paths for action in _limb()._actions_for_id(armature)
+           for curve in _limb()._fcurves_for_action(action)):
+        raise _error('Foot Roll has authored rotation animation; preserve those channels before updating direction.')
+    _refuse_foreign_dependencies(armature, record)
+    if any(bone.parent and bone.parent.name == roll.name for bone in armature.data.bones):
+        raise _error('Another bone follows the Foot Roll input; preserve that dependency before updating direction.')
+    if roll.custom_shape_transform is None or roll.custom_shape_transform == roll:
+        raise _error('Fit the Foot Roll arrow to the solved foot before updating its rotation direction.')
+    changes = []
+    by_path = {(entry['path'], entry['index']): entry for entry in record['drivers']}
+    for old_plan, new_plan in zip(_rotation_driver_plan(record['side'], natural=False),
+                                  _rotation_driver_plan(record['side'], natural=True)):
+        role, axis, expression, variable = old_plan
+        path = armature.pose.bones[record['bones'][role]].path_from_id('rotation_euler')
+        entry = by_path.get((path, axis))
+        input_path = roll.path_from_id('rotation_euler') + ('[0]' if variable == 'roll' else '[1]')
+        if entry is None or entry['expression'] != expression or entry['variables'] != {variable: input_path}:
+            raise _error('The legacy Foot Roll driver layout changed; preserve it before updating direction.')
+        curve = next(c for c in armature.animation_data.drivers
+                     if c.data_path == path and c.array_index == axis)
+        changes.append((entry, curve, new_plan[2]))
+    _update(context, armature)
+    desired = {pb.name: pb.matrix.copy() for pb in armature.pose.bones if pb != roll}
+    old_rotation = roll.rotation_euler.copy()
+    old_expressions = [(curve, curve.driver.expression) for entry, curve, expression in changes]
+    old_raw, values = armature.data[RECORD_KEY], _all_records(armature)
+    try:
+        roll.rotation_euler.x = -old_rotation.x
+        if record['side'] == 'R':
+            roll.rotation_euler.y = -old_rotation.y
+        for entry, curve, expression in changes:
+            entry['expression'] = curve.driver.expression = expression
+        record['rotation_direction'] = 'NATURAL'
+        _write_records(armature, dict(values, **{record['side']: record}))
+        _update(context, armature)
+        _verify_pose(armature, desired)
+        validate(armature)
+        _limb()._validate_inventory(armature)
+    except Exception:
+        roll.rotation_euler = old_rotation
+        for curve, expression in old_expressions:
+            curve.driver.expression = expression
+        armature.data[RECORD_KEY] = old_raw
+        _update(context, armature)
+        raise
+    return record
 
 
 def remove(context, armature, key):

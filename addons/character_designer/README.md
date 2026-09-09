@@ -1,4 +1,4 @@
-# Character Designer 0.52.2
+# Character Designer 0.53.2
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
@@ -6,6 +6,32 @@ RR Helper and focuses on character-modeling tools.
 Workflow principle: generated bindings and setups should remain editable and
 provide an explicit remove/restore path. Preserve the artist's original state
 and unrelated data; support saving/reopening where restoration depends on a backup.
+
+Version 0.53.2 corrects reversed Foot Roll rotation on both feet and reversed
+Bank on the right foot. The output now follows the input rotation, with the
+heel, ball and toe-tip pivots retained. Existing setups expose **Fix Roll Direction**
+for an explicit, pose-preserving update. Weights and displayed outlines stay intact;
+authored rotation animation or external dependencies block an unsafe conversion.
+Legacy setups are not converted automatically when loading a file.
+
+Version 0.53.1 corrects the breast rings' cup direction: the middle projects
+forward while the upper and lower rim recede toward the torso. Ring sizes,
+placement, native pivots, and recovery data stay intact. Only the depth curve
+changes; existing artist-edited geometry is preserved during explicit updates.
+
+Version 0.53.0 adds **Add Breasts / Hips** in **Rig > Body > Body Controls**.
+Two softly curved breast rings and one pelvis oval replace the displays on the
+existing native bones. Fitting uses the shared body and nearby registered clothing
+in rest space. Hips uses Character Setup; breast bones are detected by name, with
+a bone picker when the names are ambiguous or missing. Select **Breast L / R / Hips**
+to move or rotate them. The restore button recovers the previous displays and colors,
+including artist custom shapes after saving/reopening. The rings remain editable;
+native pivots, constraints, weights, animation, and bone collections are preserved.
+
+Version 0.52.3 places newly generated whole-body Root outlines at the lowest
+foot-sole display height in rest space, including fitted offsets and Auto Align
+display anchors. Direct and Enhanced builds share the rule. Root rest pivots,
+poses, existing widgets, and recovery snapshots remain unchanged.
 
 Version 0.52.2 rounds the crown and chin corners in the head widget's side
 profile on new builds. The frontal proportions, open face, and forward marker
@@ -138,7 +164,8 @@ The unique deform toe child is detected automatically; an explicit Toe Bone fiel
 handles ambiguous rigs. Existing toe animation or constraints must be resolved first.
 
 - **Foot Roll**: rotate local X to roll from heel through ball to toe-tip; rotate
-  local Y to bank. Positive roll initially lifts the heel while the toes stay planted.
+  local Y to bank. The foot turns in the input rotation's direction; heel, ball
+  and toe-tip pivots switch automatically as the foot rolls.
 - **Toe Bend**: rotate at the ball to bend the toes independently of the ankle.
   This control remains available in both IK and FK. Foot Roll is shown in IK.
 

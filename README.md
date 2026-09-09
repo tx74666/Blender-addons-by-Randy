@@ -5,10 +5,18 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.52.2 | [character_designer](addons/character_designer) | [character_designer-0.52.2.zip](dist/character_designer-0.52.2.zip) |
+| Character Designer | 0.53.2 | [character_designer](addons/character_designer) | [character_designer-0.53.2.zip](dist/character_designer-0.53.2.zip) |
+
+Character Designer 0.53.2 修正左右 Foot Roll 与右脚 Bank 的反向旋转，让脚部跟随控制器的旋转方向，并保留脚跟、前脚掌与脚尖支点。旧设置使用 **Fix Roll Direction** 显式更新，保持当前姿势、权重与显示位置；已有相关动画或外部依赖时会阻止更新，避免改坏动作。
+
+Character Designer 0.53.1 修正胸部圆环的包覆方向：中段向胸部前方凸出，上下边缘朝身体收回。保持原尺寸、位置、骨骼支点与恢复资料；只调整圆环的前后弧度。
 
 两个插件独立安装，也可以同时启用。RR Helper 的内部模块名保留为
 `random_realm_builder_exporter`，便于更新原来的安装。
+
+Character Designer 0.53.0 在 **Rig → Body → Body Controls** 加入 **Add Breasts / Hips**：左右胸部使用略带弧度的圆环，Hips 使用骨盆椭圆环。沿用共用身体与附近登记衣物匹配比例；Hips 读取 Character Setup，胸部骨骼优先按名称辨识，无法确定时提供骨骼选择。保留原骨骼名称、旋转中心、权重、约束、动画与集合；恢复按钮取回先前显示和颜色，控制器网格可编辑，恢复资料随 blend 保存。
+
+Character Designer 0.52.3 将新建全身 Root 的显示高度对齐到鞋底控制轮廓，沿用脚部显示的静止坐标与偏移，不再固定在骨架原点。Direct 与 Enhanced 生成共用定位规则；只移动显示，保留全身旋转支点与动画。已有显示和恢复快照保留。
 
 Character Designer 0.52.2 将新建头部控制器的侧面顶部、底部转角改为圆弧，保留正面切角轮廓、脸前开口和小前向标记。只调整显示形状，保留原旋转支点、姿势与恢复功能；已有手工编辑的显示不会自动被覆盖。
 

@@ -15,7 +15,7 @@ BACKUP_KEY = '_cd_control_color_before_v1'
 DISPLAY_KEY = '_cd_control_color_display_before_v1'
 ENABLED_KEY = '_cd_control_colors_enabled'
 OWNER_KEY = 'character_designer_owner'
-OWNERS = {'limb_ik', 'foot_controls', 'torso_controls', 'eye_controls', 'spine_ik_fk', 'root_control', 'limb_fk_visuals', 'head_neck_visuals'}
+OWNERS = {'limb_ik', 'foot_controls', 'torso_controls', 'eye_controls', 'spine_ik_fk', 'root_control', 'limb_fk_visuals', 'head_neck_visuals', 'body_detail_visuals'}
 
 # RGB values are Blender's display colors, not material/shader colors.
 # Normal stays colored against a dark viewport; selection increases brightness
@@ -50,6 +50,10 @@ def is_control(pb, *, owned_only=False):
 
 def palette_for(pb):
     rig, bone = pb.id_data, pb.bone
+    if pb.custom_shape and pb.custom_shape.get(OWNER_KEY) == 'body_detail_visuals':
+        from . import body_detail_visuals
+        role = pb.custom_shape.get(body_detail_visuals.ROLE_KEY)
+        return {'BREAST_L': 'MINT', 'BREAST_R': 'ROSE', 'HIPS': 'LILAC'}.get(role, 'LILAC')
     if pb.custom_shape and pb.custom_shape.get(OWNER_KEY) == 'head_neck_visuals':
         from . import head_neck_visuals
         return 'IRIS' if pb.custom_shape.get(head_neck_visuals.ROLE_KEY) == 'NECK' else 'LILAC'

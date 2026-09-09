@@ -212,6 +212,7 @@ def _add_widget(context, armature, record, *, snapshot=None):
     pb.custom_shape, pb.use_custom_shape_bone_size = obj, False
     pb.custom_shape_scale_xyz = (record['widget_size'],) * 3
     pb.custom_shape_rotation_euler = (math.pi * .5, 0, 0)
+    pb.custom_shape_translation = _limb()._master_widget_translation(armature)
     if hasattr(pb, 'custom_shape_wire_width'):
         pb.custom_shape_wire_width = 2.0
     if snapshot:

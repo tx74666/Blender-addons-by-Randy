@@ -19,6 +19,9 @@ for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
     record = foot_controls.get_record(rig, key)
     assert record and bone_collections.has_layout_backup(rig)
     limb_ik_fk._verify(rig, before)
+    assert record['rotation_direction'] == 'NATURAL'
+    assert bpy.ops.character_designer.foot_controls(action='FIX_DIRECTION') == {'FINISHED'}
+    limb_ik_fk._verify(rig, before)
     assert bpy.ops.character_designer.foot_controls(action='FIT_VISUAL') == {'FINISHED'}
     assert foot_controls.has_roll_visual_backup(rig, key)
     limb_ik_fk._verify(rig, before)

@@ -1,6 +1,6 @@
 """Compact whole-body and limb-display actions in the existing Body panel."""
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import EnumProperty, StringProperty
 from bpy.types import Operator
 
 from . import limb_ik, root_control, control_colors
@@ -205,5 +205,102 @@ def draw_head_neck_visuals(layout, context):
         row.label(text=str(exc), icon='ERROR')
 
 
+class CHARACTERDESIGNER_OT_body_detail_visuals(Operator):
+    bl_idname = 'character_designer.body_detail_visuals'
+    bl_label = 'Breast and Hips Controls'
+    bl_description = 'Fit simple breast and pelvis rings; preserve native pivots, poses and weights'
+    bl_options = {'REGISTER', 'UNDO'}
+    action: EnumProperty(items=(('BUILD', 'Add Breasts / Hips', ''),
+                                ('SELECT_BREAST_L', 'Select Left Breast', ''),
+                                ('SELECT_BREAST_R', 'Select Right Breast', ''),
+                                ('SELECT_HIPS', 'Select Hips', ''),
+                                ('REMOVE', 'Restore Original Shapes', 'Restore the displays and colors saved before adding these rings')))
+    hips_name: StringProperty(name='Hips', description='Central pelvis bone; blank uses Character Setup')
+    left_name: StringProperty(name='Left Breast', description='Existing left breast bone')
+    right_name: StringProperty(name='Right Breast', description='Existing right breast bone')
+
+    @classmethod
+    def poll(cls, context):
+        return CHARACTERDESIGNER_OT_head_neck_visuals.poll(context)
+
+    def invoke(self, context, event):
+        from . import body_detail_visuals
+        if self.action == 'BUILD' and not body_detail_visuals.get_record(context.object):
+            try:
+                body_detail_visuals.resolve_bones(context, context.object,
+                    hips_name=self.hips_name or None, left_name=self.left_name or None,
+                    right_name=self.right_name or None)
+            except (ValueError, RuntimeError):
+                return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text='Choose the three existing bones.', icon='BONE_DATA')
+        for field in ('hips_name', 'left_name', 'right_name'):
+            layout.prop_search(self, field, context.object.data, 'bones')
+
+    def execute(self, context):
+        from . import body_detail_visuals
+        rig = context.object
+        try:
+            if self.action == 'REMOVE':
+                body_detail_visuals.remove(context, rig)
+                control_colors.cleanup(rig)
+                self.report({'INFO'}, 'Original breast and hips displays restored; pose unchanged.')
+                return {'FINISHED'}
+            if self.action == 'BUILD':
+                record = body_detail_visuals.build(context, rig, hips_name=self.hips_name or None,
+                    left_name=self.left_name or None, right_name=self.right_name or None)
+                control_colors.sync(rig)
+            else:
+                record = body_detail_visuals.validate(rig)
+            if not record:
+                raise ValueError('Add Breasts / Hips controls first.')
+            role = 'HIPS' if self.action == 'BUILD' else self.action.removeprefix('SELECT_')
+            name = next(name for name, entry in record['bindings'].items() if entry['role'] == role)
+            limb_ik._mode_set(context, rig, 'POSE')
+            for pb in rig.pose.bones:
+                pb.select = pb.name == name
+            bone = rig.data.bones[name]
+            rig.data.bones.active = bone
+            bone.hide = False
+            collections = list(bone.collections)
+            if not any(c.is_visible_effectively for c in collections):
+                collection = next((c for c in collections if c.name == 'Animation'),
+                                  collections[0] if collections else None)
+                while collection is not None:
+                    collection.is_visible = True
+                    collection = collection.parent
+            self.report({'INFO'}, f'{name}: move or rotate the ring using its original bone pivot.')
+            return {'FINISHED'}
+        except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError, StopIteration) as exc:
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
+
+
+def draw_body_detail_visuals(layout, context):
+    from . import body_detail_visuals
+    rig = context.object
+    if rig is None or rig.type != 'ARMATURE':
+        return
+    row = layout.row(align=True)
+    try:
+        record = body_detail_visuals.get_record(rig)
+        if record:
+            for role, label in (('BREAST_L', 'Breast L'), ('BREAST_R', 'Breast R'), ('HIPS', 'Hips')):
+                row.operator('character_designer.body_detail_visuals', text=label,
+                             icon='MESH_CIRCLE').action = 'SELECT_' + role
+            restore = row.row(align=True)
+            restore.alert = True
+            restore.operator('character_designer.body_detail_visuals', text='', icon='LOOP_BACK').action = 'REMOVE'
+        else:
+            row.alert = True
+            row.operator('character_designer.body_detail_visuals', text='Add Breasts / Hips',
+                         icon='MESH_CIRCLE').action = 'BUILD'
+    except (ValueError, RuntimeError, KeyError, TypeError) as exc:
+        row.label(text=str(exc), icon='ERROR')
+
+
 BODY_CONTROL_UI_CLASSES = (CHARACTERDESIGNER_OT_root_control, CHARACTERDESIGNER_OT_limb_fk_visuals,
-                           CHARACTERDESIGNER_OT_head_neck_visuals)
+                           CHARACTERDESIGNER_OT_head_neck_visuals, CHARACTERDESIGNER_OT_body_detail_visuals)

@@ -1,4 +1,5 @@
 """Reverse-foot pivots, toe isolation, ownership, and atomic build validation."""
+import json
 import math
 import os
 import sys
@@ -23,6 +24,7 @@ def check_pivots(method, selected):
     rest = {b.name: (b.head_local.copy(), b.tail_local.copy(), b.matrix_local.copy()) for b in rig.data.bones}
     target_basis = rig.pose.bones[data['target'].name].matrix_basis.copy()
     record = feet.build(bpy.context, rig, key, toe_name=native_toe)
+    assert record['rotation_direction'] == 'NATURAL'
     assert feet.build(bpy.context, rig, key) == record  # Idempotent.
     feet.validate(rig, limb_ik._validate_inventory(rig))
     for name, matrix in old_pose.items():
@@ -38,16 +40,16 @@ def check_pivots(method, selected):
     ankle = rig.pose.bones[native_foot]
     native = rig.pose.bones[native_toe]
     before = {'ankle': ankle.head.copy(), 'ball': native.head.copy(), 'tip': native.tail.copy()}
-    roll.rotation_euler.x = 0.30
+    roll.rotation_euler.x = -0.30
     update(rig)
     assert ankle.head.z > before['ankle'].z + 0.005, (method, side, ankle.head, before)
     assert (native.head - before['ball']).length < 1e-4
     assert (native.tail - before['tip']).length < 1e-4
-    roll.rotation_euler.x = 1.0
+    roll.rotation_euler.x = -1.0
     update(rig)
     assert (native.tail - before['tip']).length < 2e-4
     assert native.head.z > before['ball'].z + 0.002
-    roll.rotation_euler.x = -0.25
+    roll.rotation_euler.x = 0.25
     update(rig)
     assert native.tail.z > before['tip'].z + 0.005
     roll.rotation_euler.x = 0.0
@@ -67,6 +69,26 @@ def check_pivots(method, selected):
     assert not any(o.get(feet.OWNER_KEY) == feet.OWNER_VALUE for o in bpy.data.objects)
     assert set(rest) == set(rig.data.bones.keys())
     limb_ik._validate_inventory(rig)
+
+
+def test_natural_rotation_matches_input_axes():
+    for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
+        for selected in ('LEFT_LEG', 'RIGHT_LEG'):
+            rig, key, data = fixture(method, selected, toes=True)
+            record = feet.build(bpy.context, rig, key)
+            roll = rig.pose.bones[record['roll']]
+            foot = rig.pose.bones[record['chain'][2]]
+            for axis in (0, 1):
+                for sign in (-1., 1.):
+                    roll.rotation_euler = (0, 0, 0)
+                    update(rig)
+                    old_input, old_output = roll.matrix.copy(), foot.matrix.copy()
+                    roll.rotation_euler[axis] = sign*.25
+                    update(rig)
+                    input_rotation = (roll.matrix.to_3x3() @ old_input.to_3x3().inverted()).to_quaternion().to_exponential_map()
+                    foot_rotation = (foot.matrix.to_3x3() @ old_output.to_3x3().inverted()).to_quaternion().to_exponential_map()
+                    assert input_rotation.length > .24 and foot_rotation.length > .24
+                    assert input_rotation.normalized().dot(foot_rotation.normalized()) > .999, (method, selected, axis, sign)
 
 
 def test_pivots_both_sides_and_schemas():

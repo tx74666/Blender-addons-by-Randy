@@ -1561,6 +1561,31 @@ def _custom_shape_anchor_world(armature, pose_bone):
     return armature.matrix_world @ (transform.matrix @ local_offset)
 
 
+def _master_widget_translation(armature):
+    """Place the global outline at the sole displays' rest height, not rig zero.
+
+    Rest frames keep lifted feet and animation from changing the global floor.
+    Display offsets and Auto Align anchors already encode fitted shoe soles.
+    """
+    heights = []
+    for pb in armature.pose.bones:
+        if (pb.bone.get(OWNER_KEY) != OWNER_VALUE or pb.bone.get(ROLE_KEY) != 'FOOT_IK'
+                or pb.custom_shape is None or pb.custom_shape.type != 'MESH'):
+            continue
+        anchor = pb.custom_shape_transform or pb
+        scale = pb.custom_shape_scale_xyz * (pb.bone.length if pb.use_custom_shape_bone_size else 1.0)
+        matrix = anchor.bone.matrix_local @ Matrix.LocRotScale(
+            pb.custom_shape_translation, pb.custom_shape_rotation_euler.to_quaternion(), scale)
+        heights.extend((matrix @ vertex.co).z for vertex in pb.custom_shape.data.vertices)
+    if not heights:
+        return (0.0, 0.0, 0.0)
+    if not all(math.isfinite(value) for value in heights):
+        raise LimbIKError('Foot display geometry must be finite before fitting Root height.')
+    master = armature.data.bones[MASTER_NAME]
+    floor = Vector((master.head_local.x, master.head_local.y, min(heights)))
+    return tuple(master.matrix_local.inverted() @ floor)
+
+
 def _custom_shape_state_matrix(state):
     """Return one Custom Shape's display-only local TRS matrix."""
 
@@ -4894,9 +4919,6 @@ def _create_constraints_and_shapes(
             pose_bone.custom_shape_wire_width = 2.0
         _write_control_visual_default(pose_bone)
 
-    if _is_enhanced_schema(schema) and create_master:
-        master_pb = armature.pose.bones[MASTER_NAME]
-        set_shape(master_pb, widgets["MASTER"], _master_bone_size(armature) * 2.8, rotation=(math.pi * 0.5, 0.0, 0.0))
     foot_fits = _foot_widget_fits(context, armature, plans, foot_widgets) if foot_widgets else {}
 
     def set_foot_shape(plan, target, chain_length):
@@ -5125,6 +5147,11 @@ def _create_constraints_and_shapes(
             heel = armature.pose.bones[plan.heel_name]
             heel_limit = next(item for item in extras if item.type == "LIMIT_ROTATION")
             pending_records.append((heel, heel_limit, plan, "HEEL_LIMIT"))
+
+    if _is_enhanced_schema(schema) and create_master:
+        master_pb = armature.pose.bones[MASTER_NAME]
+        set_shape(master_pb, widgets["MASTER"], _master_bone_size(armature) * 2.8,
+                  translation=_master_widget_translation(armature), rotation=(math.pi * 0.5, 0.0, 0.0))
 
     if decorate_sources and source_widget_chains:
         _decorate_source_widgets(
@@ -6715,7 +6742,7 @@ class CHARACTERDESIGNER_OT_foot_controls(Operator):
     bl_description = "Add or remove foot-roll and toe-bend controls while preserving the current pose and weights"
     bl_options = {"REGISTER", "UNDO"}
 
-    action: EnumProperty(items=(("BUILD", "Add Foot Controls", "Add reversible roll and toe controls"), ("REMOVE", "Remove Foot Controls", "Restore the original foot and toe controls"), ("SELECT_ROLL", "Foot Roll", "Select the foot-roll control"), ("SELECT_TOE", "Toe Bend", "Select the toe-bend control"), ("FIT_VISUAL", "Fit Arrow", "Fit the arrow behind the saved footwear, following the posed foot"), ("RESTORE_VISUAL", "Restore Arrow", "Restore the arrow appearance saved before its first fit")))
+    action: EnumProperty(items=(("BUILD", "Add Foot Controls", "Add reversible roll and toe controls"), ("REMOVE", "Remove Foot Controls", "Restore the original foot and toe controls"), ("SELECT_ROLL", "Foot Roll", "Select the foot-roll control"), ("SELECT_TOE", "Toe Bend", "Select the toe-bend control"), ("FIX_DIRECTION", "Fix Roll Direction", "Make the foot rotate in the control's direction while preserving the current pose"), ("FIT_VISUAL", "Fit Arrow", "Fit the arrow behind the saved footwear, following the posed foot"), ("RESTORE_VISUAL", "Restore Arrow", "Restore the arrow appearance saved before its first fit")))
 
     def execute(self, context):
         settings = _settings(context)
@@ -6736,6 +6763,12 @@ class CHARACTERDESIGNER_OT_foot_controls(Operator):
                 for bone in armature.pose.bones:
                     bone.select = bone.name == name
                 armature.data.bones.active = armature.data.bones[name]
+                return {"FINISHED"}
+            if self.action == "FIX_DIRECTION":
+                foot_controls.update_rotation_direction(context, armature, key)
+                message = f"{key[1]} foot rotation direction corrected; current pose and weights preserved."
+                _set_status(settings, "SUCCESS", message)
+                self.report({"INFO"}, message)
                 return {"FINISHED"}
             before = bone_groups.capture_managed_layout(armature)
             if self.action == "BUILD":
@@ -8370,10 +8403,11 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if settings is None:
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
-        from .body_controls_ui import draw_root_controls, draw_fk_visuals, draw_head_neck_visuals
+        from .body_controls_ui import draw_root_controls, draw_fk_visuals, draw_head_neck_visuals, draw_body_detail_visuals
         draw_root_controls(layout, context)
         draw_fk_visuals(layout, context)
         draw_head_neck_visuals(layout, context)
+        draw_body_detail_visuals(layout, context)
         layout.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
         layout.prop(settings, "selected_limb", text="")
         active = context.object
@@ -8401,7 +8435,9 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                             roll_select.enabled = mode == "IK"
                             roll_select.operator("character_designer.foot_controls", text="Foot Roll", icon="CON_ROTLIKE").action = "SELECT_ROLL"
                             row.operator("character_designer.foot_controls", text="Toe Bend", icon="BONE_DATA").action = "SELECT_TOE"
-                            foot_box.label(text="Roll: X / Bank: Y · Toe: rotate", icon="INFO")
+                            foot_box.label(text="Local X: Roll · Local Y: Bank", icon="INFO")
+                            if foot.get("rotation_direction") != "NATURAL":
+                                foot_box.operator("character_designer.foot_controls", text="Fix Roll Direction", icon="FILE_REFRESH").action = "FIX_DIRECTION"
                             foot_box.prop(settings, "show_foot_visual_options", icon="TRIA_DOWN" if settings.show_foot_visual_options else "TRIA_RIGHT", emboss=False)
                             if settings.show_foot_visual_options:
                                 from . import character_setup
