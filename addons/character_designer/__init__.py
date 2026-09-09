@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 45, 0),
+    "version": (0, 49, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -67,6 +67,9 @@ from .bone_collections import (
     unregister_handlers as unregister_bone_collection_handlers,
 )
 from .character_setup import CHARACTER_SETUP_CLASSES, CharacterDesignerSetup
+from .torso_ui import TORSO_UI_CLASSES
+from .eye_ui import EYE_UI_CLASSES
+from .control_colors import CONTROL_COLOR_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
 from .animation import (
@@ -8382,6 +8385,9 @@ CLASSES = (
     *WEIGHT_SYMMETRY_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
+    *TORSO_UI_CLASSES,
+    *EYE_UI_CLASSES,
+    *CONTROL_COLOR_CLASSES,
     *FOREARM_TWIST_CLASSES,
     *SPLINE_IK_SETUP_CLASSES,
     *REFERENCE_VIEW_CLASSES,

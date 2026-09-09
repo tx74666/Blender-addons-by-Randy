@@ -786,6 +786,9 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
                                    if candidate is not obj and candidate.get(OWNER_KEY) == owner]
         write_record(obj, record)
         select_controls(context, obj)
+        from . import control_colors
+        for name in control_names:
+            control_colors.style(rig.pose.bones[name])
         return record
     except Exception as error:
         current = context.view_layer.objects.active

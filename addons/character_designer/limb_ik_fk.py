@@ -209,6 +209,37 @@ def _matrices(armature, names):
     return {name: armature.pose.bones[name].matrix.copy() for name in names}
 
 
+def _bone_name(value):
+    return value if isinstance(value, str) else getattr(value, "name", "")
+
+
+def pose_names(rig):
+    """Native bones whose evaluated pose a limb switch must preserve."""
+    names = list(rig["chain"])
+    foot = rig.get("foot_controls")
+    if foot:
+        toe = _bone_name(foot.get("toe"))
+        if not toe:
+            raise _error("The Foot Controls inventory has no native Toe bone.")
+        names.append(toe)
+    return tuple(names)
+
+
+def _match_toe(context, armature, rig, desired):
+    foot = rig.get("foot_controls")
+    if not foot:
+        return set()
+    toe = _bone_name(foot.get("toe"))
+    control_name = _bone_name(foot.get("toe_control"))
+    control = armature.pose.bones.get(control_name)
+    if control is None or toe not in desired:
+        raise _error("The Foot Controls inventory is missing its ToeBend control or saved Toe pose.")
+    # ToeSpace changes its reference when the limb changes mode. Match only
+    # after the native Foot is final, using the control's normal parent space.
+    _set_matrix(context, armature, control, desired[toe])
+    return {control.name}
+
+
 def _rotation_error(actual, expected):
     delta = actual.to_quaternion().normalized().rotation_difference(expected.to_quaternion().normalized())
     return min(abs(delta.angle), abs(2.0 * math.pi - delta.angle))
@@ -329,7 +360,19 @@ def _match_ik(context, armature, inventory, rig, desired):
     _match_pole_plane(context, armature, rig, desired)
     end_constraint = next(con for _pb, con, record in rig["entries"] if record["role"] == "END_ROTATION")
     offset = rig.get("auto_offset_rotation")
-    if rig["auto_align"]:
+    if rig.get("foot_controls"):
+        # Reverse-foot owns both end-rotation paths in world space. Its fixed
+        # pivots must keep the foot orientation, including in Auto display
+        # mode; interpreting the solver as a local offset would double roll.
+        solver = armature.pose.bones[rig["solver_target"].name]
+        desired_world = armature.matrix_world @ desired_end
+        solver_world = armature.matrix_world @ solver.matrix
+        target_world = armature.matrix_world @ target.matrix
+        delta = desired_world.to_quaternion().normalized() @ solver_world.to_quaternion().normalized().inverted()
+        pivot = solver_world.translation.copy()
+        transform = Matrix.Translation(pivot) @ delta.to_matrix().to_4x4() @ Matrix.Translation(-pivot)
+        _set_matrix(context, armature, target, armature.matrix_world.inverted_safe() @ transform @ target_world)
+    elif rig["auto_align"]:
         if offset is None:
             raise _error("Rebuild this rig to add the Auto Align rotation offset before matching IK.")
         # Keep the FK end's natural local transform and solve only the visible
@@ -372,7 +415,7 @@ def _match_ik(context, armature, inventory, rig, desired):
     return changed
 
 
-def switch_limb(context, armature, key, mode, *, keyframe=None):
+def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=None):
     """Switch one limb and match its evaluated pose; restore everything on error."""
     if mode not in {"IK", "FK"}:
         raise _error("Choose IK or FK.")
@@ -386,10 +429,14 @@ def switch_limb(context, armature, key, mode, *, keyframe=None):
     rig = inventory["rigs"][key]
     target = armature.pose.bones[rig["target"].name]
     old_mode = mode_for_rig(armature, rig)
-    if old_mode == mode:
+    if old_mode == mode and desired_pose is None:
         return {"mode": mode, "changed": False, "keyed": False, "errors": (0.0, 0.0, 0.0)}
     _update(context, armature)
-    desired = _matrices(armature, rig["chain"])
+    desired = _matrices(armature, pose_names(rig)) if desired_pose is None else {
+        name: matrix.copy() for name, matrix in desired_pose.items()
+    }
+    if any(name not in desired or armature.pose.bones.get(name) is None for name in pose_names(rig)):
+        raise _error("The saved match pose is missing a native limb or Toe bone.")
     pose_before = {pb.name: (pb.rotation_mode, pb.matrix_basis.copy()) for pb in armature.pose.bones}
     mute_before = [(con, con.mute) for _pb, con, _record in rig["entries"]]
     value_before = target.get(PROPERTY, 1.0)
@@ -398,6 +445,15 @@ def switch_limb(context, armature, key, mode, *, keyframe=None):
         ensure_switching(armature, inventory, keys=(key,))
         _update(context, armature)
         affected = _match_fk(context, armature, rig, desired) if mode == "FK" else _match_ik(context, armature, inventory, rig, desired)
+        affected.update(_match_toe(context, armature, rig, desired))
+        # Removal of an optional extension restores its native Toe constraint
+        # baseline first. The caller can include that Toe matrix here so it is
+        # matched directly after the legacy Foot has been matched.
+        if not rig.get("foot_controls"):
+            extra_names = set(desired) - set(rig["chain"])
+            for name in sorted(extra_names, key=lambda item: len(armature.pose.bones[item].parent_recursive)):
+                _set_matrix(context, armature, armature.pose.bones[name], desired[name])
+                affected.add(name)
         errors = _verify(armature, desired)
         _limb()._validate_inventory(armature)
         keyed = bool(keyframe if keyframe is not None else context.scene.tool_settings.use_keyframe_insert_auto)
@@ -424,6 +480,22 @@ def switch_limb(context, armature, key, mode, *, keyframe=None):
         _update(context, armature)
         raise
     return {"mode": mode, "changed": True, "keyed": keyed, "errors": errors}
+
+
+def match_existing_pose(context, armature, key, desired_pose, *, keyframe=False):
+    """Re-match a rebuilt attachment without changing this limb's IK/FK mode.
+
+    Foot Controls uses this after restoring its previous native relations. The
+    caller owns the attachment transaction; this service rolls back its own
+    transform and key changes if the restored rig cannot reproduce the pose.
+    """
+    inventory = _limb()._validate_inventory(armature)
+    if key not in inventory["rigs"]:
+        raise _error("There is no generated limb to match after restoring the attachment.")
+    mode = mode_for_rig(armature, inventory["rigs"][key])
+    if mode == "BLEND":
+        raise _error("Choose IK or FK before restoring the Foot Controls attachment.")
+    return switch_limb(context, armature, key, mode, keyframe=keyframe, desired_pose=desired_pose)
 
 
 def _curve_bookend(curve, frame):

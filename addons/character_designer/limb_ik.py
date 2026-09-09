@@ -22,10 +22,15 @@ from mathutils import Euler, Matrix, Vector
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 from . import bone_collections as bone_groups
 from . import limb_ik_fk
+from . import foot_controls
+from . import torso_controls
+from . import eye_controls
+from . import control_colors
 
 
 OWNER_KEY = "character_designer_owner"
 OWNER_VALUE = "limb_ik"
+GENERATED_CONTROL_OWNERS = {OWNER_VALUE, foot_controls.OWNER_VALUE, torso_controls.OWNER_VALUE, eye_controls.OWNER_VALUE}
 VERSION_KEY = "character_designer_limb_ik_version"
 RIG_ID_KEY = "character_designer_limb_ik_rig_id"
 ROLE_KEY = "character_designer_limb_ik_role"
@@ -343,7 +348,7 @@ def _canonical_json(value):
 def _armature_digest(armature):
     payload = []
     for bone in sorted(armature.data.bones, key=lambda item: item.name):
-        if bone.get(OWNER_KEY) == OWNER_VALUE:
+        if bone.get(OWNER_KEY) in GENERATED_CONTROL_OWNERS:
             continue
         payload.append(
             (
@@ -393,7 +398,7 @@ def _name_score(name, kind, role):
 
 def _candidate_chains(armature, kind, side):
     candidates = []
-    source_bones = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) != OWNER_VALUE]
+    source_bones = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) not in GENERATED_CONTROL_OWNERS]
     center_x = sum(float(bone.head_local.x) for bone in source_bones) / max(1, len(source_bones))
     extent_x = max((abs(float(bone.head_local.x) - center_x) for bone in source_bones), default=1.0)
     for upper in armature.data.bones:
@@ -568,6 +573,9 @@ class CharacterDesignerLimbIKState(PropertyGroup):
     right_leg_upper: StringProperty(options={"SKIP_SAVE"})
     right_leg_lower: StringProperty(options={"SKIP_SAVE"})
     right_leg_end: StringProperty(options={"SKIP_SAVE"})
+    left_foot_toe: StringProperty(name="Toe Bone", description="Optional toe-bone override; blank uses the unique toe child of the foot", options={"SKIP_SAVE"})
+    right_foot_toe: StringProperty(name="Toe Bone", description="Optional toe-bone override; blank uses the unique toe child of the foot", options={"SKIP_SAVE"})
+    show_foot_visual_options: BoolProperty(name="Arrow Placement", default=False, options={"SKIP_SAVE"})
     last_level: EnumProperty(items=(("NONE", "None", ""), ("INFO", "Info", ""), ("SUCCESS", "Success", ""), ("WARNING", "Warning", ""), ("ERROR", "Error", "")), default="NONE", options={"SKIP_SAVE"})
     last_message: StringProperty(default="", options={"SKIP_SAVE"})
 
@@ -3019,6 +3027,9 @@ def _validate_inventory(armature):
             or DIRECT_REST_KEY in armature.data
             or SOURCE_WIDGETS_KEY in armature.data
             or TARGET_ROTATION_VERSION_KEY in armature.data
+            or foot_controls.RECORD_KEY in armature.data
+            or torso_controls.RECORD_KEY in armature.data
+            or eye_controls.RECORD_KEY in armature.data
         ):
             raise LimbIKError("Orphaned Limb IK ownership data was found on this Armature.")
         return {
@@ -3443,6 +3454,11 @@ def _validate_inventory(armature):
                     or getattr(source_rotation, "mix_mode", "") != "REPLACE"
                 ):
                     raise LimbIKError(f"Limb IK rig '{rig_id}' {segment.title()} source rotation was edited.")
+        foot_record = foot_controls.get_record(armature, key, rig_id=rig_id)
+        if foot_record is not None:
+            solver_target = armature.data.bones.get(foot_record["solver"])
+            if solver_target is None:
+                raise LimbIKError("Foot Controls ankle solver is missing.")
         if (
             ik.target is not armature
             or ik.subtarget != solver_target.name
@@ -3484,10 +3500,10 @@ def _validate_inventory(armature):
             if (
                 offset_pb.name != chain[2]
                 or auto_offset_rotation.target is not armature
-                or auto_offset_rotation.subtarget != target.name
-                or auto_offset_rotation.target_space != "LOCAL"
-                or auto_offset_rotation.owner_space != "LOCAL"
-                or getattr(auto_offset_rotation, "mix_mode", "") != "AFTER"
+                or auto_offset_rotation.subtarget != (solver_target.name if foot_record else target.name)
+                or auto_offset_rotation.target_space != ("WORLD" if foot_record else "LOCAL")
+                or auto_offset_rotation.owner_space != ("WORLD" if foot_record else "LOCAL")
+                or getattr(auto_offset_rotation, "mix_mode", "") != ("REPLACE" if foot_record else "AFTER")
                 or not all(
                     getattr(auto_offset_rotation, name, False)
                     for name in ("use_x", "use_y", "use_z")
@@ -3535,6 +3551,7 @@ def _validate_inventory(armature):
             "direct_rest": direct_rest,
             "auto_align": auto_align,
             "auto_offset_rotation": auto_offset_rotation,
+            "foot_controls": foot_record,
         }
     if _is_direct_preroll_schema(schema) and set(direct_registry["limbs"]) != set(by_rig):
         raise LimbIKError("Direct Pre-Roll Rest registry contains missing or orphaned limb entries.")
@@ -3544,7 +3561,7 @@ def _validate_inventory(armature):
         if not _owned(master, armature_id, role="MASTER") or master.parent is not None:
             raise LimbIKError("The enhanced Limb IK Master control is missing or invalid.")
         expected_bones.add(master.name)
-        source_roots = {bone.name for bone in armature.data.bones if bone.parent is None and bone.get(OWNER_KEY) != OWNER_VALUE}
+        source_roots = {bone.name for bone in armature.data.bones if bone.parent is None and bone.get(OWNER_KEY) not in GENERATED_CONTROL_OWNERS}
         if {pose_bone.name for pose_bone, _constraint, _record in master_records} != source_roots or len(master_records) != len(source_roots):
             raise LimbIKError("Master does not own exactly one follow constraint for every source root.")
         for pose_bone, constraint, record in master_records:
@@ -3558,7 +3575,7 @@ def _validate_inventory(armature):
         raise LimbIKError("Orphaned or duplicate generated Limb IK control bones were found.")
     source_widgets = _load_source_widget_registry(armature, strict=True)
     _validate_source_widget_assignments(armature, source_widgets, rigs)
-    return {
+    inventory = {
         "armature_id": armature_id,
         "schema": schema,
         "target_rotation_version": target_rotation_version,
@@ -3569,6 +3586,10 @@ def _validate_inventory(armature):
         "master_records": master_records,
         "source_widgets": source_widgets,
     }
+    foot_controls.validate(armature, inventory)
+    torso_controls.validate(armature, inventory)
+    eye_controls.validate(armature, inventory)
+    return inventory
 
 
 def _preflight_plans(context, armature, plans, inventory, *, schema=CURRENT_SCHEMA):
@@ -3793,7 +3814,7 @@ def _rollback_build(context, armature, transaction):
 
 
 def _master_bone_size(armature):
-    source = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) != OWNER_VALUE]
+    source = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) not in GENERATED_CONTROL_OWNERS]
     if not source:
         return 1.0
     points = [Vector(point) for bone in source for point in (bone.head_local, bone.tail_local)]
@@ -3829,7 +3850,7 @@ def _foot_medial_sign(armature, plan, lateral):
         roots = [
             bone
             for bone in armature.data.bones
-            if bone.parent is None and bone.get(OWNER_KEY) != OWNER_VALUE
+            if bone.parent is None and bone.get(OWNER_KEY) not in GENERATED_CONTROL_OWNERS
         ]
         if not roots:
             return fallback
@@ -4019,7 +4040,7 @@ def _foot_widget_fits(context, armature, plans, shapes):
     roots = [
         bone
         for bone in armature.data.bones
-        if bone.parent is None and bone.get(OWNER_KEY) != OWNER_VALUE
+        if bone.parent is None and bone.get(OWNER_KEY) not in GENERATED_CONTROL_OWNERS
     ]
     center_x = (
         sum(float(bone.head_local.x) for bone in roots) / len(roots)
@@ -4613,7 +4634,7 @@ def _create_constraints_and_shapes(
     runtime_constraints = {}
     runtime_roll_constraints = {}
     if _is_enhanced_schema(schema) and create_master:
-        roots = [bone for bone in armature.data.bones if bone.parent is None and bone.get(OWNER_KEY) != OWNER_VALUE]
+        roots = [bone for bone in armature.data.bones if bone.parent is None and bone.get(OWNER_KEY) not in GENERATED_CONTROL_OWNERS]
         if not roots:
             raise LimbIKError("No unparented source root is available for the Master control.")
         for root in roots:
@@ -5768,6 +5789,12 @@ def _direct_source_dependency_problems(armature, chains, *, owned_constraints=()
 
 
 def _foreign_dependency_problems(armature, inventory):
+    if eye_controls.get_record(armature):
+        return ["remove Eye Controls before rebuilding or removing Limb IK"]
+    if torso_controls.get_record(armature):
+        return ["remove Spine Controls before rebuilding or removing Limb IK"]
+    if foot_controls.records(armature):
+        return ["remove Foot Controls before rebuilding or removing Limb IK"]
     names = {bone.name for bone in inventory["bones"]}
     if not names:
         return []
@@ -5878,6 +5905,9 @@ def _removal_resources(context, armature, inventory):
     if len(control_collections) != 1:
         raise LimbIKError("Owned Randy Controls bone collection is missing or duplicated.")
     expected_bones = {bone.name for bone in inventory["bones"]}
+    expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == foot_controls.OWNER_VALUE)
+    expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == torso_controls.OWNER_VALUE)
+    expected_bones.update(bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == eye_controls.OWNER_VALUE)
     if {bone.name for bone in control_collections[0].bones} != expected_bones:
         raise LimbIKError("Randy Controls contains missing or foreign bones.")
 
@@ -6132,6 +6162,7 @@ def _snapshot_owned_rig(armature, inventory):
         control_pose[bone.name] = {
             "matrix_basis": pose_bone.matrix_basis.copy(),
             "rotation_mode": pose_bone.rotation_mode,
+            "color_state": control_colors.capture_bone(pose_bone),
             "shape": _pose_shape_json_state(pose_bone),
             "visual_default_present": CONTROL_VISUAL_DEFAULT_KEY in bone,
             "visual_default_raw": bone.get(CONTROL_VISUAL_DEFAULT_KEY, None),
@@ -6164,6 +6195,14 @@ def _snapshot_owned_rig(armature, inventory):
             if bone.get(OWNER_KEY) != OWNER_VALUE
         },
     }
+
+
+def _reapply_control_colors(armature, control_pose):
+    """Keep artist colors and their recovery point when controls are rebuilt."""
+    for name, saved in control_pose.items():
+        pose_bone = armature.pose.bones.get(name)
+        if pose_bone is not None and "color_state" in saved:
+            control_colors.restore_bone_state(pose_bone, saved["color_state"])
 
 
 def _reapply_control_visual_overrides(armature, control_pose):
@@ -6428,6 +6467,8 @@ def _restore_owned_snapshot(context, armature, snapshot):
             pose_bone = armature.pose.bones[name]
             pose_bone.rotation_mode = state["rotation_mode"]
             pose_bone.matrix_basis = state["matrix_basis"]
+            if "color_state" in state:
+                control_colors.restore_bone_state(pose_bone, state["color_state"])
             shape_state = state.get("shape")
             if shape_state is not None:
                 _validate_shape_state(shape_state, f"Saved generated bone '{name}'")
@@ -6586,7 +6627,24 @@ def _finish_collection_edit(operator, armature, previous, error):
             operator.report({"WARNING"}, f"Bone groups could not refresh: {exc}")
 
 
+def _finish_control_colors(operator, armature, *, removed=False):
+    """Refresh display only after the rig transaction and recovery have finished."""
+    try:
+        if removed:
+            control_colors.cleanup(armature)
+        else:
+            control_colors.sync(armature)
+    except (ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        operator.report({"WARNING"}, f"Controller colors could not refresh: {exc}")
+
+
 def _require_ik_for_rig_edit(armature, inventory):
+    if eye_controls.get_record(armature):
+        raise LimbIKError("Remove Eye Controls before rebuilding or removing Limb IK.")
+    if torso_controls.get_record(armature):
+        raise LimbIKError("Remove Spine Controls before rebuilding or removing Limb IK.")
+    if foot_controls.records(armature):
+        raise LimbIKError("Remove Foot Controls before rebuilding or removing Limb IK.")
     for (kind, side), rig in inventory["rigs"].items():
         if limb_ik_fk.mode_for_rig(armature, rig) != "IK":
             raise LimbIKError(
@@ -6620,6 +6678,63 @@ class CHARACTERDESIGNER_OT_limb_ik_fk_switch(Operator):
         message = f"{key[0].title()} {key[1]}: {result['mode']}; current pose matched."
         if result["keyed"]:
             message += " Switch keys inserted."
+        _set_status(settings, "SUCCESS", message)
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+class CHARACTERDESIGNER_OT_foot_controls(Operator):
+    bl_idname = "character_designer.foot_controls"
+    bl_label = "Foot Controls"
+    bl_description = "Add or remove foot-roll and toe-bend controls while preserving the current pose and weights"
+    bl_options = {"REGISTER", "UNDO"}
+
+    action: EnumProperty(items=(("BUILD", "Add Foot Controls", "Add reversible roll and toe controls"), ("REMOVE", "Remove Foot Controls", "Restore the original foot and toe controls"), ("SELECT_ROLL", "Foot Roll", "Select the foot-roll control"), ("SELECT_TOE", "Toe Bend", "Select the toe-bend control"), ("FIT_VISUAL", "Fit Arrow", "Fit the arrow behind the saved footwear, following the posed foot"), ("RESTORE_VISUAL", "Restore Arrow", "Restore the arrow appearance saved before its first fit")))
+
+    def execute(self, context):
+        settings = _settings(context)
+        armature = None
+        before = None
+        error = None
+        try:
+            armature = _require_active_armature(context, settings, analyzed=False)
+            key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
+            if key[0] != "LEG":
+                raise LimbIKError("Choose Left Leg or Right Leg first.")
+            if self.action.startswith("SELECT_"):
+                record = foot_controls.get_record(armature, key)
+                if record is None:
+                    raise LimbIKError("Add Foot Controls for this leg first.")
+                _mode_set(context, armature, "POSE")
+                name = record["roll" if self.action == "SELECT_ROLL" else "toe_control"]
+                for bone in armature.pose.bones:
+                    bone.select = bone.name == name
+                armature.data.bones.active = armature.data.bones[name]
+                return {"FINISHED"}
+            before = bone_groups.capture_managed_layout(armature)
+            if self.action == "BUILD":
+                from . import character_setup
+                toe = getattr(settings, "left_foot_toe" if key[1] == "L" else "right_foot_toe")
+                shoe = character_setup.footwear_reference(context, armature)
+                foot_controls.build(context, armature, key, toe_name=toe or None, shoe=shoe)
+                character_setup._mapping(character_setup.settings(context), armature, create=True)
+            elif self.action == "FIT_VISUAL":
+                from . import character_setup
+                shoe = character_setup.footwear_reference(context, armature)
+                foot_controls.fit_roll_visual(context, armature, key, shoe=shoe)
+                character_setup._mapping(character_setup.settings(context), armature, create=True)
+            elif self.action == "RESTORE_VISUAL":
+                foot_controls.restore_roll_visual(context, armature, key)
+            else:
+                foot_controls.remove(context, armature, key)
+        except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            error = exc
+        _finish_collection_edit(self, armature, before, error)
+        if error is not None:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        message = (f"{key[1]} foot arrow {'fitted' if self.action == 'FIT_VISUAL' else 'restored'}; only its display changed."
+                   if self.action.endswith("VISUAL") else f"{key[1]} Foot Controls {'added' if self.action == 'BUILD' else 'removed'}; current pose and weights preserved.")
         _set_status(settings, "SUCCESS", message)
         self.report({"INFO"}, message)
         return {"FINISHED"}
@@ -6689,6 +6804,7 @@ def _execute_build(operator, context, scope):
         _set_status(settings, level, message)
         operator.report({"ERROR" if level == "ERROR" else "WARNING"}, message)
         return {"CANCELLED"}
+    _finish_control_colors(operator, armature)
     if _is_direct_preroll_schema(schema):
         try:
             payload = json.loads(settings.analysis_json)
@@ -6846,6 +6962,7 @@ class CHARACTERDESIGNER_OT_limb_ik_remove(Operator):
             _set_status(settings, level, message)
             self.report({"ERROR" if level == "ERROR" else "WARNING"}, message)
             return {"CANCELLED"}
+        _finish_control_colors(self, armature, removed=True)
         settings.analysis_json = ""
         message = f"Removed {summary['bones']} controls, {summary['constraints']} constraints, and {summary['widgets']} widgets. Analyze again before rebuilding."
         _set_status(settings, "SUCCESS", message)
@@ -7096,6 +7213,7 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
                 armature,
                 rig_snapshot["control_pose"],
             )
+            _reapply_control_colors(armature, rig_snapshot["control_pose"])
             _removal_resources(context, armature, _validate_inventory(armature))
             _restore_master_state(context, armature, master_state)
             master_state = None
@@ -7138,6 +7256,7 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
             _set_status(settings, "ERROR", message)
             self.report({"ERROR"}, message)
             return {"CANCELLED"}
+        _finish_control_colors(self, armature)
         message = f"Rebuilt {len(rebuilt)} Limb IK sides from the current analyzed chains."
         _set_status(settings, "SUCCESS", message)
         self.report({"INFO"}, message)
@@ -7354,6 +7473,16 @@ def _set_auto_align_selected_target(context, armature, settings, enabled=None):
         raise LimbIKError(
             "Auto Align will not override an animated/driven Target rotation offset."
         )
+    if rig.get("foot_controls"):
+        # Reverse-foot pivots define the ground frame in either display mode.
+        # Auto Align still follows the current foot for its visual/input frame.
+        end_rotation.mute = desired_enabled
+        auto_offset_rotation.mute = not desired_enabled
+        target.bone[AUTO_ALIGN_KEY] = desired_enabled
+        _retarget_custom_shape_frame(target, end if desired_enabled else None)
+        armature.update_tag(refresh={"OBJECT"})
+        context.view_layer.update()
+        return target.name, desired_enabled, True
     world_to_world = (
         end_rotation.target_space == "WORLD"
         and end_rotation.owner_space == "WORLD"
@@ -8230,6 +8359,45 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                         op = row.operator("character_designer.limb_ik_fk_switch", text=choice, depress=mode == choice)
                         op.mode = choice
                     layout.label(text="Switch keeps the current pose", icon="CON_ROTLIKE")
+                    if selected_key[0] == "LEG":
+                        foot_box = layout.box()
+                        foot = rig.get("foot_controls")
+                        if foot:
+                            row = foot_box.row(align=True)
+                            roll_select = row.row(align=True)
+                            roll_select.enabled = mode == "IK"
+                            roll_select.operator("character_designer.foot_controls", text="Foot Roll", icon="CON_ROTLIKE").action = "SELECT_ROLL"
+                            row.operator("character_designer.foot_controls", text="Toe Bend", icon="BONE_DATA").action = "SELECT_TOE"
+                            foot_box.label(text="Roll: X / Bank: Y · Toe: rotate", icon="INFO")
+                            foot_box.prop(settings, "show_foot_visual_options", icon="TRIA_DOWN" if settings.show_foot_visual_options else "TRIA_RIGHT", emboss=False)
+                            if settings.show_foot_visual_options:
+                                from . import character_setup
+                                mapping = character_setup._mapping(character_setup.settings(context), active)
+                                if mapping is not None:
+                                    foot_box.prop(mapping, "footwear", text="Footwear")
+                                fit_error = None
+                                try:
+                                    shoe = character_setup.footwear_reference(context, active)
+                                except ValueError as exc:
+                                    shoe, fit_error = None, str(exc)
+                                foot_box.label(text=fit_error or "Reference: " + (shoe.name if shoe else "Foot bones"), icon="ERROR" if fit_error else "OUTLINER_OB_MESH" if shoe else "BONE_DATA")
+                                row = foot_box.row(align=True)
+                                fit_row = row.row(align=True)
+                                fit_row.enabled = fit_error is None
+                                fit_row.operator("character_designer.foot_controls", text="Fit Arrow", icon="FULLSCREEN_EXIT").action = "FIT_VISUAL"
+                                if foot_controls.has_roll_visual_backup(active, selected_key):
+                                    row.operator("character_designer.foot_controls", text="Restore", icon="LOOP_BACK").action = "RESTORE_VISUAL"
+                            row = foot_box.row()
+                            row.alert = True
+                            row.operator("character_designer.foot_controls", text="Remove Foot Controls", icon="TRASH").action = "REMOVE"
+                        else:
+                            toe_field = "left_foot_toe" if selected_key[1] == "L" else "right_foot_toe"
+                            toe_candidates = [bone for bone in active.data.bones[rig["chain"][2]].children if bone.use_deform and not bone.get(OWNER_KEY)]
+                            if not getattr(settings, toe_field) and len(toe_candidates) == 1:
+                                foot_box.label(text="Toe: " + toe_candidates[0].name, icon="BONE_DATA")
+                            else:
+                                foot_box.prop_search(settings, toe_field, active.data, "bones", text="Toe Bone")
+                            foot_box.operator("character_designer.foot_controls", text="Add Foot Controls", icon="CON_KINEMATIC").action = "BUILD"
             except (LimbIKError, ReferenceError, RuntimeError, ValueError):
                 pass
         layout.prop(settings, "build_method", text="Build Method")
@@ -8267,6 +8435,12 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         layout.operator("character_designer.simplify_bone_collections", icon="GROUP_BONE")
         if active is not None and active.type == "ARMATURE" and bone_groups.has_layout_backup(active):
             layout.operator("character_designer.restore_bone_collections", icon="LOOP_BACK")
+        colors = layout.row(align=True)
+        colors.enabled = active is not None and active.type == "ARMATURE"
+        colors.operator("character_designer.control_colors", text="Apply Colors", icon="COLOR").action = "APPLY"
+        restore_colors = colors.row(align=True)
+        restore_colors.enabled = bool(active is not None and active.type == "ARMATURE" and control_colors.has_backup(active))
+        restore_colors.operator("character_designer.control_colors", text="Restore Colors", icon="LOOP_BACK").action = "RESTORE"
 
 
 class CHARACTERDESIGNER_PT_limb_ik_target_rotation(Panel):
@@ -8437,6 +8611,7 @@ LIMB_IK_CLASSES = (
     CHARACTERDESIGNER_OT_limb_ik_remove,
     CHARACTERDESIGNER_OT_limb_ik_rebuild,
     CHARACTERDESIGNER_OT_limb_ik_fk_switch,
+    CHARACTERDESIGNER_OT_foot_controls,
     CHARACTERDESIGNER_OT_limb_ik_default_pole_direction,
     CHARACTERDESIGNER_OT_limb_ik_auto_align_target,
     CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation,

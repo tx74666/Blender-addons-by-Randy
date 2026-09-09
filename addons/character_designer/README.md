@@ -1,4 +1,4 @@
-# Character Designer 0.45.0
+# Character Designer 0.49.0
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
@@ -6,6 +6,79 @@ RR Helper and focuses on character-modeling tools.
 Workflow principle: generated bindings and setups should remain editable and
 provide an explicit remove/restore path. Preserve the artist's original state
 and unrelated data; support saving/reopening where restoration depends on a backup.
+
+Version 0.49.0 adds **Rig > Body > Eye Controls** to an existing CDesigner limb
+rig. One mask outline aims both eyes; each circle adjusts an individual eye.
+The shared Head mapping is reused, with explicit bone selection when automatic
+eye detection is ambiguous. The three controls follow Head and are sized from
+the character's eyes. Their wire geometry is generated analytically, inspired
+by Rain's shared-mask and individual-target arrangement.
+
+Use **Both Eyes**, **Left Eye**, or **Right Eye** to select a control, then move
+with **G**. Select all three eye controls and press **Alt+G** to restore the
+native rest gaze. Building preserves the current gaze, including eyes posed
+before installation; their original pivots, rest bones and weights are retained.
+**Remove Eye Controls** preserves the current gaze and restores native eye
+control. Existing eye animation/constraints and later external dependencies
+are protected. Remove this extension before rebuilding/removing the base Limb IK.
+The setup, muted/selected colors and restoration data survive saving/reopening.
+
+Version 0.48.0 adds soft pose-controller colors: mint/sky on the left,
+rose/peach on the right, lilac/iris on the spine, with mauve hair/skirt controls
+and a honey master control. Idle wires retain their hue; selected and active
+controls become progressively brighter. Blender handles this natively without
+a playback handler or changes to the application theme.
+
+New bone controls use these defaults. On an existing character, use **Rig >
+Body > Limb IK > Apply Colors**. **Restore Colors** restores the first saved
+pose colors and opts that armature out of automatic coloring. Applying again
+reenables the defaults without replacing the original backup. Per-bone color
+edits survive ordinary rig updates and rebuilds; color backups persist with
+the blend file and follow bone renaming. This only styles bone controls, not
+Spline IK's separate Empty handles. Poses, constraints, weights and shapes
+are unchanged by applying or restoring colors.
+
+Version 0.47.0 adds **Rig > Body > Spine Controls** on the existing spine under
+the shared Hips mapping. **Bend Spine** distributes an additive bend across the
+spine; the individual FK controls refine each section. Existing limb controls
+must be present. This uses the original deform bones and weights, with ordinary
+native Blender constraints. It does not convert the mesh to a B-Bone rig.
+**Remove Spine Controls** keeps the current body pose and restores native control;
+animated controls and external dependencies are protected. Remove this extension
+before rebuilding or removing its base Limb IK.
+
+The Foot Roll arrow now uses the solved foot as its display frame, so it follows
+raised and rotated feet. Open **Arrow Placement**, optionally choose **Footwear**
+with the eyedropper, then click **Fit Arrow**. The complete wire is placed behind
+the shoe heel; without a reference it fits the foot bones. A registered shoe bound
+to this main rig is used when unique. The explicit reference is stored per character.
+**Restore** returns the appearance saved before the first explicit fit, including
+after saving/reopening. Fitting changes only display transforms, preserving the
+rig's existing input channels, pivots, rest bones and weights. Animated display
+offsets are protected.
+
+Version 0.46.0 adds optional **Foot Controls** to existing Stable or Direct legs.
+In **Rig > Body > Limb IK**, choose Left Leg or Right Leg, then **Add Foot Controls**.
+The unique deform toe child is detected automatically; an explicit Toe Bone field
+handles ambiguous rigs. Existing toe animation or constraints must be resolved first.
+
+- **Foot Roll**: rotate local X to roll from heel through ball to toe-tip; rotate
+  local Y to bank. Positive roll initially lifts the heel while the toes stay planted.
+- **Toe Bend**: rotate at the ball to bend the toes independently of the ankle.
+  This control remains available in both IK and FK. Foot Roll is shown in IK.
+
+Both Rain-derived wire shapes use the existing Controls / Animation collections.
+The original toe is retained in Original. Native rest bones, mesh geometry and
+weights remain unchanged. Foot roll and toe poses participate in IK/FK matching,
+including keyed switches; the authored roll angle remains intact during matching.
+With this extension, the foot follows the reverse-foot solver's ground orientation;
+Auto Align still aligns the main target's display frame and remains remembered.
+
+**Remove Foot Controls** matches the current pose back to the original leg and toe,
+then removes only its generated setup. Keyed foot controls and external references
+are protected and must be handled before removal. Remove this optional extension
+before rebuilding or removing the base Limb IK. Shoe weight gradients are a separate
+weight-painting step; adding these controls does not repaint or replace weights.
 
 Version 0.45.0 automatically presents new limb controls through **Animation**:
 generated IK controls replace their source chains in the default view, while

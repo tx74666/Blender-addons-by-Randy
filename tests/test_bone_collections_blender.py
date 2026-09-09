@@ -4,11 +4,12 @@ import tempfile
 from pathlib import Path
 
 import bpy
+from mathutils import Vector
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "addons"))
 sys.path.insert(0, str(ROOT / "tests"))
-from character_designer import bone_collections as groups, limb_ik
+from character_designer import bone_collections as groups, foot_controls, limb_ik, torso_controls
 from test_limb_ik_blender import (analyze, cancelled_result, ensure_registered,
                                 ensure_unregistered, make_humanoid, reset_scene)
 
@@ -319,6 +320,206 @@ def test_animated_visibility():
     assert groups._frame_visibility not in bpy.app.handlers.frame_change_post
 
 
+def test_foot_controls_collections(method):
+    rig, settings, _original = fixture(method)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for side in ("L", "R"):
+        parent = rig.data.edit_bones[f"foot.{side}"]
+        toe = rig.data.edit_bones.new(f"toe.{side}")
+        toe.head = parent.tail
+        toe.tail = toe.head + Vector((0.0, -0.12, 0.0))
+        toe.parent = parent
+        toe.use_connect = True
+        toe.use_deform = True
+    bpy.ops.object.mode_set(mode="POSE")
+    _result, settings = analyze(rig)
+    settings.build_method = method
+    original = {bone.name for bone in rig.data.bones}
+    original_layout = groups.snapshot_layout(rig)["collections"]
+    assert bpy.ops.character_designer.limb_ik_build_all() == {"FINISHED"}
+    baseline = groups._load_backup(rig)["original"]["collections"]
+    assert baseline == original_layout
+    rig.data.collections["Original"].is_visible = True
+    rig.data.collections["Original"].is_solo = True
+    rig.data.collections["Animation"].is_visible = False
+    artist = rig.data.collections.new("Artist Foot Notes")
+    artist.assign(rig.data.bones["Hips"])
+    for side in ("L", "R"):
+        previous = groups.capture_managed_layout(rig)
+        foot_controls.build(bpy.context, rig, ("LEG", side), toe_name=f"toe.{side}")
+        groups.finish_rig_edit(rig, previous)
+    inventory = limb_ik._validate_inventory(rig)
+    feet = foot_controls.collection_members(rig)
+    assert tuple(rig.data.collections.keys()) == groups.BODY_NAMES + ("Artist Foot Notes",)
+    assert members(rig, "Controls") == {bone.name for bone in inventory["bones"]} | feet["generated"]
+    assert members(rig, "Original") == original
+    assert not feet["generated"] & members(rig, "Original")
+    assert feet["always"] <= members(rig, "Animation")
+    assert not feet["replaced"] & members(rig, "Animation")
+    assert not feet["hidden_base"] & members(rig, "Animation")
+    assert all(names <= members(rig, "Animation") for names in feet["ik"].values())
+    assert all(not rig.data.bones[name].hide for name in feet["replaced"])
+    assert rig.data.collections["Original"].is_solo
+    assert not rig.data.collections["Animation"].is_visible
+    assert groups._load_backup(rig)["original"]["collections"] == baseline
+
+    # Mode playback replaces the leg chain, but Toe Bend remains available in FK.
+    record = foot_controls.get_record(rig, ("LEG", "L"))
+    target = rig.pose.bones[record["target"]]
+    target["ik_fk"] = 1.0
+    target.keyframe_insert(data_path='["ik_fk"]', frame=1)
+    target["ik_fk"] = 0.0
+    target.keyframe_insert(data_path='["ik_fk"]', frame=10)
+    for curve in limb_ik._fcurves_for_action(rig.animation_data.action):
+        for point in curve.keyframe_points:
+            point.interpolation = "CONSTANT"
+    groups.register_handlers()
+    try:
+        bpy.context.scene.frame_set(1)
+        assert record["roll"] in members(rig, "Animation")
+        bpy.context.scene.frame_set(10)
+        assert record["roll"] not in members(rig, "Animation")
+        assert record["toe_control"] in members(rig, "Animation")
+        assert record["toe"] not in members(rig, "Animation")
+        assert set(inventory["rigs"][("LEG", "L")]["chain"]) <= members(rig, "Animation")
+        bpy.context.scene.frame_set(1)
+    finally:
+        groups.unregister_handlers()
+    action = rig.animation_data.action
+    rig.animation_data.action = None
+    if action.users == 0:
+        bpy.data.actions.remove(action)
+    target["ik_fk"] = 1.0
+
+    # Removing one extension restores only that native toe's animation access.
+    previous = groups.capture_managed_layout(rig)
+    foot_controls.remove(bpy.context, rig, ("LEG", "L"))
+    groups.finish_rig_edit(rig, previous)
+    feet = foot_controls.collection_members(rig)
+    assert "toe.L" in members(rig, "Animation")
+    assert "toe.R" not in members(rig, "Animation")
+    assert feet["always"] <= members(rig, "Animation")
+    assert groups._load_backup(rig)["original"]["collections"] == baseline
+    assert rig.data.collections["Original"].is_solo
+
+    with tempfile.TemporaryDirectory(prefix="cd-foot-collections-") as temp:
+        name = rig.name
+        path = str(Path(temp) / "feet.blend")
+        bpy.ops.wm.save_as_mainfile(filepath=path)
+        bpy.ops.wm.open_mainfile(filepath=path)
+        rig = bpy.data.objects[name]
+        feet = foot_controls.collection_members(rig)
+        assert bpy.ops.character_designer.restore_bone_collections() == {"FINISHED"}
+        restored = {item["name"]: item for item in groups.snapshot_layout(rig)["collections"]}
+        for item in original_layout:
+            assert restored[item["name"]] == item
+        controls = rig.data.collections_all[limb_ik.CONTROL_COLLECTION_NAME]
+        assert feet["generated"] <= set(controls.bones.keys())
+        assert controls.is_visible
+        assert members(rig, "Artist Foot Notes") == {"Hips"}
+        # Extension removal after an explicit layout restore keeps that artist layout.
+        previous = groups.capture_managed_layout(rig)
+        foot_controls.remove(bpy.context, rig, ("LEG", "R"))
+        groups.finish_rig_edit(rig, previous)
+        assert "Animation" not in rig.data.collections_all
+        assert "Torso" in rig.data.collections_all
+        assert not foot_controls.collection_members(rig)["generated"]
+
+
+def test_torso_controls_collections(method):
+    rig, settings, _original = fixture(method)
+    bpy.ops.object.mode_set(mode="EDIT")
+    hips = rig.data.edit_bones["Hips"]
+    lower = rig.data.edit_bones.new("Spine")
+    lower.head, lower.tail = hips.tail, (0.0, 0.0, 1.28)
+    lower.parent, lower.use_connect = hips, True
+    upper = rig.data.edit_bones.new("Spine1")
+    upper.head, upper.tail = lower.tail, (0.0, 0.0, 1.40)
+    upper.parent, upper.use_connect = lower, True
+    chest = rig.data.edit_bones["Chest"]
+    chest.head, chest.parent, chest.use_connect = upper.tail, upper, True
+    foot = rig.data.edit_bones["foot.L"]
+    toe = rig.data.edit_bones.new("toe.L")
+    toe.head, toe.tail = foot.tail, foot.tail + Vector((0.0, -0.12, 0.0))
+    toe.parent, toe.use_connect = foot, True
+    bpy.ops.object.mode_set(mode="POSE")
+    _result, settings = analyze(rig)
+    settings.build_method = method
+    original = {bone.name for bone in rig.data.bones}
+    original_layout = groups.snapshot_layout(rig)["collections"]
+    assert bpy.ops.character_designer.limb_ik_build_all() == {"FINISHED"}
+    foot_controls.build(bpy.context, rig, ("LEG", "L"), toe_name="toe.L")
+    baseline = groups._load_backup(rig)["original"]["collections"]
+    assert baseline == original_layout
+    rig.data.collections["Original"].is_visible = True
+    rig.data.collections["Original"].is_solo = True
+    rig.data.collections["Animation"].is_visible = False
+    artist = rig.data.collections.new("Artist Torso Notes")
+    artist.assign(rig.data.bones["Hips"])
+    chain = ("Spine", "Spine1", "Chest")
+    digest = limb_ik._armature_digest(rig)
+    torso_controls.build(bpy.context, rig, chain=chain, hips_name="Hips")
+    assert limb_ik._armature_digest(rig) == digest
+    inventory = limb_ik._validate_inventory(rig)
+    feet = foot_controls.collection_members(rig)
+    torso = torso_controls.collection_members(rig)
+    assert torso["replaced"] == set(chain)
+    assert len(torso["always"]) == 4
+    assert tuple(rig.data.collections.keys()) == groups.BODY_NAMES + ("Artist Torso Notes",)
+    assert members(rig, "Controls") == {bone.name for bone in inventory["bones"]} | feet["generated"] | torso["generated"]
+    assert members(rig, "Original") == original
+    assert not torso["generated"] & members(rig, "Original")
+    assert torso["always"] | feet["always"] <= members(rig, "Animation")
+    assert not (torso["replaced"] | feet["replaced"]) & members(rig, "Animation")
+    assert "Hips" in members(rig, "Animation")
+    assert all(not rig.data.bones[name].hide for name in torso["replaced"])
+    assert rig.data.collections["Original"].is_solo
+    assert not rig.data.collections["Animation"].is_visible
+    assert groups._load_backup(rig)["original"]["collections"] == baseline
+    before_repeat = groups.snapshot_layout(rig)
+    torso_controls.build(bpy.context, rig, chain=chain, hips_name="Hips")
+    assert groups.snapshot_layout(rig) == before_repeat
+
+    # A leg mode change must not re-expose spine sources or hide their controls.
+    target = rig.pose.bones[inventory["rigs"][("LEG", "L")]["target"].name]
+    target["ik_fk"] = 0.0
+    groups._FRAME_CACHE.clear()
+    groups._frame_visibility(bpy.context.scene)
+    assert torso["always"] | feet["always"] <= members(rig, "Animation")
+    assert not torso["replaced"] & members(rig, "Animation")
+    target["ik_fk"] = 1.0
+    groups._frame_visibility(bpy.context.scene)
+
+    # Removal restores native spine access without affecting the foot extension.
+    torso_controls.remove(bpy.context, rig)
+    assert set(chain) <= members(rig, "Animation")
+    assert not torso_controls.collection_members(rig)["generated"]
+    assert feet["always"] <= members(rig, "Animation")
+    assert "toe.L" not in members(rig, "Animation")
+    assert rig.data.collections["Original"].is_solo
+    assert groups._load_backup(rig)["original"]["collections"] == baseline
+    torso_controls.build(bpy.context, rig, chain=chain, hips_name="Hips")
+    with tempfile.TemporaryDirectory(prefix="cd-torso-collections-") as temp:
+        name = rig.name
+        path = str(Path(temp) / "torso.blend")
+        bpy.ops.wm.save_as_mainfile(filepath=path)
+        bpy.ops.wm.open_mainfile(filepath=path)
+        rig = bpy.data.objects[name]
+        torso = torso_controls.collection_members(rig)
+        assert bpy.ops.character_designer.restore_bone_collections() == {"FINISHED"}
+        restored = {item["name"]: item for item in groups.snapshot_layout(rig)["collections"]}
+        for item in original_layout:
+            assert restored[item["name"]] == item
+        controls = rig.data.collections_all[limb_ik.CONTROL_COLLECTION_NAME]
+        assert torso["generated"] | feet["generated"] <= set(controls.bones.keys())
+        assert controls.is_visible
+        assert members(rig, "Artist Torso Notes") == {"Hips"}
+        torso_controls.remove(bpy.context, rig)
+        assert "Animation" not in rig.data.collections_all
+        assert "Torso" in rig.data.collections_all
+        assert feet["generated"] <= set(rig.data.collections_all[limb_ik.CONTROL_COLLECTION_NAME].bones.keys())
+
+
 def main():
     ensure_registered()
     for cls in groups.BONE_COLLECTION_CLASSES:
@@ -335,6 +536,11 @@ def main():
         test_restore_after_remove_and_conflicts()
         test_failed_first_build()
         test_animated_visibility()
+        for method in ("DIRECT_PREROLL", "ROLL_DECOUPLED"):
+            test_foot_controls_collections(method)
+            print(f"PASS foot collections {method}")
+            test_torso_controls_collections(method)
+            print(f"PASS torso collections {method}")
     finally:
         reset_scene()
         for cls in reversed(groups.BONE_COLLECTION_CLASSES):

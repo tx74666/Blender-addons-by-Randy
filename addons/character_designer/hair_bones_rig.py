@@ -796,6 +796,10 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         _select_chains(context, armature, tuple(name for chain in selected_chains for name in chain["bones"]))
         context.view_layer.update()
         collection.name = COLLECTION_NAME
+        from . import control_colors
+        for plan in new:
+            for name in plan['names']:
+                control_colors.style(armature.pose.bones[name])
         return {"armature": armature, "chains": tuple(selected_chains), "created": len(new),
                 "reused": len(plans) - len(new), "parent_bone": parent_bone,
                 "rig_created": created_rig is not None, "modifier_created": created_modifier is not None}

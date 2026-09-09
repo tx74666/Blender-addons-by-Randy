@@ -17,6 +17,7 @@ from character_designer import (
     animation,
     character_setup,
     delta_symmetry,
+    eye_ui,
     forearm_twist,
     hair_bones,
     limb_ik,
@@ -66,6 +67,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         ),
         "rig": spline_ik_setup.CHARACTERDESIGNER_PT_spline_ik_setup.poll(bpy.context),
         "limb_ik": limb_ik.CHARACTERDESIGNER_PT_limb_ik.poll(bpy.context),
+        "eye_controls": eye_ui.CHARACTERDESIGNER_PT_eye_controls.poll(bpy.context),
         "forearm_twist": forearm_twist.CHARACTERDESIGNER_PT_forearm_twist.poll(bpy.context),
         "limb_preroll": limb_ik.CHARACTERDESIGNER_PT_limb_ik_direct_preroll.poll(
             bpy.context
@@ -85,6 +87,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "modeling": modeling,
         "rig": rig,
         "limb_ik": rig,
+        "eye_controls": rig,
         "forearm_twist": rig,
         "limb_preroll": rig and limb_settings.build_method == "DIRECT_PREROLL",
         "reference": reference,
@@ -269,6 +272,8 @@ def assert_compact_limb_ik_panel():
         "character_designer.limb_ik_rebuild",
         "character_designer.limb_ik_remove",
         "character_designer.simplify_bone_collections",
+        "character_designer.control_colors",
+        "character_designer.control_colors",
     )
     old_armature = settings.armature
     settings.armature = None

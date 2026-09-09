@@ -14,6 +14,12 @@ $selectedTests = @(
     'test_limb_ik_auto_align_default_blender.py'
     'test_limb_ik_fk_blender.py'
     'test_limb_ik_fk_ui_blender.py'
+    'test_foot_controls_blender.py'
+    'test_foot_controls_ui_blender.py'
+    'test_torso_controls_blender.py'
+    'test_torso_controls_ui_blender.py'
+    'test_eye_controls_blender.py'
+    'test_eye_controls_ui_blender.py'
     'test_bone_collections_blender.py'
     'test_accessory_bone_collections_blender.py'
     'test_animation_import_blender.py'
@@ -38,6 +44,8 @@ foreach ($testName in $selectedTests) {
 ```
 
 每项在独立的临时 Blender 场景中运行；不要在工作中的实时场景里执行测试脚本。
+Eye Controls 测试覆盖双眼与单眼视线、Head 跟随、非平行原眼骨、带姿势接入、清零、权重与原骨保留、移除、保存重开、失败回滚及动画／外部依赖保护。公开按钮测试同时验证配色、骨骼集合和基础 Rig 移除保护。
+Foot Controls 测试覆盖左右脚、Stable／Direct、脚跟／前脚掌／脚尖支点、脚趾独立运动、任意姿势添加与移除、失败回滚和依赖保护；IK／FK、集合与公开按钮测试同时覆盖新增控制器。
 Animation 测试验证独立 BVH 预览、身体动作转移、坐标/缩放及原 Action 的保存与恢复。
 Limb IK 测试验证新建默认 Auto Align 开启，以及保存重开和 Rebuild 保留开启或手动关闭状态。
 集合测试覆盖原生/控制骨的逐肢体切换、保存重开、Build/Rebuild/Remove、失败恢复，

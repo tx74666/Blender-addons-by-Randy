@@ -16,6 +16,7 @@ from mathutils import Matrix, Vector
 from . import hair_bones_rig as rig
 from . import hair_bones_topology as topology
 from . import hair_bones_variants as variants
+from . import control_colors
 from .selected_bone_weights import _capture_vertex_groups, _restore_vertex_groups
 
 BINDING_KEY = "character_designer_hair_binding_v1"
@@ -409,6 +410,7 @@ def _owned_bone_snapshot(armature, names):
                        "bone_fields": {field: value(bone, field) for field in bone_fields},
                        "pose_fields": {field: value(pose, field) for field in pose_fields},
                        "pose_properties": dict(pose.items()), "pose": pose.matrix_basis.copy(),
+                       "pose_color_state": control_colors.capture_bone(pose),
                        "collections": tuple(bone.collections), "color": bone.color.palette,
                        "color_custom": (tuple(bone.color.custom.normal), tuple(bone.color.custom.select), tuple(bone.color.custom.active))})
     return result
@@ -441,6 +443,8 @@ def _restore_owned_bones(context, armature, states):
         pose.matrix_basis = state["pose"]
         bone.color.palette = state["color"]
         bone.color.custom.normal, bone.color.custom.select, bone.color.custom.active = state["color_custom"]
+        if "pose_color_state" in state:
+            control_colors.restore_bone_state(pose, state["pose_color_state"])
 
 
 def remove_hair_binding(context, source):
@@ -518,6 +522,7 @@ def remove_hair_binding(context, source):
         if key in source:
             del source[key]
     context.view_layer.update()
+    control_colors.cleanup(armature)
     return {"removed_bones": len(names)}
 
 

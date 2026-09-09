@@ -14,9 +14,16 @@ from character_designer import limb_ik, limb_ik_fk
 import test_limb_ik_blender as base
 
 
-def build(method="ROLL_DECOUPLED", selected="LEFT_LEG"):
+def build(method="ROLL_DECOUPLED", selected="LEFT_LEG", *, toes=False):
     base.reset_scene()
     armature = base.make_humanoid(roll_offset=0.37)
+    if toes:
+        bpy.ops.object.mode_set(mode="EDIT")
+        for side in ("L", "R"):
+            foot = armature.data.edit_bones[f"foot.{side}"]
+            base.add_bone(armature.data.edit_bones, f"toe.{side}", foot.tail.copy(),
+                          foot.tail + Vector((0.0, -0.13, 0.0)), foot)
+        bpy.ops.object.mode_set(mode="POSE")
     result, settings = base.analyze(armature)
     assert result == {"FINISHED"}, settings.last_message
     settings.build_method = method
@@ -35,7 +42,7 @@ def update(armature):
 
 def snapshot(armature, rig):
     update(armature)
-    return limb_ik_fk._matrices(armature, rig["chain"])
+    return limb_ik_fk._matrices(armature, limb_ik_fk.pose_names(rig))
 
 
 def test_roundtrip_auto():
@@ -223,12 +230,88 @@ def test_keyed_switch_preserves_moving_prior_curve():
         assert abs(mode_curve().evaluate(frame) - before[frame]) < 1.0e-6
 
 
+def test_reverse_foot_roll_and_toe_roundtrip():
+    from character_designer import foot_controls
+    for method in ("ROLL_DECOUPLED", "DIRECT_PREROLL"):
+        for selected in ("LEFT_LEG", "RIGHT_LEG"):
+            for auto in (True, False):
+                for angle in (-0.2, 0.35, 1.1):
+                    armature, key, rig = build(method, selected, toes=True)
+                    if not auto:
+                        assert bpy.ops.character_designer.limb_ik_auto_align_target(action="DISABLE") == {"FINISHED"}
+                    foot_controls.build(bpy.context, armature, key, toe_name=f"toe.{key[1]}")
+                    rig = limb_ik._validate_inventory(armature)["rigs"][key]
+                    record = rig["foot_controls"]
+                    roll = armature.pose.bones[record["roll"]]
+                    toe = armature.pose.bones[record["toe_control"]]
+                    roll.rotation_mode = toe.rotation_mode = "XYZ"
+                    roll.rotation_euler.x = angle
+                    roll.rotation_euler.y = 0.07
+                    toe.rotation_euler = (0.18, -0.03, 0.02)
+                    armature.pose.bones[rig["target"].name].location += Vector((0.01, -0.01, 0.02))
+                    before = snapshot(armature, rig)
+                    roll_basis = roll.matrix_basis.copy()
+                    limb_ik_fk.switch_limb(bpy.context, armature, key, "FK", keyframe=False)
+                    limb_ik_fk._verify(armature, before)
+                    limb_ik_fk.switch_limb(bpy.context, armature, key, "IK", keyframe=False)
+                    limb_ik_fk._verify(armature, before)
+                    assert max(abs(roll.matrix_basis[row][col] - roll_basis[row][col])
+                               for row in range(4) for col in range(4)) < 1.0e-7
+                    assert limb_ik._validate_inventory(armature)["rigs"][key]["auto_align"] == auto
+                    if angle == 1.1:
+                        limb_ik_fk.switch_limb(bpy.context, armature, key, "FK", keyframe=False)
+                        upper = armature.pose.bones[rig["chain"][0]]
+                        upper.rotation_mode = "XYZ"
+                        upper.rotation_euler.rotate(Euler((0.05, 0.06, 0.03)))
+                        toe.rotation_euler.rotate(Euler((0.07, 0.0, 0.0)))
+                        authored = snapshot(armature, rig)
+                        limb_ik_fk.switch_limb(bpy.context, armature, key, "IK", keyframe=False)
+                        limb_ik_fk._verify(armature, authored)
+                        assert max(abs(roll.matrix_basis[row][col] - roll_basis[row][col])
+                                   for row in range(4) for col in range(4)) < 1.0e-7
+
+
+def test_reverse_foot_keyed_spaces_and_remove_matching():
+    from character_designer import foot_controls
+    for method in ("ROLL_DECOUPLED", "DIRECT_PREROLL"):
+        armature, key, rig = build(method, "LEFT_LEG", toes=True)
+        foot_controls.build(bpy.context, armature, key, toe_name="toe.L")
+        rig = limb_ik._validate_inventory(armature)["rigs"][key]
+        record = rig["foot_controls"]
+        armature.pose.bones[record["roll"]].rotation_euler.x = 0.3
+        armature.pose.bones[record["toe_control"]].rotation_euler.x = 0.15
+        bpy.context.scene.frame_set(10)
+        before = snapshot(armature, rig)
+        limb_ik_fk.switch_limb(bpy.context, armature, key, "FK", keyframe=True)
+        bpy.context.scene.frame_set(20)
+        limb_ik_fk.switch_limb(bpy.context, armature, key, "IK", keyframe=True)
+        for frame in (9, 10, 15, 20):
+            bpy.context.scene.frame_set(frame)
+            update(armature)
+            limb_ik_fk._verify(armature, before)
+        toe_path = armature.pose.bones[record["toe_control"]].path_from_id("rotation_euler")
+        assert any(curve.data_path == toe_path for curve in limb_ik._fcurves_for_action(armature.animation_data.action))
+        # Removal rejects owned animation by design; test the same nonzero
+        # foot/toe pose on a fresh, unanimated extension below.
+        armature, key, rig = build(method, "LEFT_LEG", toes=True)
+        foot_controls.build(bpy.context, armature, key, toe_name="toe.L")
+        rig = limb_ik._validate_inventory(armature)["rigs"][key]
+        record = rig["foot_controls"]
+        armature.pose.bones[record["roll"]].rotation_euler.x = 0.3
+        armature.pose.bones[record["toe_control"]].rotation_euler.x = 0.15
+        before = snapshot(armature, rig)
+        foot_controls.remove(bpy.context, armature, key)
+        limb_ik_fk._verify(armature, before)
+        assert not limb_ik._validate_inventory(armature)["rigs"][key].get("foot_controls")
+
+
 def main():
     base.ensure_registered()
     tests = (test_roundtrip_auto, test_manual_with_parent_and_object_transforms, test_authored_fk_pose,
              test_failed_match_restores_everything, test_animation_keeps_previous_ik_roll,
              test_keyed_switch_preserves_moving_prior_curve,
-             test_native_keyframes_reopen_and_driver_ownership)
+             test_native_keyframes_reopen_and_driver_ownership,
+             test_reverse_foot_roll_and_toe_roundtrip, test_reverse_foot_keyed_spaces_and_remove_matching)
     for test in tests:
         test()
         print("PASS", test.__name__, flush=True)

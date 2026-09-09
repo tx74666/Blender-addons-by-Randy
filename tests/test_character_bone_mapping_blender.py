@@ -166,6 +166,24 @@ def test_hair_consumes_mapping_and_retains_existing_attachment():
     print('PASS hair uses shared Head; existing attachment stays authoritative until removal')
 
 
+def test_footwear_reference_per_character():
+    state = clean()
+    first, second = make_armature('First Character'), make_armature('Second Character')
+    shoe = bpy.data.objects.new('Footwear', bpy.data.meshes.new('Footwear Mesh'))
+    bpy.context.scene.collection.objects.link(shoe)
+    modifier = shoe.modifiers.new('Character Bind', 'ARMATURE')
+    modifier.object = first
+    setup.remember_asset(bpy.context, shoe, 'SHOES')
+    assert setup.footwear_reference(bpy.context, first) == shoe
+    assert setup.footwear_reference(bpy.context, second) is None
+    second_entry = setup._mapping(state, second, create=True)
+    second_entry.footwear = shoe
+    assert setup.footwear_reference(bpy.context, second) == shoe
+    second_entry.footwear = None
+    assert setup.footwear_reference(bpy.context, second) is None
+    print('PASS footwear reference is scoped to its character')
+
+
 if __name__ == '__main__':
     cd.register()
     try:
@@ -173,6 +191,7 @@ if __name__ == '__main__':
         test_per_rig_mapping_survives_save_reload()
         test_selected_bone_capture_in_pose_and_edit()
         test_hair_consumes_mapping_and_retains_existing_attachment()
+        test_footwear_reference_per_character()
         print('CHARACTER_BONE_MAPPING_OK')
     finally:
         cd.unregister()

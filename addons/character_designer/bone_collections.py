@@ -240,8 +240,11 @@ def _assign_exact(collection, data, names):
         collection.assign(data.bones[name])
 
 
-def _animation_names(armature, inventory, native):
-    from . import limb_ik
+def _animation_names(armature, inventory, native, foot=None, torso=None, eyes=None):
+    from . import eye_controls, foot_controls, limb_ik, torso_controls
+    foot = foot if foot is not None else foot_controls.collection_members(armature)
+    torso = torso if torso is not None else torso_controls.collection_members(armature)
+    eyes = eyes if eyes is not None else eye_controls.collection_members(armature)
     ik_rigs = [rig for rig in inventory["rigs"].values()
                if float(armature.pose.bones[rig["target"].name].get("ik_fk", 1.0)) > 0.0]
     replaced = {name for rig in ik_rigs for name in rig["chain"]}
@@ -253,12 +256,18 @@ def _animation_names(armature, inventory, native):
     guides = {b.name for b in inventory["bones"]
               if b.get(limb_ik.ROLE_KEY) == "POLE_LINE" and not b.hide
               and b.get(limb_ik.RIG_ID_KEY) in ik_ids}
-    return (native - replaced) | animator | guides
+    foot_ik = {name for target, names in foot["ik"].items()
+               if float(armature.pose.bones[target].get("ik_fk", 1.0)) > 0.0
+               for name in names}
+    # Toe Bend remains useful in either mode; the reverse-foot roll is an IK input.
+    # A legacy Stable heel stays in Controls but yields its animation display to Roll.
+    return (((native - replaced - foot["replaced"] - torso["replaced"] - eyes["replaced"]) | animator | guides
+             | foot["always"] | foot_ik | torso["always"] | eyes["always"]) - foot.get("hidden_base", set()))
 
 
 def simplify_body_collections(armature, *, compact=True, visibility=None, original_layout=None):
     """Use current tagged IK chains for per-limb native fallback, never name guesses."""
-    from . import hair_bones_rig as hair, limb_ik
+    from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls
 
     if (armature.type != "ARMATURE" or armature.mode == "EDIT"
             or armature.library or armature.data.library or not armature.is_editable
@@ -266,7 +275,10 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
     data = armature.data
     inventory = limb_ik._validate_inventory(armature)
-    generated = {b.name for b in inventory["bones"]}
+    foot = foot_controls.collection_members(armature)
+    torso = torso_controls.collection_members(armature)
+    eyes = eye_controls.collection_members(armature)
+    generated = {b.name for b in inventory["bones"]} | foot["generated"] | torso["generated"] | eyes["generated"]
     owned = [c for c in data.collections_all
              if c.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
              and c.get(limb_ik.ROLE_KEY) == "CONTROL_COLLECTION"]
@@ -291,7 +303,7 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
             raise ValueError("Bone Collection 'Hair' belongs to another group.")
     native = {b.name for b in data.bones} - generated - hair_names
     desired = {"Original": native, "Controls": generated,
-               "Animation": _animation_names(armature, inventory, native)}
+               "Animation": _animation_names(armature, inventory, native, foot, torso, eyes)}
     before = snapshot_layout(armature)
     try:
         controls = owned[0] if owned else None
@@ -365,7 +377,7 @@ def finish_rig_edit(armature, previous, *, failed=False):
 @bpy.app.handlers.persistent
 def _frame_visibility(scene, _depsgraph=None):
     """Follow keyed modes without changing the artist's visible/solo switches."""
-    from . import hair_bones_rig as hair, limb_ik
+    from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls
     for armature in scene.objects:
         if (armature.type != "ARMATURE" or armature.mode == "EDIT"
                 or armature.library or armature.data.library or armature.data.users != 1
@@ -395,10 +407,13 @@ def _frame_visibility(scene, _depsgraph=None):
                 # A user-repurposed collection is theirs; a frame change never overwrites it.
                 continue
             inventory = limb_ik._validate_inventory(armature)
-            generated = {bone.name for bone in inventory["bones"]}
+            foot = foot_controls.collection_members(armature)
+            torso = torso_controls.collection_members(armature)
+            eyes = eye_controls.collection_members(armature)
+            generated = {bone.name for bone in inventory["bones"]} | foot["generated"] | torso["generated"] | eyes["generated"]
             native = {bone.name for bone in armature.data.bones
                       if bone.name not in generated and bone.get(hair.OWNER_KEY) != hair.OWNER_VALUE}
-            desired = _animation_names(armature, inventory, native)
+            desired = _animation_names(armature, inventory, native, foot, torso, eyes)
             if desired != set(membership):
                 _assign_exact(collection, armature.data, desired)
                 # Update only our Animation record, not artist edits to other collections.

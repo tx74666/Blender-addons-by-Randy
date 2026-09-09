@@ -67,6 +67,25 @@ def _mapping(state, armature, *, create=False):
     return entry
 
 
+def footwear_reference(context, armature=None):
+    """One optional visual-fit reference per character; legacy assets are scoped by rig."""
+    armature = preferred_rig(context, armature)
+    state = settings(context)
+    entry = _mapping(state, armature)
+    if entry is not None and entry.footwear is not None:
+        shoe = entry.footwear
+        if shoe.name not in context.scene.objects or shoe.type != 'MESH':
+            raise ValueError('The saved footwear reference is not a mesh in this scene; choose it again.')
+        return shoe
+    if state is None or armature is None:
+        return None
+    candidates = {item.object for item in state.assets if item.role == 'SHOES'
+                  and item.object is not None and item.object.type == 'MESH'
+                  and item.object.name in context.scene.objects
+                  and any(mod.type == 'ARMATURE' and mod.object == armature for mod in item.object.modifiers)}
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def _bone_name(name):
     return name.rsplit(':', 1)[-1].casefold().removeprefix('def-')
 
@@ -225,6 +244,8 @@ class CharacterDesignerBoneMapping(PropertyGroup):
     rig: PointerProperty(type=bpy.types.Object, poll=_rig_only)
     hips_bone: StringProperty()
     head_bone: StringProperty()
+    footwear: PointerProperty(type=bpy.types.Object, name='Footwear', poll=_mesh_only,
+                             description='Optional shoe mesh used to place foot controls outside the heel; saved for this Main Rig')
 
 
 class CharacterDesignerSetup(PropertyGroup):
