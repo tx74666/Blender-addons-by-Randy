@@ -22,6 +22,8 @@ OWNER_KEY = "character_designer_skirt_owner"
 RIG_KEY = "character_designer_skirt_armature"
 SOURCE_KEY = "character_designer_skirt_source"
 PARENT_KEY = "character_designer_skirt_original_parent"
+ATTACHMENT_BACKUP_KEY = "character_designer_skirt_attachment_before_update_v1"
+ATTACHMENT_PARENT_KEY = "character_designer_skirt_attachment_previous_parent"
 BONE_COLLECTION_NAME = "Skirt"
 
 
@@ -185,7 +187,7 @@ def _anchor_bone(armature, requested=""):
     matching = [bone.name for bone in armature.data.bones if bone.name.casefold() in names]
     if len(matching) == 1:
         return matching[0]
-    raise SkirtRigError("Choose the character's Hips or pelvis bone in Skirt Setup.")
+    raise SkirtRigError("Choose one Attachment Bone, usually the character's central Hips bone.")
 
 
 def _find_character(context, obj, armature, parent_bone):
@@ -208,15 +210,212 @@ def _find_character(context, obj, armature, parent_bone):
         if len(candidates) == 1:
             return candidates[0]
         if len(candidates) > 1:
-            raise SkirtRigError("Several character rigs have a pelvis. Choose the skirt's character rig.")
+            raise SkirtRigError("Several character rigs have a Hips attachment candidate. Choose the Main Rig.")
         if parent_bone:
-            raise SkirtRigError("Choose a character rig before specifying its pelvis bone.")
+            raise SkirtRigError("Choose the Main Rig before specifying its Attachment Bone.")
         return None, ""
     if armature.type != "ARMATURE" or armature.get(OWNER_KEY):
         raise SkirtRigError("Choose the character armature, not a generated skirt rig.")
     if context.view_layer.objects.get(armature.name) is not armature:
         raise SkirtRigError("The selected character rig must be linked into the current view layer.")
     return armature, _anchor_bone(armature, parent_bone)
+
+
+def has_attachment_backup(source):
+    return source is not None and ATTACHMENT_BACKUP_KEY in source
+
+
+def attachment_status(source):
+    """Report the actual live parent; legacy record names are only metadata."""
+    record = read_record(source)
+    if not record:
+        return None
+    rig = source[RIG_KEY]
+    parent = rig.parent
+    character = parent if parent and parent.type == "ARMATURE" else None
+    attached = bool(character and rig.parent_type == "BONE" and rig.parent_bone in character.data.bones)
+    return {"rig": rig, "character": character, "parent": parent,
+            "parent_type": rig.parent_type, "parent_bone": rig.parent_bone,
+            "attached": attached, "has_backup": has_attachment_backup(source),
+            "physics": bool(record.get("physics"))}
+
+
+def _attachment_state(rig):
+    return {"parent": rig.parent.name if rig.parent else "", "parent_type": rig.parent_type,
+            "parent_bone": rig.parent_bone,
+            "matrix_parent_inverse": _matrix_values(rig.matrix_parent_inverse)}
+
+
+def _valid_matrix(matrix):
+    return (all(math.isfinite(value) for row in matrix for value in row)
+            and abs(matrix.determinant()) > 1.0e-12)
+
+
+def _attachment_preflight(context, source, record, parent, parent_type, parent_bone):
+    rig = source[RIG_KEY]
+    if (source.library or source.override_library or rig.library or rig.override_library
+            or rig.data.library or rig.data.users != 1
+            or rig.get(SOURCE_KEY) is not source or rig.data.get(OWNER_KEY) != record["owner"]):
+        raise SkirtRigError("The skirt attachment must have a local, unshared generated rig and valid ownership.")
+    if source.mode == "EDIT" or rig.mode == "EDIT":
+        raise SkirtRigError("Leave Edit Mode before changing the skirt attachment.")
+    if any(context.view_layer.objects.get(obj.name) is not obj for obj in (source, rig)):
+        raise SkirtRigError("Include the skirt and its rig in the current view layer before changing attachment.")
+    if rig.constraints:
+        raise SkirtRigError("The skirt rig has object constraints. Resolve them before changing its attachment.")
+    if not _valid_matrix(rig.matrix_world) or not _valid_matrix(rig.matrix_basis):
+        raise SkirtRigError("The skirt rig has an invalid or zero-scale transform. Restore a nonzero scale first.")
+    if parent is None:
+        return
+    if (parent.library or parent.override_library or (parent.type == "ARMATURE"
+            and (parent.data.library or parent.data.users != 1))):
+        raise SkirtRigError("Choose a local Main Rig with unshared armature data for the attachment.")
+    if context.view_layer.objects.get(parent.name) is not parent:
+        raise SkirtRigError("The attachment target must be in the current view layer.")
+    if parent_type not in {"OBJECT", "BONE"}:
+        raise SkirtRigError("Only object and bone attachments can be restored.")
+    if parent_type == "BONE" and (parent.type != "ARMATURE" or parent_bone not in parent.data.bones):
+        raise SkirtRigError(f"The attachment target has no bone named '{parent_bone}'. Choose a valid Attachment Bone.")
+    if parent.mode == "EDIT":
+        raise SkirtRigError("Leave the Main Rig's Edit Mode before changing attachment.")
+    if parent_type == "BONE" and not _valid_matrix(parent.pose.bones[parent_bone].matrix):
+        raise SkirtRigError("The Attachment Bone has a zero-scale or invalid pose.")
+    owned = {candidate for candidate in bpy.data.objects if candidate.get(OWNER_KEY) == record["owner"]}
+    current, visited = parent, set()
+    while current:
+        if current in owned or current is source or current in visited:
+            raise SkirtRigError("This attachment would create a parenting cycle. Choose an independent Main Rig.")
+        visited.add(current)
+        constraints = list(current.constraints)
+        if current.type == "ARMATURE":
+            constraints.extend(constraint for bone in current.pose.bones for constraint in bone.constraints)
+        if any(getattr(constraint, "target", None) in owned for constraint in constraints):
+            raise SkirtRigError("The target rig depends on this skirt's controls. Resolve that dependency before attaching.")
+        if current.animation_data:
+            for driver in current.animation_data.drivers:
+                if any(target.id in owned for variable in driver.driver.variables for target in variable.targets):
+                    raise SkirtRigError("The target rig has a driver depending on this skirt. Resolve it before attaching.")
+        current = current.parent
+    if not _valid_matrix(parent.matrix_world):
+        raise SkirtRigError("The attachment target has an invalid or zero-scale transform.")
+
+
+def _set_attachment(rig, parent, state):
+    rig.parent = parent
+    rig.parent_type = state["parent_type"] if parent else "OBJECT"
+    rig.parent_bone = state["parent_bone"] if parent else ""
+    rig.matrix_parent_inverse = Matrix(state["matrix_parent_inverse"])
+
+
+def _write_attachment_record(source, record):
+    rig = source[RIG_KEY]
+    record["character"] = rig.parent.name if rig.parent and rig.parent.type == "ARMATURE" else ""
+    record["parent_bone"] = rig.parent_bone if rig.parent_type == "BONE" else ""
+    write_record(source, record)
+
+
+def _require_no_physics(record):
+    if record.get("physics"):
+        raise SkirtRigError("This skirt has Physics + Colliders linked to its current attachment. "
+                            "Keep this setup; use a separate skirt setup without physics to change attachment. "
+                            "Clearing the cache alone does not retarget colliders.")
+
+
+def update_attachment(context, source, armature, parent_bone=""):
+    """Explicitly reconnect without changing any pose/object animation channels.
+
+    Only the rig's parent and parent inverse change. The first successful update
+    retains a blend-persistent original attachment until Restore is used.
+    """
+    record = read_record(source)
+    if not record:
+        raise SkirtRigError("Create the skirt setup before updating its attachment.")
+    if armature is None or armature.type != "ARMATURE" or armature.get(OWNER_KEY):
+        raise SkirtRigError("Choose the Main Rig and one Attachment Bone, usually Hips.")
+    bone = _anchor_bone(armature, parent_bone)
+    rig = source[RIG_KEY]
+    context.view_layer.update()
+    _attachment_preflight(context, source, record, armature, "BONE", bone)
+    if rig.parent is armature and rig.parent_type == "BONE" and rig.parent_bone == bone:
+        return record
+    _require_no_physics(record)
+    previous, previous_parent = _attachment_state(rig), rig.parent
+    old_record = source[RECORD_KEY]
+    old_backup = source.get(ATTACHMENT_BACKUP_KEY)
+    old_backup_parent = source.get(ATTACHMENT_PARENT_KEY)
+    world, basis = rig.matrix_world.copy(), rig.matrix_basis.copy()
+    try:
+        rig.parent, rig.parent_type, rig.parent_bone = armature, "BONE", bone
+        rig.matrix_parent_inverse = Matrix.Identity(4)
+        context.view_layer.update()
+        # Ask Blender for the effective parent frame, including bone-tail and
+        # relative-parent conventions. No transform channels are decomposed.
+        parent_frame = rig.matrix_world @ basis.inverted()
+        if not _valid_matrix(parent_frame):
+            raise SkirtRigError("The Attachment Bone has a zero-scale or invalid pose.")
+        rig.matrix_parent_inverse = parent_frame.inverted() @ world @ basis.inverted()
+        context.view_layer.update()
+        if max(abs(rig.matrix_world[i][j] - world[i][j]) for i in range(4) for j in range(4)) > 1.0e-5:
+            raise SkirtRigError("The skirt could not keep its current placement; attachment was restored.")
+        if old_backup is None:
+            source[ATTACHMENT_BACKUP_KEY] = json.dumps(previous, separators=(",", ":"))
+            if previous_parent:
+                source[ATTACHMENT_PARENT_KEY] = previous_parent
+        _write_attachment_record(source, record)
+        return record
+    except Exception as error:
+        _set_attachment(rig, previous_parent, previous)
+        source[RECORD_KEY] = old_record
+        for key, value in ((ATTACHMENT_BACKUP_KEY, old_backup), (ATTACHMENT_PARENT_KEY, old_backup_parent)):
+            if value is None:
+                if key in source:
+                    del source[key]
+            else:
+                source[key] = value
+        context.view_layer.update()
+        if isinstance(error, SkirtRigError):
+            raise
+        raise SkirtRigError(f"Attachment update was rolled back: {error}") from error
+
+
+def restore_attachment(context, source):
+    """Restore the first saved parent and inverse, retaining authored channels.
+
+    This restores the original animation space. If that original parent moved
+    meanwhile, the skirt follows its current pose rather than keeping an offset.
+    """
+    record = read_record(source)
+    if not record or not has_attachment_backup(source):
+        raise SkirtRigError("This skirt has no previous attachment to restore.")
+    try:
+        original = json.loads(source[ATTACHMENT_BACKUP_KEY])
+        parent = source.get(ATTACHMENT_PARENT_KEY)
+        if original["parent"] and parent is None:
+            raise SkirtRigError("The previous attachment object is missing. Restore that object before restoring attachment.")
+        if not _valid_matrix(Matrix(original["matrix_parent_inverse"])):
+            raise ValueError("invalid parent inverse")
+        _attachment_preflight(context, source, record, parent, original["parent_type"], original["parent_bone"])
+    except (KeyError, TypeError, ValueError) as error:
+        if isinstance(error, SkirtRigError):
+            raise
+        raise SkirtRigError("The saved skirt attachment is unreadable. Undo its modification before restoring.") from error
+    _require_no_physics(record)
+    rig = source[RIG_KEY]
+    previous, previous_parent = _attachment_state(rig), rig.parent
+    old_record = source[RECORD_KEY]
+    try:
+        _set_attachment(rig, parent, original)
+        context.view_layer.update()
+        _write_attachment_record(source, record)
+    except Exception as error:
+        _set_attachment(rig, previous_parent, previous)
+        source[RECORD_KEY] = old_record
+        context.view_layer.update()
+        raise SkirtRigError(f"Attachment restore was rolled back: {error}") from error
+    for key in (ATTACHMENT_BACKUP_KEY, ATTACHMENT_PARENT_KEY):
+        if key in source:
+            del source[key]
+    return record
 
 
 def _owned(obj, source, owner):
@@ -318,7 +517,7 @@ def _purge_owned(source, owner):
 
 
 def _clear_source_properties(source):
-    for key in (RECORD_KEY, RIG_KEY, OWNER_KEY, PARENT_KEY):
+    for key in (RECORD_KEY, RIG_KEY, OWNER_KEY, PARENT_KEY, ATTACHMENT_BACKUP_KEY, ATTACHMENT_PARENT_KEY):
         if key in source:
             del source[key]
 

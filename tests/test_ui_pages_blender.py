@@ -18,6 +18,7 @@ from character_designer import (
     character_setup,
     delta_symmetry,
     forearm_twist,
+    hair_bones,
     limb_ik,
     reference_views,
     selected_bone_weights,
@@ -32,16 +33,23 @@ from character_designer.ui_constants import (
     UI_PAGE_MISC,
     UI_PAGE_RIG,
     UI_PAGE_WEIGHT,
+    active_rig_section,
+    active_ui_page,
+    rig_page_active,
 )
 
 
 def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference=False,
-                     clothing=False, motion=False):
+                     clothing=False, hair_rig=False, motion=False, section="BODY"):
     settings = bpy.context.window_manager.character_designer
     limb_settings = bpy.context.window_manager.character_designer_limb_ik
+    settings.rig_section = section
     result = bpy.ops.character_designer.set_ui_page(page=page)
-    if "FINISHED" not in result or settings.ui_page != page:
+    expected_page = UI_PAGE_RIG if page == UI_PAGE_CLOTHING else page
+    if "FINISHED" not in result or settings.ui_page != expected_page:
         raise AssertionError(f"Could not switch to CDesigner page {page}")
+    if page == UI_PAGE_CLOTHING and settings.rig_section != "SKIRT":
+        raise AssertionError("The legacy Clothing route did not select Rig > Skirt")
 
     actual = {
         "quick_bind": character_setup.CHARACTERDESIGNER_PT_quick_bind.poll(bpy.context),
@@ -66,10 +74,11 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
             bpy.context
         ),
         "clothing": skirt.CHARACTERDESIGNER_PT_skirt_setup.poll(bpy.context),
+        "hair_rig": hair_bones.CHARACTERDESIGNER_PT_hair_bones.poll(bpy.context),
     }
     expected = {
         "quick_bind": weight,
-        "character_setup": page in {UI_PAGE_WEIGHT, UI_PAGE_HAIR, UI_PAGE_CLOTHING, UI_PAGE_RIG},
+        "character_setup": expected_page in {UI_PAGE_WEIGHT, UI_PAGE_RIG},
         "animation": motion,
         "weight_tools": weight,
         "weight_symmetry": weight,
@@ -80,9 +89,44 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "limb_preroll": rig and limb_settings.build_method == "DIRECT_PREROLL",
         "reference": reference,
         "clothing": clothing,
+        "hair_rig": hair_rig,
     }
     if actual != expected:
-        raise AssertionError(f"Page {page} routed panels incorrectly: {actual}")
+        raise AssertionError(f"Page {page}/{section} routed panels incorrectly: {actual}")
+
+
+def assert_rig_subroutes():
+    settings = bpy.context.window_manager.character_designer
+    section_property = character_designer.CharacterDesignerState.bl_rna.properties["rig_section"]
+    if section_property.default != "BODY" or not section_property.is_skip_save:
+        raise AssertionError("Rig section must default to Body and remain session-only")
+    identifiers = tuple(item.identifier for item in section_property.enum_items)
+    if identifiers != ("BODY", "HAIR", "SKIRT"):
+        raise AssertionError(f"Unexpected Rig sections: {identifiers}")
+
+    dirty_before_toggle = bpy.data.is_dirty
+    for section in identifiers:
+        bpy.ops.character_designer.set_ui_page(page=UI_PAGE_WEIGHT)
+        result = bpy.ops.character_designer.set_rig_section(section=section)
+        if result != {"FINISHED"} or settings.ui_page != UI_PAGE_RIG or settings.rig_section != section:
+            raise AssertionError(f"Could not enter Rig > {section}")
+    for page in (UI_PAGE_HAIR, UI_PAGE_WEIGHT, UI_PAGE_RIG, UI_PAGE_MISC):
+        for section in identifiers:
+            settings.rig_section = section
+            bpy.ops.character_designer.set_ui_page(page=page)
+            if active_ui_page(bpy.context) != page or active_rig_section(bpy.context) != section:
+                raise AssertionError("Switching pages lost the selected Rig section")
+            for candidate in identifiers:
+                if rig_page_active(bpy.context, candidate) != (page == UI_PAGE_RIG and section == candidate):
+                    raise AssertionError(f"Rig section leaked into {page}/{section}: {candidate}")
+    if bpy.data.is_dirty != dirty_before_toggle:
+        raise AssertionError("Changing Rig sections or pages dirtied the .blend")
+
+    assert_only_page(UI_PAGE_RIG, section="BODY", rig=True)
+    assert_only_page(UI_PAGE_RIG, section="HAIR", hair_rig=True)
+    assert_only_page(UI_PAGE_RIG, section="SKIRT", clothing=True)
+    assert_only_page(UI_PAGE_CLOTHING, clothing=True)
+    settings.rig_section = "BODY"
 
 
 def assert_weight_panel_forwards_full_auto(expected):
@@ -372,6 +416,8 @@ def main():
         settings = bpy.context.window_manager.character_designer
         if settings.ui_page != UI_PAGE_HAIR:
             raise AssertionError("Hair must be the default CDesigner page")
+        if settings.rig_section != "BODY":
+            raise AssertionError("Body must be the default Rig section")
 
         ui_page_property = character_designer.CharacterDesignerState.bl_rna.properties[
             "ui_page"
@@ -440,7 +486,8 @@ def main():
         assert_only_page(UI_PAGE_CLOTHING, clothing=True)
         assert_only_page(UI_PAGE_ANIMATION, motion=True)
         assert_only_page(UI_PAGE_MISC, modeling=True, reference=True)
-        print("PASS CDesigner UI Pages 3 tests")
+        assert_rig_subroutes()
+        print("PASS CDesigner UI Pages 4 tests")
     finally:
         character_designer.unregister()
 

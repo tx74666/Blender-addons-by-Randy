@@ -12,6 +12,8 @@ $selectedTests = @(
     'test_ui_pages_blender.py'
     'test_limb_ik_blender.py'
     'test_limb_ik_auto_align_default_blender.py'
+    'test_limb_ik_fk_blender.py'
+    'test_limb_ik_fk_ui_blender.py'
     'test_bone_collections_blender.py'
     'test_accessory_bone_collections_blender.py'
     'test_animation_import_blender.py'
@@ -70,3 +72,13 @@ after saving/reopening, later unrelated edits, and refusal after incompatible to
 `test_character_setup_accessories_blender.py` verifies saved references across
 rename, reload and add-on registration, multiple Hair meshes, explicit overrides,
 and Hair/Skirt binding through the saved main rig.
+
+`test_character_bone_mapping_blender.py` verifies per-armature Hips/Head mappings,
+unique detection, ambiguous/invalid choices, selected-bone capture, generated-rig
+exclusion, saved reload, and Hair use of the shared Head.
+`test_skirt_attachment_blender.py` verifies live attachment status, keeping the
+current placement and animation channels during updates, persistent restoration,
+failure rollback, parent-cycle validation, and physics guards.
+`test_skirt_ui_blender.py` also exercises shared Hips and explicit Update/Restore.
+`test_ui_pages_blender.py` verifies Rig Body/Hair/Skirt routing and the legacy
+Clothing shortcut without dirtying the blend file.

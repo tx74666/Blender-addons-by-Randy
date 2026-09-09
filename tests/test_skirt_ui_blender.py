@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "addons"))
 
 import character_designer
-from character_designer import skirt, skirt_rig
+from character_designer import character_setup, skirt, skirt_rig
 
 
 def activate(obj):
@@ -109,7 +109,7 @@ def test_baked_preview(source, record):
 def test_ui_workflow():
     settings = bpy.context.window_manager.character_designer_skirt
     assert settings.chain_count == 8 and settings.segment_count == 4
-    assert settings.physics and settings.use_scene_range
+    assert not settings.physics and settings.use_scene_range
     settings.physics = False
     source = make_skirt("Skirt UI Source")
     activate(source)
@@ -218,6 +218,88 @@ def test_physics_bake_operators():
     assert bpy.context.active_object == source and not source.hide_get()
 
 
+def test_shared_attachment_operator_workflow():
+    def make_character(name, bone_name, x):
+        data = bpy.data.armatures.new(name + " Bones")
+        armature = bpy.data.objects.new(name, data)
+        bpy.context.collection.objects.link(armature)
+        armature.location.x = x
+        activate(armature)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bone = data.edit_bones.new(bone_name)
+        bone.head, bone.tail = (0, 0, 1), (0, 0, 1.5)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        return armature
+
+    settings = skirt._settings(bpy.context)
+    profile = character_setup.settings(bpy.context)
+    settings.physics = False
+    settings.armature = None
+    settings.parent_bone = ""
+    settings.show_attachment = False
+    original = make_character("Shared Attachment Character", "Artist Waist", 0)
+    replacement = make_character("Replacement Attachment Character", "Travel Base", 2)
+    assert not character_setup.bone_candidates(original, "HIPS")
+    assert not character_setup.bone_candidates(replacement, "HIPS")
+    profile.rig = original
+    profile.hips_bone = "Artist Waist"
+    assert character_setup.bone_mapping_status(bpy.context, "HIPS")["status"] == "CONFIRMED"
+    source = make_skirt("Shared Attachment Skirt")
+    activate(source)
+    assert bpy.ops.character_designer.create_skirt_setup() == {"FINISHED"}
+    generated = source[skirt_rig.RIG_KEY]
+    status = skirt_rig.attachment_status(source)
+    assert status["attached"] and status["character"] is original
+    assert status["parent_bone"] == "Artist Waist" and not status["physics"]
+    world_before = generated.matrix_world.copy()
+    objects_before = set(bpy.data.objects)
+
+    # Changing shared data describes the next target; existing artist work stays attached.
+    profile.rig = replacement
+    profile.hips_bone = "Travel Base"
+    bpy.context.view_layer.update()
+    assert skirt._desired_attachment(bpy.context, source) == (replacement, "Travel Base")
+    assert bpy.ops.character_designer.create_skirt_setup() == {"FINISHED"}
+    status = skirt_rig.attachment_status(source)
+    assert status["character"] is original and status["parent_bone"] == "Artist Waist"
+    assert set(bpy.data.objects) == objects_before and source[skirt_rig.RIG_KEY] is generated
+
+    labels = []
+    layout = SimpleNamespace(
+        label=lambda **kwargs: labels.append(kwargs.get("text")),
+        prop=lambda *_args, **_kwargs: None,
+        operator=lambda *_args, **_kwargs: SimpleNamespace(),
+        separator=lambda: None,
+    )
+    layout.row = lambda **_kwargs: layout
+    skirt.CHARACTERDESIGNER_PT_skirt_setup.draw(SimpleNamespace(layout=layout), bpy.context)
+    assert f"Following: {original.name} / Artist Waist" in labels
+    assert f"New target: {replacement.name} / Travel Base" in labels
+    assert "Connected" not in labels, "The UI confused the desired target with the actual attachment"
+
+    assert bpy.ops.character_designer.skirt_update_attachment() == {"FINISHED"}
+    status = skirt_rig.attachment_status(source)
+    assert status["attached"] and status["character"] is replacement
+    assert status["parent_bone"] == "Travel Base" and status["has_backup"]
+    assert bpy.ops.character_designer.skirt_restore_attachment.poll()
+    assert max(abs(generated.matrix_world[i][j] - world_before[i][j])
+               for i in range(4) for j in range(4)) < 1.0e-5
+    assert set(bpy.data.objects) == objects_before
+
+    assert bpy.ops.character_designer.skirt_restore_attachment() == {"FINISHED"}
+    status = skirt_rig.attachment_status(source)
+    assert status["attached"] and status["character"] is original
+    assert status["parent_bone"] == "Artist Waist" and not status["has_backup"]
+    assert not bpy.ops.character_designer.skirt_restore_attachment.poll()
+    assert skirt._desired_attachment(bpy.context, source) == (replacement, "Travel Base")
+    assert source[skirt_rig.RIG_KEY] is generated and set(bpy.data.objects) == objects_before
+    assert max(abs(generated.matrix_world[i][j] - world_before[i][j])
+               for i in range(4) for j in range(4)) < 1.0e-5
+    assert bpy.ops.character_designer.remove_skirt_setup() == {"FINISHED"}
+    profile.rig = None
+    print("PASS shared custom Hips / explicit update / actual UI state / restore")
+
+
 def main():
     character_designer.register()
     own_registration = not hasattr(bpy.types.WindowManager, "character_designer_skirt")
@@ -230,7 +312,8 @@ def main():
     try:
         test_ui_workflow()
         test_physics_bake_operators()
-        print("SKIRT_UI_PASS=create/repeat, selected source, wire controls, baked preview visibility, rollback, frame range, cancellation, removal", flush=True)
+        test_shared_attachment_operator_workflow()
+        print("SKIRT_UI_PASS=create/repeat, selected source, wire controls, baked preview visibility, rollback, frame range, cancellation, removal, shared attachment update/restore", flush=True)
     finally:
         skirt.stop_skirt_runtime()
         if own_registration:

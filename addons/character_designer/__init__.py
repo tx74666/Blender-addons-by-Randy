@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 43, 2),
+    "version": (0, 45, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -61,7 +61,11 @@ from .spline_ik_setup import (
     CharacterDesignerSplineIKState,
 )
 from .selected_bone_weights import SELECTED_BONE_WEIGHT_CLASSES
-from .bone_collections import BONE_COLLECTION_CLASSES
+from .bone_collections import (
+    BONE_COLLECTION_CLASSES,
+    register_handlers as register_bone_collection_handlers,
+    unregister_handlers as unregister_bone_collection_handlers,
+)
 from .character_setup import CHARACTER_SETUP_CLASSES, CharacterDesignerSetup
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
@@ -82,6 +86,8 @@ from .ui_constants import (
     UI_PAGE_RIG,
     UI_PAGE_WEIGHT,
     UI_PAGES,
+    UI_RIG_SECTION_ITEMS,
+    active_rig_section,
     active_ui_page,
 )
 from .weight_symmetry import WEIGHT_SYMMETRY_CLASSES
@@ -678,6 +684,10 @@ def _centerline_blend_factor_updated(settings, context):
 
 
 class CharacterDesignerState(PropertyGroup):
+    rig_section: EnumProperty(
+        name="Rig Section", items=UI_RIG_SECTION_ITEMS, default="BODY",
+        options={"SKIP_SAVE"},
+    )
     ui_page: EnumProperty(
         name="CDesigner Page",
         description="Choose which CDesigner tool family is visible",
@@ -8147,8 +8157,26 @@ class CHARACTERDESIGNER_OT_set_ui_page(Operator):
         if self.page not in UI_PAGES:
             self.report({"WARNING"}, "Unknown CDesigner page.")
             return {"CANCELLED"}
-        settings.ui_page = self.page
+        if self.page == UI_PAGE_CLOTHING:
+            settings.ui_page = UI_PAGE_RIG
+            settings.rig_section = 'SKIRT'
+        else:
+            settings.ui_page = self.page
         return {"FINISHED"}
+
+
+class CHARACTERDESIGNER_OT_set_rig_section(Operator):
+    bl_idname = "character_designer.set_rig_section"
+    bl_label = "Show Rig Section"
+    bl_description = "Show body, hair, or skirt rig tools"
+    bl_options = {"INTERNAL"}
+    section: EnumProperty(items=UI_RIG_SECTION_ITEMS, default='BODY')
+
+    def execute(self, context):
+        settings = _settings(context)
+        settings.ui_page = UI_PAGE_RIG
+        settings.rig_section = self.section
+        return {'FINISHED'}
 
 
 def _draw_page_tab(row, active_page, page, text, icon):
@@ -8169,7 +8197,6 @@ def _draw_page_tabs(layout, active_page):
     _draw_page_tab(first_row, active_page, UI_PAGE_RIG, "Rig", "CONSTRAINT_BONE")
 
     second_row = tab_box.row(align=True)
-    _draw_page_tab(second_row, active_page, UI_PAGE_CLOTHING, "Clothing", "MOD_CLOTH")
     _draw_page_tab(second_row, active_page, UI_PAGE_ANIMATION, "Animation", "ACTION")
     _draw_page_tab(
         second_row,
@@ -8214,6 +8241,12 @@ class CHARACTERDESIGNER_PT_main(Panel):
 
         page = active_ui_page(context)
         _draw_page_tabs(layout, page)
+        if page == UI_PAGE_RIG:
+            row = layout.row(align=True)
+            section = active_rig_section(context)
+            for value, label, _description in UI_RIG_SECTION_ITEMS:
+                row.operator('character_designer.set_rig_section', text=label,
+                             depress=section == value).section = value
         if page != UI_PAGE_HAIR:
             _draw_refresh_action(layout)
             return
@@ -8338,6 +8371,7 @@ CLASSES = (
     CHARACTERDESIGNER_OT_select_output,
     CHARACTERDESIGNER_OT_refresh_addon,
     CHARACTERDESIGNER_OT_set_ui_page,
+    CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
     *CHARACTER_SETUP_CLASSES,
     *HAIR_BONES_CLASSES,
@@ -8467,6 +8501,7 @@ def register():
         register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
+        register_bone_collection_handlers()
         register_forearm_twist_runtime()
         _register_workspace_filter_guard()
         _register_source_watch()
@@ -8531,6 +8566,7 @@ def register():
         register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
+        register_bone_collection_handlers()
         register_forearm_twist_runtime()
         _register_workspace_filter_guard()
         _register_source_watch()
@@ -8539,6 +8575,7 @@ def register():
         unregister_animation_runtime()
         unregister_forearm_twist_runtime()
         unregister_limb_ik_viewport_handler()
+        unregister_bone_collection_handlers()
         unregister_reference_view_handlers()
         _unregister_workspace_filter_guard()
         _unregister_source_watch()
@@ -8562,6 +8599,7 @@ def unregister():
     _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
     stop_delta_symmetry_runtime(clear_capture=True)
     unregister_limb_ik_viewport_handler()
+    unregister_bone_collection_handlers()
     unregister_reference_view_handlers()
     _unregister_workspace_filter_guard()
     _unregister_source_watch()

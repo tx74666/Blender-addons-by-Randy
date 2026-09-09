@@ -5,12 +5,14 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.43.1 | [character_designer](addons/character_designer) | [character_designer-0.43.1.zip](dist/character_designer-0.43.1.zip) |
+| Character Designer | 0.45.0 | [character_designer](addons/character_designer) | [character_designer-0.45.0.zip](dist/character_designer-0.45.0.zip) |
 
 两个插件独立安装，也可以同时启用。RR Helper 的内部模块名保留为
 `random_realm_builder_exporter`，便于更新原来的安装。
 
-Character Designer 0.43.2 精简绑定界面：**Character Setup** 只显示主骨架和身体权重源，不列配件清单。选中网格，在 **Weight → Quick Bind** 选择 **Surface Transfer**（最近面插值，默认）或 **Automatic Weights**，点击 **Bind Weights**。头发和裙子使用各自页面的专用绑定。**Restore Previous Binding** 保留首次绑定前的状态，多次重算和保存重开后仍可恢复；原先未绑定则恢复为未绑定。已有引用和恢复记录继续有效。
+Character Designer 0.45.0 新建控制器默认启用 **Animation** 骨骼集合，隐藏已被控制器替代的原骨骼，其他部位继续用原生骨。**Rig → Body → Limb IK** 为每条手臂、腿提供 **IK / FK** 姿势匹配切换，支持 Stable 和 Direct。开启 Blender Auto Key 时记录切换，拖动时间轴同步显示当前控制方式。**Restore Bone Collections** 可恢复首次整理前的集合布局。重建或移除前需先匹配回 IK；已有动画仍受依赖保护，不会自动删除。
+
+Character Designer 0.44.0 将骨架工具集中到 **Rig → Body / Hair / Skirt**。**Character Setup** 在 Weight、Rig 共用主骨架、身体权重源以及按主骨架保存的 Hips／Head 对应，支持使用选中骨骼快捷指定。裙子字段改为 **Attachment Bone**，显示实际跟随目标；**Update Attachment / Restore Attachment** 显式更新或恢复连接，保留权重、控制器和动画通道。已有物理碰撞器的裙子暂不允许更换挂接目标，避免旧碰撞绑定失效。Hair 顶层保留建模工具，Weight 保留通用快速绑定与恢复。
 
 Character Designer 0.42.3 新增 **Rig → Limb IK → Simplify Bone Collections**，
 把当前骨架整理为 **Original / Controls / Animation**。Animation 有控制骨时使用

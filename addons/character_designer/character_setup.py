@@ -5,7 +5,7 @@ from bpy.props import CollectionProperty, EnumProperty, IntProperty, PointerProp
 from bpy.types import Operator, Panel, PropertyGroup
 
 from .ui_constants import (
-    SIDEBAR_CATEGORY, UI_PAGE_CLOTHING, UI_PAGE_HAIR, UI_PAGE_RIG,
+    SIDEBAR_CATEGORY, UI_PAGE_RIG,
     UI_PAGE_WEIGHT, active_ui_page,
 )
 
@@ -40,6 +40,130 @@ def settings(context):
 def preferred_rig(context, override=None):
     state = settings(context)
     return override if override is not None else state.rig if state else None
+
+
+BONE_ROLES = (
+    ('HIPS', 'Hips', 'The central bone that moves the whole pelvis'),
+    ('HEAD', 'Head', 'The head bone used to attach hair'),
+)
+
+
+def _bone_role(role):
+    role = role.upper()
+    if role == 'PELVIS':
+        role = 'HIPS'
+    if role not in {'HIPS', 'HEAD'}:
+        raise ValueError('Unknown character bone role')
+    return role
+
+
+def _mapping(state, armature, *, create=False):
+    if state is None or armature is None:
+        return None
+    entry = next((item for item in state.bone_mappings if item.rig == armature), None)
+    if entry is None and create:
+        entry = state.bone_mappings.add()
+        entry.rig = armature
+    return entry
+
+
+def _bone_name(name):
+    return name.rsplit(':', 1)[-1].casefold().removeprefix('def-')
+
+
+def bone_candidates(armature, role):
+    """Read-only central-bone detection; side names and Root are never guesses."""
+    role = _bone_role(role)
+    if armature is None or armature.type != 'ARMATURE':
+        return ()
+    aliases = {'hips', 'hip', 'pelvis'} if role == 'HIPS' else {'head'}
+    names = tuple(bone.name for bone in armature.data.bones if _bone_name(bone.name) in aliases)
+    if names or role != 'HEAD':
+        return names
+    # Some generated rigs call Head spine.006. Preserve the existing anatomical
+    # detection only when each eye is unique and both share the same parent.
+    left = [bone for bone in armature.data.bones
+            if _bone_name(bone.name) in {'eye.l', 'eye_l', 'l_eye', 'left_eye'}]
+    right = [bone for bone in armature.data.bones
+             if _bone_name(bone.name) in {'eye.r', 'eye_r', 'r_eye', 'right_eye'}]
+    if (len(left) == len(right) == 1 and left[0].parent is not None
+            and left[0].parent == right[0].parent):
+        return (left[0].parent.name,)
+    return ()
+
+
+def bone_mapping_status(context, role, armature=None, override=''):
+    """Describe the exact resolved target without changing saved user choices."""
+    role = _bone_role(role)
+    armature = preferred_rig(context, armature)
+    label = 'Hips' if role == 'HIPS' else 'Head'
+    result = {'armature': armature, 'role': role, 'name': '', 'requested': '',
+              'status': 'NO_RIG', 'candidates': (), 'message': 'Set Main Rig in Character Setup.'}
+    if armature is None or armature.type != 'ARMATURE':
+        return result
+    entry = _mapping(settings(context), armature)
+    requested = override or (getattr(entry, role.lower() + '_bone') if entry else '')
+    if requested:
+        result['requested'] = requested
+        if requested not in armature.data.bones:
+            result.update(status='INVALID', message=f'{label} bone "{requested}" is missing from {armature.name}; choose it again.')
+        else:
+            result.update(name=requested, status='OVERRIDE' if override else 'CONFIRMED', message='')
+        return result
+    candidates = bone_candidates(armature, role)
+    result['candidates'] = candidates
+    if len(candidates) == 1:
+        result.update(name=candidates[0], status='AUTO', message='')
+    elif candidates:
+        result.update(status='AMBIGUOUS', message=f'Multiple {label} candidates; choose one in Character Setup.')
+    else:
+        result.update(status='MISSING', message=f'Choose {label} in Character Setup.')
+    return result
+
+
+def resolve_bone(context, role, armature=None, override=''):
+    status = bone_mapping_status(context, role, armature, override)
+    if not status['name']:
+        raise ValueError(status['message'])
+    return status['name']
+
+
+def _get_mapping_field(state, role):
+    armature = state.rig
+    entry = _mapping(state, armature)
+    confirmed = getattr(entry, role.lower() + '_bone') if entry else ''
+    if confirmed:
+        return confirmed
+    names = bone_candidates(armature, role)
+    return names[0] if len(names) == 1 else ''
+
+
+def _set_mapping_field(state, role, value):
+    if state.rig is None:
+        return
+    entry = _mapping(state, state.rig, create=True)
+    setattr(entry, role.lower() + '_bone', value)
+
+
+def selected_character_bone(context):
+    armature = context.active_object
+    if armature is None or armature.type != 'ARMATURE':
+        return None
+    # Only object ownership excludes a generated accessory rig. A main rig may
+    # contain generated hair bones or the artist's own non-deform controls.
+    if any(armature.get(key) for key in (
+            'character_designer_skirt_owner', 'character_designer_hair_bones_owner',
+            'character_designer_hair_variant_version')):
+        return None
+    if context.mode == 'EDIT_ARMATURE':
+        bone = armature.data.edit_bones.active
+    elif context.mode == 'POSE':
+        bone = context.active_pose_bone
+    else:
+        return None
+    selected = (getattr(bone, 'select', getattr(getattr(bone, 'bone', None), 'select', False))
+                if bone is not None else False)
+    return (armature, bone.name) if selected else None
 
 
 def _selected_mesh(context):
@@ -97,16 +221,57 @@ class CharacterDesignerAsset(PropertyGroup):
     role: EnumProperty(name='Role', items=ASSET_ROLES)
 
 
+class CharacterDesignerBoneMapping(PropertyGroup):
+    rig: PointerProperty(type=bpy.types.Object, poll=_rig_only)
+    hips_bone: StringProperty()
+    head_bone: StringProperty()
+
+
 class CharacterDesignerSetup(PropertyGroup):
     rig: PointerProperty(type=bpy.types.Object, name='Main Rig', poll=_rig_only,
                          description='Saved character armature used by weight, hair and skirt tools')
     body: PointerProperty(type=bpy.types.Object, name='Body Weight Source', poll=_mesh_only,
                           description='Already weighted body mesh from which clothes receive deform weights')
+    bone_mappings: CollectionProperty(type=CharacterDesignerBoneMapping)
+    hips_bone: StringProperty(
+        name='Hips', description='Central pelvis attachment shared by rig tools; clear to detect automatically',
+        get=lambda self: _get_mapping_field(self, 'HIPS'),
+        set=lambda self, value: _set_mapping_field(self, 'HIPS', value),
+    )
+    head_bone: StringProperty(
+        name='Head', description='Hair attachment shared by rig tools; clear to detect automatically',
+        get=lambda self: _get_mapping_field(self, 'HEAD'),
+        set=lambda self, value: _set_mapping_field(self, 'HEAD', value),
+    )
     assets: CollectionProperty(type=CharacterDesignerAsset)
     active_asset: IntProperty(default=-1)
     add_role: EnumProperty(name='Role', items=ASSET_ROLES)
     binding_method: EnumProperty(name='Method', items=BINDING_METHODS, default='TRANSFER')
     last_message: StringProperty(options={'SKIP_SAVE'})
+
+
+class CHARACTERDESIGNER_OT_capture_character_bone(Operator):
+    bl_idname = 'character_designer.capture_character_bone'
+    bl_label = 'Use Selected Bone'
+    bl_description = 'Use the active selected bone as this character role and remember its armature as Main Rig'
+    bl_options = {'REGISTER', 'UNDO'}
+    role: EnumProperty(items=BONE_ROLES, default='HIPS')
+
+    @classmethod
+    def poll(cls, context):
+        return selected_character_bone(context) is not None and settings(context) is not None
+
+    def execute(self, context):
+        selected = selected_character_bone(context)
+        if selected is None:
+            self.report({'ERROR'}, 'Select a bone in Pose Mode or Armature Edit Mode.')
+            return {'CANCELLED'}
+        armature, name = selected
+        state = settings(context)
+        state.rig = armature
+        setattr(state, self.role.lower() + '_bone', name)
+        self.report({'INFO'}, f'{self.role.title()}: {armature.name} / {name}')
+        return {'FINISHED'}
 
 
 class CHARACTERDESIGNER_OT_register_assets(Operator):
@@ -205,14 +370,26 @@ class CHARACTERDESIGNER_PT_character_setup(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) in {UI_PAGE_WEIGHT, UI_PAGE_HAIR, UI_PAGE_CLOTHING, UI_PAGE_RIG}
+        return active_ui_page(context) in {UI_PAGE_WEIGHT, UI_PAGE_RIG}
 
     def draw(self, context):
         layout = self.layout
         state = settings(context)
         layout.prop(state, 'rig')
-        if active_ui_page(context) == UI_PAGE_WEIGHT:
-            layout.prop(state, 'body')
+        layout.prop(state, 'body')
+        for role, label, _description in BONE_ROLES:
+            row = layout.row(align=True)
+            field = role.lower() + '_bone'
+            if state.rig is not None:
+                row.prop_search(state, field, state.rig.data, 'bones', text=label)
+            else:
+                field_row = row.row()
+                field_row.enabled = False
+                field_row.prop(state, field, text=label)
+            row.operator('character_designer.capture_character_bone', text='', icon='EYEDROPPER').role = role
+            status = bone_mapping_status(context, role)
+            if status['status'] in {'INVALID', 'AMBIGUOUS', 'MISSING'}:
+                layout.label(text=status['message'], icon='ERROR' if status['status'] == 'INVALID' else 'INFO')
 
 
 class CHARACTERDESIGNER_OT_restore_quick_binding(Operator):
@@ -283,7 +460,8 @@ class CHARACTERDESIGNER_PT_quick_bind(Panel):
 
 
 CHARACTER_SETUP_CLASSES = (
-    CharacterDesignerAsset, CharacterDesignerSetup,
+    CharacterDesignerAsset, CharacterDesignerBoneMapping, CharacterDesignerSetup,
+    CHARACTERDESIGNER_OT_capture_character_bone,
     CHARACTERDESIGNER_OT_register_assets, CHARACTERDESIGNER_OT_character_asset,
     CHARACTERDESIGNER_OT_quick_bind, CHARACTERDESIGNER_OT_restore_quick_binding,
     CHARACTERDESIGNER_PT_character_setup,

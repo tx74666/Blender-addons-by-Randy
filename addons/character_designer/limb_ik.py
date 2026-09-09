@@ -15,12 +15,13 @@ import uuid
 from dataclasses import dataclass, replace
 
 import bpy
-from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Euler, Matrix, Vector
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_RIG, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 from . import bone_collections as bone_groups
+from . import limb_ik_fk
 
 
 OWNER_KEY = "character_designer_owner"
@@ -3075,7 +3076,8 @@ def _validate_inventory(armature):
         direct_registry = {"version": DIRECT_PREROLL_RESULT_VERSION, "limbs": {}}
     for pose_bone, constraint, record in records:
         influence = float(constraint.influence)
-        if not math.isfinite(influence) or abs(influence - 1.0) > 1.0e-6:
+        switched = limb_ik_fk.validate_constraint_influence(armature, pose_bone, constraint, record)
+        if not switched and (not math.isfinite(influence) or abs(influence - 1.0) > 1.0e-6):
             raise LimbIKError(f"Owned constraint '{constraint.name}' on '{pose_bone.name}' was disabled or had its influence edited.")
         if record["role"] in {"END_ROTATION", "AUTO_OFFSET_ROTATION"}:
             target_bone = armature.data.bones.get(record.get("target", ""))
@@ -3676,6 +3678,7 @@ def _rollback_build(context, armature, transaction):
                 live_owner = armature.pose.bones.get(pose_bone.name)
                 live_constraint = live_owner.constraints.get(constraint.name) if live_owner is not None else None
                 if live_constraint is not None:
+                    live_constraint.driver_remove("influence")
                     live_owner.constraints.remove(live_constraint)
             except (ReferenceError, RuntimeError) as exc:
                 errors.append(str(exc))
@@ -5464,6 +5467,10 @@ def _build_plans(
                             f"Direct Pre-Roll could not establish a zero-twist start frame on '{name}' "
                             f"(position {position_error:.4g}, rotation {rotation_error:.4g})."
                         )
+        if schema in {ROLL_DECOUPLED_SCHEMA, DIRECT_PREROLL_SCHEMA}:
+            limb_ik_fk.ensure_switching(
+                armature, verified, keys={(plan.chain.kind, plan.chain.side) for plan in missing}
+            )
         return missing, transaction
     except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
         rollback_errors = _rollback_build(context, armature, transaction)
@@ -5660,6 +5667,7 @@ def _direct_source_dependency_problems(armature, chains, *, owned_constraints=()
         for pair in ((chain[0], chain[1]), (chain[1], chain[2]))
     }
     owned_constraints = set(owned_constraints)
+    switch_paths = limb_ik_fk.owned_driver_paths(armature)
     problems = []
 
     for bone in armature.data.bones:
@@ -5730,6 +5738,8 @@ def _direct_source_dependency_problems(armature, chains, *, owned_constraints=()
                 problems.append(f"Action '{action.name}' animates a Direct Pre-Roll source chain")
         animation = getattr(id_block, "animation_data", None)
         for fcurve in getattr(animation, "drivers", ()) if animation else ():
+            if id_block is armature and fcurve.data_path in switch_paths:
+                continue
             if _path_mentions_bone(fcurve.data_path, animated_names):
                 problems.append("a driver writes to a Direct Pre-Roll source chain")
             for variable in fcurve.driver.variables:
@@ -5767,6 +5777,7 @@ def _foreign_dependency_problems(armature, inventory):
         for pose_bone, constraint, _record in inventory["records"]
     }
     problems = []
+    switch_paths = limb_ik_fk.owned_driver_paths(armature)
     allowed_source_widgets = set(
         (inventory.get("source_widgets") or {}).get("bones", {})
     )
@@ -5823,6 +5834,8 @@ def _foreign_dependency_problems(armature, inventory):
                     break
         animation = getattr(id_block, "animation_data", None)
         for fcurve in getattr(animation, "drivers", ()) if animation else ():
+            if id_block is armature and fcurve.data_path in switch_paths:
+                continue
             if _path_mentions_bone(fcurve.data_path, names):
                 problems.append("a driver writes to a generated control")
             if any(fcurve.data_path.startswith(path) for path in owned_constraint_paths):
@@ -5839,6 +5852,8 @@ def _foreign_dependency_problems(armature, inventory):
     for obj in bpy.data.objects:
         animation = obj.animation_data
         for fcurve in getattr(animation, "drivers", ()) if animation else ():
+            if obj is armature and fcurve.data_path in switch_paths:
+                continue
             for variable in fcurve.driver.variables:
                 for target in variable.targets:
                     target_path = getattr(target, "data_path", "")
@@ -6332,6 +6347,7 @@ def _purge_snapshot_owned(context, armature, snapshot):
                 and record.get("armature_id") in purge_ids
             ):
                 name = constraint.name
+                constraint.driver_remove("influence")
                 pose_bone.constraints.remove(constraint)
                 registry.pop(name, None)
         _write_constraint_registry(pose_bone, registry)
@@ -6499,6 +6515,7 @@ def _restore_owned_snapshot(context, armature, snapshot):
 
 def _remove_owned(context, armature, *, refuse_dependencies=True):
     inventory = _validate_inventory(armature)
+    _require_ik_for_rig_edit(armature, inventory)
     if not inventory["rigs"]:
         raise LimbIKError("No exactly tagged Limb IK rig exists on the active Armature.")
     if refuse_dependencies:
@@ -6514,6 +6531,7 @@ def _remove_owned(context, armature, *, refuse_dependencies=True):
     armature_id = inventory["armature_id"]
     removed_constraints = 0
     _mode_set(context, armature, "POSE")
+    limb_ik_fk.remove_switching(armature, inventory)
     for pose_bone, constraint, _record in reversed(inventory["records"]):
         registry = _constraint_registry(pose_bone, strict=True)
         name = constraint.name
@@ -6566,6 +6584,45 @@ def _finish_collection_edit(operator, armature, previous, error):
             bone_groups.finish_rig_edit(armature, previous, failed=error is not None)
         except Exception as exc:
             operator.report({"WARNING"}, f"Bone groups could not refresh: {exc}")
+
+
+def _require_ik_for_rig_edit(armature, inventory):
+    for (kind, side), rig in inventory["rigs"].items():
+        if limb_ik_fk.mode_for_rig(armature, rig) != "IK":
+            raise LimbIKError(
+                f"Switch {kind.title()} {side} to IK with pose matching before rebuilding or removing the rig."
+            )
+
+
+class CHARACTERDESIGNER_OT_limb_ik_fk_switch(Operator):
+    bl_idname = "character_designer.limb_ik_fk_switch"
+    bl_label = "Switch IK / FK"
+    bl_description = "Match the current limb pose and switch its controls; Auto Key is respected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    mode: EnumProperty(items=(("IK", "IK", "Move the hand or foot target"), ("FK", "FK", "Rotate the original limb bones")))
+    keyframe: BoolProperty(name="Insert Switch Keys", default=False)
+
+    def execute(self, context):
+        settings = _settings(context)
+        try:
+            armature = _require_active_armature(context, settings, analyzed=False)
+            key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
+            before = bone_groups.capture_managed_layout(armature)
+            result = limb_ik_fk.switch_limb(
+                context, armature, key, self.mode,
+                keyframe=True if self.keyframe else None,
+            )
+            _finish_collection_edit(self, armature, before, None)
+        except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({"WARNING"}, str(exc))
+            return {"CANCELLED"}
+        message = f"{key[0].title()} {key[1]}: {result['mode']}; current pose matched."
+        if result["keyed"]:
+            message += " Switch keys inserted."
+        _set_status(settings, "SUCCESS", message)
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
 
 
 def _execute_build(operator, context, scope):
@@ -6738,6 +6795,7 @@ class CHARACTERDESIGNER_OT_limb_ik_remove(Operator):
             collection_snapshot = bone_groups.capture_managed_layout(armature)
             context_snapshot = _capture_context(context, armature)
             inventory = _validate_inventory(armature)
+            _require_ik_for_rig_edit(armature, inventory)
             _removal_resources(context, armature, inventory)
             problems = _foreign_dependency_problems(armature, inventory)
             if problems:
@@ -6817,6 +6875,7 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
             context_snapshot = _capture_context(context, armature)
             inventory = _validate_inventory(armature)
             rig_keys = sorted(inventory["rigs"])
+            _require_ik_for_rig_edit(armature, inventory)
             previous_schema = inventory["schema"]
             if not rig_keys:
                 raise LimbIKError("No generated Limb IK rig exists to rebuild.")
@@ -7147,8 +7206,9 @@ def _constraint_has_animation_or_driver(armature, owner_name, constraint_name):
     ):
         return True
     animation = armature.animation_data
+    switch_paths = limb_ik_fk.owned_driver_paths(armature)
     return any(
-        fcurve.data_path.startswith(path)
+        fcurve.data_path.startswith(path) and fcurve.data_path not in switch_paths
         for fcurve in getattr(animation, "drivers", ()) if animation is not None
     )
 
@@ -7479,6 +7539,8 @@ def _set_auto_align_all_targets(context, armature, settings, enabled=None):
     inventory = _validate_inventory(armature)
     if not inventory["rigs"]:
         raise LimbIKError("Build at least one Arm or Leg IK before changing Auto Align.")
+    if any(limb_ik_fk.mode_for_rig(armature, rig) != "IK" for rig in inventory["rigs"].values()):
+        raise LimbIKError("Switch limbs to IK before changing Auto Align; its saved setting is retained in FK.")
     current_values = [bool(rig["auto_align"]) for rig in inventory["rigs"].values()]
     desired_enabled = (
         not all(current_values)
@@ -8145,7 +8207,7 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_RIG
+        return rig_page_active(context, "BODY")
 
     def draw(self, context):
         layout = self.layout
@@ -8155,6 +8217,21 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
             return
         layout.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
         layout.prop(settings, "selected_limb", text="")
+        active = context.object
+        if active is not None and active.type == "ARMATURE":
+            try:
+                inventory = _validate_inventory(active)
+                selected_key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
+                rig = inventory["rigs"].get(selected_key)
+                if rig is not None:
+                    mode = limb_ik_fk.mode_for_rig(active, rig)
+                    row = layout.row(align=True)
+                    for choice in ("IK", "FK"):
+                        op = row.operator("character_designer.limb_ik_fk_switch", text=choice, depress=mode == choice)
+                        op.mode = choice
+                    layout.label(text="Switch keeps the current pose", icon="CON_ROTLIKE")
+            except (LimbIKError, ReferenceError, RuntimeError, ValueError):
+                pass
         layout.prop(settings, "build_method", text="Build Method")
         armature = settings.armature
         kind, side = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
@@ -8188,6 +8265,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         remove.alert = _active_has_owned_side_rig(context)
         remove.operator("character_designer.limb_ik_remove", text="Remove Generated Rig", icon="TRASH")
         layout.operator("character_designer.simplify_bone_collections", icon="GROUP_BONE")
+        if active is not None and active.type == "ARMATURE" and bone_groups.has_layout_backup(active):
+            layout.operator("character_designer.restore_bone_collections", icon="LOOP_BACK")
 
 
 class CHARACTERDESIGNER_PT_limb_ik_target_rotation(Panel):
@@ -8201,7 +8280,7 @@ class CHARACTERDESIGNER_PT_limb_ik_target_rotation(Panel):
     @classmethod
     def poll(cls, context):
         return (
-            active_ui_page(context) == UI_PAGE_RIG
+            rig_page_active(context, "BODY")
             and _active_limb_target(context) is not None
         )
 
@@ -8253,7 +8332,7 @@ class CHARACTERDESIGNER_PT_limb_ik_control_visual(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_RIG and _active_control_visual(context) is not None
+        return rig_page_active(context, "BODY") and _active_control_visual(context) is not None
 
     def draw(self, context):
         resolved = _active_control_visual(context)
@@ -8298,7 +8377,7 @@ class CHARACTERDESIGNER_PT_limb_ik_direct_preroll(Panel):
     def poll(cls, context):
         settings = _settings(context)
         return (
-            active_ui_page(context) == UI_PAGE_RIG
+            rig_page_active(context, "BODY")
             and settings is not None
             and settings.build_method == "DIRECT_PREROLL"
         )
@@ -8357,6 +8436,7 @@ LIMB_IK_CLASSES = (
     CHARACTERDESIGNER_OT_limb_ik_build_all,
     CHARACTERDESIGNER_OT_limb_ik_remove,
     CHARACTERDESIGNER_OT_limb_ik_rebuild,
+    CHARACTERDESIGNER_OT_limb_ik_fk_switch,
     CHARACTERDESIGNER_OT_limb_ik_default_pole_direction,
     CHARACTERDESIGNER_OT_limb_ik_auto_align_target,
     CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation,

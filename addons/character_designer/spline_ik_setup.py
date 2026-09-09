@@ -10,7 +10,7 @@ from bpy.props import BoolProperty, FloatProperty, IntProperty, PointerProperty,
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Matrix, Vector
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_RIG, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
 OWNER_KEY = "character_designer_owner"
@@ -4004,7 +4004,7 @@ class CHARACTERDESIGNER_PT_spline_ik_setup(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_RIG
+        return rig_page_active(context, "BODY")
 
     def draw(self, context):
         layout = self.layout

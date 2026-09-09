@@ -1,4 +1,4 @@
-# Character Designer 0.43.2
+# Character Designer 0.45.0
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
@@ -6,6 +6,56 @@ RR Helper and focuses on character-modeling tools.
 Workflow principle: generated bindings and setups should remain editable and
 provide an explicit remove/restore path. Preserve the artist's original state
 and unrelated data; support saving/reopening where restoration depends on a backup.
+
+Version 0.45.0 automatically presents new limb controls through **Animation**:
+generated IK controls replace their source chains in the default view, while
+uncontrolled torso, fingers and toes remain available as original bones.
+**Original / Controls / Animation** remain selectable in Bone Collections.
+**Restore Bone Collections** restores the first saved layout, including custom
+properties, while retaining later artist collections and generated controls;
+conflicting edits are reported. A restored layout opts out of automatic grouping.
+
+In **Rig > Body > Limb IK**, choose a limb and click **IK** or **FK** to match its
+current pose before changing the driver. FK uses the original three-bone chain.
+Stable and Direct rigs support matching, including Auto Align, manual target
+rotation, Master transforms and heel roll. Impossible matches (such as stretched
+FK limbs) are refused and rolled back. Auto Align remains remembered in FK; change
+that option in IK. Rebuild older rig schemas before using these switches.
+
+Enable Blender **Auto Key** to key matched channels and the discrete mode switch.
+Native drivers and constant mode keys survive saving/reopening; the Animation
+collection follows keyed mode changes without resetting manual eye/solo state.
+Rebuild/Remove require all limbs matched back to IK, and retain the existing
+animation/dependency guards. They do not delete or bake animator Actions.
+
+Version 0.44.0 groups rigging in **Rig > Body / Hair / Skirt**, with one level of
+navigation. The top-level Hair page keeps modeling and centerline tools; Weight
+keeps common weight operations. The former Clothing shortcut opens Rig > Skirt.
+
+**Character Setup**, shared by Weight and Rig, stores Main Rig, Body Weight Source,
+and Hips / Head mappings. Bone mappings belong to the chosen armature and survive
+saving/reopening. A search field or its **Use Selected Bone** button sets a mapping;
+the button also remembers the selected bone's armature. Unique central Hips/Head
+candidates are shown automatically. Manual choices are retained, invalid choices
+are reported, and detection never substitutes a left/right pelvis or Root.
+
+Skirt's **Attachment Bone** is the single main bone followed by the entire skirt,
+usually Hips. The panel shows the actual live attachment separately from a changed
+requested target. Optional overrides are collapsed by default. New setups start
+without physics so attachment can be checked first; **Add Physics + Colliders**
+remains available once the controls are ready. **Update Attachment**
+reconnects an existing setup while preserving current placement, authored control
+channels, weights and Actions. **Restore Attachment** retains the first previous
+parent and parent inverse across repeated updates and saving/reopening. Restore
+returns to that original animation space, which may move the skirt if the old
+parent has since moved. No bones are renamed, merged, or rebuilt by these actions.
+
+Changing an attachment with existing Physics + Colliders is currently blocked:
+the colliders are weighted to the old character and clearing the cache alone does
+not retarget them. An unchanged target remains a no-op. Establish the main-bone
+attachment before adding physics. Existing hair also keeps its actual binding
+until explicitly removed and rebound; changing Character Setup never silently
+reattaches generated work.
 
 Version 0.43.2 simplifies binding around the selected mesh. **Character Setup**
 shows Main Rig and, on the Weight page, Body Weight Source. There is no clothing

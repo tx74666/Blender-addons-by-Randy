@@ -1,4 +1,4 @@
-"""Clothing-page workflow for a fitted skirt rig and continuous physics baking."""
+"""Rig / Skirt workflow for fitted controls, attachment, and physics baking."""
 
 import importlib
 import json
@@ -7,7 +7,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_CLOTHING, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
 _ACTIVE_BAKES = {}
@@ -43,6 +43,20 @@ def _source(context):
 def _record(context):
     source = _source(context)
     return _rig().read_record(source) if source is not None else None
+
+
+def _desired_attachment(context, source):
+    settings = _settings(context)
+    armature = _setup().preferred_rig(context, settings.armature)
+    if armature is None:
+        if source is None:
+            return None, ''
+        armature, bone = _rig()._find_character(context, source, None, settings.parent_bone)
+        if armature is None:
+            return None, ''
+    bone = _setup().resolve_bone(context, 'HIPS', armature=armature,
+                                override=settings.parent_bone)
+    return armature, bone
 
 
 def _report(operator, context, message, *, error=False):
@@ -201,15 +215,16 @@ class CharacterDesignerSkirtState(PropertyGroup):
                              default=8, min=3, max=32, options={"SKIP_SAVE"})
     segment_count: IntProperty(name="Bones per Chain", default=4, min=2, max=12,
                                options={"SKIP_SAVE"})
-    physics: BoolProperty(name="Physics + Colliders", default=True, options={"SKIP_SAVE"},
+    physics: BoolProperty(name="Physics + Colliders", default=False, options={"SKIP_SAVE"},
                           description="Create a cloth proxy and closed character colliders")
-    show_attachment: BoolProperty(name="Attachment Options", default=False,
+    show_attachment: BoolProperty(name="Attachment Override", default=False,
+                                  description="Optional local target; leave fields blank to use Character Setup",
                                   options={"SKIP_SAVE"})
     armature: PointerProperty(type=bpy.types.Object, name="Character Rig", poll=_armature_only,
                               options={"SKIP_SAVE"},
                               description="Optional override; otherwise use the saved Main Rig or detect the character rig")
-    parent_bone: StringProperty(name="Pelvis Bone", options={"SKIP_SAVE"},
-                                description="Optional override; otherwise detect the pelvis bone")
+    parent_bone: StringProperty(name="Attachment Bone", options={"SKIP_SAVE"},
+                                description="Single bone followed by the whole skirt, usually central Hips; blank uses Character Setup")
     use_scene_range: BoolProperty(name="Use Scene Frame Range", default=True,
                                   options={"SKIP_SAVE"})
     bake_start: IntProperty(name="Start", default=1, min=-1048574, max=1048574,
@@ -238,11 +253,12 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
             _restore_preview(context, source)
             had_setup = _rig().read_record(source) is not None
             settings.source = source
+            armature, bone = (None, '') if had_setup else _desired_attachment(context, source)
             record = _rig().build_skirt(
                 context, source, chain_count=settings.chain_count,
                 segment_count=settings.segment_count,
-                armature=_setup().preferred_rig(context, settings.armature),
-                parent_bone=settings.parent_bone,
+                armature=armature,
+                parent_bone=bone,
             )
             built = True
             if settings.physics:
@@ -265,6 +281,56 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
         message = f"Skirt ready: {count} chains × {segments} bones. Pose the waist and wire controls."
         _report(self, context, message)
         return {"FINISHED"}
+
+
+class CHARACTERDESIGNER_OT_skirt_update_attachment(Operator):
+    bl_idname = 'character_designer.skirt_update_attachment'
+    bl_label = 'Update Attachment'
+    bl_description = 'Follow the chosen main bone while keeping the current skirt position and control animation'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _idle(context) and _has_setup(context)
+
+    def execute(self, context):
+        try:
+            source = _source(context)
+            armature, bone = _desired_attachment(context, source)
+            if armature is None:
+                raise ValueError('Set Main Rig and its Hips bone in Character Setup first.')
+            _restore_preview(context, source)
+            _rig().update_attachment(context, source, armature, bone)
+            _report(self, context, f'Following {armature.name} / {bone}.')
+        except (ValueError, RuntimeError) as exc:
+            _report(self, context, str(exc), error=True)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_skirt_restore_attachment(Operator):
+    bl_idname = 'character_designer.skirt_restore_attachment'
+    bl_label = 'Restore Attachment'
+    bl_description = 'Restore the original attachment saved before the first update, including its animation space'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            return _idle(context) and _rig().has_attachment_backup(_source(context))
+        except (ValueError, RuntimeError):
+            return False
+
+    def execute(self, context):
+        try:
+            source = _source(context)
+            _restore_preview(context, source)
+            _rig().restore_attachment(context, source)
+            _report(self, context, 'Original skirt attachment restored.')
+        except (ValueError, RuntimeError) as exc:
+            _report(self, context, str(exc), error=True)
+            return {'CANCELLED'}
+        return {'FINISHED'}
 
 
 class CHARACTERDESIGNER_OT_skirt_select_controls(Operator):
@@ -615,7 +681,7 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_CLOTHING
+        return rig_page_active(context, 'SKIRT')
 
     def draw(self, context):
         layout = self.layout
@@ -633,31 +699,72 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
         else:
             layout.label(text="Select an open skirt mesh.", icon="INFO")
             layout.prop(settings, "source")
-        preferred = _setup().preferred_rig(context, settings.armature)
-        if preferred is not None and settings.armature is None:
-            layout.label(text=f"Main Rig: {preferred.name}", icon="ARMATURE_DATA")
         if not _idle(context):
             layout.label(text="Baking every frame in order…", icon="TIME")
             layout.label(text=settings.last_message)
             layout.label(text="Esc to cancel.")
             return
+        preferred = _setup().preferred_rig(context, settings.armature)
+        desired, desired_bone, attachment_error = None, '', ''
+        try:
+            desired, desired_bone = _desired_attachment(context, source)
+        except (ValueError, RuntimeError) as exc:
+            attachment_error = str(exc)
+        if record:
+            try:
+                actual = _rig().attachment_status(source)
+            except (ValueError, RuntimeError) as exc:
+                layout.label(text=str(exc), icon='ERROR')
+                return
+            if actual['attached']:
+                layout.label(text=f"Following: {actual['character'].name} / {actual['parent_bone']}",
+                             icon='CONSTRAINT_BONE')
+            else:
+                layout.label(text='Not attached to a main bone.', icon='INFO')
+            different = desired is not actual['character'] or desired_bone != actual['parent_bone']
+            if attachment_error:
+                layout.label(text=attachment_error, icon='ERROR')
+            elif different and desired is not None:
+                layout.label(text=f'New target: {desired.name} / {desired_bone}', icon='INFO')
+            elif actual['attached']:
+                layout.label(text='Connected', icon='CHECKMARK')
+        else:
+            if attachment_error:
+                layout.label(text=attachment_error, icon='ERROR')
+            elif desired is not None:
+                layout.label(text=f'Attach to: {desired.name} / {desired_bone}', icon='CONSTRAINT_BONE')
+            else:
+                layout.label(text='Set Main Rig to follow your character.', icon='INFO')
+        layout.prop(settings, 'show_attachment',
+                    icon='TRIA_DOWN' if settings.show_attachment else 'TRIA_RIGHT', emboss=False)
+        if settings.show_attachment:
+            col = layout.column(align=True)
+            col.prop(settings, 'armature')
+            if preferred is not None:
+                col.prop_search(settings, 'parent_bone', preferred.data, 'bones')
+            else:
+                col.prop(settings, 'parent_bone')
+            col.label(text='Blank fields use Character Setup.')
+        if record:
+            row = layout.row()
+            row.alert = True
+            row.enabled = not attachment_error and desired is not None and not (actual['physics'] and different)
+            row.operator('character_designer.skirt_update_attachment', icon='CONSTRAINT_BONE')
+            if actual['physics'] and different:
+                layout.label(text='Existing physics prevents changing attachment.', icon='INFO')
+            if actual['has_backup']:
+                row = layout.row()
+                row.alert = True
+                row.operator('character_designer.skirt_restore_attachment', icon='LOOP_BACK')
         if not record:
             row = layout.row(align=True)
             row.prop(settings, "chain_count")
             row.prop(settings, "segment_count", text="Bones")
             layout.prop(settings, "physics")
-            layout.prop(settings, "show_attachment", icon=("TRIA_DOWN" if settings.show_attachment
-                                                             else "TRIA_RIGHT"), emboss=False)
-            if settings.show_attachment:
-                col = layout.column(align=True)
-                col.prop(settings, "armature")
-                if preferred is not None:
-                    col.prop_search(settings, "parent_bone", preferred.data, "bones")
-                else:
-                    col.prop(settings, "parent_bone")
-                col.label(text="Leave blank for automatic detection.")
             row = layout.row()
             row.scale_y = 1.4
+            row.alert = True
+            row.enabled = not attachment_error
             row.operator("character_designer.create_skirt_setup", icon="OUTLINER_OB_ARMATURE")
             layout.label(text="Fits the waist, hem, and wire cage.", icon="INFO")
             if _last_bake(source):
@@ -726,6 +833,8 @@ def stop_skirt_runtime():
 SKIRT_CLASSES = (
     CharacterDesignerSkirtState,
     CHARACTERDESIGNER_OT_create_skirt_setup,
+    CHARACTERDESIGNER_OT_skirt_update_attachment,
+    CHARACTERDESIGNER_OT_skirt_restore_attachment,
     CHARACTERDESIGNER_OT_skirt_select_controls,
     CHARACTERDESIGNER_OT_skirt_add_physics,
     CHARACTERDESIGNER_OT_skirt_toggle_helpers,

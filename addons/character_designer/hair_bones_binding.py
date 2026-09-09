@@ -49,6 +49,15 @@ def resolve_target(context, source, armature=None):
         raise rig.HairBonesRigError("Hair binding supports one Armature modifier.")
     if modifiers and modifiers[0].object is None:
         raise rig.HairBonesRigError("The hair Armature modifier has no rig.")
+    if is_bound(source):
+        # Changing Character Setup describes the next operation. Existing hair
+        # continues to report its saved, actual binding until explicitly removed.
+        data = _read(source)
+        target = source.get(rig.RIG_KEY)
+        if (not _character(target) or not modifiers or modifiers[0].object != target
+                or data['head'] not in target.data.bones):
+            raise rig.HairBonesRigError("The saved hair attachment is no longer valid; restore it before changing the binding.")
+        return target, data['head']
     parent = source.parent if source.parent and source.parent.type == "ARMATURE" else None
     targets = [item for item in (armature, modifiers[0].object if modifiers else None,
                                 parent, source.get(rig.RIG_KEY)) if item is not None]
@@ -56,9 +65,10 @@ def resolve_target(context, source, armature=None):
         raise rig.HairBonesRigError("The chosen, parent and bound hair rigs disagree.")
     target = targets[0] if targets else None
     if target:
-        if not _character(target) or not _head(target):
-            raise rig.HairBonesRigError("Choose the character Armature with a recognizable Head bone.")
-        return target, _head(target)
+        if not _character(target):
+            raise rig.HairBonesRigError("Choose the character Armature.")
+        from .character_setup import resolve_bone
+        return target, resolve_bone(context, 'HEAD', armature=target)
     snapshot = rig._mesh_snapshot(source)
     if not snapshot["coordinates"]:
         raise rig.HairBonesRigError("The original hair mesh is empty.")

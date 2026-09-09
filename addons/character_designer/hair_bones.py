@@ -3,12 +3,12 @@
 import importlib
 
 import bpy
-from bpy.props import IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
 from . import hair_bones_rig as rig
 from .hair_bones_topology import select_strands
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_HAIR, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
 def _groups():
@@ -96,6 +96,10 @@ class CharacterDesignerHairBonesState(PropertyGroup):
     target_armature: PointerProperty(
         type=bpy.types.Object, name="Character Rig", poll=_armature_poll,
         description="Optional override; otherwise use the saved Main Rig or detect the character automatically",
+    )
+    show_attachment_override: BoolProperty(
+        name='Show Rig Override', default=False,
+        description='Show an optional rig override; normally use Main Rig from Character Setup',
     )
     bone_count: IntProperty(
         name="Bones per Chain",
@@ -261,7 +265,7 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_HAIR
+        return rig_page_active(context, 'HAIR')
 
     def draw(self, context):
         layout = self.layout
@@ -284,14 +288,21 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
             layout.label(text=str(exc), icon="ERROR")
             bound = False
         if source:
-            layout.prop(settings, "target_armature")
+            if not bound:
+                layout.prop(settings, 'show_attachment_override')
+                if settings.show_attachment_override or settings.target_armature is not None:
+                    layout.prop(settings, "target_armature")
             target = None
             try:
                 preferred = _setup().preferred_rig(context, settings.target_armature)
                 target, head = _binding().resolve_target(context, source, armature=preferred)
-                label = "Main Rig" if preferred is not None and settings.target_armature is None else "Rig"
+                label = 'Attached Rig' if bound else "Main Rig" if preferred is not None and settings.target_armature is None else "Rig"
                 layout.label(text=f"{label}: {target.name}", icon="ARMATURE_DATA")
                 layout.label(text=f"Head: {getattr(head, 'name', head)}", icon="BONE_DATA")
+                if bound and preferred is not None:
+                    desired = _setup().bone_mapping_status(context, 'HEAD', armature=preferred)
+                    if preferred != target or desired['name'] != head:
+                        layout.label(text='Character Setup differs; existing hair is unchanged.', icon='INFO')
             except (ValueError, RuntimeError) as exc:
                 layout.label(text=str(exc), icon="INFO")
             if strands:
@@ -302,6 +313,7 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
                     layout.label(text=f"{strands} strands / {strands} chains")
                 layout.prop(settings, "bone_count")
                 row = layout.row()
+                row.alert = True
                 row.enabled = target is not None and not bound
                 row.operator("character_designer.hair_bind_to_character", icon="BONE_DATA")
             if bound:

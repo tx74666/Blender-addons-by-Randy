@@ -949,7 +949,8 @@ def test_direct_preroll_lifecycle_refuses_new_source_dependencies_and_hydrates_m
         raise AssertionError("Direct Rebuild accepted new source-chain animation")
     if lifecycle_signature() != baseline:
         raise AssertionError("Rejected animated Direct lifecycle operation changed the old rig")
-    armature.animation_data_clear()
+    # Clear only this test's Action; native IK/FK drivers belong to the rig.
+    armature.animation_data.action = None
 
     foreign = upper.constraints.new(type="COPY_LOCATION")
     foreign.name = "Artist source constraint"
@@ -1667,7 +1668,7 @@ def test_remove_scans_cross_armature_and_constraint_animation_dependencies():
     ik.keyframe_insert(data_path="influence", frame=1)
     if cancelled_result(lambda: bpy.ops.character_designer.limb_ik_remove("EXEC_DEFAULT")) != {"CANCELLED"}:
         raise AssertionError("Remove accepted animation on an owned IK constraint")
-    armature.animation_data_clear()
+    armature.animation_data.action = None
     if bpy.ops.character_designer.limb_ik_remove("EXEC_DEFAULT") != {"FINISHED"}:
         raise AssertionError(settings.last_message)
 

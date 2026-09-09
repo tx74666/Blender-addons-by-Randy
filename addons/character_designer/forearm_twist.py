@@ -21,7 +21,7 @@ from . import limb_ik
 from .forearm_twist_math import corrected_vertex, profile_ratio, twist_angle
 from .forearm_twist_topology import detect_rings
 from .forearm_twist_symmetry import mirror_ring_pairs
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_RIG, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 RECORD_KEY = "character_designer_forearm_twist_v1"
 PREVIEW_KEY = "character_designer_forearm_twist_preview_v1"
@@ -1322,7 +1322,7 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_RIG
+        return rig_page_active(context, "BODY")
 
     def draw(self, context):
         layout = self.layout
