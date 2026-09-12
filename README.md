@@ -5,7 +5,17 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.53.2 | [character_designer](addons/character_designer) | [character_designer-0.53.2.zip](dist/character_designer-0.53.2.zip) |
+| Character Designer | 0.55.3 | [character_designer](addons/character_designer) | [character_designer-0.55.3.zip](dist/character_designer-0.55.3.zip) |
+
+Character Designer 0.55.3 让手腕的局部旋转轴跟随显示的手腕控制器，修正抬臂后 R Y Y 仍沿旧 IK 轴旋转的问题；保留 Global／View 的旋转方向。**Update Body Setup** 可更新现有控制器，无需重建骨骼。Forearm Twist 校准失效时显示 **Paused**，并允许保留资料直接停用；移除冗余 Both Arms 标签。
+
+Character Designer 0.55.2 修正脚部 **Auto Align**：移动 IK 控制器时脚与脚尖跟随小腿，保留 Foot Roll／Toe Bend；Manual 保持目标朝向。新 Setup 自动采用，已有脚部通过一次 **Fix Foot Auto Align** 保持当前姿势升级，兼容 IK／FK、Root 与可逆移除。Body 面板保留统一生成／移除和动画操作，直接在视图中选择控制器。
+
+Character Designer 0.54.5 修正左右手腕的旋转坐标，让视角旋转和全局旋转同向，兼容 Auto Align 开关及旋转后的全身 Root。旧设置在 **Rig → Body → Body Controls → Correct Wrist Rotation** 显式更新，保留当前姿势和原生骨骼／权重；已有相关动画时会保护旧动作。内部参考骨默认隐藏，IK／FK 姿势匹配与可移除流程继续保留。
+
+Character Designer 0.54.4 将绑定、创建、更新、恢复和刷新按钮改为普通颜色，红色操作按钮保留给移除／删除；实际错误信息仍正常提示。此次仅调整界面颜色，不执行权重绑定或删除备份。
+
+Character Designer 0.54.0 将日常骨骼显示整理为 **Body、Hair、Dress、Original**。Body 包含身体、头部、面部与手指的动画操作，Original 放最后；生成骨骼的完整性分组保留在 Body 下默认隐藏的内部子组。Rig 和 Weight 共用 **Bone Display**：**Show All Controls** 显示所有可操作控制器；**Original · Native Bones** 显示原生身体骨架，Hair／Dress 的 **Bones** 显示各自真实带权重的骨骼。**Restore Display** 恢复进入前的显隐和外形，保留期间的姿势、权重编辑；恢复资料随 blend 保存。裙子仍可保留独立骨架，由同一面板操作，不创建空集合或强行合并骨架。
 
 Character Designer 0.53.2 修正左右 Foot Roll 与右脚 Bank 的反向旋转，让脚部跟随控制器的旋转方向，并保留脚跟、前脚掌与脚尖支点。旧设置使用 **Fix Roll Direction** 显式更新，保持当前姿势、权重与显示位置；已有相关动画或外部依赖时会阻止更新，避免改坏动作。
 

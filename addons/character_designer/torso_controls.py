@@ -195,6 +195,9 @@ def _add_widget(context, armature, record, role, width):
         collection = bpy.data.collections.new(record['widget_collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'Torso')
+        record['widget_collection'] = collection.name
     # The broad waist contour follows Rain's torso widget silhouette. FK rings
     # stay in their local transverse plane and do not affect deformation.
     vertices = []
@@ -250,6 +253,8 @@ def _delete_graph(context, armature, record):
     collection = bpy.data.collections.get(record['widget_collection'])
     if collection and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(context)
 
 
 def build(context, armature, chain=None, hips_name=None):

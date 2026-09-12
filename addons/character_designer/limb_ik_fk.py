@@ -379,7 +379,10 @@ def _match_ik(context, armature, inventory, rig, desired):
     _match_pole_plane(context, armature, rig, desired)
     end_constraint = next(con for _pb, con, record in rig["entries"] if record["role"] == "END_ROTATION")
     offset = rig.get("auto_offset_rotation")
-    if rig.get("foot_controls"):
+    if rig.get("foot_controls") and rig['foot_controls'].get('auto_follow') == 1 and rig['auto_align']:
+        from . import foot_controls
+        foot_controls.match_auto_rotation(context, armature, rig, desired_end)
+    elif rig.get("foot_controls"):
         # Reverse-foot owns both end-rotation paths in world space. Its fixed
         # pivots must keep the foot orientation, including in Auto display
         # mode; interpreting the solver as a local offset would double roll.
@@ -400,11 +403,15 @@ def _match_ik(context, armature, inventory, rig, desired):
         offset.mute = True
         _update(context, armature)
         natural = end.matrix.copy()
-        natural_local = armature.convert_space(pose_bone=end, matrix=natural, from_space="POSE", to_space="LOCAL")
-        desired_local = armature.convert_space(pose_bone=end, matrix=desired_end, from_space="POSE", to_space="LOCAL")
-        rotation = natural_local.to_quaternion().inverted() @ desired_local.to_quaternion()
-        basis = target.matrix_basis.copy()
-        target.matrix_basis = Matrix.LocRotScale(basis.translation, rotation.normalized(), basis.to_scale())
+        if rig.get("auto_rotation_space", "LOCAL") == "PARENT_DELTA":
+            _set_matrix(context, armature, target,
+                        _limb()._auto_target_rotation_matrix(armature, target, natural, desired_end))
+        else:
+            natural_local = armature.convert_space(pose_bone=end, matrix=natural, from_space="POSE", to_space="LOCAL")
+            desired_local = armature.convert_space(pose_bone=end, matrix=desired_end, from_space="POSE", to_space="LOCAL")
+            rotation = natural_local.to_quaternion().inverted() @ desired_local.to_quaternion()
+            basis = target.matrix_basis.copy()
+            target.matrix_basis = Matrix.LocRotScale(basis.translation, rotation.normalized(), basis.to_scale())
         offset.mute = old_mute
         _update(context, armature)
     elif end_constraint.target_space == "LOCAL_OWNER_ORIENT":
@@ -651,8 +658,16 @@ def _key_switch(context, armature, target, affected, old_value, pose_before):
                 if not pb.keyframe_insert(data_path=transform_path, frame=frame, group=pb.name):
                     raise _error(f"Could not key '{pb.name}'.")
                 for curve in _limb()._fcurves_for_action(animation.action):
-                    if curve.data_path == full_path and curve.array_index in plans:
-                        _restore_bookend(curve, frame - 1.0, plans[curve.array_index])
+                    if curve.data_path == full_path:
+                        if curve.array_index in plans:
+                            _restore_bookend(curve, frame - 1.0, plans[curve.array_index])
+                        # Native FK wrist input also contributes to Auto IK.
+                        # Hold its old value until the mode cut so the matched
+                        # FK rotation cannot ramp into the preceding IK pose.
+                        for point in curve.keyframe_points:
+                            if abs(point.co.x - (frame - 1.0)) < 1.0e-5:
+                                point.interpolation = "CONSTANT"
+                        curve.update()
         for curve in _limb()._fcurves_for_action(animation.action):
             if curve.data_path == path:
                 if mode_plan:

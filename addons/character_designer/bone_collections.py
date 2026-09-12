@@ -6,11 +6,47 @@ from bpy.types import Operator
 
 PROFILE_KEY = "character_designer_simple_bone_collections"
 GROUP_KEY = "character_designer_simple_bone_group"
-BODY_NAMES = ("Original", "Controls", "Animation")
+BODY_NAMES = ("Body", "Original")
+INTERNAL_NAME = "_Internal"
+OTHER_NAME = "_Other"
+MANAGED_GROUPS = {"Body", "Original", "Controls", "Animation", INTERNAL_NAME, OTHER_NAME, "Hair"}
+VIEW_KEY = "character_designer_bone_display_view_v1"
 BACKUP_KEY = "character_designer_bone_collections_backup_v1"
 BACKUP_REFS_KEY = "character_designer_bone_collections_backup_refs"
 AUTO_KEY = "character_designer_auto_bone_collections"
 _FRAME_CACHE = {}
+
+
+def body_collection(armature):
+    """Resolve the daily Body group while accepting saved legacy Animation."""
+    if armature is None or armature.type != "ARMATURE":
+        return None
+    for name in ("Body", "Animation"):
+        collection = armature.data.collections_all.get(name)
+        if collection is not None and collection.get(GROUP_KEY) in {"Body", "Animation"}:
+            return collection
+    return None
+
+
+def public_collections(armature):
+    """Existing daily body groups only; independent dresses use their own rig."""
+    if armature is None or armature.type != "ARMATURE":
+        return ()
+    return tuple(c for c in (body_collection(armature), armature.data.collections_all.get("Hair"),
+                             armature.data.collections_all.get("Original")) if c is not None)
+
+
+def _structural_edit_guard(armature):
+    if VIEW_KEY in armature.data:
+        raise ValueError("Restore the temporary bone display view before changing Bone Collections or rebuilding controls.")
+
+
+def _native_body_names(armature, generated, hair_names):
+    """Exclude identifiable machinery without guessing that ordinary bones are controls."""
+    return {b.name for b in armature.data.bones
+            if b.name not in generated and b.name not in hair_names
+            and not b.get("character_designer_owner")
+            and not (not b.use_deform and b.name.rsplit(":", 1)[-1].upper().startswith(("MCH-", "MCH_", "ORG-", "ORG_")))}
 
 
 def _collection_record(collection):
@@ -125,7 +161,7 @@ def _save_backup(armature, original):
     original = {key: value for key, value in original.items()
                 if key not in {"backup", "backup_refs"}}
     managed = [_collection_record(c) for c in armature.data.collections_all
-               if c.get(GROUP_KEY) in BODY_NAMES
+               if c.get(GROUP_KEY) in MANAGED_GROUPS
                or (c.name == "Hair" and c.get(hair.OWNER_KEY) == hair.OWNER_VALUE)]
     _write_backup(armature, {"original": original, "managed": managed})
 
@@ -143,6 +179,7 @@ def _write_backup(armature, backup):
 def restore_bone_collections(armature):
     """Restore the first layout while retaining later collections and live controls."""
     from . import hair_bones_rig as hair, limb_ik
+    _structural_edit_guard(armature)
     if (armature.mode == "EDIT" or armature.library or armature.data.library
             or not armature.is_editable or armature.data.users != 1):
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
@@ -272,13 +309,14 @@ def _animation_names(armature, inventory, native, foot=None, torso=None, eyes=No
 
 
 def simplify_body_collections(armature, *, compact=True, visibility=None, original_layout=None):
-    """Use current tagged IK chains for per-limb native fallback, never name guesses."""
+    """Expose Body/Hair/Original; keep owned implementation bones nested and hidden."""
     from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls, spine_ik_fk, root_control
 
     if (armature.type != "ARMATURE" or armature.mode == "EDIT"
             or armature.library or armature.data.library or not armature.is_editable
             or armature.data.users != 1):
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
+    _structural_edit_guard(armature)
     data = armature.data
     inventory = limb_ik._validate_inventory(armature)
     foot = foot_controls.collection_members(armature)
@@ -291,7 +329,6 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
              if c.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
              and c.get(limb_ik.ROLE_KEY) == "CONTROL_COLLECTION"]
     if generated:
-        # Collection ownership is also the remove/rebuild contract, including helpers.
         if len(owned) != 1 or {b.name for b in owned[0].bones} != generated:
             raise ValueError("The generated Controls collection needs a valid complete rig.")
     elif owned:
@@ -300,61 +337,97 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
     hair_groups = [c for c in data.collections_all if c.get(hair.OWNER_KEY) == hair.OWNER_VALUE]
     if len(hair_groups) > 1:
         raise ValueError("Multiple owned Hair collections need repair first.")
+    # An explicitly named native Hair group is also a reliable authored boundary.
+    named_hair = data.collections_all.get("Hair")
+    hair_group = hair_groups[0] if hair_groups else named_hair
+    if hair_group is not None:
+        stack = [hair_group]
+        while stack:
+            current = stack.pop()
+            hair_names.update(b.name for b in current.bones)
+            stack.extend(current.children)
+    controls = owned[0] if owned else None
+    body = body_collection(armature)
+    other = data.collections_all.get(OTHER_NAME)
+    if other is not None and other.get(GROUP_KEY) != OTHER_NAME:
+        other = None
+    original = data.collections_all.get("Original")
+    if original is not None and original.get(GROUP_KEY) != "Original":
+        original = None
     if not compact:
-        for name in BODY_NAMES:
+        for name, expected in (("Body", body), (INTERNAL_NAME, controls), (OTHER_NAME, other), ("Original", original)):
             existing = data.collections_all.get(name)
-            if (existing is not None and existing not in owned
-                    and existing.get(GROUP_KEY) != name):
-                raise ValueError(f"Bone Collection '{name}' belongs to an artist-created group; keep it or organize again explicitly.")
-        existing_hair = data.collections_all.get("Hair")
-        if hair_names and existing_hair is not None and existing_hair not in hair_groups:
+            if existing is not None and existing != expected:
+                raise ValueError(f"Bone Collection '{name}' belongs to an artist-created group; organize again explicitly to fold it.")
+        if hair_groups and named_hair is not None and named_hair != hair_group:
             raise ValueError("Bone Collection 'Hair' belongs to another group.")
-    native = {b.name for b in data.bones} - generated - hair_names
-    desired = {"Original": native, "Controls": generated,
-               "Animation": _animation_names(armature, inventory, native, foot, torso, eyes, spine)}
+    native = _native_body_names(armature, generated, hair_names)
+    remaining = {b.name for b in data.bones} - generated - hair_names - native
+    desired = {"Body": _animation_names(armature, inventory, native, foot, torso, eyes, spine),
+               INTERNAL_NAME: generated, OTHER_NAME: remaining, "Original": native}
     before = snapshot_layout(armature)
     try:
-        controls = owned[0] if owned else None
-        hair_group = hair_groups[0] if hair_groups else None
-        # Explicit organization folds old subdivisions. Later lifecycle updates
-        # leave any new artist-created groups alone.
-        keep = {c.as_pointer() for c in (controls, hair_group) if c is not None}
+        # Explicit organization folds old subdivisions. Routine rig lifecycle
+        # updates retain later artist groups and the generated ownership object.
+        keep = {c.as_pointer() for c in (controls, hair_group, body, original, other) if c is not None}
         for c in reversed(tuple(data.collections_all)):
             if c.as_pointer() in keep:
                 c.parent = None
-            elif compact or c.get(GROUP_KEY) == "Controls":
+            elif compact or c.get(GROUP_KEY) in {"Controls", "Animation", INTERNAL_NAME, OTHER_NAME}:
                 data.collections.remove(c)
+        if body is None:
+            body = data.collections.new("Body")
+        body.name, body.parent = "Body", None
+        if original is None:
+            original = data.collections.new("Original")
+        original.name, original.parent = "Original", None
+        groups = {"Body": body, "Original": original}
         if controls is not None:
-            controls.name = "Controls"
-        for name in BODY_NAMES:
-            collection = controls if name == "Controls" and controls else data.collections_all.get(name)
-            if collection is None:
-                collection = data.collections.new(name)
+            controls.name, controls.parent = INTERNAL_NAME, body
+            groups[INTERNAL_NAME] = controls
+        # An unassigned bone is visible in Blender. Keep identifiable foreign
+        # machinery in a private group without claiming our rig ownership.
+        if remaining:
+            if other is None:
+                other = data.collections.new(OTHER_NAME)
+            other.name, other.parent = OTHER_NAME, body
+            groups[OTHER_NAME] = other
+        elif other is not None:
+            data.collections.remove(other)
+        for name, collection in groups.items():
             collection[GROUP_KEY] = name
             _assign_exact(collection, data, desired[name])
             if compact:
-                collection.is_visible = name == "Animation"
+                collection.is_visible = name == "Body"
                 collection.is_solo = False
-            elif visibility and name in visibility:
-                collection.is_visible, collection.is_solo = visibility[name]
-        if hair_names:
+                collection.is_expanded = False
+            else:
+                previous_name = "Animation" if name == "Body" else "Controls" if name == INTERNAL_NAME else name
+                flags = (visibility or {}).get(name, (visibility or {}).get(previous_name))
+                if flags is not None:
+                    collection.is_visible, collection.is_solo = flags
+                elif name in {INTERNAL_NAME, OTHER_NAME}:
+                    collection.is_visible, collection.is_solo = False, False
+        if hair_names or hair_group is not None:
             if hair_group is None:
                 hair_group = data.collections.new("Hair")
                 hair_group[hair.OWNER_KEY] = hair.OWNER_VALUE
-            hair_group.name = "Hair"
+            hair_group.name, hair_group.parent = "Hair", None
+            hair_group[GROUP_KEY] = "Hair"
             _assign_exact(hair_group, data, hair_names)
-        # Keep the rig's own hide/select flags, including visible non-selectable
-        # Pole connector guides. Collection organization never changes the rig.
-        order = [data.collections_all[name] for name in BODY_NAMES]
-        if hair_group is not None:
-            order.append(hair_group)
-        for index, collection in enumerate(order):
+            if compact:
+                hair_group.is_visible, hair_group.is_solo = True, False
+        front = [body] + ([hair_group] if hair_group is not None else [])
+        for index, collection in enumerate(front):
             data.collections.move(list(data.collections).index(collection), index)
+        # Original stays last, including when later artist groups are retained.
+        data.collections.move(list(data.collections).index(original), len(data.collections)-1)
         if compact:
-            data.collections.active = data.collections_all["Animation"]
-        data[PROFILE_KEY] = 1
+            data.collections.active = body
+        data[PROFILE_KEY] = 2
         data[AUTO_KEY] = 1
         _save_backup(armature, original_layout or before)
+        _FRAME_CACHE.pop(armature.as_pointer(), None)
         return {name: len(names) for name, names in desired.items()}
     except Exception:
         restore_layout(armature, before)
@@ -362,6 +435,7 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
 
 
 def capture_managed_layout(armature):
+    _structural_edit_guard(armature)
     return snapshot_layout(armature)
 
 
@@ -390,10 +464,11 @@ def _frame_visibility(scene, _depsgraph=None):
         if (armature.type != "ARMATURE" or armature.mode == "EDIT"
                 or armature.library or armature.data.library or armature.data.users != 1
                 or not armature.is_editable or not armature.data.get(PROFILE_KEY)
-                or armature.data.get(AUTO_KEY) == 0 or not has_layout_backup(armature)):
+                or armature.data.get(AUTO_KEY) == 0 or not has_layout_backup(armature)
+                or VIEW_KEY in armature.data):
             continue
-        collection = armature.data.collections_all.get("Animation")
-        if collection is None or collection.get(GROUP_KEY) != "Animation":
+        collection = body_collection(armature)
+        if collection is None:
             continue
         modes = tuple((pb.name, ("IK" if pb.get("ik_fk", 1.0) >= 1.0 - 1.0e-6
                                 else "FK" if pb.get("ik_fk", 1.0) <= 1.0e-6 else "BLEND")
@@ -411,7 +486,7 @@ def _frame_visibility(scene, _depsgraph=None):
         _FRAME_CACHE[key] = state
         try:
             backup = _load_backup(armature)
-            saved = next(record for record in backup["managed"] if record["name"] == "Animation")
+            saved = next(record for record in backup["managed"] if record["name"] == collection.name)
             current = _collection_record(collection)
             if any(current[field] != saved[field] for field in ("parent", "properties", "bones")):
                 # A user-repurposed collection is theirs; a frame change never overwrites it.
@@ -423,12 +498,19 @@ def _frame_visibility(scene, _depsgraph=None):
             spine = spine_ik_fk.collection_members(armature)
             generated = ({bone.name for bone in inventory["bones"]} | foot["generated"] | torso["generated"]
                          | eyes["generated"] | spine["generated"] | root_control.collection_members(armature)["generated"])
-            native = {bone.name for bone in armature.data.bones
-                      if bone.name not in generated and bone.get(hair.OWNER_KEY) != hair.OWNER_VALUE}
+            hair_names = {b.name for b in armature.data.bones if b.get(hair.OWNER_KEY) == hair.OWNER_VALUE}
+            hair_group = armature.data.collections_all.get("Hair")
+            if hair_group is not None:
+                stack = [hair_group]
+                while stack:
+                    current = stack.pop()
+                    hair_names.update(b.name for b in current.bones)
+                    stack.extend(current.children)
+            native = _native_body_names(armature, generated, hair_names)
             desired = _animation_names(armature, inventory, native, foot, torso, eyes, spine)
             if desired != set(membership):
                 _assign_exact(collection, armature.data, desired)
-                # Update only our Animation record, not artist edits to other collections.
+                # Update only our Body record, not artist edits to other collections.
                 saved.update(_collection_record(collection))
                 _write_backup(armature, backup)
             _FRAME_CACHE[key] = (modes, tuple(sorted(desired)))
@@ -453,7 +535,7 @@ def unregister_handlers():
 class CHARACTERDESIGNER_OT_simplify_bone_collections(Operator):
     bl_idname = "character_designer.simplify_bone_collections"
     bl_label = "Simplify Bone Collections"
-    bl_description = "Original, Controls, and Animation with native fallback; Hair and Skirt stay separate"
+    bl_description = "Organize Body and Hair with Original last; Dress stays on its own rig and internal controls stay hidden"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -484,7 +566,7 @@ class CHARACTERDESIGNER_OT_simplify_bone_collections(Operator):
                 restore_layout(obj, saved)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        self.report({"INFO"}, "Bone collections simplified; Animation uses controls where available and original bones elsewhere.")
+        self.report({"INFO"}, "Bone collections organized: Body uses available controls, Hair stays separate, and Original is last.")
         return {"FINISHED"}
 
 

@@ -19,7 +19,7 @@ before = fixtures.native(rig)
 assert bpy.ops.character_designer.root_control(action='BUILD') == {'FINISHED'}
 root = root_control.get_record(rig)
 assert root and rig.data.bones.active.name == root['master']
-assert root['master'] in rig.data.collections_all['Animation'].bones
+assert root['master'] in rig.data.collections_all['Body'].bones
 assert rig.pose.bones[root['master']].color.palette == 'CUSTOM'
 assert bpy.ops.character_designer.root_control(action='BUILD') == {'FINISHED'}
 assert root_control.get_record(rig) == root
@@ -40,13 +40,13 @@ target = rig.pose.bones[arm['target'].name]
 target['ik_fk'] = .5
 limb_ik_fk._update(bpy.context, rig)
 bone_collections._frame_visibility(bpy.context.scene)
-members = set(rig.data.collections_all['Animation'].bones.keys())
+members = set(rig.data.collections_all['Body'].bones.keys())
 assert set(arm['chain']) <= members
 assert {arm['target'].name, arm['pole'].name, root['master']} <= members
 target['ik_fk'] = 1.0
 limb_ik_fk._update(bpy.context, rig)
 bone_collections._frame_visibility(bpy.context.scene)
-assert not set(arm['chain']) & set(rig.data.collections_all['Animation'].bones.keys())
+assert not set(arm['chain']) & set(rig.data.collections_all['Body'].bones.keys())
 
 class Layout:
     def __init__(self): self.buttons = []; self.fields = []
@@ -61,8 +61,9 @@ class Layout:
 layout = Layout()
 body_controls_ui.draw_root_controls(layout, bpy.context)
 body_controls_ui.draw_fk_visuals(layout, bpy.context)
-assert ('character_designer.root_control', 'Root · Whole Body') in layout.buttons
-assert '["uniform_scale"]' in layout.fields
+assert ('character_designer.root_control', 'Remove Whole Body Root') in layout.buttons
+assert ('character_designer.root_control', 'Root · Whole Body') not in layout.buttons
+assert '["uniform_scale"]' not in layout.fields and 'scale' not in layout.fields
 assert ('character_designer.limb_fk_visuals', 'Remove FK Rings') in layout.buttons
 
 assert bpy.ops.character_designer.limb_fk_visuals(action='FIT_IK') == {'FINISHED'}

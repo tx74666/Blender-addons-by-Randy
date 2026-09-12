@@ -747,14 +747,12 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             col.label(text='Blank fields use Character Setup.')
         if record:
             row = layout.row()
-            row.alert = True
             row.enabled = not attachment_error and desired is not None and not (actual['physics'] and different)
             row.operator('character_designer.skirt_update_attachment', icon='CONSTRAINT_BONE')
             if actual['physics'] and different:
                 layout.label(text='Existing physics prevents changing attachment.', icon='INFO')
             if actual['has_backup']:
                 row = layout.row()
-                row.alert = True
                 row.operator('character_designer.skirt_restore_attachment', icon='LOOP_BACK')
         if not record:
             row = layout.row(align=True)
@@ -763,7 +761,6 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             layout.prop(settings, "physics")
             row = layout.row()
             row.scale_y = 1.4
-            row.alert = True
             row.enabled = not attachment_error
             row.operator("character_designer.create_skirt_setup", icon="OUTLINER_OB_ARMATURE")
             layout.label(text="Fits the waist, hem, and wire cage.", icon="INFO")

@@ -100,6 +100,8 @@ class CHARACTERDESIGNER_PT_eye_controls(Panel):
 
     def draw(self, context):
         layout, rig = self.layout, context.object
+        from .body_setup_ui import advanced
+        show_advanced = advanced(context)
         if rig is None or rig.type != 'ARMATURE':
             layout.label(text='Select the main armature.', icon='INFO')
             return
@@ -114,12 +116,16 @@ class CHARACTERDESIGNER_PT_eye_controls(Panel):
                     op = row.operator('character_designer.eye_controls', text=label)
                     op.action, op.bone = 'SELECT', record['targets'][side]
                 layout.label(text='G: aim; Alt+G: reset selected controls.', icon='INFO')
-                layout.operator('character_designer.eye_controls', text='Display Spacing...',
-                                icon='EMPTY_ARROWS').action = 'SPACING'
-                row = layout.row()
-                row.alert = True
-                row.operator('character_designer.eye_controls', text='Remove Eye Controls', icon='TRASH').action = 'REMOVE'
+                if show_advanced:
+                    layout.operator('character_designer.eye_controls', text='Display Spacing...',
+                                    icon='EMPTY_ARROWS').action = 'SPACING'
+                    row = layout.row()
+                    row.alert = True
+                    row.operator('character_designer.eye_controls', text='Remove Eye Controls', icon='TRASH').action = 'REMOVE'
             else:
+                if not show_advanced:
+                    layout.label(text='Included in Body Setup', icon='INFO')
+                    return
                 try:
                     head, left, right = eye_controls.resolve_eyes(context, rig)
                     layout.label(text=left + ' / ' + right, icon='BONE_DATA')
@@ -127,7 +133,6 @@ class CHARACTERDESIGNER_PT_eye_controls(Panel):
                 except (ValueError, RuntimeError, limb_ik.LimbIKError):
                     layout.label(text='Choose eye bones when adding controls.', icon='INFO')
                 row = layout.row()
-                row.alert = True
                 row.operator('character_designer.eye_controls', text='Add Eye Controls', icon='CON_TRACKTO').action = 'BUILD'
         except (ValueError, RuntimeError, KeyError, limb_ik.LimbIKError) as exc:
             layout.label(text=str(exc), icon='ERROR')

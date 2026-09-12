@@ -46,8 +46,8 @@ for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
     assert bpy.ops.character_designer.foot_controls(action='SELECT_TOE') == {'FINISHED'}
     assert rig.data.bones.active.name == record['toe_control']
     assert bpy.ops.character_designer.limb_ik_fk_switch(mode='FK') == {'FINISHED'}
-    assert record['toe_control'] in {b.name for b in rig.data.collections['Animation'].bones}
-    assert record['roll'] not in {b.name for b in rig.data.collections['Animation'].bones}
+    assert record['toe_control'] in {b.name for b in rig.data.collections_all['Body'].bones}
+    assert record['roll'] not in {b.name for b in rig.data.collections_all['Body'].bones}
     assert bpy.ops.character_designer.limb_ik_fk_switch(mode='IK') == {'FINISHED'}
     assert base.cancelled_result(bpy.ops.character_designer.limb_ik_rebuild) == {'CANCELLED'}
     assert base.cancelled_result(lambda: bpy.ops.character_designer.limb_ik_remove('EXEC_DEFAULT')) == {'CANCELLED'}
@@ -55,6 +55,6 @@ for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
     assert bpy.ops.character_designer.foot_controls(action='REMOVE') == {'FINISHED'}
     limb_ik_fk._verify(rig, desired)
     assert not foot_controls.records(rig)
-    assert record['toe'] in {b.name for b in rig.data.collections['Animation'].bones}
+    assert record['toe'] in {b.name for b in rig.data.collections_all['Body'].bones}
     print('PASS FOOT_UI', method, flush=True)
 print('FOOT_UI_PASSED', flush=True)

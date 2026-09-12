@@ -223,6 +223,9 @@ def _add_widget(context, armature, record, role, width, height):
         collection = bpy.data.collections.new(record['widget_collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'Eyes')
+        record['widget_collection'] = collection.name
     # Original analytic geometry: a pinched goggles contour and two clean rings.
     vertices = []
     for index in range(64):
@@ -286,6 +289,8 @@ def _delete_widgets(record):
     collection = bpy.data.collections.get(record['widget_collection'])
     if collection and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(bpy.context)
 
 
 def build(context, armature, head_name=None, left_name=None, right_name=None):

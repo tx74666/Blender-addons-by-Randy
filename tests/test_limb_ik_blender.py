@@ -524,12 +524,12 @@ def test_direct_preroll_minimal_build_and_remove_restores_exact_rest():
 
     inventory = limb_ik._validate_inventory(armature)
     expected_display = limb_ik.LIMB_SPEC["ARM"]["display"].format(side="L")
-    expected_bones = {"CTRL_hand_IK.L", "CTRL_elbow_pole.L", expected_display}
+    expected_bones = {"CTRL_hand_IK.L", "CTRL_elbow_pole.L", expected_display, "MCH_hand_rotation.L"}
     if inventory["schema"] != limb_ik.DIRECT_PREROLL_SCHEMA:
         raise AssertionError(f"Direct build used schema {inventory['schema']}")
     if {bone.name for bone in inventory["bones"]} != expected_bones:
         raise AssertionError(
-            "Direct build was not Target + Pole + one hidden display helper: "
+            "Direct build was not Target + Pole + hidden display/rotation references: "
             f"{[bone.name for bone in inventory['bones']]}"
         )
     if {record["role"] for _pb, _constraint, record in inventory["records"]} != {
@@ -545,7 +545,7 @@ def test_direct_preroll_minimal_build_and_remove_restores_exact_rest():
     unexpected_helpers = {
         bone.name
         for bone in inventory["bones"]
-        if bone.name.startswith(("MCH_", "ORI_", "VIS_")) and bone.name != expected_display
+        if bone.name.startswith(("MCH_", "ORI_", "VIS_")) and bone.name not in {expected_display, "MCH_hand_rotation.L"}
     }
     if (
         inventory["master"] is not None
@@ -604,7 +604,7 @@ def test_direct_preroll_incremental_build_all_and_method_mixing():
     if bpy.ops.character_designer.limb_ik_build_selected() != {"FINISHED"}:
         raise AssertionError(settings.last_message)
     first = limb_ik._validate_inventory(armature)
-    if len(first["bones"]) != 3 or len(first["records"]) != 4:
+    if len(first["bones"]) != 4 or len(first["records"]) != 4:
         raise AssertionError(
             "Selected Direct build was not exactly Target + Pole + hidden Pole display"
         )
@@ -633,7 +633,7 @@ def test_direct_preroll_incremental_build_all_and_method_mixing():
     inventory = limb_ik._validate_inventory(armature)
     if inventory["schema"] != limb_ik.DIRECT_PREROLL_SCHEMA or len(inventory["rigs"]) != 4:
         raise AssertionError("Direct Build All did not complete all four limbs")
-    if len(inventory["bones"]) != 12 or len(inventory["records"]) != 16:
+    if len(inventory["bones"]) != 14 or len(inventory["records"]) != 16:
         raise AssertionError(
             f"Direct Build All was not minimal: bones={len(inventory['bones'])}, records={len(inventory['records'])}"
         )
@@ -641,7 +641,7 @@ def test_direct_preroll_incremental_build_all_and_method_mixing():
     unexpected_helpers = {
         bone.name
         for bone in inventory["bones"]
-        if bone.name.startswith(("MCH_", "ORI_", "VIS_")) and bone.name not in display_names
+        if bone.name.startswith(("MCH_", "ORI_", "VIS_")) and bone.name not in display_names | {"MCH_hand_rotation.L", "MCH_hand_rotation.R"}
     }
     if inventory["master"] is not None or unexpected_helpers or len(display_names) != 4:
         raise AssertionError(
@@ -755,7 +755,7 @@ def test_direct_preroll_rebuild_stays_minimal_and_tamper_is_guarded():
     rebuilt = limb_ik._validate_inventory(armature)
     if (
         rebuilt["schema"] != limb_ik.DIRECT_PREROLL_SCHEMA
-        or len(rebuilt["bones"]) != 3
+        or len(rebuilt["bones"]) != 4
         or len(rebuilt["records"]) != 4
     ):
         raise AssertionError(
@@ -828,6 +828,7 @@ def test_legacy_direct_schema4_without_display_helper_rebuilds_to_schema5():
     display.bone.hide = False
     bpy.ops.object.mode_set(mode="EDIT")
     armature.data.edit_bones.remove(armature.data.edit_bones[display_name])
+    armature.data.edit_bones.remove(armature.data.edit_bones["MCH_hand_rotation.L"])
     bpy.ops.object.mode_set(mode="POSE")
     armature.data[limb_ik.SCHEMA_KEY] = limb_ik.LEGACY_DIRECT_PREROLL_SCHEMA
     del armature.data[limb_ik.TARGET_ROTATION_VERSION_KEY]
@@ -1380,7 +1381,7 @@ def test_build_selected_right_leg_and_build_all_atomic_completion():
     inventory = limb_ik._validate_inventory(armature)
     if set(inventory["rigs"]) != {(kind, side) for kind in limb_ik.KINDS for side in limb_ik.SIDES}:
         raise AssertionError("Build All did not complete every remaining limb")
-    if len(inventory["bones"]) != 37 or len(inventory["records"]) != 47:
+    if len(inventory["bones"]) != 39 or len(inventory["records"]) != 47:
         raise AssertionError("Build All completion produced an inexact current-schema inventory")
     for key, direction in configured.items():
         assert_rest_pole_direction(armature, key, direction, f"Build All {key}")
@@ -1430,6 +1431,7 @@ def test_build_arm_then_leg_and_exact_contract():
     expected = {
         "CTRL_master",
         "CTRL_hand_IK.L", "CTRL_elbow_pole.L", "CTRL_hand_IK.R", "CTRL_elbow_pole.R",
+        "MCH_hand_rotation.L", "MCH_hand_rotation.R",
         "VIS_elbow_pole_line.L", "MCH_elbow_pole_aim.L", "VIS_elbow_pole_line.R", "MCH_elbow_pole_aim.R",
         "MCH_upper_arm_IK.L", "MCH_forearm_IK.L", "ORI_upper_arm_IK.L", "ORI_forearm_IK.L",
         "MCH_upper_arm_IK.R", "MCH_forearm_IK.R", "ORI_upper_arm_IK.R", "ORI_forearm_IK.R",

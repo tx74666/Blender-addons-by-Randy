@@ -92,7 +92,7 @@ def test_default_fk_and_full_roundtrips():
             spine.switch(bpy.context, rig, 'IK')
             spine._verify_pose(rig, before)
             assert spine.mode_for_rig(rig) == 'IK'
-            animation = rig.data.collections_all['Animation']
+            animation = rig.data.collections_all['Body']
             assert rec['chest'] in animation.bones and rec['shape'] in animation.bones
             assert not (set(original['controls'].values()) | {original['bend']}) & set(animation.bones.keys())
             target = rig.pose.bones[rec['chest']]
@@ -105,8 +105,8 @@ def test_default_fk_and_full_roundtrips():
             spine.switch(bpy.context, rig, 'FK')
             spine._verify_pose(rig, current)
             assert spine.mode_for_rig(rig) == 'FK'
-            assert rec['chest'] not in rig.data.collections_all['Animation'].bones
-            assert set(original['controls'].values()) <= set(rig.data.collections_all['Animation'].bones.keys())
+            assert rec['chest'] not in rig.data.collections_all['Body'].bones
+            assert set(original['controls'].values()) <= set(rig.data.collections_all['Body'].bones.keys())
             rig.pose.bones[original['controls'][chain[1]]].rotation_euler.x += .035
             current = native(rig)
             spine.switch(bpy.context, rig, 'IK')

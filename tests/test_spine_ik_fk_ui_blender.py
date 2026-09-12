@@ -26,7 +26,7 @@ spine._verify_pose(rig, original)
 assert bpy.ops.character_designer.spine_ik_fk(action='SWITCH', mode='IK') == {'FINISHED'}
 assert rig.data.bones.active.name == record['chest']
 assert spine.mode_for_rig(rig) == 'IK'
-assert {record['chest'], record['shape']} <= set(rig.data.collections['Animation'].bones.keys())
+assert {record['chest'], record['shape']} <= set(rig.data.collections_all['Body'].bones.keys())
 spine._verify_pose(rig, original)
 for name in (record['chest'], record['shape']):
     assert bpy.ops.character_designer.spine_ik_fk(action='SELECT', bone=name) == {'FINISHED'}

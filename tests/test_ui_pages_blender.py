@@ -89,7 +89,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "limb_ik": rig,
         "eye_controls": rig,
         "forearm_twist": rig,
-        "limb_preroll": rig and limb_settings.build_method == "DIRECT_PREROLL",
+        "limb_preroll": rig and limb_settings.show_body_setup_advanced and limb_settings.build_method == "DIRECT_PREROLL",
         "reference": reference,
         "clothing": clothing,
         "hair_rig": hair_rig,
@@ -254,6 +254,9 @@ def assert_compact_limb_ik_panel():
         def column(self, **_kwargs):
             return self
 
+        def box(self):
+            return self
+
         def label(self, **_kwargs):
             return None
 
@@ -268,7 +271,6 @@ def assert_compact_limb_ik_panel():
         "character_designer.limb_ik_default_pole_direction",
         "character_designer.limb_ik_build_selected",
         "character_designer.limb_ik_build_all",
-        "character_designer.limb_ik_auto_align_target",
         "character_designer.limb_ik_rebuild",
         "character_designer.limb_ik_remove",
         "character_designer.simplify_bone_collections",
@@ -276,6 +278,8 @@ def assert_compact_limb_ik_panel():
         "character_designer.control_colors",
     )
     old_armature = settings.armature
+    old_advanced = settings.show_body_setup_advanced
+    settings.show_body_setup_advanced = True
     settings.armature = None
     try:
         for selection, fields in expected_fields.items():
@@ -283,7 +287,7 @@ def assert_compact_limb_ik_panel():
             layout = LayoutProxy()
             panel = type("PanelProxy", (), {"layout": layout})()
             limb_ik.CHARACTERDESIGNER_PT_limb_ik.draw(panel, bpy.context)
-            if tuple(layout.properties) != ("selected_limb", "build_method", *fields):
+            if tuple(layout.properties) != ("selected_limb", "show_body_setup_advanced", "build_method", *fields):
                 raise AssertionError(
                     f"Limb IK {selection} drew unexpected fields: {layout.properties}"
                 )
@@ -406,6 +410,7 @@ def assert_compact_limb_ik_panel():
             limb_ik._active_has_owned_side_rig = original_owned_check
     finally:
         settings.armature = old_armature
+        settings.show_body_setup_advanced = old_advanced
         settings.build_method = "ROLL_DECOUPLED"
         for _selection, (property_name, expected_default) in expected_direction_properties.items():
             setattr(settings, property_name, expected_default)

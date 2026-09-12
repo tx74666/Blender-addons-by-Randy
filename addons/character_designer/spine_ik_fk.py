@@ -317,6 +317,9 @@ def _add_widget(context, armature, record, role, width):
         collection = bpy.data.collections.new(record['widget_collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'Spine IK')
+        record['widget_collection'] = collection.name
     count = 48 if role == 'CHEST' else 4
     vertices = [(math.cos(i * math.tau / count) * width, 0.0,
                  math.sin(i * math.tau / count) * width * (0.62 if role == 'CHEST' else 0.75)) for i in range(count)]
@@ -359,6 +362,8 @@ def _delete_widgets(record):
     collection = bpy.data.collections.get(record['widget_collection'])
     if collection and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(bpy.context)
 
 
 def _delete_graph(context, armature, record, *, keep_widgets=False):

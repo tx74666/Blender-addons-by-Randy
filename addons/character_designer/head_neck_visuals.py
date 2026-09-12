@@ -38,8 +38,8 @@ def _owned(item, record, role):
             and item.get(ID_KEY) == record['id'] and item.get(ROLE_KEY) == role)
 
 
-def resolve_bones(context, armature, head_name=None, neck_name=None):
-    """Use the shared Head mapping and its native Neck parent, or explicit names."""
+def resolve_bones(context, armature, head_name=None, neck_name=None, *, allow_partial=False):
+    """Resolve Head/Neck; partial mode permits Head without a recognized Neck."""
     try:
         head_name = character_setup.resolve_bone(context, 'HEAD', armature, head_name or '')
     except ValueError as exc:
@@ -49,10 +49,13 @@ def resolve_bones(context, armature, head_name=None, neck_name=None):
     if (neck is None or head.parent != neck or head == neck
             or (not neck_name and character_setup._bone_name(neck.name) not in
                 {'neck', 'neck.001', 'neck_01', 'neck01'})):
-        raise _error('Choose the native Neck bone that directly parents the mapped Head.')
-    if any(bone.get(OWNER_KEY) or bone.length < 1e-5 for bone in (head, neck)):
+        if allow_partial and not neck_name:
+            neck = None
+        else:
+            raise _error('Choose the native Neck bone that directly parents the mapped Head.')
+    if any(bone.get(OWNER_KEY) or bone.length < 1e-5 for bone in (head, neck) if bone is not None):
         raise _error('Choose existing native Head and Neck bones with usable lengths.')
-    return head.name, neck.name
+    return head.name, neck.name if neck else None
 
 
 def get_record(armature):
@@ -61,8 +64,12 @@ def get_record(armature):
         return None
     try:
         record = json.loads(raw)
+        expected = {record['head']} | ({record['neck']} if record['neck'] else set())
         if (record['version'] != VERSION or record['id'] != armature.data.get(ID_KEY)
-                or set(record['bindings']) != {record['head'], record['neck']}
+                or not isinstance(record['head'], str) or not record['head']
+                or (record['neck'] is None and record.get('partial') is not True)
+                or (record['neck'] is not None and (not isinstance(record['neck'], str) or not record['neck']))
+                or set(record['bindings']) != expected
                 or record['head'] == record['neck']):
             raise ValueError('unsupported record')
         for name, entry in record['bindings'].items():
@@ -169,7 +176,8 @@ def _bounds(points):
 
 def _fit(context, armature, head, neck, body_source, bounds):
     forward = _forward(armature, head)
-    head_frame, neck_frame = _frame(head, forward), _frame(neck, forward)
+    head_frame = _frame(head, forward)
+    neck_frame = _frame(neck, forward) if neck else None
     body = _body(context, armature, body_source)
     length = head.length
     points = _points(armature, body, head.name, head_frame)
@@ -191,6 +199,11 @@ def _fit(context, armature, head, neck, body_source, bounds):
         low, high, fitted = [-.65*length, -.85*length, -.1*length], [.65*length, .65*length, 1.55*length], False
     margin = length*.055
     low, high = [value-margin for value in low], [value+margin for value in high]
+    result = {'body': body.name if body else '', 'method': 'BOUNDS' if bounds is not None else 'HEAD_WEIGHTS' if fitted else 'BONE',
+              'point_count': len(points), 'bounds': [low, high],
+              'head_frame': [list(row) for row in head_frame]}
+    if neck is None:
+        return result
     neck_points = [p for p in _points(armature, body, neck.name, neck_frame, .25)
                    if .05*neck.length <= p.z <= .65*neck.length]
     if len(neck_points) >= 8:
@@ -199,10 +212,8 @@ def _fit(context, armature, head, neck, body_source, bounds):
         radius = ((nhigh[0]-nlow[0])*.56, (nhigh[1]-nlow[1])*.56)
     else:
         center, radius = (0, 0, .35*neck.length), ((high[0]-low[0])*.25, (high[1]-low[1])*.22)
-    return {'body': body.name if body else '', 'method': 'BOUNDS' if bounds is not None else 'HEAD_WEIGHTS' if fitted else 'BONE',
-            'point_count': len(points), 'bounds': [low, high],
-            'head_frame': [list(row) for row in head_frame], 'neck_frame': [list(row) for row in neck_frame],
-            'neck_center': list(center), 'neck_radius': list(radius)}
+    result.update(neck_frame=[list(row) for row in neck_frame], neck_center=list(center), neck_radius=list(radius))
+    return result
 
 
 def _rounded_point(point, low, high, radius):
@@ -273,6 +284,9 @@ def _create_widget(context, armature, record, name, entry):
         collection = bpy.data.collections.new(record['collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'Head & Neck')
+        record['collection'] = collection.name
     mesh = bpy.data.meshes.new(entry['mesh'])
     _tag(mesh, record, entry['role'])
     vertices, edges = _geometry(entry['role'], record['fit'])
@@ -302,25 +316,31 @@ def _delete_resources(record):
     collection = bpy.data.collections.get(record['collection'])
     if _owned(collection, record, 'COLLECTION') and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(bpy.context)
 
 
-def build(context, armature, *, head_name=None, neck_name=None, body_source=None, bounds=None):
+def build(context, armature, *, head_name=None, neck_name=None, body_source=None, bounds=None, allow_partial=False):
     """Replace Head/Neck displays explicitly, preserving artist shapes and colors.
 
     Optional bounds are an armature-space (minimum, maximum) head box.
     Existing native pose animation is allowed; animated display channels are not.
+    Partial mode creates only Head when no recognized Neck is present.
     """
     _active(context, armature)
     if previous := validate(armature):
         return previous
-    head_name, neck_name = resolve_bones(context, armature, head_name, neck_name)
-    if any(visuals._animated_display(armature, armature.pose.bones[name]) for name in (head_name, neck_name)):
+    head_name, neck_name = resolve_bones(context, armature, head_name, neck_name, allow_partial=allow_partial)
+    roles = [('HEAD', head_name)] + ([('NECK', neck_name)] if neck_name else [])
+    if any(visuals._animated_display(armature, armature.pose.bones[name]) for _role, name in roles):
         raise _error('Head/Neck custom-shape display has animation or drivers; preserve those channels first.')
-    fit = _fit(context, armature, armature.data.bones[head_name], armature.data.bones[neck_name], body_source, bounds)
+    fit = _fit(context, armature, armature.data.bones[head_name], armature.data.bones.get(neck_name or ''), body_source, bounds)
     record = {'version': VERSION, 'id': uuid.uuid4().hex, 'head': head_name, 'neck': neck_name, 'bindings': {}, 'fit': fit}
+    if neck_name is None:
+        record['partial'] = True
     record['collection'] = 'CD_Head_Neck_Widgets_' + record['id'][:10]
     before, refs = {}, {}
-    for role, name in (('HEAD', head_name), ('NECK', neck_name)):
+    for role, name in roles:
         pb = armature.pose.bones[name]
         before[name] = _limb()._pose_shape_runtime_state(pb)
         if pb.custom_shape:

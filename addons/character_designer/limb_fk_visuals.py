@@ -139,6 +139,9 @@ def _create_widget(context, armature, record, name, entry):
         collection = bpy.data.collections.new(record['collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'FK Rings')
+        record['collection'] = collection.name
     mesh = bpy.data.meshes.new(entry['mesh'])
     entry['mesh'] = mesh.name
     _tag(mesh, record, name)
@@ -170,6 +173,8 @@ def _delete_resources(record, names):
     collection = bpy.data.collections.get(record['collection'])
     if collection is not None and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(bpy.context)
 
 
 def _verify_pose(armature, expected):

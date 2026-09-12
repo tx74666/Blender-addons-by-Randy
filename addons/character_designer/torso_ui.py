@@ -112,6 +112,8 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
     def draw(self, context):
         layout = self.layout
         rig = context.active_object
+        from .body_setup_ui import advanced
+        show_advanced = advanced(context)
         if rig is None or rig.type != 'ARMATURE':
             layout.label(text='Select the main armature.', icon='INFO')
             return
@@ -151,17 +153,20 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
                     layout.label(text='Straight spine: bend Shape slightly first.')
                 if extension:
                     layout.operator('character_designer.spine_ik_fk', text='Reset Spine Pose', icon='LOOP_BACK').action = 'RESET'
+                    if show_advanced:
+                        row = layout.row()
+                        row.alert = True
+                        row.operator('character_designer.spine_ik_fk', text='Remove Spine IK / FK', icon='TRASH').action = 'REMOVE'
+                elif show_advanced:
                     row = layout.row()
-                    row.alert = True
-                    row.operator('character_designer.spine_ik_fk', text='Remove Spine IK / FK', icon='TRASH').action = 'REMOVE'
-                else:
-                    row = layout.row()
-                    row.alert = True
                     row.operator('character_designer.spine_ik_fk', text='Add Spine IK / FK', icon='CON_KINEMATIC').action = 'BUILD'
                     row = layout.row()
                     row.alert = True
                     row.operator('character_designer.torso_controls', text='Remove Spine Controls', icon='TRASH').action = 'REMOVE'
             else:
+                if not show_advanced:
+                    layout.label(text='Included in Body Setup', icon='INFO')
+                    return
                 layout.label(text='Uses your existing spine and Hips.', icon='BONE_DATA')
                 row = layout.row()
                 row.enabled = context.mode in {'OBJECT', 'POSE'}

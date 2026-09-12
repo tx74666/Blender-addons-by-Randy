@@ -35,6 +35,9 @@ def check_pivots(method, selected):
         assert rig.data.bones[name].head_local == values[0]
         assert rig.data.bones[name].tail_local == values[1]
         assert limb_ik._rotation_error(rig.data.bones[name].matrix_local, values[2]) < 1e-5
+    # Ground-contact pivots are the Manual contract; Auto inherits the shin.
+    limb_ik._set_auto_align_selected_target(bpy.context, rig,
+        bpy.context.window_manager.character_designer_limb_ik, False)
     roll = rig.pose.bones[record['roll']]
     toe = rig.pose.bones[record['toe_control']]
     ankle = rig.pose.bones[native_foot]
@@ -76,6 +79,8 @@ def test_natural_rotation_matches_input_axes():
         for selected in ('LEFT_LEG', 'RIGHT_LEG'):
             rig, key, data = fixture(method, selected, toes=True)
             record = feet.build(bpy.context, rig, key)
+            limb_ik._set_auto_align_selected_target(bpy.context, rig,
+                bpy.context.window_manager.character_designer_limb_ik, False)
             roll = rig.pose.bones[record['roll']]
             foot = rig.pose.bones[record['chain'][2]]
             for axis in (0, 1):
@@ -399,6 +404,135 @@ def test_roll_display_errors_are_atomic():
     assert rig.data[feet.RECORD_KEY] == raw and feet._roll_visual_state(roll) == visual
 
 
+def _legacy_rotation_record(rig, key):
+    record = feet.get_record(rig, key)
+    for role, axis, expression, variable in feet._rotation_driver_plan(record['side'], natural=False):
+        path = rig.pose.bones[record['bones'][role]].path_from_id('rotation_euler')
+        entry = next(e for e in record['drivers'] if e['path'] == path and e['index'] == axis)
+        curve = next(c for c in rig.animation_data.drivers if c.data_path == path and c.array_index == axis)
+        entry['expression'] = curve.driver.expression = expression
+    record.pop('rotation_direction', None)
+    feet._write_records(rig, dict(feet.records(rig), **{record['side']: record}))
+    update(rig)
+    return record
+
+
+def _refusal(call, message):
+    try:
+        call()
+    except limb_ik.LimbIKError as exc:
+        assert message.casefold() in str(exc).casefold(), str(exc)
+        return
+    raise AssertionError('Expected refusal: '+message)
+
+
+def test_legacy_direction_update_preserves_pose_and_removal():
+    for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
+        for selected in ('LEFT_LEG', 'RIGHT_LEG'):
+            for legacy_roll in (-.3, .3, 1.0):
+                rig, key, data = fixture(method, selected, toes=True)
+                feet.build(bpy.context, rig, key)
+                old_record = _legacy_rotation_record(rig, key)
+                roll = rig.pose.bones[old_record['roll']]
+                roll.rotation_euler.x, roll.rotation_euler.y = legacy_roll, .17
+                update(rig)
+                pose = {pb.name: pb.matrix.copy() for pb in rig.pose.bones if pb != roll}
+                rests = {b.name: b.matrix_local.copy() for b in rig.data.bones}
+                displays = {pb.name: limb_ik._pose_shape_runtime_state(pb) for pb in rig.pose.bones}
+                widgets = {obj.name: tuple(tuple(v.co) for v in obj.data.vertices)
+                           for obj in bpy.data.objects if obj.get(feet.OWNER_KEY) == feet.OWNER_VALUE and obj.type == 'MESH'}
+                wire = _display_vertices(rig, roll)
+                assert feet.build(bpy.context, rig, key) == old_record
+                result = feet.update_rotation_direction(bpy.context, rig, key)
+                assert result['rotation_direction'] == 'NATURAL'
+                assert abs(roll.rotation_euler.x+legacy_roll) < 1e-6
+                assert abs(roll.rotation_euler.y-(.17 if key[1] == 'L' else -.17)) < 1e-6
+                limb_ik_fk._verify(rig, pose)
+                assert all(rig.data.bones[n].matrix_local == m for n,m in rests.items())
+                assert all(limb_ik._pose_shape_runtime_state(rig.pose.bones[n]) == value for n,value in displays.items())
+                assert all(tuple(tuple(v.co) for v in bpy.data.objects[n].data.vertices) == values for n,values in widgets.items())
+                assert max((a-b).length for a,b in zip(wire, _display_vertices(rig, roll))) < 1e-5
+                normalized = json.loads(json.dumps(result))
+                normalized.pop('rotation_direction')
+                for after, before in zip(normalized['drivers'], old_record['drivers']):
+                    after['expression'] = before['expression']
+                assert normalized == old_record
+                euler = roll.rotation_euler.copy()
+                assert feet.update_rotation_direction(bpy.context, rig, key) == result
+                assert roll.rotation_euler == euler
+                if method == 'DIRECT_PREROLL' and selected == 'RIGHT_LEG' and legacy_roll == .3:
+                    name = rig.name
+                    with tempfile.TemporaryDirectory(prefix='cd-foot-direction-') as directory:
+                        path = os.path.join(directory, 'foot.blend')
+                        bpy.ops.wm.save_as_mainfile(filepath=path)
+                        bpy.ops.wm.open_mainfile(filepath=path)
+                        rig = bpy.data.objects[name]
+                        assert feet.validate(rig)[key[1]] == result
+                        assert feet.update_rotation_direction(bpy.context, rig, key) == result
+                feet.remove(bpy.context, rig, key)
+                limb_ik_fk._verify(rig, {n:m for n,m in pose.items() if n in rig.pose.bones and rig.data.bones[n].use_deform})
+
+
+def test_legacy_direction_update_guards_and_rollback():
+    rig, key, data = fixture('DIRECT_PREROLL', 'RIGHT_LEG', toes=True)
+    feet.build(bpy.context, rig, key)
+    record = _legacy_rotation_record(rig, key)
+    roll = rig.pose.bones[record['roll']]
+    roll.rotation_euler = (.3, -.16, 0)
+    update(rig)
+    old_raw, old_rotation = rig.data[feet.RECORD_KEY], roll.rotation_euler.copy()
+    old_drivers = [(c, c.driver.expression) for c in rig.animation_data.drivers]
+    old_pose = {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
+    def untouched():
+        assert rig.data[feet.RECORD_KEY] == old_raw and roll.rotation_euler == old_rotation
+        assert all(c.driver.expression == expression for c, expression in old_drivers)
+        limb_ik_fk._verify(rig, old_pose)
+    roll.keyframe_insert(data_path='rotation_euler', frame=1)
+    action = rig.animation_data.action
+    _refusal(lambda: feet.update_rotation_direction(bpy.context, rig, key), 'animation')
+    untouched()
+    assert rig.animation_data.action == action
+    rig.animation_data.action = None
+    input_driver = roll.driver_add('rotation_euler', 0)
+    input_driver.driver.expression = '0.3'
+    _refusal(lambda: feet.update_rotation_direction(bpy.context, rig, key), 'driver')
+    untouched()
+    roll.driver_remove('rotation_euler', 0)
+    artist = bpy.data.objects.new('Reads roll input', None)
+    bpy.context.scene.collection.objects.link(artist)
+    artist['follow'] = 0.
+    curve = artist.driver_add('["follow"]')
+    variable = curve.driver.variables.new()
+    variable.name, variable.type = 'roll', 'SINGLE_PROP'
+    variable.targets[0].id = rig
+    variable.targets[0].data_path = roll.path_from_id('rotation_euler')+'[0]'
+    curve.driver.expression = 'roll'
+    _refusal(lambda: feet.update_rotation_direction(bpy.context, rig, key), 'reads')
+    untouched()
+    artist.driver_remove('["follow"]')
+    anchor = roll.custom_shape_transform
+    roll.custom_shape_transform = None
+    _refusal(lambda: feet.update_rotation_direction(bpy.context, rig, key), 'Fit')
+    untouched()
+    roll.custom_shape_transform = anchor
+    verify = feet._verify_pose
+    def fail(*args):
+        raise RuntimeError('Injected direction migration failure')
+    feet._verify_pose = fail
+    try:
+        try:
+            feet.update_rotation_direction(bpy.context, rig, key)
+        except RuntimeError as exc:
+            assert 'Injected' in str(exc)
+        else:
+            raise AssertionError('Injected migration failure ignored')
+    finally:
+        feet._verify_pose = verify
+    untouched()
+    assert feet.validate(rig)[key[1]] == record
+    feet.update_rotation_direction(bpy.context, rig, key)
+
+
 def main():
     base.ensure_registered()
     try:
@@ -407,13 +541,16 @@ def main():
                      test_removal_preserves_new_artist_dependencies,
                      test_roll_display_follows_solved_foot_and_fits_paired_shoes,
                      test_roll_display_legacy_restore_persists_and_unbound_reference,
-                     test_roll_display_errors_are_atomic):
+                     test_roll_display_errors_are_atomic,
+                     test_natural_rotation_matches_input_axes,
+                     test_legacy_direction_update_preserves_pose_and_removal,
+                     test_legacy_direction_update_guards_and_rollback):
             test()
             print('PASS', test.__name__, flush=True)
     finally:
         base.reset_scene()
         base.ensure_unregistered()
-    print('FOOT_CONTROLS_PASSED 8')
+    print('FOOT_CONTROLS_PASSED 11')
 
 
 if __name__ == '__main__':

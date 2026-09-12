@@ -53,7 +53,7 @@ for method in ('ROLL_DECOUPLED', 'DIRECT_PREROLL'):
     desired = limb_ik_fk._matrices(rig, names)
     assert bpy.ops.character_designer.torso_controls(action='REMOVE') == {'FINISHED'}
     limb_ik_fk._verify(rig, desired)
-    assert set(record['sources']) <= {b.name for b in rig.data.collections['Animation'].bones}
+    assert set(record['sources']) <= {b.name for b in rig.data.collections_all['Body'].bones}
     assert limb_ik._armature_digest(rig) == removal_digest
     limb_ik._validate_inventory(rig)
     print('PASS SPINE_UI', method, flush=True)

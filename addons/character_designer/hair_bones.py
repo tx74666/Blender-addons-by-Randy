@@ -313,7 +313,6 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
                     layout.label(text=f"{strands} strands / {strands} chains")
                 layout.prop(settings, "bone_count")
                 row = layout.row()
-                row.alert = True
                 row.enabled = target is not None and not bound
                 row.operator("character_designer.hair_bind_to_character", icon="BONE_DATA")
             if bound:

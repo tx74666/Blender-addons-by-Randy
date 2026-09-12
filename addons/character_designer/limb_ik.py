@@ -222,6 +222,7 @@ class LimbPlan:
     persist_pole_direction: bool = True
     preserve_pole_angle: bool = False
     auto_align: bool = DEFAULT_AUTO_ALIGN
+    auto_rotation_space: str = "PARENT_DELTA"
 
 
 def _is_enhanced_schema(schema):
@@ -579,6 +580,8 @@ class CharacterDesignerLimbIKState(PropertyGroup):
     left_foot_toe: StringProperty(name="Toe Bone", description="Optional toe-bone override; blank uses the unique toe child of the foot", options={"SKIP_SAVE"})
     right_foot_toe: StringProperty(name="Toe Bone", description="Optional toe-bone override; blank uses the unique toe child of the foot", options={"SKIP_SAVE"})
     show_foot_visual_options: BoolProperty(name="Arrow Placement", default=False, options={"SKIP_SAVE"})
+    show_body_setup_advanced: BoolProperty(name="Advanced", default=False, options={"SKIP_SAVE"},
+        description="Show individual setup, fitting, calibration and recovery tools")
     last_level: EnumProperty(items=(("NONE", "None", ""), ("INFO", "Info", ""), ("SUCCESS", "Success", ""), ("WARNING", "Warning", ""), ("ERROR", "Error", "")), default="NONE", options={"SKIP_SAVE"})
     last_message: StringProperty(default="", options={"SKIP_SAVE"})
 
@@ -1490,6 +1493,7 @@ def _apply_direct_preroll(context, armature, plans, transaction):
                 rebuilt,
                 rig_id=plan.rig_id,
                 auto_align=bool(plan.auto_align),
+                auto_rotation_space=plan.auto_rotation_space,
             )
         prepared.append(_direct_arm_target_frame(armature, prepared_plan))
         registry["limbs"][plan.rig_id] = applied_by_rig[plan.rig_id]
@@ -2490,6 +2494,7 @@ def _restore_source_widget_registry_snapshot(context, armature, raw, transaction
         context,
         saved["armature_id"],
         transaction,
+        armature=armature,
     )
     widgets = {
         kind: _ensure_widget(
@@ -2872,7 +2877,7 @@ def _collection_scene_memberships(collection):
     return tuple(scene for scene in bpy.data.scenes if collection is scene.collection or collection in scene.collection.children_recursive)
 
 
-def _ensure_widget_collection(context, armature_id, transaction):
+def _ensure_widget_collection(context, armature_id, transaction, *, armature):
     matches = [collection for collection in bpy.data.collections if _owned(collection, armature_id, role="WIDGET_COLLECTION")]
     if len(matches) > 1:
         raise LimbIKError("Multiple owned Randy Rig widget collections were found; repair them manually.")
@@ -2890,6 +2895,8 @@ def _ensure_widget_collection(context, armature_id, transaction):
     collection.hide_render = True
     collection.hide_viewport = True
     transaction["collections"].append(collection)
+    from . import widget_collections
+    widget_collections.ensure_container(context, collection, armature, "Body IK")
     return collection
 
 
@@ -2923,12 +2930,12 @@ def _ensure_widget(context, armature_id, collection, kind, transaction, *, schem
 
 
 def _ensure_control_collection(armature, armature_id, transaction):
-    matches = [collection for collection in armature.data.collections if _owned(collection, armature_id, role="CONTROL_COLLECTION")]
+    matches = [collection for collection in armature.data.collections_all if _owned(collection, armature_id, role="CONTROL_COLLECTION")]
     if len(matches) > 1:
         raise LimbIKError("Multiple owned Randy Controls bone collections were found.")
     if matches:
         return matches[0]
-    foreign = armature.data.collections.get(CONTROL_COLLECTION_NAME)
+    foreign = armature.data.collections_all.get(CONTROL_COLLECTION_NAME)
     if foreign is not None:
         raise LimbIKError(f"Bone Collection '{CONTROL_COLLECTION_NAME}' already exists but is not owned by Character Designer.")
     collection = armature.data.collections.new(CONTROL_COLLECTION_NAME)
@@ -2978,6 +2985,10 @@ def _owned_constraint_records(armature, *, strict=True):
                 raise LimbIKError(f"Owned constraint '{constraint_name}' is missing or duplicated.")
             constraint = matches[0]
             expected_type = role_types[role]
+            if role == "AUTO_OFFSET_ROTATION" and record.get("rotation_space") == "PARENT_DELTA":
+                if record.get("kind") != "ARM":
+                    raise LimbIKError("Parent-relative rotation is only supported on Arm targets.")
+                expected_type = "COPY_ROTATION"
             if constraint.type != expected_type:
                 raise LimbIKError(f"Owned constraint '{constraint_name}' changed type.")
             records.append((pose_bone, constraint, record))
@@ -3001,6 +3012,8 @@ def _record_constraint(pose_bone, constraint, plan, armature_id, role, *, schema
         "target": plan.target_name,
         "pole": plan.pole_name,
     }
+    if role == "AUTO_OFFSET_ROTATION" and plan.chain.kind == "ARM" and plan.auto_rotation_space == "PARENT_DELTA":
+        record["rotation_space"] = "PARENT_DELTA"
     if _is_enhanced_schema(schema):
         record.update(
             {
@@ -3525,15 +3538,26 @@ def _validate_inventory(armature):
         ):
             raise LimbIKError(f"Limb IK rig '{rig_id}' end rotation settings were edited.")
         auto_offset_rotation = None
+        auto_rotation_space = "LOCAL"
         if auto_offset_entry is not None:
             offset_pb, auto_offset_rotation, _record = auto_offset_entry
-            if (
+            foot_auto = bool(foot_record and foot_record.get("auto_follow") == 1)
+            ground_foot = bool(foot_record and not foot_auto)
+            auto_rotation_space = _record.get("rotation_space", "LOCAL")
+            if auto_rotation_space == "PARENT_DELTA":
+                _validate_parent_delta_rotation(armature, target, offset_pb, auto_offset_rotation, chain[2])
+                if not world_end_rotation:
+                    raise LimbIKError("The generated wrist Manual rotation frame was edited.")
+                expected_bones.add(auto_offset_rotation.subtarget)
+            elif auto_rotation_space != "LOCAL":
+                raise LimbIKError(f"Limb IK rig '{rig_id}' has an unknown Auto rotation space.")
+            elif (
                 offset_pb.name != chain[2]
                 or auto_offset_rotation.target is not armature
-                or auto_offset_rotation.subtarget != (solver_target.name if foot_record else target.name)
-                or auto_offset_rotation.target_space != ("WORLD" if foot_record else "LOCAL")
-                or auto_offset_rotation.owner_space != ("WORLD" if foot_record else "LOCAL")
-                or getattr(auto_offset_rotation, "mix_mode", "") != ("REPLACE" if foot_record else "AFTER")
+                or auto_offset_rotation.subtarget != (foot_record['bones']['AUTO_ROTATION_REF'] if foot_auto else solver_target.name if ground_foot else target.name)
+                or auto_offset_rotation.target_space != ("WORLD" if ground_foot else "LOCAL")
+                or auto_offset_rotation.owner_space != ("WORLD" if ground_foot else "LOCAL")
+                or getattr(auto_offset_rotation, "mix_mode", "") != ("REPLACE" if ground_foot else "AFTER")
                 or not all(
                     getattr(auto_offset_rotation, name, False)
                     for name in ("use_x", "use_y", "use_z")
@@ -3581,6 +3605,7 @@ def _validate_inventory(armature):
             "direct_rest": direct_rest,
             "auto_align": auto_align,
             "auto_offset_rotation": auto_offset_rotation,
+            "auto_rotation_space": auto_rotation_space,
             "foot_controls": foot_record,
         }
     if _is_direct_preroll_schema(schema) and set(direct_registry["limbs"]) != set(by_rig):
@@ -3685,7 +3710,7 @@ def _preflight_plans(context, armature, plans, inventory, *, schema=CURRENT_SCHE
     if not inventory["armature_id"]:
         if _is_enhanced_schema(schema) and armature.data.bones.get(MASTER_NAME) is not None:
             raise LimbIKError(f"Bone '{MASTER_NAME}' already exists and is not this exact generated control.")
-        if armature.data.collections.get(CONTROL_COLLECTION_NAME) is not None:
+        if armature.data.collections_all.get(CONTROL_COLLECTION_NAME) is not None:
             raise LimbIKError(f"Bone Collection '{CONTROL_COLLECTION_NAME}' is occupied by foreign data.")
         if bpy.data.collections.get(WIDGET_COLLECTION_NAME) is not None:
             raise LimbIKError(f"Collection '{WIDGET_COLLECTION_NAME}' is occupied by foreign data.")
@@ -3816,9 +3841,14 @@ def _rollback_build(context, armature, transaction):
                 bpy.data.collections.remove(collection)
         except (ReferenceError, RuntimeError) as exc:
             errors.append(str(exc))
+    try:
+        from . import widget_collections
+        widget_collections.prune_empty(context)
+    except (ReferenceError, RuntimeError, ValueError) as exc:
+        errors.append(str(exc))
     for collection in reversed(transaction["bone_collections"]):
         try:
-            live = armature.data.collections.get(collection.name)
+            live = armature.data.collections_all.get(collection.name)
             if live is not None:
                 armature.data.collections.remove(live)
         except (ReferenceError, RuntimeError) as exc:
@@ -4268,7 +4298,7 @@ def _foot_widget_fits(context, armature, plans, shapes):
     return fits
 
 
-def _create_control_bones(context, armature, armature_id, plans, transaction, *, schema=CURRENT_SCHEMA, create_master=False):
+def _create_control_bones(context, armature, armature_id, plans, transaction, *, schema=CURRENT_SCHEMA, create_master=False, target_rotation_version=0):
     # Blender's X-Mirror edit option also mirrors programmatic EditBone writes.
     # On an asymmetric/rest-rolled production skeleton, creating the R control
     # after L can silently overwrite L's roll.  This temporary option change is
@@ -4465,6 +4495,10 @@ def _create_control_bones(context, armature, armature_id, plans, transaction, *,
                     solver.use_deform = False
                     solver.align_roll(plan.target_z)
 
+        for plan in plans:
+            if target_rotation_version and plan.chain.kind == "ARM" and plan.auto_rotation_space == "PARENT_DELTA":
+                helper = _new_wrist_helper_edit(armature, plan.target_name, plan.chain.side)
+                transaction["bone_names"].append(helper.name)
         # Finish the topology edit before restoring the artist's symmetry flag;
         # restoring it while Edit Mode is live can itself mirror the last write.
         _mode_set(context, armature, "OBJECT")
@@ -4503,6 +4537,8 @@ def _create_control_bones(context, armature, armature_id, plans, transaction, *,
                 pole[POLE_CONFIGURED_DIRECTION_KEY] = [float(component) for component in configured]
         collection.assign(target)
         collection.assign(pole)
+        if target_rotation_version and plan.chain.kind == "ARM" and plan.auto_rotation_space == "PARENT_DELTA":
+            _tag_wrist_helper(armature, plan.chain.side, armature_id, plan.rig_id, plan.chain.names, collection)
         if _uses_dynamic_pole_display(schema) and not _is_enhanced_schema(schema):
             display = armature.data.bones[plan.display_name]
             _tag(
@@ -4622,7 +4658,7 @@ def _create_constraints_and_shapes(
     foot_widget_kinds=None,
     target_rotation_version=0,
 ):
-    widget_collection = _ensure_widget_collection(context, armature_id, transaction)
+    widget_collection = _ensure_widget_collection(context, armature_id, transaction, armature=armature)
     if schema == LEGACY_SCHEMA:
         widgets = {"POLE": _ensure_widget(context, armature_id, widget_collection, "POLE", transaction, schema=schema)}
     elif _is_direct_preroll_schema(schema):
@@ -4748,7 +4784,7 @@ def _create_constraints_and_shapes(
         copy_rotation.target = armature
         solver_name = plan.solver_target_name if _is_enhanced_schema(schema) else plan.target_name
         copy_rotation.subtarget = solver_name
-        if _is_direct_preroll_schema(schema) and plan.chain.kind == "ARM":
+        if _is_direct_preroll_schema(schema) and plan.chain.kind == "ARM" and plan.auto_rotation_space != "PARENT_DELTA":
             # The minimal Direct Target is authored in the final Forearm frame.
             # Local Owner Orientation transports animator rotation into the
             # Hand's own Rest axes while Local With Parent preserves its modeled
@@ -4758,6 +4794,11 @@ def _create_constraints_and_shapes(
         else:
             copy_rotation.target_space = "WORLD"
             copy_rotation.owner_space = "WORLD"
+            if plan.chain.kind == "ARM" and plan.auto_rotation_space == "PARENT_DELTA" and not plan.auto_align:
+                current = target_pose.matrix.copy()
+                target_pose.matrix = Matrix.LocRotScale(current.translation,
+                    plan.desired_end_matrix.to_quaternion().normalized(), current.to_scale())
+                context.view_layer.update()
         if hasattr(copy_rotation, "mix_mode"):
             copy_rotation.mix_mode = "REPLACE"
         # Auto Align is a persistent evaluation mode, not a polling loop:
@@ -4768,28 +4809,32 @@ def _create_constraints_and_shapes(
         transaction["constraints"].append((end, copy_rotation))
         auto_offset_rotation = None
         if target_rotation_version == TARGET_ROTATION_VERSION:
-            # Auto Align supplies the natural Forearm/Shin frame.  This second
-            # relation adds the visible Target's local Euler offset after that
-            # natural rotation, so Auto stays live while animators retain all
-            # three wrist/ankle rotation degrees of freedom.  It needs no
-            # helper bone and is mutually exclusive with END_ROTATION.
+            # Auto Align supplies the natural Forearm/Shin frame. Arms apply
+            # the visible Target's parent-relative delta through a hidden
+            # reference. Legacy rigs and legs retain their local AFTER offset.
+            # This relation is mutually exclusive with END_ROTATION.
+            parent_delta = plan.chain.kind == "ARM" and plan.auto_rotation_space == "PARENT_DELTA"
             auto_offset_rotation = end.constraints.new(type="COPY_ROTATION")
             auto_offset_rotation.name = _constraint_name(
                 plan.rig_id,
                 "AUTO_OFFSET_ROTATION",
             )
-            auto_offset_rotation.target = armature
-            auto_offset_rotation.subtarget = plan.target_name
-            auto_offset_rotation.target_space = "LOCAL"
-            auto_offset_rotation.owner_space = "LOCAL"
-            auto_offset_rotation.use_x = True
-            auto_offset_rotation.use_y = True
-            auto_offset_rotation.use_z = True
-            auto_offset_rotation.invert_x = False
-            auto_offset_rotation.invert_y = False
-            auto_offset_rotation.invert_z = False
-            if hasattr(auto_offset_rotation, "mix_mode"):
-                auto_offset_rotation.mix_mode = "AFTER"
+            if parent_delta:
+                _configure_parent_delta_rotation(armature, armature.pose.bones[plan.target_name], auto_offset_rotation)
+                armature.pose.bones[plan.target_name].use_transform_at_custom_shape = True
+            else:
+                auto_offset_rotation.target = armature
+                auto_offset_rotation.subtarget = plan.target_name
+                auto_offset_rotation.target_space = "LOCAL"
+                auto_offset_rotation.owner_space = "LOCAL"
+                auto_offset_rotation.use_x = True
+                auto_offset_rotation.use_y = True
+                auto_offset_rotation.use_z = True
+                auto_offset_rotation.invert_x = False
+                auto_offset_rotation.invert_y = False
+                auto_offset_rotation.invert_z = False
+                if hasattr(auto_offset_rotation, "mix_mode"):
+                    auto_offset_rotation.mix_mode = "AFTER"
             auto_offset_rotation.mute = not bool(plan.auto_align)
             transaction["constraints"].append((end, auto_offset_rotation))
         roll_constraints = []
@@ -5454,7 +5499,8 @@ def _build_plans(
         if _is_direct_preroll_schema(schema):
             missing = _apply_direct_preroll(context, armature, missing, transaction)
         _create_constraint_shells(armature, armature_id, missing, transaction, schema=schema, create_master=create_master)
-        _create_control_bones(context, armature, armature_id, missing, transaction, schema=schema, create_master=create_master)
+        _create_control_bones(context, armature, armature_id, missing, transaction, schema=schema, create_master=create_master,
+                              target_rotation_version=requested_target_rotation_version)
         _create_constraints_and_shapes(
             context,
             armature,
@@ -5933,7 +5979,7 @@ def _foreign_dependency_problems(armature, inventory):
                         or any(target_path.startswith(path) for path in owned_constraint_paths)
                     ):
                         problems.append(f"driver on '{obj.name}' reads a generated control")
-    control_collection = next((collection for collection in armature.data.collections if _owned(collection, inventory["armature_id"], role="CONTROL_COLLECTION")), None)
+    control_collection = next((collection for collection in armature.data.collections_all if _owned(collection, inventory["armature_id"], role="CONTROL_COLLECTION")), None)
     if control_collection is not None:
         foreign_members = [bone.name for bone in control_collection.bones if bone.name not in names]
         if foreign_members:
@@ -5944,7 +5990,7 @@ def _foreign_dependency_problems(armature, inventory):
 def _removal_resources(context, armature, inventory):
     """Validate every deletion target before the first destructive operation."""
     armature_id = inventory["armature_id"]
-    control_collections = [collection for collection in armature.data.collections if _owned(collection, armature_id, role="CONTROL_COLLECTION")]
+    control_collections = [collection for collection in armature.data.collections_all if _owned(collection, armature_id, role="CONTROL_COLLECTION")]
     if len(control_collections) != 1:
         raise LimbIKError("Owned Randy Controls bone collection is missing or duplicated.")
     expected_bones = {bone.name for bone in inventory["bones"]}
@@ -6194,6 +6240,7 @@ def _snapshot_owned_rig(armature, inventory):
                 persist_pole_direction=rig["pole_direction"] is not None,
                 preserve_pole_angle=True,
                 auto_align=rig["auto_align"],
+                auto_rotation_space=rig.get("auto_rotation_space", "LOCAL"),
             )
         )
         if kind == "LEG":
@@ -6207,6 +6254,8 @@ def _snapshot_owned_rig(armature, inventory):
         control_pose[bone.name] = {
             "matrix_basis": pose_bone.matrix_basis.copy(),
             "rotation_mode": pose_bone.rotation_mode,
+            "at_custom_shape": pose_bone.use_transform_at_custom_shape,
+            "around_custom_shape": pose_bone.use_transform_around_custom_shape,
             "color_state": control_colors.capture_bone(pose_bone),
             "shape": _pose_shape_json_state(pose_bone),
             "visual_default_present": CONTROL_VISUAL_DEFAULT_KEY in bone,
@@ -6351,6 +6400,7 @@ def _reapply_control_shape_styles(
         context,
         armature_id,
         transaction,
+        armature=armature,
     )
     requested_kinds = set(widget_geometry) & CONTROL_SHAPE_WIDGET_KINDS
     for pose_bone in _control_pose_bones(armature, inventory):
@@ -6456,7 +6506,9 @@ def _purge_snapshot_owned(context, armature, snapshot):
     for collection in tuple(bpy.data.collections):
         if collection.get(OWNER_KEY) == OWNER_VALUE and collection.get(ARMATURE_ID_KEY) in purge_ids and collection.get(ROLE_KEY) == "WIDGET_COLLECTION":
             bpy.data.collections.remove(collection)
-    for collection in tuple(armature.data.collections):
+    from . import widget_collections
+    widget_collections.prune_empty(context)
+    for collection in tuple(armature.data.collections_all):
         if collection.get(OWNER_KEY) == OWNER_VALUE and collection.get(ARMATURE_ID_KEY) in purge_ids and collection.get(ROLE_KEY) == "CONTROL_COLLECTION":
             armature.data.collections.remove(collection)
     if ARMATURE_ID_KEY in armature.data:
@@ -6512,6 +6564,10 @@ def _restore_owned_snapshot(context, armature, snapshot):
             pose_bone = armature.pose.bones[name]
             pose_bone.rotation_mode = state["rotation_mode"]
             pose_bone.matrix_basis = state["matrix_basis"]
+            if "at_custom_shape" in state:
+                pose_bone.use_transform_at_custom_shape = state["at_custom_shape"]
+            if "around_custom_shape" in state:
+                pose_bone.use_transform_around_custom_shape = state["around_custom_shape"]
             if "color_state" in state:
                 control_colors.restore_bone_state(pose_bone, state["color_state"])
             shape_state = state.get("shape")
@@ -6650,6 +6706,8 @@ def _remove_owned(context, armature, *, refuse_dependencies=True):
         if not mesh.users:
             bpy.data.meshes.remove(mesh)
     bpy.data.collections.remove(resources["widget_collection"])
+    from . import widget_collections
+    widget_collections.prune_empty(context)
     armature.data.collections.remove(resources["control_collection"])
     if ARMATURE_ID_KEY in armature.data:
         del armature.data[ARMATURE_ID_KEY]
@@ -7085,6 +7143,9 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
                         (plan.chain.kind, plan.chain.side),
                         bool(plan.auto_align),
                     ),
+                    auto_rotation_space=next((old.auto_rotation_space for old in rig_snapshot["plans"]
+                                              if old.chain.kind == plan.chain.kind and old.chain.side == plan.chain.side),
+                                             plan.auto_rotation_space),
                 )
                 for plan in plans
             ]
@@ -7171,6 +7232,7 @@ class CHARACTERDESIGNER_OT_limb_ik_rebuild(Operator):
                         )
                         legacy_direct_arm = (
                             plan.chain.kind == "ARM"
+                            and old.auto_rotation_space != "PARENT_DELTA"
                             and old_end_rotation.target_space == "WORLD"
                             and old_end_rotation.owner_space == "WORLD"
                         )
@@ -7391,6 +7453,365 @@ def _constraint_has_animation_or_driver(armature, owner_name, constraint_name):
     )
 
 
+def _neutral_target_matrix(target):
+    """The target's zero-input frame, with its existing live parent applied."""
+    parent = target.parent
+    kwargs = ({"parent_matrix": parent.matrix, "parent_matrix_local": parent.bone.matrix_local}
+              if parent is not None else {})
+    return target.bone.convert_local_to_pose(Matrix.Identity(4), target.bone.matrix_local, **kwargs)
+
+
+def _wrist_helper_name(side):
+    return f"MCH_hand_rotation.{side}"
+
+
+def _new_wrist_helper_edit(armature, target_name, side):
+    name = _wrist_helper_name(side)
+    if armature.data.edit_bones.get(name) is not None:
+        raise LimbIKError(f"Wrist rotation helper name '{name}' is already in use.")
+    target = armature.data.edit_bones[target_name]
+    helper = armature.data.edit_bones.new(name)
+    helper.head = target.head
+    helper.tail = target.head + Vector((0, max(target.length * .3, .01), 0))
+    helper.parent = target
+    helper.use_connect = helper.use_deform = False
+    return helper
+
+
+def _tag_wrist_helper(armature, side, armature_id, rig_id, chain, collection):
+    helper = armature.pose.bones[_wrist_helper_name(side)]
+    _tag(helper.bone, armature_id, role="HAND_ROTATION", rig_id=rig_id, kind="ARM", side=side, chain=chain)
+    helper.bone.hide = helper.bone.hide_select = True
+    if hasattr(helper, "hide"):
+        helper.hide = True
+    helper.lock_location = helper.lock_rotation = helper.lock_scale = (True, True, True)
+    helper.lock_rotation_w = True
+    helper.rotation_mode = "QUATERNION"
+    for previous in tuple(helper.bone.collections):
+        previous.unassign(helper.bone)
+    collection.assign(helper.bone)
+
+
+def _wrist_helper_basis(target, helper):
+    parent_rest = target.parent.bone.matrix_local if target.parent is not None else Matrix.Identity(4)
+    return (helper.bone.matrix_local.to_quaternion().normalized().inverted()
+            @ parent_rest.to_quaternion().normalized()).to_matrix().to_4x4()
+
+
+def _configure_parent_delta_rotation(armature, target, constraint):
+    """Apply target rotation in its actual input frame, before the solved wrist.
+
+    Both spaces remove the same live parent. A hidden child cancels the
+    target's neutral Rest orientation, so a zero offset still follows the
+    forearm, and a viewport rotation turns the wrist around the requested axis.
+    Location and scale never participate in this relation.
+    """
+    helper = armature.pose.bones.get(_wrist_helper_name(target.bone.get(SIDE_KEY)))
+    if helper is None or helper.parent != target:
+        raise LimbIKError("The generated wrist rotation reference is missing.")
+    helper.matrix_basis = _wrist_helper_basis(target, helper)
+    constraint.target = armature
+    constraint.subtarget = helper.name
+    constraint.target_space = constraint.owner_space = "CUSTOM" if target.parent is not None else "POSE"
+    constraint.space_object = armature if target.parent is not None else None
+    constraint.space_subtarget = target.parent.name if target.parent is not None else ""
+    constraint.mix_mode = "BEFORE"
+    for field in ("invert_x", "invert_y", "invert_z"):
+        setattr(constraint, field, False)
+    for field in ("use_x", "use_y", "use_z"):
+        setattr(constraint, field, True)
+
+
+def _validate_parent_delta_rotation(armature, target, owner, constraint, end_name):
+    target = armature.pose.bones[target.name]
+    helper = armature.pose.bones.get(_wrist_helper_name(target.bone.get(SIDE_KEY)))
+    if (helper is None or helper.parent != target or helper.bone.use_deform or helper.constraints
+            or not _owned(helper.bone, target.bone.get(ARMATURE_ID_KEY), role="HAND_ROTATION", rig_id=target.bone.get(RIG_ID_KEY))):
+        raise LimbIKError("The generated wrist rotation reference was edited.")
+    if (owner.name != end_name or constraint.type != "COPY_ROTATION"
+            or constraint.target is not armature or constraint.subtarget != helper.name
+            or constraint.target_space != ("CUSTOM" if target.parent is not None else "POSE")
+            or constraint.owner_space != ("CUSTOM" if target.parent is not None else "POSE")
+            or constraint.space_object != (armature if target.parent is not None else None)
+            or constraint.space_subtarget != (target.parent.name if target.parent is not None else "")
+            or any(getattr(constraint, field) for field in
+                   ("invert_x", "invert_y", "invert_z"))
+            or not all(getattr(constraint, field) for field in
+                       ("use_x", "use_y", "use_z"))
+            or constraint.mix_mode != "BEFORE"):
+        raise LimbIKError("The generated wrist rotation frame was edited.")
+    expected = _wrist_helper_basis(target, helper)
+    if max(abs(helper.matrix_basis[i][j] - expected[i][j]) for i in range(4) for j in range(4)) > 2e-5:
+        raise LimbIKError("The generated wrist neutral rotation was edited.")
+
+
+def sync_wrist_local_axes(armature):
+    """Use the displayed Hand's axes for viewport input on managed wrists.
+
+    PARENT_DELTA controls retain their own rotation channels while Auto Align
+    displays the solved Hand frame. Blender's native display-frame option lets
+    Local rotation and gizmos follow that frame without changing the rig pose.
+    Validate all candidates before applying this idempotent, display-only fix.
+    """
+    inventory = _validate_inventory(armature)
+    targets = []
+    for key, rig in inventory["rigs"].items():
+        if key[0] != "ARM" or rig.get("auto_rotation_space") != "PARENT_DELTA":
+            continue
+        target = armature.pose.bones[rig["target"].name]
+        end = armature.pose.bones[rig["chain"][2]]
+        if target.use_transform_around_custom_shape:
+            raise LimbIKError(f"{target.name}: Transform Around Custom Shape is enabled; resolve this artist setting before syncing wrist axes.")
+        if target.custom_shape_transform not in (None, end):
+            raise LimbIKError(f"{target.name}: an artist Custom Shape Transform is in use.")
+        if not target.use_transform_at_custom_shape:
+            targets.append(target)
+    if targets and (armature.library or armature.override_library):
+        raise LimbIKError("Use a local Armature before syncing wrist axes.")
+    changed = []
+    try:
+        for target in targets:
+            target.use_transform_at_custom_shape = True
+            changed.append(target.name)
+    except Exception:
+        for name in changed:
+            armature.pose.bones[name].use_transform_at_custom_shape = False
+        raise
+    return changed
+
+
+def _auto_target_rotation_matrix(armature, target, natural_end_matrix, desired_end_matrix):
+    neutral = _neutral_target_matrix(target).to_quaternion().normalized()
+    desired = desired_end_matrix.to_quaternion().normalized()
+    natural = natural_end_matrix.to_quaternion().normalized()
+    rotation = (desired @ natural.inverted() @ neutral).normalized()
+    return Matrix.LocRotScale(target.matrix.to_translation(), rotation, target.matrix.to_scale())
+
+
+def refresh_parent_delta_spaces(context, armature):
+    """Refresh owned input references inside an explicit parent-change transaction."""
+    foot_controls.refresh_auto_reference_parents(context, armature)
+    for owner, constraint, record in _owned_constraint_records(armature):
+        if record.get("rotation_space") == "PARENT_DELTA":
+            target = armature.pose.bones.get(record.get("target", ""))
+            if target is None:
+                raise LimbIKError("A wrist rotation target is missing.")
+            _configure_parent_delta_rotation(armature, target, constraint)
+    armature.update_tag(refresh={"OBJECT"})
+    context.view_layer.update()
+
+
+def _wrist_rotation_upgrade_problems(armature, inventory, candidates):
+    problems = []
+    if armature.library or armature.override_library or armature.data.library or armature.data.users != 1:
+        return ["Use a local, single-user Armature before upgrading wrist rotation."]
+    names = {rig["target"].name for rig in candidates}
+    owned = {(owner.as_pointer(), con.as_pointer()) for owner, con, _ in inventory["records"]}
+    transform_suffixes = ("location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "rotation_mode", "scale")
+
+    def transform_path(path):
+        return any(path.startswith(f'pose.bones["{_rna_escape(name)}"].{field}')
+                   for name in names for field in transform_suffixes)
+
+    nonzero = False
+    frame_names = set()
+    for rig in candidates:
+        target = armature.pose.bones[rig["target"].name]
+        end = armature.pose.bones[rig["chain"][2]]
+        frame_names.update(pb.name for pb in (end, *end.parent_recursive))
+        if target.parent is not None:
+            frame_names.difference_update(pb.name for pb in (target.parent, *target.parent.parent_recursive))
+        offset = rig.get("auto_offset_rotation")
+        if armature.data.bones.get(_wrist_helper_name(target.bone.get(SIDE_KEY))) is not None:
+            problems.append(f"{target.name}: its reserved rotation helper name is already in use.")
+        if offset is None:
+            problems.append(f"{target.name}: rebuild this legacy rig before upgrading wrist rotation.")
+            continue
+        if target.custom_shape_transform not in (None, end):
+            problems.append(f"{target.name}: an artist Custom Shape Transform is in use.")
+        if target.use_transform_around_custom_shape:
+            problems.append(f"{target.name}: Transform Around Custom Shape is enabled; resolve this artist setting before upgrading wrist rotation.")
+        if target.constraints:
+            problems.append(f"{target.name}: input constraints must be resolved before upgrading.")
+        rotated = abs(target.matrix_basis.to_quaternion().angle) > 1e-6
+        nonzero |= rotated
+        if rotated and (any(target.lock_rotation) or target.lock_rotation_w):
+            problems.append(f"{target.name}: unlock rotation before preserving its offset.")
+        if rotated and rig["auto_align"] and abs(offset.influence - 1.0) > 1e-6:
+            problems.append(f"{target.name}: switch fully to IK before upgrading a posed wrist.")
+        if _constraint_has_animation_or_driver(armature, end.name, offset.name):
+            problems.append(f"{target.name}: its Auto rotation constraint has authored animation.")
+        manual = next(con for _pb, con, record in rig["entries"] if record["role"] == "END_ROTATION")
+        if _constraint_has_animation_or_driver(armature, end.name, manual.name):
+            problems.append(f"{target.name}: its Manual rotation constraint has authored animation.")
+        if not rig["auto_align"] and (any(target.lock_rotation) or target.lock_rotation_w):
+            problems.append(f"{target.name}: unlock rotation before preserving Manual wrist orientation.")
+    for action in _actions_for_id(armature):
+        curves = tuple(_fcurves_for_action(action))
+        if any(transform_path(curve.data_path) for curve in curves):
+            problems.append(f"Action '{action.name}' animates a wrist target; retain the legacy rig for this animation.")
+        elif nonzero and curves:
+            problems.append(f"Action '{action.name}' may change the posed wrist reference frame; upgrade at neutral before animation.")
+    for obj in bpy.data.objects:
+        if obj.parent is armature and obj.parent_type == "BONE" and obj.parent_bone in names:
+            problems.append(f"Object '{obj.name}' is parented to a wrist target.")
+        constraints = [(None, c) for c in obj.constraints]
+        if obj.pose is not None:
+            constraints += [(pb, c) for pb in obj.pose.bones for c in pb.constraints]
+            if obj is armature:
+                for pb in obj.pose.bones:
+                    if pb.parent is not None and pb.parent.name in names:
+                        problems.append(f"Bone '{pb.name}' is parented to a wrist target.")
+        for pb, con in constraints:
+            if obj is armature and pb is not None and (pb.as_pointer(), con.as_pointer()) in owned:
+                continue
+            if _constraint_references_controls(con, armature, names):
+                problems.append(f"Constraint '{con.name}' reads a wrist target.")
+        # Object/data/node-tree drivers can all reference pose inputs.
+    ids = set(bpy.data.user_map())
+    ids.add(armature)
+    for id_block in ids:
+        animation = getattr(id_block, "animation_data", None)
+        for curve in getattr(animation, "drivers", ()) if animation else ():
+            if (nonzero and id_block is armature
+                    and _path_mentions_bone(curve.data_path, frame_names)
+                    and curve.data_path not in limb_ik_fk.owned_driver_paths(armature)):
+                problems.append("A driven rig may change the posed wrist reference frame; upgrade at neutral before animation.")
+            if id_block is armature and transform_path(curve.data_path):
+                problems.append("A driver writes wrist transform channels.")
+            for variable in curve.driver.variables:
+                for source in variable.targets:
+                    if source.id is armature and (getattr(source, "bone_target", "") in names
+                            or transform_path(getattr(source, "data_path", ""))):
+                        problems.append("A driver reads wrist transform channels.")
+    return list(dict.fromkeys(problems))
+
+
+def upgrade_wrist_rotation(context, armature, key=None, *, dry_run=False):
+    """Explicitly replace legacy wrist offsets, preserving the current pose.
+
+    Existing animation is never reinterpreted silently. This changes two owned
+    constraint relations and, for a posed legacy offset, compensates only the
+    corresponding input rotation. Native bones, shapes and actions stay intact.
+    """
+    inventory = _validate_inventory(armature)
+    if key is not None and (tuple(key) not in inventory["rigs"] or tuple(key)[0] != "ARM"):
+        raise LimbIKError("Choose a generated Arm to upgrade wrist rotation.")
+    candidates = [rig for k, rig in inventory["rigs"].items() if k[0] == "ARM"
+                  and (key is None or k == tuple(key)) and rig.get("auto_rotation_space", "LOCAL") != "PARENT_DELTA"]
+    blockers = _wrist_rotation_upgrade_problems(armature, inventory, candidates) if candidates else []
+    result = {"changed": False, "targets": [rig["target"].name for rig in candidates], "blockers": blockers}
+    if dry_run or not candidates:
+        return result
+    if blockers:
+        raise LimbIKError(blockers[0])
+    if armature.mode == "EDIT":
+        raise LimbIKError("Leave Edit Mode before upgrading wrist rotation.")
+    context.view_layer.update()
+    before = {pb.name: pb.matrix.copy() for pb in armature.pose.bones}
+    snapshots = []
+    fields = ("target", "subtarget", "target_space", "owner_space", "mix_mode", "euler_order", "space_object", "space_subtarget",
+              "use_x", "use_y", "use_z", "invert_x", "invert_y", "invert_z", "mute", "influence", "show_expanded")
+    context_before = _capture_context(context, armature)
+    mirror_before = armature.data.use_mirror_x
+    created = []
+    for rig in candidates:
+        target = armature.pose.bones[rig["target"].name]
+        owner = armature.pose.bones[rig["chain"][2]]
+        old = rig["auto_offset_rotation"]
+        manual = next(con for _pb, con, record in rig["entries"] if record["role"] == "END_ROTATION")
+        snapshots.append({"owner": owner.name, "name": old.name,
+                          "state": {field: getattr(old, field) for field in fields},
+                          "registry": owner.get(CONSTRAINT_REGISTRY_KEY),
+                          "target": target.name, "basis": target.matrix_basis.copy(),
+                          "at_custom_shape": target.use_transform_at_custom_shape,
+                          "visual": _control_visual_state(target), "display": target.custom_shape_transform.name if target.custom_shape_transform else "",
+                          "visual_default": target.bone.get(CONTROL_VISUAL_DEFAULT_KEY),
+                          "manual": manual.name, "manual_spaces": (manual.target_space, manual.owner_space),
+                          "side": target.bone.get(SIDE_KEY), "rig_id": rig["rig_id"],
+                          "chain": tuple(rig["chain"]), "auto_align": rig["auto_align"]})
+    try:
+        armature.data.use_mirror_x = False
+        _mode_set(context, armature, "EDIT")
+        for saved in snapshots:
+            created.append(_new_wrist_helper_edit(armature, saved["target"], saved["side"]).name)
+        _mode_set(context, armature, "OBJECT")
+        armature.data.update_tag(); armature.update_tag(refresh={"OBJECT"}); context.view_layer.update()
+        _mode_set(context, armature, "POSE")
+        collection = next(c for c in armature.data.collections_all if _owned(c, inventory["armature_id"], role="CONTROL_COLLECTION"))
+        for saved in snapshots:
+            _tag_wrist_helper(armature, saved["side"], inventory["armature_id"], saved["rig_id"], saved["chain"], collection)
+        for saved in snapshots:
+            target = armature.pose.bones[saved["target"]]
+            owner = armature.pose.bones[saved["owner"]]
+            old = owner.constraints[saved["name"]]
+            old.mute = True
+            armature.update_tag(refresh={"OBJECT"}); context.view_layer.update()
+            natural = owner.matrix.copy()
+            compensated = (_auto_target_rotation_matrix(armature, target, natural, before[owner.name])
+                           if saved["auto_align"] and abs(target.matrix_basis.to_quaternion().angle) > 1e-6 else None)
+            manual = owner.constraints[saved["manual"]]
+            if not saved["auto_align"]:
+                # Keep the existing visible shape while rebasing Manual input
+                # from the old local convention to the wrist's actual pose.
+                _retarget_custom_shape_frame(target, owner)
+                compensated = Matrix.LocRotScale(target.matrix.translation,
+                    before[owner.name].to_quaternion().normalized(), target.matrix.to_scale())
+            manual.target_space = manual.owner_space = "WORLD"
+            _configure_parent_delta_rotation(armature, target, old)
+            target.use_transform_at_custom_shape = True
+            old.mute = saved["state"]["mute"]
+            if compensated is not None:
+                target.matrix = compensated
+                armature.update_tag(refresh={"OBJECT"}); context.view_layer.update()
+            if not saved["auto_align"]:
+                _retarget_custom_shape_frame(target, armature.pose.bones.get(saved["display"]) if saved["display"] else None)
+            registry = _constraint_registry(owner, strict=True)
+            registry[saved["name"]]["rotation_space"] = "PARENT_DELTA"
+            _write_constraint_registry(owner, registry)
+            armature.update_tag(refresh={"OBJECT"}); context.view_layer.update()
+        changed_targets = set(result["targets"])
+        for name, matrix in before.items():
+            if name in changed_targets:
+                continue
+            actual = armature.pose.bones[name].matrix
+            if max(abs(actual[i][j] - matrix[i][j]) for i in range(4) for j in range(4)) > 2e-5:
+                raise LimbIKError(f"Wrist upgrade could not preserve '{name}' current pose.")
+        _validate_inventory(armature)
+        _restore_context(context, armature, context_before)
+    except Exception:
+        for saved in reversed(snapshots):
+            owner = armature.pose.bones[saved["owner"]]
+            current = owner.constraints.get(saved["name"])
+            for field, value in saved["state"].items():
+                setattr(current, field, value)
+            owner[CONSTRAINT_REGISTRY_KEY] = saved["registry"]
+            manual = owner.constraints[saved["manual"]]
+            manual.target_space, manual.owner_space = saved["manual_spaces"]
+            target = armature.pose.bones[saved["target"]]
+            target.matrix_basis = saved["basis"]
+            target.use_transform_at_custom_shape = saved["at_custom_shape"]
+            target.custom_shape_transform = armature.pose.bones.get(saved["display"]) if saved["display"] else None
+            _apply_control_visual_state(target, saved["visual"])
+            if saved["visual_default"] is not None:
+                target.bone[CONTROL_VISUAL_DEFAULT_KEY] = saved["visual_default"]
+            elif CONTROL_VISUAL_DEFAULT_KEY in target.bone:
+                del target.bone[CONTROL_VISUAL_DEFAULT_KEY]
+        _mode_set(context, armature, "EDIT")
+        for name in created:
+            helper = armature.data.edit_bones.get(name)
+            if helper is not None:
+                armature.data.edit_bones.remove(helper)
+        _mode_set(context, armature, "OBJECT")
+        armature.update_tag(refresh={"OBJECT"}); context.view_layer.update()
+        raise
+    finally:
+        armature.data.use_mirror_x = mirror_before
+        _restore_context(context, armature, context_before)
+    result["changed"] = True
+    return result
+
+
 def _solve_auto_align_target(
     armature,
     inventory,
@@ -7420,7 +7841,12 @@ def _solve_auto_align_target(
         old_basis = target.matrix_basis.copy()
         free_basis = free_end.matrix_basis.copy()
         desired_rotation = free_basis.to_quaternion().normalized()
-        if auto_offset_rotation is not None and not auto_offset_rotation.mute:
+        if rig.get("auto_rotation_space") == "PARENT_DELTA":
+            target_rest = target.bone.matrix_local.to_quaternion().normalized()
+            end_rest = free_end.bone.matrix_local.to_quaternion().normalized()
+            desired_rotation = (target_rest.inverted() @ free_end.matrix.to_quaternion().normalized()
+                                @ end_rest.inverted() @ target_rest).normalized()
+        elif auto_offset_rotation is not None and not auto_offset_rotation.mute:
             # LOCAL/LOCAL + AFTER evaluates the natural owner basis followed by
             # the Target's local offset.  Manual END_ROTATION replaces the
             # owner's local rotation, so bake that exact product into the
@@ -7467,10 +7893,11 @@ def _solve_auto_align_target(
 def _set_auto_align_selected_target(context, armature, settings, enabled=None):
     """Transactionally switch one limb between natural and manual end rotation.
 
-    Auto mode mutes the absolute END_ROTATION and, on feature-v1 rigs, enables
-    a local AFTER offset from the same visible Target.  Hand/Foot therefore
+    Auto mode mutes the absolute END_ROTATION and enables the saved target
+    offset contract (parent-relative for new arms, local AFTER for legacy).
+    Hand/Foot therefore
     follows the live solved chain while retaining all three animator rotation
-    channels, without polling or extra bones.  Returning to Manual bakes the
+    channels without polling. Returning to Manual bakes the
     evaluated end orientation into the Target before swapping constraints.
     """
 
@@ -7533,6 +7960,8 @@ def _set_auto_align_selected_target(context, armature, settings, enabled=None):
             "Auto Align will not override an animated/driven Target rotation offset."
         )
     if rig.get("foot_controls"):
+        if rig['foot_controls'].get('auto_follow') == 1:
+            return foot_controls.set_auto_align(context, armature, rig, desired_enabled)
         # Reverse-foot pivots define the ground frame in either display mode.
         # Auto Align still follows the current foot for its visual/input frame.
         end_rotation.mute = desired_enabled
@@ -8391,7 +8820,6 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
-    bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
     def poll(cls, context):
@@ -8403,12 +8831,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if settings is None:
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
-        from .body_controls_ui import draw_root_controls, draw_fk_visuals, draw_head_neck_visuals, draw_body_detail_visuals
-        draw_root_controls(layout, context)
-        draw_fk_visuals(layout, context)
-        draw_head_neck_visuals(layout, context)
-        draw_body_detail_visuals(layout, context)
-        layout.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
+        from . import body_setup_ui
+        body_setup_ui.draw_actions(layout, context)
         layout.prop(settings, "selected_limb", text="")
         active = context.object
         if active is not None and active.type == "ARMATURE":
@@ -8436,10 +8860,11 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                             roll_select.operator("character_designer.foot_controls", text="Foot Roll", icon="CON_ROTLIKE").action = "SELECT_ROLL"
                             row.operator("character_designer.foot_controls", text="Toe Bend", icon="BONE_DATA").action = "SELECT_TOE"
                             foot_box.label(text="Local X: Roll · Local Y: Bank", icon="INFO")
-                            if foot.get("rotation_direction") != "NATURAL":
+                            if settings.show_body_setup_advanced and foot.get("rotation_direction") != "NATURAL":
                                 foot_box.operator("character_designer.foot_controls", text="Fix Roll Direction", icon="FILE_REFRESH").action = "FIX_DIRECTION"
-                            foot_box.prop(settings, "show_foot_visual_options", icon="TRIA_DOWN" if settings.show_foot_visual_options else "TRIA_RIGHT", emboss=False)
-                            if settings.show_foot_visual_options:
+                            if settings.show_body_setup_advanced:
+                                foot_box.prop(settings, "show_foot_visual_options", icon="TRIA_DOWN" if settings.show_foot_visual_options else "TRIA_RIGHT", emboss=False)
+                            if settings.show_body_setup_advanced and settings.show_foot_visual_options:
                                 from . import character_setup
                                 mapping = character_setup._mapping(character_setup.settings(context), active)
                                 if mapping is not None:
@@ -8456,10 +8881,11 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                                 fit_row.operator("character_designer.foot_controls", text="Fit Arrow", icon="FULLSCREEN_EXIT").action = "FIT_VISUAL"
                                 if foot_controls.has_roll_visual_backup(active, selected_key):
                                     row.operator("character_designer.foot_controls", text="Restore", icon="LOOP_BACK").action = "RESTORE_VISUAL"
-                            row = foot_box.row()
-                            row.alert = True
-                            row.operator("character_designer.foot_controls", text="Remove Foot Controls", icon="TRASH").action = "REMOVE"
-                        else:
+                            if settings.show_body_setup_advanced:
+                                row = foot_box.row()
+                                row.alert = True
+                                row.operator("character_designer.foot_controls", text="Remove Foot Controls", icon="TRASH").action = "REMOVE"
+                        elif settings.show_body_setup_advanced:
                             toe_field = "left_foot_toe" if selected_key[1] == "L" else "right_foot_toe"
                             toe_candidates = [bone for bone in active.data.bones[rig["chain"][2]].children if bone.use_deform and not bone.get(OWNER_KEY)]
                             if not getattr(settings, toe_field) and len(toe_candidates) == 1:
@@ -8467,8 +8893,29 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                             else:
                                 foot_box.prop_search(settings, toe_field, active.data, "bones", text="Toe Bone")
                             foot_box.operator("character_designer.foot_controls", text="Add Foot Controls", icon="CON_KINEMATIC").action = "BUILD"
+                        else:
+                            foot_box.label(text="Included in Body Setup", icon="INFO")
             except (LimbIKError, ReferenceError, RuntimeError, ValueError):
                 pass
+        auto_available, auto_enabled = _global_auto_align_ui_state(context, settings)
+        if auto_available:
+            auto_row = layout.row()
+            auto_row.operator("character_designer.limb_ik_auto_align_target", text="Auto Align",
+                              icon="CON_ROTLIKE", depress=auto_enabled).action = "DISABLE" if auto_enabled else "ENABLE"
+        from .body_controls_ui import draw_foot_auto_align_upgrade
+        draw_foot_auto_align_upgrade(layout, context)
+        layout.prop(settings, "show_body_setup_advanced", text="Advanced",
+                    icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
+        if not settings.show_body_setup_advanced:
+            return
+        from .body_controls_ui import draw_root_controls, draw_fk_visuals, draw_head_neck_visuals, draw_body_detail_visuals
+        layout = layout.box()
+        body_setup_ui.draw_plan(layout, context)
+        draw_root_controls(layout, context)
+        draw_fk_visuals(layout, context)
+        draw_head_neck_visuals(layout, context)
+        draw_body_detail_visuals(layout, context)
+        layout.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
         layout.prop(settings, "build_method", text="Build Method")
         armature = settings.armature
         kind, side = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
@@ -8486,16 +8933,6 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         row = layout.row(align=True)
         row.operator("character_designer.limb_ik_build_selected", text="Build IK", icon="CON_KINEMATIC")
         row.operator("character_designer.limb_ik_build_all", text="Build All", icon="ARMATURE_DATA")
-        auto_available, auto_enabled = _global_auto_align_ui_state(context, settings)
-        auto_row = layout.row()
-        auto_row.enabled = auto_available
-        auto_operator = auto_row.operator(
-            "character_designer.limb_ik_auto_align_target",
-            text="Auto Align",
-            icon="CON_ROTLIKE",
-            depress=auto_enabled,
-        )
-        auto_operator.action = "DISABLE" if auto_enabled else "ENABLE"
         row = layout.row(align=True)
         row.operator("character_designer.limb_ik_rebuild", text="Rebuild Rig", icon="FILE_REFRESH")
         remove = row.row(align=True)
@@ -8575,7 +9012,8 @@ class CHARACTERDESIGNER_PT_limb_ik_control_visual(Panel):
 
     @classmethod
     def poll(cls, context):
-        return rig_page_active(context, "BODY") and _active_control_visual(context) is not None
+        return (rig_page_active(context, "BODY") and bool(getattr(_settings(context), "show_body_setup_advanced", False))
+                and _active_control_visual(context) is not None)
 
     def draw(self, context):
         resolved = _active_control_visual(context)
@@ -8622,6 +9060,7 @@ class CHARACTERDESIGNER_PT_limb_ik_direct_preroll(Panel):
         return (
             rig_page_active(context, "BODY")
             and settings is not None
+            and settings.show_body_setup_advanced
             and settings.build_method == "DIRECT_PREROLL"
         )
 

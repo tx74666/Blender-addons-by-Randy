@@ -1,5 +1,6 @@
 """Global root: complete-character motion, matching, recovery, and ownership guards."""
 import os
+import json
 import sys
 import tempfile
 
@@ -23,6 +24,26 @@ def poses(rig):
     return {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
 
 
+def wrist_helpers(rig):
+    return {b.name for b in rig.data.bones if b.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
+            and b.get(limb_ik.ROLE_KEY) == 'HAND_ROTATION'}
+
+
+def foot_auto_helpers(rig):
+    return {record['bones']['AUTO_ROTATION_REF'] for record in foot_controls.records(rig).values()
+            if record.get('auto_follow') == 1}
+
+
+def extension_record(rig, key):
+    if key != foot_controls.RECORD_KEY:
+        return rig.data[key]
+    result = json.loads(rig.data[key])
+    for record in result['legs'].values():
+        # Root explicitly rebases this owned coordinate frame on removal.
+        record['bone_states'].pop('AUTO_ROTATION_REF', None)
+    return result
+
+
 def fixture():
     rig, chain, torso = spine_tests.fixture(posed=True)
     foot_controls.build(bpy.context, rig, ('LEG', 'R'), toe_name='toe.R')
@@ -41,7 +62,7 @@ def test_whole_body_follow_roundtrip_and_removal():
     before = poses(rig)
     rest = {bone.name: torso_controls._state(bone) for bone in rig.data.bones}
     digest = limb_ik._armature_digest(rig)
-    records = {key: rig.data[key] for key in (spine.RECORD_KEY, torso_controls.RECORD_KEY,
+    records = {key: extension_record(rig, key) for key in (spine.RECORD_KEY, torso_controls.RECORD_KEY,
                                              foot_controls.RECORD_KEY, eye_controls.RECORD_KEY)}
     rig.data.use_mirror_x = True
     rec = root.build(bpy.context, rig)
@@ -50,10 +71,10 @@ def test_whole_body_follow_roundtrip_and_removal():
     assert bpy.context.mode == 'POSE' and rig.data.use_mirror_x
     assert len(rec['controls']) == 8 and rec['sources'] == ['Hips']
     assert len(rig.pose.bones[rec['master']].custom_shape.data.vertices) == 24
-    assert rec['master'] in rig.data.collections_all['Animation'].bones
+    assert rec['master'] in rig.data.collections_all['Body'].bones
     assert limb_ik._armature_digest(rig) == digest
     for name, state in rest.items():
-        expected = dict(state, parent=rec['master']) if name in rec['controls'] else state
+        expected = dict(state, parent=rec['master']) if name in set(rec['controls']) | foot_auto_helpers(rig) else state
         assert torso_controls._same_rest(rig.data.bones[name], expected), name
     control = rig.pose.bones[rec['master']]
     for loc, rot, size in (((.15, -.07, .06), (0, 0, 0), 1.0),
@@ -82,10 +103,12 @@ def test_whole_body_follow_roundtrip_and_removal():
     root.remove(bpy.context, rig)
     assert root.get_record(rig) is None and set(rig.data.bones.keys()) == set(rest)
     root._verify_pose(rig, {name: matrix for name, matrix in desired.items()
-                           if name != rec['master'] and name not in rec['controls']})
+                           if name != rec['master'] and name not in rec['controls']
+                           and name not in wrist_helpers(rig)})
     for name, state in rest.items():
-        assert torso_controls._same_rest(rig.data.bones[name], state), name
-    assert records == {key: rig.data[key] for key in records}
+        if name not in foot_auto_helpers(rig):
+            assert torso_controls._same_rest(rig.data.bones[name], state), name
+    assert records == {key: extension_record(rig, key) for key in records}
     assert limb_ik._armature_digest(rig) == digest
     limb_ik._validate_inventory(rig)
 
@@ -143,7 +166,8 @@ def test_near_straight_cumulative_removal_preserves_or_rolls_back():
     else:
         assert root.get_record(rig) is None and set(rig.data.bones.keys()) == set(rest)
         root._verify_pose(rig, {name: matrix for name, matrix in desired.items()
-                               if name != rec['master'] and name not in rec['controls']})
+                               if name != rec['master'] and name not in rec['controls']
+                               and name not in wrist_helpers(rig)})
         for name, state in rest.items():
             assert torso_controls._same_rest(rig.data.bones[name], state), name
         print('ROOT_NEAR_STRAIGHT_REMOVAL_PRESERVED', flush=True)
@@ -179,8 +203,11 @@ def test_build_and_remove_rollback():
     rig.pose.bones[rec['master']][root.SCALE_PROPERTY] = 1.11
     before = poses(rig)
     saved = rig.data[root.RECORD_KEY]
+    foot_saved = rig.data[foot_controls.RECORD_KEY]
+    foot_rest = {name: torso_controls._state(rig.data.bones[name]) for name in foot_auto_helpers(rig)}
     finish = bone_collections.finish_rig_edit
     def fail_finish(*_args, **_kwargs):
+        assert rec['master'] not in rig.data.bones
         raise RuntimeError('Injected root final layout failure')
     bone_collections.finish_rig_edit = fail_finish
     try:
@@ -193,6 +220,9 @@ def test_build_and_remove_rollback():
     finally:
         bone_collections.finish_rig_edit = finish
     assert rig.data[root.RECORD_KEY] == saved
+    assert rig.data[foot_controls.RECORD_KEY] == foot_saved
+    for name, state in foot_rest.items():
+        assert torso_controls._same_rest(rig.data.bones[name], state)
     root.validate(rig)
     root._verify_pose(rig, before)
     limb_ik._validate_inventory(rig)
@@ -256,7 +286,8 @@ def test_manual_and_fk_removal():
             control[root.SCALE_PROPERTY] = 1.08
             current = poses(rig)
             expected = {name: matrix for name, matrix in current.items()
-                        if name != rec['master'] and name not in rec['controls']}
+                        if name != rec['master'] and name not in rec['controls']
+                        and name not in wrist_helpers(rig)}
             root.remove(bpy.context, rig)
             root._verify_pose(rig, expected)
             inventory = limb_ik._validate_inventory(rig)
@@ -264,11 +295,52 @@ def test_manual_and_fk_removal():
             assert not inventory['rigs'][key]['auto_align']
 
 
+def test_wrist_parent_delta_survives_root_parent_changes():
+    limb_tests.base.ensure_registered()
+    for selected in ('LEFT_ARM', 'RIGHT_ARM'):
+        rig, key, data = limb_tests.build('DIRECT_PREROLL', selected)
+        target = rig.pose.bones[data['target'].name]
+        target.location += Vector((-.05 if key[1] == 'L' else .05, -.05, .03))
+        target.rotation_euler = (.13, -.07, .11)
+        update(rig)
+        helper_name = limb_ik._wrist_helper_name(key[1])
+        helper_rest = torso_controls._state(rig.data.bones[helper_name])
+        before = poses(rig)
+        assert data['auto_rotation_space'] == 'PARENT_DELTA'
+        assert data['auto_offset_rotation'].owner_space == 'POSE'
+        record = root.build(bpy.context, rig)
+        root._verify_pose(rig, {name: matrix for name, matrix in before.items() if name != helper_name})
+        data = limb_ik._validate_inventory(rig)['rigs'][key]
+        constraint = data['auto_offset_rotation']
+        assert constraint.owner_space == constraint.target_space == 'CUSTOM'
+        assert constraint.space_object == rig and constraint.space_subtarget == record['master']
+        assert rig.pose.bones[helper_name].parent.name == target.name
+        assert torso_controls._same_rest(rig.data.bones[helper_name], helper_rest)
+        master = rig.pose.bones[record['master']]
+        master.location = (.12, -.06, .04)
+        master.rotation_euler = (.18, -.21, .14)
+        master[root.SCALE_PROPERTY] = 1.13
+        current = poses(rig)
+        expected = {name: matrix for name, matrix in current.items()
+                    if name != record['master'] and name not in record['controls'] and name != helper_name}
+        root.remove(bpy.context, rig)
+        root._verify_pose(rig, expected)
+        data = limb_ik._validate_inventory(rig)['rigs'][key]
+        constraint = data['auto_offset_rotation']
+        assert data['auto_rotation_space'] == 'PARENT_DELTA'
+        assert constraint.owner_space == constraint.target_space == 'POSE'
+        assert constraint.space_object is None and constraint.space_subtarget == ''
+        assert constraint.subtarget == helper_name and constraint.mix_mode == 'BEFORE'
+        assert rig.pose.bones[helper_name].parent.name == target.name
+        assert torso_controls._same_rest(rig.data.bones[helper_name], helper_rest)
+        assert rig.data.bones[helper_name].hide and rig.pose.bones[helper_name].hide
+
+
 if __name__ == '__main__':
     for test in (test_whole_body_follow_roundtrip_and_removal,
                  test_near_straight_cumulative_removal_preserves_or_rolls_back, test_build_and_remove_rollback,
                  test_dependencies_uniform_scale_and_reopen, test_existing_enhanced_master_reused,
-                 test_manual_and_fk_removal):
+                 test_manual_and_fk_removal, test_wrist_parent_delta_survives_root_parent_changes):
         test()
         print('PASS', test.__name__, flush=True)
-    print('ROOT_CONTROL_TESTS_PASS 6', flush=True)
+    print('ROOT_CONTROL_TESTS_PASS 7', flush=True)

@@ -469,14 +469,12 @@ class CHARACTERDESIGNER_PT_quick_bind(Panel):
             elif transfer and state.body is None:
                 layout.label(text='Set Body Weight Source above.', icon='INFO')
             row = layout.row()
-            row.alert = True
             row.enabled = not transfer or state.body is not None
             row.operator('character_designer.quick_bind',
                          icon='MOD_DATA_TRANSFER' if transfer else 'ARMATURE_DATA').mode = state.binding_method
         from .quick_bind import has_binding_backup
         if has_binding_backup(target):
             row = layout.row()
-            row.alert = True
             row.operator('character_designer.restore_quick_binding', icon='LOOP_BACK')
 
 

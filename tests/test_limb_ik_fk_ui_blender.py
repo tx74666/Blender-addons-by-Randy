@@ -24,13 +24,13 @@ for method in ("ROLL_DECOUPLED", "DIRECT_PREROLL"):
     before = limb_ik_fk._matrices(rig, side["chain"])
     assert bpy.ops.character_designer.limb_ik_fk_switch(mode="FK") == {"FINISHED"}
     limb_ik_fk._verify(rig, before)
-    animation = rig.data.collections["Animation"]
+    animation = rig.data.collections_all["Body"]
     assert set(side["chain"]) <= {bone.name for bone in animation.bones}
     assert base.cancelled_result(bpy.ops.character_designer.limb_ik_rebuild) == {"CANCELLED"}
     assert base.cancelled_result(lambda: bpy.ops.character_designer.limb_ik_remove("EXEC_DEFAULT")) == {"CANCELLED"}
     limb_ik_fk._verify(rig, before)
     assert bpy.ops.character_designer.limb_ik_fk_switch(mode="IK") == {"FINISHED"}
-    animation = rig.data.collections["Animation"]
+    animation = rig.data.collections_all["Body"]
     assert not (set(side["chain"]) & {bone.name for bone in animation.bones})
     limb_ik_fk._verify(rig, before)
     assert bpy.ops.character_designer.limb_ik_rebuild() == {"FINISHED"}

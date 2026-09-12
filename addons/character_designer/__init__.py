@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 53, 2),
+    "version": (0, 55, 3),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -67,6 +67,9 @@ from .bone_collections import (
     unregister_handlers as unregister_bone_collection_handlers,
 )
 from .character_setup import CHARACTER_SETUP_CLASSES, CharacterDesignerSetup
+from .bone_display import BONE_DISPLAY_CLASSES
+from .widget_collections import WIDGET_COLLECTION_CLASSES
+from .bone_display_sync import register as register_bone_display_sync, unregister as unregister_bone_display_sync
 from .torso_ui import TORSO_UI_CLASSES
 from .eye_ui import EYE_UI_CLASSES
 from .body_controls_ui import BODY_CONTROL_UI_CLASSES
@@ -8216,7 +8219,6 @@ def _draw_refresh_action(layout):
         return
     layout.separator()
     refresh_row = layout.row(align=True)
-    refresh_row.alert = bool(ADDON_REFRESH_LAST_ERROR)
     refresh_row.enabled = not ADDON_REFRESH_PENDING
     refresh_row.operator(
         "character_designer.refresh_addon",
@@ -8383,6 +8385,8 @@ CLASSES = (
     *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
     *BONE_COLLECTION_CLASSES,
+    *BONE_DISPLAY_CLASSES,
+    *WIDGET_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
@@ -8510,6 +8514,7 @@ def register():
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
         register_bone_collection_handlers()
+        register_bone_display_sync()
         register_forearm_twist_runtime()
         _register_workspace_filter_guard()
         _register_source_watch()
@@ -8575,6 +8580,7 @@ def register():
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
         register_bone_collection_handlers()
+        register_bone_display_sync()
         register_forearm_twist_runtime()
         _register_workspace_filter_guard()
         _register_source_watch()
@@ -8584,6 +8590,7 @@ def register():
         unregister_forearm_twist_runtime()
         unregister_limb_ik_viewport_handler()
         unregister_bone_collection_handlers()
+        unregister_bone_display_sync()
         unregister_reference_view_handlers()
         _unregister_workspace_filter_guard()
         _unregister_source_watch()
@@ -8608,6 +8615,7 @@ def unregister():
     stop_delta_symmetry_runtime(clear_capture=True)
     unregister_limb_ik_viewport_handler()
     unregister_bone_collection_handlers()
+    unregister_bone_display_sync()
     unregister_reference_view_handlers()
     _unregister_workspace_filter_guard()
     _unregister_source_watch()

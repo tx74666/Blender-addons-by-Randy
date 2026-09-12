@@ -196,6 +196,9 @@ def _add_widget(context, armature, record, *, snapshot=None):
     collection = bpy.data.collections.new(record['widget_collection'])
     context.scene.collection.children.link(collection)
     _tag(collection, record, 'WIDGET_COLLECTION')
+    from . import widget_collections
+    widget_collections.ensure_container(context, collection, armature, 'Root')
+    record['widget_collection'] = collection.name
     vertices, edges = (_limb()._widget_geometry('MASTER') if snapshot is None
                        else (snapshot['vertices'], snapshot['edges']))
     entry = record['widgets']['MASTER']
@@ -244,6 +247,7 @@ def _create_graph(context, armature, record, *, snapshot=None):
     for name in record['controls']:
         armature.data.edit_bones[name].parent = master
     _limb()._mode_set(context, armature, 'OBJECT')
+    _limb().refresh_parent_delta_spaces(context, armature)
     pb = armature.pose.bones[record['master']]
     _tag(pb.bone, record, 'MASTER')
     pb.rotation_mode = 'XYZ'
@@ -277,6 +281,7 @@ def _delete_graph(context, armature, record):
     if bone and bone.get(OWNER_KEY) == OWNER_VALUE:
         armature.data.edit_bones.remove(bone)
     _limb()._mode_set(context, armature, 'OBJECT')
+    _limb().refresh_parent_delta_spaces(context, armature)
     for entry in record['widgets'].values():
         obj = bpy.data.objects.get(entry['object'])
         if obj and obj.get(ID_KEY) == record['id']:
@@ -287,9 +292,12 @@ def _delete_graph(context, armature, record):
     collection = bpy.data.collections.get(record['widget_collection'])
     if collection and collection.get(ID_KEY) == record['id'] and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(context)
 
 
 def build(context, armature):
+    from . import foot_controls
     """Add a neutral global root; an existing enhanced Master is reused unchanged."""
     from . import bone_collections
     _active(context, armature)
@@ -337,6 +345,7 @@ def build(context, armature):
     layout = bone_collections.capture_managed_layout(armature)
     ctx = _limb()._capture_context(context, armature)
     mirror = armature.data.use_mirror_x
+    foot_frames = armature.data.get(foot_controls.RECORD_KEY)
     try:
         armature.data.use_mirror_x = False
         _create_graph(context, armature, record)
@@ -350,6 +359,7 @@ def build(context, armature):
     except Exception:
         _delete_graph(context, armature, record)
         armature.data.pop(RECORD_KEY, None)
+        foot_controls.restore_auto_reference_frames(context, armature, foot_frames)
         for name, (rotation_mode, basis) in bases.items():
             pb = armature.pose.bones[name]
             pb.rotation_mode, pb.matrix_basis = rotation_mode, basis
@@ -363,7 +373,7 @@ def build(context, armature):
 
 
 def _refuse_dependencies(armature, record):
-    from .foot_controls import _driver_owners
+    from .foot_controls import _driver_owners, records as foot_records
     names = {record['master']}
     changed = names | set(record['sources']) | set(record['controls'])
     paths = owned_driver_paths(armature)
@@ -372,10 +382,19 @@ def _refuse_dependencies(armature, record):
         curves.extend(c for c in armature.animation_data.drivers if c.data_path not in paths)
     if any(_limb()._path_mentions_bone(c.data_path, changed) for c in curves):
         raise _error('Root or its inputs have animation or drivers; preserve those channels before removal.')
+    auto_references = {foot['bones']['AUTO_ROTATION_REF'] for foot in foot_records(armature).values()
+                       if foot.get('auto_follow') == 1}
     for bone in armature.data.bones:
-        if bone.parent and bone.parent.name in names and bone.name not in record['controls']:
+        if bone.parent and bone.parent.name in names and bone.name not in set(record['controls']) | auto_references:
             raise _error('Another bone follows Root Control; detach it before removal.')
     owned = extra_constraints(armature)
+    # These managed wrist offsets use Root only as a coordinate frame. Their
+    # frame is refreshed in the explicit reparent transaction below.
+    inventory = _limb()._validate_inventory(armature)
+    for rig in inventory['rigs'].values():
+        if rig.get('auto_rotation_space') == 'PARENT_DELTA':
+            owned.update((pb.name, con.name) for pb, con, entry in rig['entries']
+                         if entry['role'] == 'AUTO_OFFSET_ROTATION')
     widget = record['widgets']['MASTER']['object']
     for obj in bpy.data.objects:
         if obj.parent == armature and obj.parent_type == 'BONE' and obj.parent_bone in names:
@@ -475,11 +494,15 @@ def _restore_end_offsets(context, armature, inventory, desired, modes):
             offset.mute = True
             try:
                 _update(context, armature)
-                natural = armature.convert_space(pose_bone=end, matrix=end.matrix.copy(), from_space='POSE', to_space='LOCAL')
-                wanted_local = armature.convert_space(pose_bone=end, matrix=wanted, from_space='POSE', to_space='LOCAL')
-                rotation = natural.to_quaternion().inverted() @ wanted_local.to_quaternion()
-                basis = target.matrix_basis.copy()
-                target.matrix_basis = Matrix.LocRotScale(basis.translation, rotation.normalized(), basis.to_scale())
+                if rig.get('auto_rotation_space') == 'PARENT_DELTA':
+                    target.matrix = _limb()._auto_target_rotation_matrix(
+                        armature, target, end.matrix.copy(), wanted)
+                else:
+                    natural = armature.convert_space(pose_bone=end, matrix=end.matrix.copy(), from_space='POSE', to_space='LOCAL')
+                    wanted_local = armature.convert_space(pose_bone=end, matrix=wanted, from_space='POSE', to_space='LOCAL')
+                    rotation = natural.to_quaternion().inverted() @ wanted_local.to_quaternion()
+                    basis = target.matrix_basis.copy()
+                    target.matrix_basis = Matrix.LocRotScale(basis.translation, rotation.normalized(), basis.to_scale())
             finally:
                 offset.mute = old_mute
             _update(context, armature)
@@ -502,6 +525,7 @@ def _restore_end_offsets(context, armature, inventory, desired, modes):
 
 
 def remove(context, armature):
+    from . import foot_controls
     """Bake this root into existing controls without changing native rest data or keys."""
     from . import bone_collections, limb_ik_fk
     _active(context, armature)
@@ -520,7 +544,10 @@ def remove(context, armature):
     desired = {pb.name: pb.matrix.copy() for pb in armature.pose.bones if pb.name != record['master']}
     # Auto hand input coordinates must change after removing their parent; their
     # visible widget follows the preserved native hand. Validate all other bones.
-    verify = {name: matrix for name, matrix in desired.items() if name not in record['controls']}
+    rotation_references = {bone.name for bone in inventory['bones']
+                           if bone.get(_limb().ROLE_KEY) == 'HAND_ROTATION'}
+    verify = {name: matrix for name, matrix in desired.items()
+              if name not in record['controls'] and name not in rotation_references}
     bases = {pb.name: (pb.rotation_mode, pb.matrix_basis.copy()) for pb in armature.pose.bones}
     root_scale = armature.pose.bones[record['master']][SCALE_PROPERTY]
     mode_props = {rig['target'].name: armature.pose.bones[rig['target'].name].get(limb_ik_fk.PROPERTY)
@@ -530,6 +557,7 @@ def remove(context, armature):
     ctx = _limb()._capture_context(context, armature)
     mirror = armature.data.use_mirror_x
     deleted = False
+    foot_frames = armature.data.get(foot_controls.RECORD_KEY)
     try:
         armature.data.use_mirror_x = False
         for entry in record['constraints']:
@@ -538,6 +566,7 @@ def remove(context, armature):
         for name, state in record['control_states'].items():
             armature.data.edit_bones[name].parent = armature.data.edit_bones.get(state['parent']) if state['parent'] else None
         _limb()._mode_set(context, armature, 'OBJECT')
+        _limb().refresh_parent_delta_spaces(context, armature)
         inventory = _resolve_match_inventory(armature, match_snapshot)
         for name in (*record['sources'], *record['controls']):
             armature.pose.bones[name].matrix = desired[name]
@@ -559,8 +588,10 @@ def remove(context, armature):
             for name in record['controls']:
                 armature.data.edit_bones[name].parent = armature.data.edit_bones[record['master']]
             _limb()._mode_set(context, armature, 'OBJECT')
+            _limb().refresh_parent_delta_spaces(context, armature)
             for entry in record['constraints']:
                 armature.pose.bones[entry['owner']].constraints[entry['name']].mute = False
+        foot_controls.restore_auto_reference_frames(context, armature, foot_frames)
         armature.data[RECORD_KEY] = json.dumps(record)
         armature.pose.bones[record['master']][SCALE_PROPERTY] = root_scale
         for name, (rotation_mode, matrix) in bases.items():

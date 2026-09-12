@@ -24,7 +24,7 @@ SOURCE_KEY = "character_designer_skirt_source"
 PARENT_KEY = "character_designer_skirt_original_parent"
 ATTACHMENT_BACKUP_KEY = "character_designer_skirt_attachment_before_update_v1"
 ATTACHMENT_PARENT_KEY = "character_designer_skirt_attachment_previous_parent"
-BONE_COLLECTION_NAME = "Skirt"
+BONE_COLLECTION_NAME = "Dress"
 
 
 class SkirtRigError(ValueError):
@@ -107,7 +107,7 @@ def _bone_collection_layout(record):
 
 
 def migrate_skirt_bone_collections(armature):
-    """Collapse a verified generated skirt's legacy display groups only.
+    """Name the owned daily group Dress, collapsing verified legacy groups.
 
     Rig objects, bone transforms, constraints, weights and unrelated collections
     are untouched. Non-owned armatures are ignored; edited ownership is rejected
@@ -139,7 +139,11 @@ def migrate_skirt_bone_collections(armature):
     if target is not None:
         if set(target.bones.keys()) != owned_names or target.children:
             raise SkirtRigError("The skirt bone collection was edited; restore it before organizing it.")
-        return False
+        previous_name = target.name
+        # Blender gives this owned group a unique suffix if an artist already
+        # uses Dress; never rename or merge that unrelated collection.
+        target.name = BONE_COLLECTION_NAME
+        return target.name != previous_name
     legacy = []
     for title, names in (("Skirt Controls", controls), ("Skirt Deform", deform),
                          ("Skirt Mechanism", mechanism)):
@@ -582,6 +586,7 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
         if existing["chain_count"] != chain_count or existing["segment_count"] != segment_count:
             raise SkirtRigError("Remove the existing setup before changing its chain or segment count.")
         _check_existing_geometry(obj, existing)
+        migrate_skirt_bone_collections(obj[RIG_KEY])
         select_controls(context, obj)
         return existing
     _validate_source(obj)

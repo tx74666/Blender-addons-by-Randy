@@ -89,6 +89,8 @@ def validate(armature, inventory=None):
             raise _error('Foot Controls record is incomplete.')
         if record.get('rotation_direction') not in {None, 'LEGACY', 'NATURAL'}:
             raise _error('Foot Controls rotation direction is unsupported.')
+        if record.get('auto_follow') not in {None, 1}:
+            raise _error('Foot Controls Auto Align version is unsupported.')
         if inventory is not None:
             base = inventory['rigs'].get(('LEG', side))
             if base is None or base['rig_id'] != record['rig_id']:
@@ -117,7 +119,7 @@ def validate(armature, inventory=None):
                 raise _error(f"Foot Controls constraint '{entry['name']}' is missing.")
             if con.mute:
                 raise _error(f"Foot Controls constraint '{con.name}' was disabled.")
-            if con.name != 'CD Foot IK Toe Space' and abs(con.influence - 1.0) > 1e-6:
+            if con.name not in {'CD Foot IK Toe Space', 'CD Foot Auto Toe Space'} and abs(con.influence - 1.0) > 1e-6:
                 raise _error(f"Foot Controls constraint '{con.name}' influence was edited.")
             for name, value in entry['fields'].items():
                 actual = getattr(con, name)
@@ -125,6 +127,8 @@ def validate(armature, inventory=None):
                     raise _error(f"Foot Controls constraint '{con.name}' was edited.")
             if con.target is not armature:
                 raise _error('Foot Controls must follow its original armature.')
+            if entry.get('custom_space') and con.space_object is not armature:
+                raise _error('Foot Controls custom space must use its original armature.')
         for entry in record['drivers']:
             _validate_driver(armature, entry)
         if armature.animation_data:
@@ -502,6 +506,9 @@ def _add_widget(context, armature, record, role, kind, scale):
         collection = bpy.data.collections.new(record['widget_collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'Foot.' + record['side'])
+        record['widget_collection'] = collection.name
     name = 'WGT_CD_' + role + '_' + record['id'][:10]
     vertices, edges = _limb()._widget_geometry(kind)
     mesh = bpy.data.meshes.new(name)
@@ -567,6 +574,8 @@ def _delete_graph(context, armature, record):
     collection = bpy.data.collections.get(record['widget_collection'])
     if collection and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(context)
 
 
 def build(context, armature, key, toe_name=None, shoe=None):
@@ -718,6 +727,7 @@ def build(context, armature, key, toe_name=None, shoe=None):
         _set_roll_visual(armature, armature.pose.bones[record['roll']], visual_state)
         record['roll_visual_fit'] = visual_metadata
         _write_records(armature, dict(previous_records, **{side: record}))
+        record = update_auto_follow(context, armature, key, _building=True)
         bone_collections.finish_rig_edit(armature, layout_before)
     except Exception:
         _set_fields(armature, record['original_constraints'])
@@ -745,6 +755,285 @@ def build(context, armature, key, toe_name=None, shoe=None):
     for name in (record['roll'], record['toe_control']):
         control_colors.style(armature.pose.bones[name])
     return record
+
+
+def _auto_edit_guard(armature, record):
+    """A mode handoff may match controls, never rewrite authored animation."""
+    for name in (record['target'],):
+        pb = armature.pose.bones[name]
+        if any(pb.lock_rotation) or pb.lock_rotation_w or any(pb.lock_location):
+            raise _error(f'Unlock {name} location and rotation before changing Foot Auto Align.')
+        if _limb()._target_transform_has_keyed_animation(armature, name):
+            raise _error(f'{name} has authored animation; choose Foot Auto Align before animating.')
+        if _limb()._target_transform_has_driver(armature, name):
+            raise _error(f'A driver writes {name}; preserve that input before changing Foot Auto Align.')
+
+
+def update_auto_follow(context, armature, key, *, _building=False):
+    """Explicitly add shin-follow evaluation while preserving the current pose.
+
+    The ankle's cumulative reverse-foot rotation is measured in a sibling bone
+    of the main Target. Applying its local delta after the native foot rotation
+    retains the solved shin frame without feeding the foot back into IK. A
+    separate toe reference transports the ankle/toe differential onto that foot.
+    Legacy records remain valid until this explicit, reversible migration.
+    """
+    import copy
+    from . import bone_collections, limb_ik_fk
+    _active(context, armature)
+    inventory = _limb()._validate_inventory(armature)
+    record = get_record(armature, key)
+    if record is None:
+        raise _error('Add Foot Controls before updating Auto Align.')
+    if record.get('auto_follow') == 1:
+        return record
+    rig = inventory['rigs'][('LEG', record['side'])]
+    if not _building:
+        from . import root_control
+        _auto_edit_guard(armature, record)
+        affected = {record['target'], record['roll'], record['toe_control'], record['toe'],
+                    rig['pole'].name, *record['chain']}
+        for name in tuple(affected):
+            parent = armature.pose.bones[name].parent
+            while parent is not None:
+                # Generated roll mechanisms have owned drivers; the animator
+                # inputs above and their native/global ancestors are the guard.
+                if parent.bone.get(OWNER_KEY) != OWNER_VALUE:
+                    affected.add(parent.name)
+                parent = parent.parent
+        owned_paths = (limb_ik_fk.owned_driver_paths(armature) | root_control.owned_driver_paths(armature)
+                       | owned_driver_paths(armature))
+        for name in affected:
+            if _limb()._target_transform_has_keyed_animation(armature, name):
+                raise _error(f'{name} has authored animation; preserve it before updating Foot Auto Align.')
+            if armature.animation_data and any(_limb()._path_mentions_bone(curve.data_path, {name})
+                    and curve.data_path not in owned_paths for curve in armature.animation_data.drivers):
+                raise _error(f'A driver writes {name}; preserve that input before updating Foot Auto Align.')
+        _refuse_foreign_dependencies(armature, record)
+    target = armature.pose.bones[record['target']]
+    if abs(float(target.get(limb_ik_fk.PROPERTY, 1.0)) - 1.0) > 1e-6:
+        raise _error('Switch this leg to IK before updating Foot Auto Align.')
+    end = armature.pose.bones[record['chain'][2]]
+    ankle = armature.pose.bones[record['solver']]
+    offset = rig['auto_offset_rotation']
+    manual = next(con for _pb, con, entry in rig['entries'] if entry['role'] == 'END_ROTATION')
+    _update(context, armature)
+    desired = {name: armature.pose.bones[name].matrix.copy() for name in (*record['chain'], record['toe'])}
+    old_record, values = copy.deepcopy(record), _all_records(armature)
+    old_fields = _constraint_state(end, offset)
+    old_mutes = (manual.mute, offset.mute)
+    context_before = _limb()._capture_context(context, armature)
+    layout_before = bone_collections.capture_managed_layout(armature)
+    new_names = {'AUTO_ROTATION_REF': 'MCH_foot_auto_rotation.' + record['side'],
+                 'AUTO_TOE_REF': 'MCH_toe_auto_ref.' + record['side']}
+    if any(name in armature.data.bones for name in new_names.values()):
+        raise _error('A Foot Auto Align helper name is already in use.')
+    added = {'bones': new_names, 'drivers': [], 'constraints': [], 'widgets': {}, 'widget_collection': ''}
+    mirror_before = armature.data.use_mirror_x
+    try:
+        # Calibrate the constant local reference against the unconstrained foot.
+        # This preserves even a raised, rotated legacy foot when adding Auto.
+        manual.mute = offset.mute = True
+        _update(context, armature)
+        natural = armature.convert_space(pose_bone=end, matrix=end.matrix, from_space='POSE', to_space='LOCAL')
+        wanted = armature.convert_space(pose_bone=end, matrix=desired[end.name], from_space='POSE', to_space='LOCAL')
+        delta = natural.to_quaternion().inverted() @ wanted.to_quaternion()
+        parent = target.parent
+        parent_pose = parent.matrix if parent else Matrix.Identity(4)
+        parent_rest = parent.bone.matrix_local if parent else Matrix.Identity(4)
+        reference_rotation = (parent_pose.to_quaternion().inverted()
+                              @ ankle.matrix.to_quaternion() @ delta.inverted())
+        reference_rest = parent_rest @ Matrix.LocRotScale(
+            (parent_pose.inverted_safe() @ ankle.matrix).translation,
+            reference_rotation.normalized(), Vector((1, 1, 1)))
+        foot_rest = end.bone.matrix_local.copy()
+        plans = [('AUTO_ROTATION_REF', parent.name if parent else None, reference_rest),
+                 ('AUTO_TOE_REF', end.name, foot_rest)]
+        manual.mute, offset.mute = old_mutes
+        armature.data.use_mirror_x = False
+        _limb()._mode_set(context, armature, 'EDIT')
+        for role, parent_name, matrix in plans:
+            bone = armature.data.edit_bones.new(new_names[role])
+            length = max(armature.data.edit_bones[record['chain'][2]].length * .16, .01)
+            bone.head = matrix.translation
+            bone.tail = bone.head + matrix.to_3x3().col[1].normalized() * length
+            bone.align_roll(matrix.to_3x3().col[2])
+            bone.parent = armature.data.edit_bones.get(parent_name) if parent_name else None
+            bone.use_deform = False
+        _limb()._mode_set(context, armature, 'OBJECT')
+        for role, parent_name, _matrix_value in plans:
+            pb = armature.pose.bones[new_names[role]]
+            _tag(pb.bone, record, role)
+            pb.bone.hide = pb.bone.hide_select = True
+            pb.lock_location = pb.lock_rotation = pb.lock_scale = (True, True, True)
+            record['bones'][role] = pb.name
+            record['bone_states'][role] = {'head': list(pb.bone.head_local), 'tail': list(pb.bone.tail_local),
+                'matrix': _matrix(pb.bone.matrix_local), 'parent': parent_name}
+            for collection in armature.data.bones[record['solver']].collections:
+                collection.assign(pb.bone)
+        ref = armature.pose.bones[new_names['AUTO_ROTATION_REF']]
+        _add_constraint(added, ref, 'COPY_ROTATION', 'CD Foot Auto Rotation', armature,
+                        subtarget=record['solver'], target_space='WORLD', owner_space='WORLD', mix_mode='REPLACE')
+        toe_ref = armature.pose.bones[new_names['AUTO_TOE_REF']]
+        con = _add_constraint(added, toe_ref, 'COPY_TRANSFORMS', 'CD Foot Auto Toe Reference', armature,
+                        subtarget=record['bones']['IK_TOE_REF'], target_space='CUSTOM', owner_space='LOCAL',
+                        space_subtarget=record['solver'], mix_mode='REPLACE')
+        con.space_object = armature
+        added['constraints'][-1]['custom_space'] = True
+        space = armature.pose.bones[record['bones']['TOE_SPACE']]
+        auto_toe = _add_constraint(added, space, 'COPY_TRANSFORMS', 'CD Foot Auto Toe Space', armature,
+                        subtarget=toe_ref.name, target_space='WORLD', owner_space='WORLD', mix_mode='REPLACE')
+        auto_path = 'data.' + target.bone.path_from_id() + '["' + _limb().AUTO_ALIGN_KEY + '"]'
+        added['drivers'].append(_driver(armature, auto_toe, 'influence', -1, 'ik_fk * auto',
+                         {'ik_fk': limb_ik_fk.property_path(target), 'auto': auto_path}))
+        end = armature.pose.bones[record['chain'][2]]
+        offset = end.constraints[old_fields['name']]
+        offset.subtarget = ref.name
+        offset.target_space = offset.owner_space = 'LOCAL'
+        offset.mix_mode = 'AFTER'
+        record['auto_follow'] = 1
+        record['constraints'].extend(added['constraints'])
+        record['drivers'].extend(added['drivers'])
+        _write_records(armature, dict(values, **{record['side']: record}))
+        _update(context, armature)
+        _verify_pose(armature, desired)
+        _limb()._validate_inventory(armature)
+        bone_collections.finish_rig_edit(armature, layout_before)
+    except Exception:
+        _set_fields(armature, [old_fields])
+        manual.mute, offset.mute = old_mutes
+        _write_records(armature, dict(values, **{record['side']: old_record}))
+        _delete_graph(context, armature, added)
+        bone_collections.restore_layout(armature, layout_before)
+        _update(context, armature)
+        raise
+    finally:
+        armature.data.use_mirror_x = mirror_before
+        _limb()._restore_context(context, armature, context_before)
+    return record
+
+
+def match_auto_rotation(context, armature, rig, desired_end):
+    """Solve the cumulative ankle delta while keeping its IK point fixed."""
+    record = rig['foot_controls']
+    target = armature.pose.bones[record['target']]
+    end = armature.pose.bones[record['chain'][2]]
+    offset = rig['auto_offset_rotation']
+    old_mute = offset.mute
+    try:
+        offset.mute = True
+        _update(context, armature)
+        natural = armature.convert_space(pose_bone=end, matrix=end.matrix, from_space='POSE', to_space='LOCAL')
+        wanted = armature.convert_space(pose_bone=end, matrix=desired_end, from_space='POSE', to_space='LOCAL')
+        delta = natural.to_quaternion().inverted() @ wanted.to_quaternion()
+        ref = armature.pose.bones[record['bones']['AUTO_ROTATION_REF']]
+        local = Matrix.LocRotScale(ref.matrix_basis.translation, delta.normalized(), Vector((1, 1, 1)))
+        desired_ankle = armature.convert_space(pose_bone=ref, matrix=local, from_space='LOCAL', to_space='POSE')
+        ankle = armature.pose.bones[record['solver']]
+        rotation = desired_ankle.to_quaternion() @ ankle.matrix.to_quaternion().inverted()
+        pivot = ankle.matrix.translation.copy()
+        transform = Matrix.Translation(pivot) @ rotation.to_matrix().to_4x4() @ Matrix.Translation(-pivot)
+        target.matrix = transform @ target.matrix
+    finally:
+        offset.mute = old_mute
+        _update(context, armature)
+
+
+def refresh_auto_reference_parents(context, armature):
+    """Rebase owned Auto coordinates when Root explicitly reparents its inputs."""
+    values = _all_records(armature)
+    plans = []
+    for record in values.values():
+        if record.get('auto_follow') != 1:
+            continue
+        ref = armature.pose.bones[record['bones']['AUTO_ROTATION_REF']]
+        parent = armature.pose.bones[record['target']].parent
+        if ref.parent == parent:
+            continue
+        old_parent_pose = ref.parent.matrix if ref.parent else Matrix.Identity(4)
+        old_parent_rest = ref.parent.bone.matrix_local if ref.parent else Matrix.Identity(4)
+        new_parent_pose = parent.matrix if parent else Matrix.Identity(4)
+        new_parent_rest = parent.bone.matrix_local if parent else Matrix.Identity(4)
+        # Preserve the reference's local delta and evaluated frame. Root
+        # removal bakes its transform into the Target; the measurement frame
+        # must receive the same rebase, otherwise that rotation is counted twice.
+        matrix = (new_parent_rest @ new_parent_pose.inverted_safe() @ old_parent_pose
+                  @ old_parent_rest.inverted_safe() @ ref.bone.matrix_local)
+        plans.append((record, ref.name, parent.name if parent else None, matrix, ref.bone.length, ref.matrix.copy()))
+    if not plans:
+        return
+    previous_mode = armature.mode
+    _limb()._mode_set(context, armature, 'EDIT')
+    for record, name, parent_name, matrix, length, _pose in plans:
+        bone = armature.data.edit_bones[name]
+        bone.parent = armature.data.edit_bones.get(parent_name) if parent_name else None
+        bone.head = matrix.translation
+        bone.tail = bone.head + matrix.to_3x3().col[1] * length
+        bone.align_roll(matrix.to_3x3().col[2])
+    _limb()._mode_set(context, armature, 'OBJECT')
+    for record, name, parent_name, _matrix_value, _length, pose in plans:
+        bone = armature.data.bones[name]
+        armature.pose.bones[name].matrix = pose
+        record['bone_states']['AUTO_ROTATION_REF'] = {'head': list(bone.head_local), 'tail': list(bone.tail_local),
+            'matrix': _matrix(bone.matrix_local), 'parent': parent_name}
+    _write_records(armature, values)
+    _limb()._mode_set(context, armature, previous_mode)
+
+
+def restore_auto_reference_frames(context, armature, saved_record):
+    """Restore exact owned reference geometry during a parent transaction rollback."""
+    if saved_record is None:
+        return
+    values = json.loads(saved_record)['legs']
+    plans = [(record['bones']['AUTO_ROTATION_REF'], record['bone_states']['AUTO_ROTATION_REF'])
+             for record in values.values() if record.get('auto_follow') == 1]
+    if plans:
+        previous_mode = armature.mode
+        _limb()._mode_set(context, armature, 'EDIT')
+        for name, state in plans:
+            bone = armature.data.edit_bones[name]
+            bone.parent = armature.data.edit_bones.get(state['parent']) if state['parent'] else None
+            bone.head, bone.tail = state['head'], state['tail']
+            bone.align_roll(Matrix(state['matrix']).to_3x3().col[2])
+        _limb()._mode_set(context, armature, previous_mode)
+    armature.data[RECORD_KEY] = saved_record
+
+
+def set_auto_align(context, armature, rig, enabled):
+    """Match modern reverse-foot modes transactionally, including Toe Bend."""
+    record = rig['foot_controls']
+    _auto_edit_guard(armature, record)
+    target = armature.pose.bones[record['target']]
+    manual = next(con for _pb, con, entry in rig['entries'] if entry['role'] == 'END_ROTATION')
+    offset = rig['auto_offset_rotation']
+    desired = {name: armature.pose.bones[name].matrix.copy() for name in (*record['chain'], record['toe'])}
+    before = (target.matrix_basis.copy(), manual.mute, offset.mute,
+              target.bone[_limb().AUTO_ALIGN_KEY], target.custom_shape_transform, _limb()._control_visual_state(target))
+    try:
+        manual.mute, offset.mute = enabled, not enabled
+        target.bone[_limb().AUTO_ALIGN_KEY] = enabled
+        _update(context, armature)
+        if enabled:
+            match_auto_rotation(context, armature, rig, desired[record['chain'][2]])
+        else:
+            ankle = armature.pose.bones[record['solver']]
+            rotation = desired[record['chain'][2]].to_quaternion() @ ankle.matrix.to_quaternion().inverted()
+            pivot = ankle.matrix.translation.copy()
+            target.matrix = Matrix.Translation(pivot) @ rotation.to_matrix().to_4x4() @ Matrix.Translation(-pivot) @ target.matrix
+            _update(context, armature)
+        _limb()._retarget_custom_shape_frame(target, armature.pose.bones[record['chain'][2]] if enabled else None)
+        _update(context, armature)
+        _verify_pose(armature, desired)
+        _limb()._validate_inventory(armature)
+    except Exception:
+        target.matrix_basis = before[0]
+        manual.mute, offset.mute = before[1:3]
+        target.bone[_limb().AUTO_ALIGN_KEY] = before[3]
+        target.custom_shape_transform = before[4]
+        _limb()._apply_control_visual_state(target, before[5])
+        _update(context, armature)
+        raise
+    return target.name, enabled, True
 
 
 def _driver_owners():
@@ -829,6 +1118,8 @@ def update_rotation_direction(context, armature, key):
     if any(curve.data_path in rotation_paths for action in _limb()._actions_for_id(armature)
            for curve in _limb()._fcurves_for_action(action)):
         raise _error('Foot Roll has authored rotation animation; preserve those channels before updating direction.')
+    if armature.animation_data and any(curve.data_path in rotation_paths for curve in armature.animation_data.drivers):
+        raise _error('A driver writes the Foot Roll rotation; preserve that input before updating direction.')
     _refuse_foreign_dependencies(armature, record)
     if any(bone.parent and bone.parent.name == roll.name for bone in armature.data.bones):
         raise _error('Another bone follows the Foot Roll input; preserve that dependency before updating direction.')

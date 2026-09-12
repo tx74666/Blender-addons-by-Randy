@@ -204,7 +204,7 @@ def controller_status(armature, target_name):
             return False, "Forearm Twist: check body calibration"
     if not matching:
         return False, "Forearm Twist: not calibrated"
-    if any(obj.name in _ERRORS for obj, _record in matching):
+    if any(record.get("enabled", True) and obj.name in _ERRORS for obj, record in matching):
         return False, "Forearm Twist paused: check body panel"
     active = sum(record.get("enabled", True) for _obj, record in matching)
     if active == len(matching):
@@ -922,15 +922,43 @@ def start_paired_test(context):
 
 
 def toggle_paired_calibration(context, obj):
+    global _BUSY
     if _SESSION is not None:
         raise ForearmTwistError("Finish the current test first.")
-    records = _prepare_runtime_records(obj)
+    records = _records(obj)
     if not records:
         return
     enabled = not all(record.get("enabled", True) for record in records.values())
-    for record in records.values():
-        record["enabled"] = enabled
-    _apply_runtime_records(obj, records, context.evaluated_depsgraph_get())
+    if enabled:
+        records = _prepare_runtime_records(obj)
+        for record in records.values():
+            record["enabled"] = True
+        _apply_runtime_records(obj, records, context.evaluated_depsgraph_get())
+    else:
+        # Stale topology or chain data must not prevent turning the correction
+        # off. Resolve ownership first, then mute both outputs without migrating
+        # the captured profile or recalculating any shape coordinates.
+        keys = [_managed_key(obj, side, record, repair_name=False)
+                for side, record in records.items()]
+        old_json = obj[RECORD_KEY]
+        old_mutes = [key.mute for key in keys]
+        old_busy = _BUSY
+        _BUSY = True
+        try:
+            for record in records.values():
+                record["enabled"] = False
+            _write_records(obj, records)
+            for key in keys:
+                key.mute = True
+        except Exception:
+            obj[RECORD_KEY] = old_json
+            for key, mute in zip(keys, old_mutes):
+                key.mute = mute
+            _CACHE.pop(obj.as_pointer(), None)
+            _OUTPUT_CACHE.pop(obj.as_pointer(), None)
+            raise
+        finally:
+            _BUSY = old_busy
     _set_render_lock(context.scene)
     _redraw()
 
@@ -1337,7 +1365,6 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
         if obj is None:
             layout.label(text="Select body Mesh or Hand Target", icon="INFO")
             return
-        layout.label(text="Both Arms", icon="MOD_MIRROR")
         if _SESSION:
             record = _records(obj)[_SESSION["side"]]
             ring = record["rings"][settings.ring_index - 1]
@@ -1362,8 +1389,9 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
             layout.operator("character_designer.forearm_twist_start", text="Recalibrate 90°" if record else "Start 90° Test", icon="DRIVER_ROTATIONAL_DIFFERENCE")
             if record:
                 enabled = all(item.get("enabled", True) for item in records.values())
+                paused = obj.name in _ERRORS and any(item.get("enabled", True) for item in records.values())
                 row = layout.row(align=True)
-                row.operator("character_designer.forearm_twist_toggle", text="Enabled" if enabled else "Disabled", depress=enabled)
+                row.operator("character_designer.forearm_twist_toggle", text="Paused" if paused else "Enabled" if enabled else "Disabled", depress=enabled)
                 remove_row = row.row(align=True)
                 remove_row.alert = True
                 remove_row.operator("character_designer.forearm_twist_remove", text="Remove", icon="TRASH")

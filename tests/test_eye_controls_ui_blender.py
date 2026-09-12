@@ -22,7 +22,7 @@ eye_controls._verify_pose(rig, before)
 assert limb_ik._armature_digest(rig) == digest
 assert bpy.ops.character_designer.eye_controls(action='BUILD') == {'FINISHED'}
 assert eye_controls.get_record(rig) == record
-animation = {bone.name for bone in rig.data.collections['Animation'].bones}
+animation = {bone.name for bone in rig.data.collections_all['Body'].bones}
 assert set(record['bones'].values()) <= animation
 assert not set(record['sources']) & animation
 for name in record['bones'].values():
@@ -41,7 +41,7 @@ assert base.cancelled_result(bpy.ops.character_designer.limb_ik_rebuild) == {'CA
 assert base.cancelled_result(lambda: bpy.ops.character_designer.limb_ik_remove('EXEC_DEFAULT')) == {'CANCELLED'}
 assert bpy.ops.character_designer.eye_controls(action='REMOVE') == {'FINISHED'}
 eye_controls._verify_pose(rig, desired)
-assert set(record['sources']) <= {bone.name for bone in rig.data.collections['Animation'].bones}
+assert set(record['sources']) <= {bone.name for bone in rig.data.collections_all['Body'].bones}
 assert limb_ik._armature_digest(rig) == digest
 limb_ik._validate_inventory(rig)
 print('EYE_UI_PASSED', flush=True)

@@ -40,7 +40,7 @@ class CHARACTERDESIGNER_OT_root_control(Operator):
                 rig.data.bones[name].hide = False
                 # Respect the existing collection layout and show its root input.
                 for collection in rig.data.bones[name].collections:
-                    if collection.name == 'Animation':
+                    if collection.name in {'Body', 'Animation'}:
                         collection.is_visible = True
             self.report({'INFO'}, 'Root removed; current pose preserved.' if self.action == 'REMOVE'
                         else 'Root controls the whole character. Move G; rotate R.')
@@ -83,6 +83,100 @@ class CHARACTERDESIGNER_OT_limb_fk_visuals(Operator):
             return {'CANCELLED'}
 
 
+class CHARACTERDESIGNER_OT_upgrade_wrist_rotation(Operator):
+    bl_idname = 'character_designer.upgrade_wrist_rotation'
+    bl_label = 'Correct Wrist Rotation'
+    bl_description = 'Correct legacy wrist rotation while preserving the current pose; keep authored animation unchanged'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        rig = context.object
+        return bool(rig and rig.type == 'ARMATURE' and context.mode in {'OBJECT', 'POSE'}
+                    and rig.is_editable and not rig.library and not rig.override_library
+                    and not rig.data.library)
+
+    def execute(self, context):
+        try:
+            result = limb_ik.upgrade_wrist_rotation(context, context.object)
+            self.report({'INFO'}, 'Wrist rotation corrected; current pose preserved.' if result['changed']
+                        else 'Wrist rotation is already current.')
+            return {'FINISHED'}
+        except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
+
+
+def draw_wrist_rotation(layout, context):
+    rig = context.object
+    if rig is None or rig.type != 'ARMATURE':
+        return
+    try:
+        if any(record.get('kind') == 'ARM' and record.get('role') == 'AUTO_OFFSET_ROTATION'
+               and record.get('rotation_space', 'LOCAL') != 'PARENT_DELTA'
+               for _owner, _constraint, record in limb_ik._owned_constraint_records(rig)):
+            layout.operator('character_designer.upgrade_wrist_rotation', text='Correct Wrist Rotation',
+                            icon='FILE_REFRESH')
+    except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
+        layout.label(text=str(exc), icon='ERROR')
+
+
+def _legacy_foot_auto_sides(rig):
+    from . import foot_controls
+    return [side for side in ('L', 'R')
+            if (record := foot_controls.get_record(rig, ('LEG', side)))
+            and record.get('auto_follow') != 1]
+
+
+class CHARACTERDESIGNER_OT_upgrade_foot_auto_align(Operator):
+    bl_idname = 'character_designer.upgrade_foot_auto_align'
+    bl_label = 'Fix Foot Auto Align'
+    bl_description = 'Make existing Auto feet follow the shin, keeping the current pose and foot-roll controls'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return CHARACTERDESIGNER_OT_upgrade_wrist_rotation.poll(context)
+
+    def execute(self, context):
+        from . import body_setup_transaction, foot_controls
+        rig = context.object
+        snapshot = None
+        try:
+            sides = _legacy_foot_auto_sides(rig)
+            if sides:
+                snapshot = body_setup_transaction.capture(context, rig)
+                for side in sides:
+                    foot_controls.update_auto_follow(context, rig, ('LEG', side))
+                body_setup_transaction.assert_original_ids(snapshot)
+            message = 'Foot Auto Align corrected; current pose kept.' if sides else 'Foot Auto Align is already current.'
+            limb_ik._set_status(limb_ik._settings(context), 'SUCCESS', message)
+            self.report({'INFO'}, message)
+            return {'FINISHED'}
+        except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
+            if snapshot is not None:
+                body_setup_transaction.restore(context, rig, snapshot)
+            limb_ik._set_status(limb_ik._settings(context), 'WARNING', str(exc))
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
+        finally:
+            if snapshot is not None:
+                body_setup_transaction.discard(snapshot)
+
+
+def draw_foot_auto_align_upgrade(layout, context):
+    rig = context.object
+    if rig is None or rig.type != 'ARMATURE':
+        return
+    try:
+        if _legacy_foot_auto_sides(rig):
+            layout.operator('character_designer.upgrade_foot_auto_align',
+                            text='Fix Foot Auto Align', icon='FILE_REFRESH')
+    except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError):
+        # The registered repair and Body Setup operators report invalid records.
+        return
+
+
 def draw_root_controls(layout, context):
     rig = context.object
     if rig is None or rig.type != 'ARMATURE':
@@ -92,14 +186,11 @@ def draw_root_controls(layout, context):
         name = root_control.control_name(rig)
         row = box.row(align=True)
         if name:
-            row.operator('character_designer.root_control', text='Root · Whole Body', icon='PIVOT_CURSOR').action = 'SELECT'
             if root_control.get_record(rig):
                 removal = row.row(align=True)
                 removal.alert = True
-                removal.operator('character_designer.root_control', text='', icon='TRASH').action = 'REMOVE'
-                box.prop(rig.pose.bones[name], '["' + root_control.SCALE_PROPERTY + '"]', text='Root Scale')
+                removal.operator('character_designer.root_control', text='Remove Whole Body Root', icon='TRASH').action = 'REMOVE'
         else:
-            row.alert = True
             row.operator('character_designer.root_control', text='Add Whole Body Root', icon='PIVOT_CURSOR').action = 'BUILD'
     except (ValueError, RuntimeError, KeyError, TypeError) as exc:
         box.label(text=str(exc), icon='ERROR')
@@ -119,6 +210,7 @@ def draw_fk_visuals(layout, context):
     # The fit action is explicit; artist-authored display edits are never overwritten automatically.
     if limb_fk_visuals.has_ik_size_backup(rig):
         layout.operator('character_designer.limb_fk_visuals', text='Restore IK Sizes', icon='LOOP_BACK').action = 'RESTORE_IK'
+    draw_wrist_rotation(layout, context)
 
 
 class CHARACTERDESIGNER_OT_head_neck_visuals(Operator):
@@ -167,7 +259,7 @@ class CHARACTERDESIGNER_OT_head_neck_visuals(Operator):
             # Use the current grouping. Showing one control does not rebuild collections.
             collections = list(bone.collections)
             if not any(c.is_visible_effectively for c in collections):
-                preferred = next((c for c in collections if c.name == 'Animation'),
+                preferred = next((c for c in collections if c.name in {'Body', 'Animation'}),
                                  collections[0] if collections else None)
                 if preferred is not None:
                     preferred.is_visible = True
@@ -190,15 +282,10 @@ def draw_head_neck_visuals(layout, context):
     try:
         record = head_neck_visuals.get_record(rig)
         if record:
-            for role, label in (('HEAD', 'Head'), ('NECK', 'Neck')):
-                if any(binding['role'] == role for binding in record['bindings'].values()):
-                    row.operator('character_designer.head_neck_visuals', text=label,
-                                 icon='BONE_DATA').action = 'SELECT_' + role
             restore = row.row(align=True)
             restore.alert = True
-            restore.operator('character_designer.head_neck_visuals', text='', icon='LOOP_BACK').action = 'REMOVE'
+            restore.operator('character_designer.head_neck_visuals', text='Remove Head / Neck Shapes', icon='LOOP_BACK').action = 'REMOVE'
         else:
-            row.alert = True
             row.operator('character_designer.head_neck_visuals', text='Add Head / Neck',
                          icon='BONE_DATA').action = 'BUILD'
     except (ValueError, RuntimeError, KeyError, TypeError) as exc:
@@ -267,7 +354,7 @@ class CHARACTERDESIGNER_OT_body_detail_visuals(Operator):
             bone.hide = False
             collections = list(bone.collections)
             if not any(c.is_visible_effectively for c in collections):
-                collection = next((c for c in collections if c.name == 'Animation'),
+                collection = next((c for c in collections if c.name in {'Body', 'Animation'}),
                                   collections[0] if collections else None)
                 while collection is not None:
                     collection.is_visible = True
@@ -288,19 +375,20 @@ def draw_body_detail_visuals(layout, context):
     try:
         record = body_detail_visuals.get_record(rig)
         if record:
-            for role, label in (('BREAST_L', 'Breast L'), ('BREAST_R', 'Breast R'), ('HIPS', 'Hips')):
-                row.operator('character_designer.body_detail_visuals', text=label,
-                             icon='MESH_CIRCLE').action = 'SELECT_' + role
             restore = row.row(align=True)
             restore.alert = True
-            restore.operator('character_designer.body_detail_visuals', text='', icon='LOOP_BACK').action = 'REMOVE'
+            restore.operator('character_designer.body_detail_visuals', text='Remove Breasts / Hips Shapes', icon='LOOP_BACK').action = 'REMOVE'
         else:
-            row.alert = True
             row.operator('character_designer.body_detail_visuals', text='Add Breasts / Hips',
                          icon='MESH_CIRCLE').action = 'BUILD'
     except (ValueError, RuntimeError, KeyError, TypeError) as exc:
         row.label(text=str(exc), icon='ERROR')
 
 
+from .body_setup_ui import BODY_SETUP_UI_CLASSES
+
+
 BODY_CONTROL_UI_CLASSES = (CHARACTERDESIGNER_OT_root_control, CHARACTERDESIGNER_OT_limb_fk_visuals,
-                           CHARACTERDESIGNER_OT_head_neck_visuals, CHARACTERDESIGNER_OT_body_detail_visuals)
+                           CHARACTERDESIGNER_OT_head_neck_visuals, CHARACTERDESIGNER_OT_body_detail_visuals,
+                           CHARACTERDESIGNER_OT_upgrade_wrist_rotation,
+                           CHARACTERDESIGNER_OT_upgrade_foot_auto_align, *BODY_SETUP_UI_CLASSES)

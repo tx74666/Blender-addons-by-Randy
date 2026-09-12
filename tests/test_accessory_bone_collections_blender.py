@@ -1,4 +1,4 @@
-"""Hair/Skirt display grouping, legacy migration and bake visibility checks."""
+"""Hair/Dress display grouping, legacy migration and bake visibility checks."""
 
 import sys
 from pathlib import Path
@@ -73,9 +73,11 @@ def assert_compact_skirt(rig, record):
 
 def test_skirt_defaults_and_baked_visibility():
     source, rig, record = make_skirt()
-    assert tuple(rig.data.collections.keys()) == ("Skirt",)
+    assert tuple(rig.data.collections.keys()) == ("Dress",)
     assert_compact_skirt(rig, record)
     assert not skirt_rig.migrate_skirt_bone_collections(rig)
+    _, deform, _ = skirt_rig._bone_collection_layout(record)
+    assert {bone.name for bone in rig.data.bones if bone.use_deform} == deform | {record["controls"]["waist"]}
     export = skirt_physics._export_objects(bpy.context, source, rig, record)
     try:
         output = export[1]
@@ -92,6 +94,9 @@ def test_skirt_migration_preserves_motion_and_user_collection():
     legacy_layout(rig, record)
     artist = rig.data.collections.new("Skirt")
     artist.assign(rig.data.bones[record["controls"]["hem"]])
+    artist_dress = rig.data.collections.new("Dress")
+    artist_dress.assign(rig.data.bones[record["controls"]["mid"]])
+    artist_dress.is_visible = False
     rig.pose.bones[record["controls"]["hem"]].location.x = 0.12
     bpy.context.view_layer.update()
     matrices = {bone.name: bone.matrix.copy() for bone in rig.pose.bones}
@@ -99,12 +104,75 @@ def test_skirt_migration_preserves_motion_and_user_collection():
     assert skirt_rig.migrate_skirt_bone_collections(rig)
     assert_compact_skirt(rig, record)
     assert tuple(artist.bones.keys()) == (record["controls"]["hem"],)
+    assert artist.name == "Skirt"
+    assert artist_dress.name == "Dress" and not artist_dress.is_visible
+    assert tuple(artist_dress.bones.keys()) == (record["controls"]["mid"],)
+    owned = next(c for c in rig.data.collections_all if c.get(skirt_rig.OWNER_KEY) == record["owner"])
+    assert owned.name == "Dress.001"
     assert not any(rig.data.collections.get(title) for title in
                    ("Skirt Controls", "Skirt Deform", "Skirt Mechanism"))
     assert source[skirt_rig.RECORD_KEY] == original_record
     bpy.context.view_layer.update()
     assert all(max(abs(bone.matrix[row][col] - matrices[bone.name][row][col])
                    for row in range(4) for col in range(4)) < 1e-6 for bone in rig.pose.bones)
+    assert not skirt_rig.migrate_skirt_bone_collections(rig)
+
+
+def test_owned_skirt_rename_preserves_display_and_physics():
+    source, rig, record = make_skirt()
+    collection = next(c for c in rig.data.collections_all if c.get(skirt_rig.OWNER_KEY) == record["owner"])
+    collection.name = "Skirt"
+    collection.is_visible = False
+    artist = rig.data.collections.new("Artist Dress")
+    artist.assign(rig.data.bones[record["controls"]["hem"]])
+    rig.pose.bones[record["controls"]["hem"]].location.x = .12
+    bpy.context.view_layer.update()
+    rest = {b.name: (tuple(b.head_local), tuple(b.tail_local), b.use_deform,
+                    b.parent.name if b.parent else None) for b in rig.data.bones}
+    poses = {b.name: b.matrix.copy() for b in rig.pose.bones}
+    hidden = {b.name: b.hide for b in rig.data.bones}
+    membership = tuple(collection.bones.keys())
+    original_record = source[skirt_rig.RECORD_KEY]
+    assert skirt_rig.migrate_skirt_bone_collections(rig)
+    assert collection.name == "Dress" and not collection.is_visible
+    assert tuple(collection.bones.keys()) == membership
+    assert {b.name: b.hide for b in rig.data.bones} == hidden
+    assert tuple(artist.bones.keys()) == (record["controls"]["hem"],)
+    assert source[skirt_rig.RECORD_KEY] == original_record
+    assert {b.name: (tuple(b.head_local), tuple(b.tail_local), b.use_deform,
+                    b.parent.name if b.parent else None) for b in rig.data.bones} == rest
+    bpy.context.view_layer.update()
+    assert all(max(abs(pb.matrix[r][c] - poses[pb.name][r][c]) for r in range(4) for c in range(4)) < 1e-6
+               for pb in rig.pose.bones)
+    assert not skirt_rig.migrate_skirt_bone_collections(rig)
+    collection.name = "Skirt"
+    skirt_rig.build_skirt(bpy.context, source)
+    assert collection.name == "Dress", "Reusing an existing skirt must migrate its owned display group"
+    physics_record = skirt_physics.add_physics(bpy.context, source)
+    assert physics_record["physics"]
+    assert skirt_rig.read_record(source)["physics"] == physics_record["physics"]
+    assert not skirt_rig.migrate_skirt_bone_collections(rig)
+    assert_compact_skirt(rig, physics_record)
+    group = source.vertex_groups.new(name="Artist Weights")
+    group.add([0], .4, 'REPLACE')
+    rig_name = rig.name
+    skirt_rig.remove_skirt(bpy.context, source)
+    assert bpy.data.objects.get(rig_name) is None
+    assert skirt_rig.read_record(source) is None
+    retained = source.vertex_groups.get("Artist Weights")
+    assert retained is not None and abs(retained.weight(0) - .4) < 1e-6
+
+
+def test_owned_skirt_rename_preserves_artist_name_collision():
+    source, rig, record = make_skirt()
+    owned = next(c for c in rig.data.collections_all if c.get(skirt_rig.OWNER_KEY) == record["owner"])
+    owned.name = "Skirt"
+    artist = rig.data.collections.new("Dress")
+    artist.assign(rig.data.bones[record["controls"]["hem"]])
+    assert skirt_rig.migrate_skirt_bone_collections(rig)
+    assert owned.name == "Dress.001"
+    assert artist.name == "Dress" and not artist.get(skirt_rig.OWNER_KEY)
+    assert tuple(artist.bones.keys()) == (record["controls"]["hem"],)
     assert not skirt_rig.migrate_skirt_bone_collections(rig)
 
 
@@ -126,6 +194,8 @@ def test_skirt_migration_refuses_edited_or_unowned_data():
 
 for test in (test_hair_reuses_owned_collection, test_skirt_defaults_and_baked_visibility,
              test_skirt_migration_preserves_motion_and_user_collection,
+             test_owned_skirt_rename_preserves_display_and_physics,
+             test_owned_skirt_rename_preserves_artist_name_collision,
              test_skirt_migration_refuses_edited_or_unowned_data):
     test()
     print("PASS", test.__name__)

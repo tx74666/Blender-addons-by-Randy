@@ -38,8 +38,8 @@ def _owned(item, record, role):
             and item.get(ID_KEY) == record['id'] and item.get(ROLE_KEY) == role)
 
 
-def resolve_bones(context, armature, hips_name=None, left_name=None, right_name=None):
-    """Return the three native roles; ambiguous names require explicit selection."""
+def resolve_bones(context, armature, hips_name=None, left_name=None, right_name=None, *, allow_partial=False):
+    """Resolve native roles; partial mode permits absent breasts, never ambiguity."""
     try:
         hips_name = character_setup.resolve_bone(context, 'HIPS', armature, hips_name or '')
     except ValueError as exc:
@@ -50,10 +50,12 @@ def resolve_bones(context, armature, hips_name=None, left_name=None, right_name=
                    'left_breast' if side == 'l' else 'right_breast'}
         candidates = ([requested] if requested else
                       [b.name for b in armature.data.bones if character_setup._bone_name(b.name) in aliases])
+        if not candidates and allow_partial and not requested:
+            continue
         if len(candidates) != 1 or candidates[0] not in armature.data.bones:
             raise _error('Choose one native left breast and one native right breast bone; Chest spine bones are not automatic candidates.')
         result[role] = candidates[0]
-    if len(set(result.values())) != 3:
+    if len(set(result.values())) != len(result):
         raise _error('Choose three different native Hips and breast bones.')
     if any(armature.data.bones[name].get(OWNER_KEY) or armature.data.bones[name].length < 1e-5
            for name in result.values()):
@@ -67,9 +69,12 @@ def get_record(armature):
         return None
     try:
         record = json.loads(raw)
+        roles = set(record['names'])
         if (record['version'] != VERSION or record['id'] != armature.data.get(ID_KEY)
-                or set(record['names']) != {'HIPS', 'BREAST_L', 'BREAST_R'}
-                or len(set(record['names'].values())) != 3
+                or not {'HIPS'} <= roles <= {'HIPS', 'BREAST_L', 'BREAST_R'}
+                or (len(roles) != 3 and record.get('partial') is not True)
+                or any(not isinstance(name, str) or not name for name in record['names'].values())
+                or len(set(record['names'].values())) != len(roles)
                 or set(record['bindings']) != set(record['names'].values())):
             raise ValueError('unsupported record')
         for name, entry in record['bindings'].items():
@@ -130,13 +135,15 @@ def validate(armature):
 
 
 def _frame(hips, left, right):
-    """Anatomical axes come from the torso and paired breasts, never breast roll."""
-    parent = left.parent if left.parent == right.parent and left.parent is not None else hips
+    """Use torso and available breast directions, with a pelvis-only fallback."""
+    breasts = [bone for bone in (left, right) if bone is not None]
+    parent = breasts[0].parent if breasts and breasts[0].parent is not None and all(
+        bone.parent == breasts[0].parent for bone in breasts) else hips
     up = (parent.tail_local-parent.head_local).normalized()
-    forward = (left.tail_local-left.head_local) + (right.tail_local-right.head_local)
+    forward = sum((bone.tail_local-bone.head_local for bone in breasts), Vector()) if breasts else Vector((0, -1, 0))
     forward -= up*forward.dot(up)
     if forward.length < 1e-5:
-        lateral = left.head_local-right.head_local
+        lateral = left.head_local-right.head_local if left is not None and right is not None else hips.matrix_local.to_3x3().col[0]
         forward = up.cross(lateral)
         if forward.dot(Vector((0, -1, 0))) < 0:
             forward.negate()
@@ -190,20 +197,21 @@ def _bounds(points):
 
 
 def _fit(context, armature, names, body_source):
-    hips, left, right = (armature.data.bones[names[role]] for role in ('HIPS', 'BREAST_L', 'BREAST_R'))
+    hips = armature.data.bones[names['HIPS']]
+    left, right = (armature.data.bones.get(names.get(role, '')) for role in ('BREAST_L', 'BREAST_R'))
+    breasts = [(role, bone) for role, bone in (('BREAST_L', left), ('BREAST_R', right)) if bone is not None]
     frame = _frame(hips, left, right)
     inverse = frame.inverted()
     body, clothing, skirts = _sources(context, armature, body_source)
     body_points = _points(armature, body, frame)
     clothed = [p for obj in clothing for p in _points(armature, obj, frame)]
-    lengths = [left.length, right.length]
-    centers = [inverse @ b.head_local.lerp(b.tail_local, .8) for b in (left, right)]
-    separation = abs(centers[0].x-centers[1].x)
-    if separation < min(lengths)*.35:
+    centers = [inverse @ bone.head_local.lerp(bone.tail_local, .8) for _role, bone in breasts]
+    separation = abs(centers[0].x-centers[1].x) if len(centers) == 2 else None
+    if separation is not None and separation < min(left.length, right.length)*.35:
         raise _error('The breast targets are too close to fit two separately selectable rings.')
     fit = {'frame': [list(row) for row in frame], 'body': body.name if body else '',
            'clothing': [obj.name for obj in clothing], 'skirts': [obj.name for obj in skirts], 'roles': {}}
-    for role, bone, center in zip(('BREAST_L', 'BREAST_R'), (left, right), centers):
+    for (role, bone), center in zip(breasts, centers):
         length = bone.length
         weighted = [p for p in _points(armature, body, frame, bone.name)
                     if abs(p.x-center.x) <= length*.85 and abs(p.z-center.z) <= length*.85
@@ -214,7 +222,8 @@ def _fit(context, armature, names, body_source):
             rx = max(length*.42, min(length*.58, (high[0]-low[0])*.5))
             rz = max(length*.42, min(length*.61, (high[2]-low[2])*.5))
         # Limit both radii by the actual pair spacing so the rings never overlap.
-        rx = min(rx, separation*.42)
+        if separation is not None:
+            rx = min(rx, separation*.42)
         surfaces = [p for p in body_points+clothed
                     if abs(p.x-center.x) <= rx*1.15 and abs(p.z-center.z) <= rz*1.15
                     and abs(p.y-center.y) <= length*1.8]
@@ -271,6 +280,9 @@ def _create_widget(context, armature, record, name, entry):
         collection = bpy.data.collections.new(record['collection'])
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'COLLECTION')
+        from . import widget_collections
+        widget_collections.ensure_container(context, collection, armature, 'Breast & Hips')
+        record['collection'] = collection.name
     mesh = bpy.data.meshes.new(entry['mesh'])
     _tag(mesh, record, entry['role'])
     vertices, edges = _geometry(entry['role'], record['fit'])
@@ -304,18 +316,22 @@ def _delete_resources(record):
     collection = bpy.data.collections.get(record['collection'])
     if _owned(collection, record, 'COLLECTION') and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
+        from . import widget_collections
+        widget_collections.prune_empty(bpy.context)
 
 
-def build(context, armature, *, hips_name=None, left_name=None, right_name=None, body_source=None):
-    """Fit three editable native displays without changing bones, weights or animation."""
+def build(context, armature, *, hips_name=None, left_name=None, right_name=None, body_source=None, allow_partial=False):
+    """Fit native displays; partial mode allows Hips alone or with either breast."""
     _active(context, armature)
     if previous := validate(armature):
         return update_breast_curvature(context, armature)
-    names = resolve_bones(context, armature, hips_name, left_name, right_name)
+    names = resolve_bones(context, armature, hips_name, left_name, right_name, allow_partial=allow_partial)
     if any(visuals._animated_display(armature, armature.pose.bones[name]) for name in names.values()):
         raise _error('Breast/Hips custom-shape display has animation or drivers; preserve those channels first.')
     fit = _fit(context, armature, names, body_source)
     record = {'version': VERSION, 'id': uuid.uuid4().hex, 'names': names, 'bindings': {}, 'fit': fit}
+    if len(names) != 3:
+        record['partial'] = True
     record['collection'] = 'CD_Body_Detail_Widgets_' + record['id'][:10]
     before, refs = {}, {}
     for role, name in names.items():

@@ -36,14 +36,19 @@ def check(rig, original, built_chains):
     assert members(rig, "Original") == original
     inventory = limb_ik._validate_inventory(rig)
     generated = {b.name for b in inventory["bones"]}
-    assert members(rig, "Controls") == generated
+    if generated:
+        assert members(rig, "_Internal") == generated
+    else:
+        assert "_Internal" not in rig.data.collections_all
     controls = {b.name for b in inventory["bones"]
                 if b.get(limb_ik.ROLE_KEY) in limb_ik.CONTROL_VISUAL_ROLES or
                 (b.get(limb_ik.ROLE_KEY) == "POLE_LINE" and not b.hide)}
-    assert members(rig, "Animation") == (original - set(built_chains)) | controls
-    assert rig.data.collections["Animation"].is_visible
+    assert members(rig, "Body") == (original - set(built_chains)) | controls
+    assert rig.data.collections["Body"].is_visible
     assert not rig.data.collections["Original"].is_visible
-    assert not rig.data.collections["Controls"].is_visible
+    if generated:
+        assert not rig.data.collections_all["_Internal"].is_visible
+        assert rig.data.collections_all["_Internal"].parent == rig.data.collections["Body"]
     if generated:
         limb_ik._removal_resources(bpy.context, rig, inventory)
 
@@ -59,8 +64,8 @@ def test_lifecycle(method):
     assert bpy.ops.character_designer.limb_ik_build_selected() == {"FINISHED"}
     left_arm = ("upper_arm.L", "forearm.L", "hand.L")
     check(rig, original, left_arm)
-    assert "hand.R" in members(rig, "Animation")
-    assert "Hips" in members(rig, "Animation")
+    assert "hand.R" in members(rig, "Body")
+    assert "Hips" in members(rig, "Body")
     assert bpy.ops.character_designer.limb_ik_build_all() == {"FINISHED"}
     chains = {name for r in limb_ik._validate_inventory(rig)["rigs"].values() for name in r["chain"]}
     check(rig, original, chains)
@@ -118,8 +123,8 @@ def test_layout_rollback():
 def test_artist_name_collision():
     rig, _settings, _original = fixture("DIRECT_PREROLL")
     groups.simplify_body_collections(rig)
-    rig.data.collections["Controls"].name = "Saved Controls"
-    artist = rig.data.collections.new("Controls")
+    rig.data.collections["Body"].name = "Saved Body"
+    artist = rig.data.collections.new("Body")
     artist.assign(rig.data.bones["Hips"])
     before = groups.snapshot_layout(rig)
     try:
@@ -127,7 +132,7 @@ def test_artist_name_collision():
     except ValueError:
         pass
     else:
-        raise AssertionError("Automatic refresh adopted an artist Controls collection")
+        raise AssertionError("Automatic refresh adopted an artist Body collection")
     assert groups.snapshot_layout(rig) == before
 
 
@@ -142,17 +147,17 @@ def test_first_build_and_manual_visibility():
     # Revealing Original never changes the rig mode, and later generation respects it.
     rig.data.collections["Original"].is_visible = True
     rig.data.collections["Original"].is_solo = True
-    rig.data.collections["Animation"].is_visible = False
+    rig.data.collections["Body"].is_visible = False
     artist = rig.data.collections.new("Artist Picks")
     artist.assign(rig.data.bones["Hips"])
     assert bpy.ops.character_designer.limb_ik_build_all() == {"FINISHED"}
     assert rig.data.collections["Original"].is_visible
     assert rig.data.collections["Original"].is_solo
-    assert not rig.data.collections["Animation"].is_visible
+    assert not rig.data.collections["Body"].is_visible
     assert members(rig, "Artist Picks") == {"Hips"}
     assert groups._load_backup(rig)["original"]["collections"] == before["collections"]
     assert bpy.ops.character_designer.limb_ik_remove() == {"FINISHED"}
-    assert members(rig, "Animation") == original
+    assert members(rig, "Body") == original
     assert rig.data.collections["Original"].is_solo
 
 
@@ -163,7 +168,7 @@ def test_fk_visibility():
     fk = inventory["rigs"][("ARM", "L")]
     rig.pose.bones[fk["target"].name]["ik_fk"] = 0.0
     groups.finish_rig_edit(rig, groups.capture_managed_layout(rig))
-    animator = members(rig, "Animation")
+    animator = members(rig, "Body")
     assert set(fk["chain"]) <= animator
     assert fk["target"].name not in animator
     assert fk["pole"].name not in animator
@@ -223,7 +228,7 @@ def test_persistent_restore():
         settings.build_method = "DIRECT_PREROLL"
         assert bpy.ops.character_designer.limb_ik_build_all() == {"FINISHED"}
         assert "Torso" in rig.data.collections_all
-        assert "Animation" not in rig.data.collections_all
+        assert "Body" not in rig.data.collections_all
 
 
 def test_restore_after_remove_and_conflicts():
@@ -231,7 +236,7 @@ def test_restore_after_remove_and_conflicts():
     before = groups.snapshot_layout(rig)
     settings.selected_limb = "LEFT_ARM"
     assert bpy.ops.character_designer.limb_ik_build_selected() == {"FINISHED"}
-    animation = rig.data.collections_all["Animation"]
+    animation = rig.data.collections_all["Body"]
     animation.assign(rig.data.bones["upper_arm.L"])
     edited = groups.snapshot_layout(rig)
     assert cancelled_result(bpy.ops.character_designer.restore_bone_collections) == {"CANCELLED"}
@@ -280,28 +285,28 @@ def test_animated_visibility():
             point.interpolation = "CONSTANT"
     rig.data.collections_all["Original"].is_visible = True
     rig.data.collections_all["Original"].is_solo = True
-    rig.data.collections_all["Animation"].is_visible = False
+    rig.data.collections_all["Body"].is_visible = False
     groups.register_handlers()
     groups.register_handlers()
     assert bpy.app.handlers.frame_change_post.count(groups._frame_visibility) == 1
     try:
         bpy.context.scene.frame_set(1)
-        assert target.name in members(rig, "Animation")
-        assert not set(record["chain"]) & members(rig, "Animation")
+        assert target.name in members(rig, "Body")
+        assert not set(record["chain"]) & members(rig, "Body")
         bpy.context.scene.frame_set(10)
-        assert target.name not in members(rig, "Animation")
-        assert set(record["chain"]) <= members(rig, "Animation")
+        assert target.name not in members(rig, "Body")
+        assert set(record["chain"]) <= members(rig, "Body")
         assert rig.data.collections_all["Original"].is_solo
-        assert not rig.data.collections_all["Animation"].is_visible
+        assert not rig.data.collections_all["Body"].is_visible
         # Manually repurposed memberships take precedence over playback updates.
-        animation = rig.data.collections_all["Animation"]
+        animation = rig.data.collections_all["Body"]
         animation.assign(rig.data.bones[target.name])
-        artist_members = members(rig, "Animation")
+        artist_members = members(rig, "Body")
         bpy.context.scene.frame_set(1)
-        assert members(rig, "Animation") == artist_members
+        assert members(rig, "Body") == artist_members
         animation.unassign(rig.data.bones[target.name])
         bpy.context.scene.frame_set(2)
-        assert target.name in members(rig, "Animation")
+        assert target.name in members(rig, "Body")
         with tempfile.TemporaryDirectory(prefix="cd-collection-playback-") as temp:
             name = rig.name
             path = str(Path(temp) / "animated.blend")
@@ -310,7 +315,7 @@ def test_animated_visibility():
             rig = bpy.data.objects[name]
             assert groups._frame_visibility in bpy.app.handlers.frame_change_post
             bpy.context.scene.frame_set(10)
-            assert set(record["chain"]) <= members(rig, "Animation")
+            assert set(record["chain"]) <= members(rig, "Body")
             assert bpy.ops.character_designer.restore_bone_collections() == {"FINISHED"}
             restored = groups.snapshot_layout(rig)["collections"]
             bpy.context.scene.frame_set(1)
@@ -341,7 +346,7 @@ def test_foot_controls_collections(method):
     assert baseline == original_layout
     rig.data.collections["Original"].is_visible = True
     rig.data.collections["Original"].is_solo = True
-    rig.data.collections["Animation"].is_visible = False
+    rig.data.collections["Body"].is_visible = False
     artist = rig.data.collections.new("Artist Foot Notes")
     artist.assign(rig.data.bones["Hips"])
     for side in ("L", "R"):
@@ -350,17 +355,17 @@ def test_foot_controls_collections(method):
         groups.finish_rig_edit(rig, previous)
     inventory = limb_ik._validate_inventory(rig)
     feet = foot_controls.collection_members(rig)
-    assert tuple(rig.data.collections.keys()) == groups.BODY_NAMES + ("Artist Foot Notes",)
-    assert members(rig, "Controls") == {bone.name for bone in inventory["bones"]} | feet["generated"]
+    assert tuple(rig.data.collections.keys()) == ("Body", "Artist Foot Notes", "Original")
+    assert members(rig, "_Internal") == {bone.name for bone in inventory["bones"]} | feet["generated"]
     assert members(rig, "Original") == original
     assert not feet["generated"] & members(rig, "Original")
-    assert feet["always"] <= members(rig, "Animation")
-    assert not feet["replaced"] & members(rig, "Animation")
-    assert not feet["hidden_base"] & members(rig, "Animation")
-    assert all(names <= members(rig, "Animation") for names in feet["ik"].values())
+    assert feet["always"] <= members(rig, "Body")
+    assert not feet["replaced"] & members(rig, "Body")
+    assert not feet["hidden_base"] & members(rig, "Body")
+    assert all(names <= members(rig, "Body") for names in feet["ik"].values())
     assert all(not rig.data.bones[name].hide for name in feet["replaced"])
     assert rig.data.collections["Original"].is_solo
-    assert not rig.data.collections["Animation"].is_visible
+    assert not rig.data.collections["Body"].is_visible
     assert groups._load_backup(rig)["original"]["collections"] == baseline
 
     # Mode playback replaces the leg chain, but Toe Bend remains available in FK.
@@ -376,12 +381,12 @@ def test_foot_controls_collections(method):
     groups.register_handlers()
     try:
         bpy.context.scene.frame_set(1)
-        assert record["roll"] in members(rig, "Animation")
+        assert record["roll"] in members(rig, "Body")
         bpy.context.scene.frame_set(10)
-        assert record["roll"] not in members(rig, "Animation")
-        assert record["toe_control"] in members(rig, "Animation")
-        assert record["toe"] not in members(rig, "Animation")
-        assert set(inventory["rigs"][("LEG", "L")]["chain"]) <= members(rig, "Animation")
+        assert record["roll"] not in members(rig, "Body")
+        assert record["toe_control"] in members(rig, "Body")
+        assert record["toe"] not in members(rig, "Body")
+        assert set(inventory["rigs"][("LEG", "L")]["chain"]) <= members(rig, "Body")
         bpy.context.scene.frame_set(1)
     finally:
         groups.unregister_handlers()
@@ -396,9 +401,9 @@ def test_foot_controls_collections(method):
     foot_controls.remove(bpy.context, rig, ("LEG", "L"))
     groups.finish_rig_edit(rig, previous)
     feet = foot_controls.collection_members(rig)
-    assert "toe.L" in members(rig, "Animation")
-    assert "toe.R" not in members(rig, "Animation")
-    assert feet["always"] <= members(rig, "Animation")
+    assert "toe.L" in members(rig, "Body")
+    assert "toe.R" not in members(rig, "Body")
+    assert feet["always"] <= members(rig, "Body")
     assert groups._load_backup(rig)["original"]["collections"] == baseline
     assert rig.data.collections["Original"].is_solo
 
@@ -421,7 +426,7 @@ def test_foot_controls_collections(method):
         previous = groups.capture_managed_layout(rig)
         foot_controls.remove(bpy.context, rig, ("LEG", "R"))
         groups.finish_rig_edit(rig, previous)
-        assert "Animation" not in rig.data.collections_all
+        assert "Body" not in rig.data.collections_all
         assert "Torso" in rig.data.collections_all
         assert not foot_controls.collection_members(rig)["generated"]
 
@@ -453,7 +458,7 @@ def test_torso_controls_collections(method):
     assert baseline == original_layout
     rig.data.collections["Original"].is_visible = True
     rig.data.collections["Original"].is_solo = True
-    rig.data.collections["Animation"].is_visible = False
+    rig.data.collections["Body"].is_visible = False
     artist = rig.data.collections.new("Artist Torso Notes")
     artist.assign(rig.data.bones["Hips"])
     chain = ("Spine", "Spine1", "Chest")
@@ -465,16 +470,16 @@ def test_torso_controls_collections(method):
     torso = torso_controls.collection_members(rig)
     assert torso["replaced"] == set(chain)
     assert len(torso["always"]) == 4
-    assert tuple(rig.data.collections.keys()) == groups.BODY_NAMES + ("Artist Torso Notes",)
-    assert members(rig, "Controls") == {bone.name for bone in inventory["bones"]} | feet["generated"] | torso["generated"]
+    assert tuple(rig.data.collections.keys()) == ("Body", "Artist Torso Notes", "Original")
+    assert members(rig, "_Internal") == {bone.name for bone in inventory["bones"]} | feet["generated"] | torso["generated"]
     assert members(rig, "Original") == original
     assert not torso["generated"] & members(rig, "Original")
-    assert torso["always"] | feet["always"] <= members(rig, "Animation")
-    assert not (torso["replaced"] | feet["replaced"]) & members(rig, "Animation")
-    assert "Hips" in members(rig, "Animation")
+    assert torso["always"] | feet["always"] <= members(rig, "Body")
+    assert not (torso["replaced"] | feet["replaced"]) & members(rig, "Body")
+    assert "Hips" in members(rig, "Body")
     assert all(not rig.data.bones[name].hide for name in torso["replaced"])
     assert rig.data.collections["Original"].is_solo
-    assert not rig.data.collections["Animation"].is_visible
+    assert not rig.data.collections["Body"].is_visible
     assert groups._load_backup(rig)["original"]["collections"] == baseline
     before_repeat = groups.snapshot_layout(rig)
     torso_controls.build(bpy.context, rig, chain=chain, hips_name="Hips")
@@ -485,17 +490,17 @@ def test_torso_controls_collections(method):
     target["ik_fk"] = 0.0
     groups._FRAME_CACHE.clear()
     groups._frame_visibility(bpy.context.scene)
-    assert torso["always"] | feet["always"] <= members(rig, "Animation")
-    assert not torso["replaced"] & members(rig, "Animation")
+    assert torso["always"] | feet["always"] <= members(rig, "Body")
+    assert not torso["replaced"] & members(rig, "Body")
     target["ik_fk"] = 1.0
     groups._frame_visibility(bpy.context.scene)
 
     # Removal restores native spine access without affecting the foot extension.
     torso_controls.remove(bpy.context, rig)
-    assert set(chain) <= members(rig, "Animation")
+    assert set(chain) <= members(rig, "Body")
     assert not torso_controls.collection_members(rig)["generated"]
-    assert feet["always"] <= members(rig, "Animation")
-    assert "toe.L" not in members(rig, "Animation")
+    assert feet["always"] <= members(rig, "Body")
+    assert "toe.L" not in members(rig, "Body")
     assert rig.data.collections["Original"].is_solo
     assert groups._load_backup(rig)["original"]["collections"] == baseline
     torso_controls.build(bpy.context, rig, chain=chain, hips_name="Hips")
@@ -515,9 +520,106 @@ def test_torso_controls_collections(method):
         assert controls.is_visible
         assert members(rig, "Artist Torso Notes") == {"Hips"}
         torso_controls.remove(bpy.context, rig)
-        assert "Animation" not in rig.data.collections_all
+        assert "Body" not in rig.data.collections_all
         assert "Torso" in rig.data.collections_all
         assert feet["generated"] <= set(rig.data.collections_all[limb_ik.CONTROL_COLLECTION_NAME].bones.keys())
+
+
+def test_legacy_animation_layout_upgrade():
+    rig, settings, original = fixture("DIRECT_PREROLL")
+    settings.selected_limb = "LEFT_ARM"
+    assert bpy.ops.character_designer.limb_ik_build_selected() == {"FINISHED"}
+    first_layout = groups._load_backup(rig)["original"]["collections"]
+    body = groups.body_collection(rig)
+    controls = rig.data.collections_all[groups.INTERNAL_NAME]
+    # Reproduce the older public three-group layout without touching rig data.
+    controls.parent = None
+    controls.name, controls[groups.GROUP_KEY] = "Controls", "Controls"
+    body.name, body[groups.GROUP_KEY] = "Animation", "Animation"
+    rig.data[groups.PROFILE_KEY] = 1
+    groups._save_backup(rig, groups.snapshot_layout(rig))
+    assert groups.body_collection(rig) == body
+    body.is_visible = False
+    rig.data.collections["Original"].is_solo = True
+    inventory = limb_ik._validate_inventory(rig)
+    source = inventory["rigs"][("ARM", "L")]
+    target = rig.pose.bones[source["target"].name]
+    target["ik_fk"] = 0.0
+    groups._FRAME_CACHE.clear()
+    groups._frame_visibility(bpy.context.scene)
+    assert set(source["chain"]) <= members(rig, "Animation")
+    assert body.name == "Animation"  # Playback never restructures an old layout.
+    before = groups.capture_managed_layout(rig)
+    groups.finish_rig_edit(rig, before)
+    assert tuple(rig.data.collections.keys()) == ("Body", "Original")
+    assert groups.body_collection(rig) == body and controls.parent == body
+    assert not body.is_visible and rig.data.collections["Original"].is_solo
+    assert members(rig, "Original") == original
+    assert groups._load_backup(rig)["original"]["collections"] == first_layout
+    assert not {"Animation", "Controls", "Facial", "All"} & set(rig.data.collections_all.keys())
+    groups.restore_bone_collections(rig)
+    restored = {item["name"]:item for item in groups.snapshot_layout(rig)["collections"]}
+    assert all(restored[item["name"]] == item for item in first_layout)
+
+
+def test_hair_and_original_boundaries_with_hidden_machinery():
+    rig, settings, original = fixture("DIRECT_PREROLL")
+    bpy.ops.object.mode_set(mode="EDIT")
+    for name, deform in (("hair.front", True), ("MCH-helper", False), ("ORG-weighted", True), ("ForeignGenerated", False)):
+        bone = rig.data.edit_bones.new(name)
+        bone.head, bone.tail = (0, 0, 1.5), (0, 0, 1.6)
+        bone.use_deform = deform
+    bpy.ops.object.mode_set(mode="POSE")
+    rig.data.bones["ForeignGenerated"]["character_designer_owner"] = "foreign_rig"
+    hair = rig.data.collections.new("Hair")
+    detail = rig.data.collections.new("Hair detail", parent=hair)
+    detail.assign(rig.data.bones["hair.front"])
+    original_layout = groups.snapshot_layout(rig)
+    poses = {p.name:p.matrix.copy() for p in rig.pose.bones}
+    flags = {b.name:(b.hide,b.hide_select) for b in rig.data.bones}
+    groups.simplify_body_collections(rig)
+    assert tuple(rig.data.collections.keys()) == ("Body", "Hair", "Original")
+    assert tuple(c.name for c in groups.public_collections(rig)) == ("Body", "Hair", "Original")
+    assert members(rig, "Original") == original | {"ORG-weighted"}
+    assert members(rig, "Hair") == {"hair.front"}
+    other = rig.data.collections_all[groups.OTHER_NAME]
+    assert set(other.bones.keys()) == {"MCH-helper", "ForeignGenerated"}
+    assert other.parent == groups.body_collection(rig) and not other.is_visible
+    assert not other.get(limb_ik.OWNER_KEY)
+    assert not groups.body_collection(rig).is_expanded
+    assert all(p.matrix == poses[p.name] for p in rig.pose.bones)
+    assert all((b.hide,b.hide_select) == flags[b.name] for b in rig.data.bones)
+    assert "Dress" not in rig.data.collections_all  # Independent accessory rigs are not fake groups here.
+    groups.restore_bone_collections(rig)
+    assert groups.snapshot_layout(rig)["collections"] == original_layout["collections"]
+
+
+def test_temporary_view_blocks_structure_and_playback_membership():
+    rig, settings, original = fixture("DIRECT_PREROLL")
+    settings.selected_limb = "LEFT_ARM"
+    assert bpy.ops.character_designer.limb_ik_build_selected() == {"FINISHED"}
+    source = limb_ik._validate_inventory(rig)["rigs"][("ARM", "L")]
+    target = rig.pose.bones[source["target"].name]
+    before = groups.snapshot_layout(rig)
+    rig.data[groups.VIEW_KEY] = "temporary view active"
+    for operation in (lambda:groups.simplify_body_collections(rig),
+                      lambda:groups.restore_bone_collections(rig),
+                      lambda:groups.capture_managed_layout(rig)):
+        try:
+            operation()
+        except ValueError as exc:
+            assert "temporary" in str(exc)
+        else:
+            raise AssertionError("Structural operation changed a temporary display view")
+        assert groups.snapshot_layout(rig) == before
+    target["ik_fk"] = 0.0
+    groups._FRAME_CACHE.clear()
+    groups._frame_visibility(bpy.context.scene)
+    assert groups.snapshot_layout(rig) == before
+    del rig.data[groups.VIEW_KEY]
+    groups._frame_visibility(bpy.context.scene)
+    assert set(source["chain"]) <= members(rig, "Body")
+    assert rig.data.collections["Original"].is_visible == before["collections"][-1]["visible"]
 
 
 def main():
@@ -536,6 +638,9 @@ def main():
         test_restore_after_remove_and_conflicts()
         test_failed_first_build()
         test_animated_visibility()
+        test_legacy_animation_layout_upgrade()
+        test_hair_and_original_boundaries_with_hidden_machinery()
+        test_temporary_view_blocks_structure_and_playback_membership()
         for method in ("DIRECT_PREROLL", "ROLL_DECOUPLED"):
             test_foot_controls_collections(method)
             print(f"PASS foot collections {method}")
