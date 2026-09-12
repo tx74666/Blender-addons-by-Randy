@@ -69,7 +69,8 @@ def main():
     assert initial[1][2] == 'Remove Generated Controls' and initial[1][3] and not initial[1][4]
     assert initial[0][5].action == 'GENERATE' and initial[1][5].action == 'REMOVE'
     assert not any(r[1] == 'character_designer.limb_ik_analyze' for r in initial)
-    assert ('label', 'Included in Body Setup') in draw(eye_ui.CHARACTERDESIGNER_PT_eye_controls)
+    assert not hasattr(bpy.types, 'CHARACTERDESIGNER_PT_eye_controls')
+    assert not any(r[1] == 'character_designer.eye_controls' for r in initial)
     assert ('label', 'Included in Body Setup') in draw(torso_ui.CHARACTERDESIGNER_PT_torso_controls)
 
     calls = []
@@ -123,7 +124,7 @@ def main():
                    and getattr(r[5], 'action', '').startswith('SELECT') for r in maintenance)
     assert any(r[1] == 'character_designer.limb_ik_analyze' for r in maintenance)
     assert any(r[1] == 'character_designer.limb_ik_remove' for r in maintenance)
-    assert any(r[2] == 'Add Eye Controls' for r in buttons(draw(eye_ui.CHARACTERDESIGNER_PT_eye_controls)))
+    assert any(r[2] == 'Set Up Eye Bones...' for r in maintenance)
     settings.show_body_setup_advanced = False
     assert bpy.ops.character_designer.body_setup('EXEC_DEFAULT', action='REMOVE') == {'FINISHED'}
     assert not body_setup.has_generated(rig)

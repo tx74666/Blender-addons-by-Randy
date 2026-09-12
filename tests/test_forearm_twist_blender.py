@@ -148,6 +148,8 @@ def expected_runtime_points(fixture):
     active = dict(zip(record["vertices"], record["positions"]))
     knots = [(0.0, 0.0)] + [(ring["position"], ring["ratio"]) for ring in record["rings"]
                            if 1.0e-5 < ring["position"] < 1.0 - 1.0e-5] + [(1.0, 1.0)]
+    if "range_start" in record:
+        knots = [(ring["position"], ring["ratio"]) for ring in record["rings"]]
     expected = []
     for index, coordinate in enumerate(source):
         weights = normalized_weights(mesh, armature, index)
@@ -156,6 +158,15 @@ def expected_runtime_points(fixture):
             position = geometry.desired_vertex(point, matrices, weights, fixture["lower_name"],
                                                fixture["hand_name"], fixture["axis"], fixture["pivot"],
                                                geometry.profile_ratio(active[index], knots))
+            if "range_start" in record:
+                first = record["rings"][record["range_start"]]["position"]
+                last = record["rings"][record["range_end"]]["position"]
+                distance = min(active[index] - first, last - active[index])
+                width = record.get("transition", .1) * (last - first)
+                mix = 0.0 if distance <= 0 else 1.0 if width == 0 else min(1., distance / width)
+                mix = mix * mix * (3. - 2. * mix)
+                original = geometry.blended_matrix(matrices, weights) @ point
+                position = original.lerp(position, mix)
         else:
             position = geometry.blended_matrix(matrices, weights) @ point
         expected.append(from_arm @ position)
@@ -396,7 +407,12 @@ def test_current_frame_animation_and_reload():
         surfaces[frame] = surface
     assert structure_snapshot(armature, mesh) == before_structure
     assert {name: snapshot[3] for name, snapshot in key_snapshot(mesh).items()} == source_coordinates
-    assert_refused(lambda: runtime.start_test(bpy.context, mesh, side="R"), "Animated target calibration")
+    animated_pose = pose_snapshot(armature)
+    runtime.start_test(bpy.context, mesh, side="R")
+    assert runtime._SESSION["pose_locked"], "Animated targets need a settings-only preview"
+    runtime.set_ratio(bpy.context, 3, .42)
+    runtime.finish_test(bpy.context, confirm=False)
+    assert_pose_snapshot(armature, animated_pose, "Animated calibration cancel")
     assert runtime._SESSION is None
     mesh_name, armature_name, target_name = mesh.name, armature.name, target.name
     before_json = mesh[runtime.RECORD_KEY]

@@ -22,6 +22,9 @@ class Layout:
 
     box = row
 
+    def prop(self, *_args, **_kwargs):
+        pass
+
     def label(self, **kwargs):
         self.labels.append(kwargs.get("text", ""))
 

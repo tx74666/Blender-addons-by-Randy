@@ -8915,6 +8915,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         draw_fk_visuals(layout, context)
         draw_head_neck_visuals(layout, context)
         draw_body_detail_visuals(layout, context)
+        from .eye_ui import draw_advanced as draw_eye_settings
+        draw_eye_settings(layout, context)
         layout.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
         layout.prop(settings, "build_method", text="Build Method")
         armature = settings.armature

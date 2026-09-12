@@ -5,7 +5,13 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.55.3 | [character_designer](addons/character_designer) | [character_designer-0.55.3.zip](dist/character_designer-0.55.3.zip) |
+| Character Designer | 0.56.1 | [character_designer](addons/character_designer) | [character_designer-0.56.1.zip](dist/character_designer-0.56.1.zip) |
+
+Character Designer 0.56.1 补全校准撤销与双侧移除：相同数值不产生空撤销步骤、不清空重做；两侧 Shape Key 名称冲突在移除前一并检查。
+
+Character Designer 0.56.0 为小臂逐圈校准加入真实环线捕获、手动起止范围、视图选圈和补环。范围实际限制额外校正，浅蓝边界与亮黄当前圈跟随变形后的控制笼。新捕获采用强度 0.4 的空间缓入缓出；逐圈、批量、平滑和重建默认分布为独立操作，保留手调结果。支持预览取消、局部撤销、双侧失败回退及保存重开继续编辑。原有手腕局部 Y 旋转机制保留，并检查已有 X 角色的控制器、手骨和实际蒙皮。
+
+Character Designer 0.55.4 移除独立 Eye Controls 面板，眼睛继续由 Body Setup 统一生成和移除。视图里的眼罩和双眼圆圈保留；显示距离及手动眼骨设置收进 Body Controls → Advanced。
 
 Character Designer 0.55.3 让手腕的局部旋转轴跟随显示的手腕控制器，修正抬臂后 R Y Y 仍沿旧 IK 轴旋转的问题；保留 Global／View 的旋转方向。**Update Body Setup** 可更新现有控制器，无需重建骨骼。Forearm Twist 校准失效时显示 **Paused**，并允许保留资料直接停用；移除冗余 Both Arms 标签。
 
@@ -30,7 +36,7 @@ Character Designer 0.52.3 将新建全身 Root 的显示高度对齐到鞋底控
 
 Character Designer 0.52.2 将新建头部控制器的侧面顶部、底部转角改为圆弧，保留正面切角轮廓、脸前开口和小前向标记。只调整显示形状，保留原旋转支点、姿势与恢复功能；已有手工编辑的显示不会自动被覆盖。
 
-Character Designer 0.52.1 将新建眼睛控制器的眼罩和圆圈显示整体前移，便于从脸前选取。**Rig → Body → Eye Controls → Display Spacing** 可调整额外间距，设为 0 恢复原显示位置；数据随 blend 保存。只移动可点击的轮廓，保留视线、动画和原追踪目标，变换轴仍位于目标骨骼。
+Character Designer 0.52.1 将新建眼睛控制器的眼罩和圆圈显示整体前移，便于从脸前选取。**Rig → Body → Body Controls → Advanced → Eye Display Spacing** 可调整额外间距，设为 0 恢复原显示位置；数据随 blend 保存。只移动可点击的轮廓，保留视线、动画和原追踪目标，变换轴仍位于目标骨骼。
 
 Character Designer 0.52.0 在 **Rig → Body → Body Controls** 加入 **Add Head / Neck**。Head 使用脸前留空、下巴略收、带前向小标记的立体切角头框；Neck 使用开口短领圈。沿用共用 Head 与身体权重源，根据头部主体匹配比例，不包含长发。只替换原骨骼显示外形，保留旋转支点、父子关系、姿势和权重；Head／Neck 按钮选中原骨骼后用 R 旋转。恢复按钮取回原显示与颜色，形状与恢复数据随 blend 保存。
 

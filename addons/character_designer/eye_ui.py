@@ -1,10 +1,9 @@
-"""Small Rig / Body entry for head-following gaze controls."""
+"""Eye operators and occasional settings inside Body Controls Advanced."""
 import bpy
 from bpy.props import EnumProperty, FloatProperty, StringProperty
-from bpy.types import Operator, Panel
+from bpy.types import Operator
 
 from . import eye_controls, limb_ik
-from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
 class CHARACTERDESIGNER_OT_eye_controls(Operator):
@@ -86,56 +85,20 @@ class CHARACTERDESIGNER_OT_eye_controls(Operator):
         return {'FINISHED'}
 
 
-class CHARACTERDESIGNER_PT_eye_controls(Panel):
-    bl_idname = 'CHARACTERDESIGNER_PT_eye_controls'
-    bl_label = 'Eye Controls'
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = SIDEBAR_CATEGORY
-    bl_order = 2
-
-    @classmethod
-    def poll(cls, context):
-        return rig_page_active(context, 'BODY')
-
-    def draw(self, context):
-        layout, rig = self.layout, context.object
-        from .body_setup_ui import advanced
-        show_advanced = advanced(context)
-        if rig is None or rig.type != 'ARMATURE':
-            layout.label(text='Select the main armature.', icon='INFO')
-            return
-        try:
-            record = eye_controls.validate(rig)
-            if record:
-                layout.label(text='Follows: ' + record['head'], icon='BONE_DATA')
-                op = layout.operator('character_designer.eye_controls', text='Both Eyes', icon='HIDE_OFF')
-                op.action, op.bone = 'SELECT', record['master']
-                row = layout.row(align=True)
-                for side, label in (('L', 'Left Eye'), ('R', 'Right Eye')):
-                    op = row.operator('character_designer.eye_controls', text=label)
-                    op.action, op.bone = 'SELECT', record['targets'][side]
-                layout.label(text='G: aim; Alt+G: reset selected controls.', icon='INFO')
-                if show_advanced:
-                    layout.operator('character_designer.eye_controls', text='Display Spacing...',
-                                    icon='EMPTY_ARROWS').action = 'SPACING'
-                    row = layout.row()
-                    row.alert = True
-                    row.operator('character_designer.eye_controls', text='Remove Eye Controls', icon='TRASH').action = 'REMOVE'
-            else:
-                if not show_advanced:
-                    layout.label(text='Included in Body Setup', icon='INFO')
-                    return
-                try:
-                    head, left, right = eye_controls.resolve_eyes(context, rig)
-                    layout.label(text=left + ' / ' + right, icon='BONE_DATA')
-                    layout.label(text='Follows: ' + head)
-                except (ValueError, RuntimeError, limb_ik.LimbIKError):
-                    layout.label(text='Choose eye bones when adding controls.', icon='INFO')
-                row = layout.row()
-                row.operator('character_designer.eye_controls', text='Add Eye Controls', icon='CON_TRACKTO').action = 'BUILD'
-        except (ValueError, RuntimeError, KeyError, limb_ik.LimbIKError) as exc:
-            layout.label(text=str(exc), icon='ERROR')
+def draw_advanced(layout, context):
+    """Keep occasional eye setup options with the unified Body workflow."""
+    rig = context.object
+    if rig is None or rig.type != 'ARMATURE':
+        return
+    try:
+        if eye_controls.validate(rig):
+            layout.operator('character_designer.eye_controls', text='Eye Display Spacing...',
+                            icon='EMPTY_ARROWS').action = 'SPACING'
+        else:
+            layout.operator('character_designer.eye_controls', text='Set Up Eye Bones...',
+                            icon='CON_TRACKTO').action = 'BUILD'
+    except (ValueError, RuntimeError, KeyError, limb_ik.LimbIKError) as exc:
+        layout.label(text=str(exc), icon='ERROR')
 
 
-EYE_UI_CLASSES = (CHARACTERDESIGNER_OT_eye_controls, CHARACTERDESIGNER_PT_eye_controls)
+EYE_UI_CLASSES = (CHARACTERDESIGNER_OT_eye_controls,)

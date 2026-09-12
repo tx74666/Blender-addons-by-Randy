@@ -1,4 +1,4 @@
-# Character Designer 0.55.3
+# Character Designer 0.56.1
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
@@ -6,6 +6,51 @@ RR Helper and focuses on character-modeling tools.
 Workflow principle: generated bindings and setups should remain editable and
 provide an explicit remove/restore path. Preserve the artist's original state
 and unrelated data; support saving/reopening where restoration depends on a backup.
+
+Version 0.56.1 also prevents unchanged UI field commits from consuming local
+Undo or clearing Redo, and checks both owned Shape Key names before paired
+removal so a collision cannot leave only one side removed.
+
+Version 0.56.0 adds editable forearm loop ranges. Capture existing closed mesh
+loops automatically, or use a selected seed loop and expand through adjacent
+quad strips. Capture / Repair can add a missed loop without changing topology.
+The saved vertex correspondence and rest-position order stay fixed across poses.
+Invalid topology requires an explicit recapture preview; Cancel keeps the previous
+calibration, including an invalid record that may still be useful for recovery.
+
+In Edit Calibration, set Start / End, select the current loop in the viewport,
+or move between loops. Boundaries are light blue and the current loop is yellow.
+These lines follow the actual deformed control cage, including the owned correction;
+Subdivision does not change their base-mesh correspondence. Additional correction
+is zero outside and on the boundaries, with a configurable fade entirely inside.
+Original skinning remains active. No weights or topology are changed.
+
+New captures start with a mild spatial ease-in/out profile, strength 0.4, using
+actual rest positions rather than loop numbers. Batch / Distribution exposes
+distinct-loop count and interval, explicit default-profile application, and a
+separate smoothing operation. Applying the default keeps both boundary shares;
+reopening or changing pose never overwrites hand-tuned shares. The panel reports
+the current share, signed target angle and boundary blend. This is a distribution
+of the actual wrist twist, not a reduction of the wrist's total rotation.
+
+Confirm preserves editable parameters through save/reopen. Cancel restores the
+pre-edit pose, records and owned key data; local Undo / Redo work during preview.
+Keyed or driven wrist targets can edit the current pose without moving animation.
+Mirrored edits preflight both sides and roll back their outputs together. Disable
+and Remove retain the existing ownership and dependency checks. The existing
+prototype limits still apply: linear Armature skinning, relative shape keys,
+and correction up to ±120 degrees; the add-on must remain enabled at runtime.
+
+The existing wrist local-axis mechanism is retained. New / rebuilt controls and
+160 actual-X rotation cases were checked for Local Y, Global and View rotation,
+both hands, Auto Align modes, arm poses and Root rotation, including skin vertices.
+An existing file with disabled custom-shape transform axes needs the existing
+Update Body Setup synchronization; updating display axes does not rebuild bones.
+
+Version 0.55.4 removes the separate Eye Controls panel. Body Setup continues
+to generate and remove the eye controls as part of the body. Select the mask
+and eye circles directly in the viewport. Eye display spacing and manual eye
+setup remain in Body Controls > Advanced. Existing rigs and gaze are unchanged.
 
 Version 0.55.3 aligns wrist viewport local axes with the displayed hand control.
 In Auto Align, Local Y / R Y Y follows the posed wrist rather than the IK target's
@@ -136,7 +181,7 @@ remain intact. Native pivots, pose, and removal behavior are unchanged;
 existing artist-edited widgets are not automatically replaced.
 
 Version 0.52.1 moves the three eye control outlines farther in front of the face
-on new builds. **Rig > Body > Eye Controls > Display Spacing** adjusts their
+on new builds. **Rig > Body > Body Controls > Advanced > Eye Display Spacing** adjusts their
 extra forward offset; zero restores their original display positions. Spacing
 and restoration data persist in the blend file. Gaze, target bones, animation,
 and weights remain unchanged; the transform gizmo stays at the actual target.
