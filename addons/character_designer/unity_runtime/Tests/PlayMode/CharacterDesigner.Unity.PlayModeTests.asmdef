@@ -1,0 +1,15 @@
+{
+  "name": "CharacterDesigner.Unity.PlayModeTests",
+  "rootNamespace": "CharacterDesigner.Unity.Tests",
+  "references": ["CharacterDesigner.Unity.Runtime"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": ["TestAssemblies"]
+}

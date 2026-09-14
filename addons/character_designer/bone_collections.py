@@ -14,7 +14,10 @@ VIEW_KEY = "character_designer_bone_display_view_v1"
 BACKUP_KEY = "character_designer_bone_collections_backup_v1"
 BACKUP_REFS_KEY = "character_designer_bone_collections_backup_refs"
 AUTO_KEY = "character_designer_auto_bone_collections"
+NATIVE_ONLY_KEY = "character_designer_native_after_body_removal"
 _FRAME_CACHE = {}
+_MIGRATION_TIMER = globals().get("_MIGRATION_TIMER")
+_MIGRATION_REGISTERED = False
 
 
 def body_collection(armature):
@@ -74,6 +77,8 @@ def snapshot_layout(armature):
         "profile": data.get(PROFILE_KEY),
         "hidden": {b.name: (b.hide, b.hide_select) for b in data.bones},
         "automatic": data.get(AUTO_KEY),
+        "native_only": data.get(NATIVE_ONLY_KEY),
+        "pose_hidden": {pb.name: pb.hide for pb in (armature.pose.bones if armature.pose else ()) if hasattr(pb, "hide")},
         "backup": data.get(BACKUP_KEY),
         "backup_refs": _copy_property(data.get(BACKUP_REFS_KEY, {})),
     }
@@ -98,11 +103,16 @@ def restore_layout(armature, snapshot):
     for name, flags in snapshot["hidden"].items():
         if name in data.bones:
             data.bones[name].hide, data.bones[name].hide_select = flags
+    for name, hidden in snapshot.get("pose_hidden", {}).items():
+        pb = armature.pose.bones.get(name) if armature.pose else None
+        if pb is not None and hasattr(pb, "hide"):
+            pb.hide = hidden
     if snapshot["profile"] is None:
         data.pop(PROFILE_KEY, None)
     else:
         data[PROFILE_KEY] = snapshot["profile"]
     for key, value in ((AUTO_KEY, snapshot.get("automatic")),
+                       (NATIVE_ONLY_KEY, snapshot.get("native_only")),
                        (BACKUP_KEY, snapshot.get("backup")),
                        (BACKUP_REFS_KEY, snapshot.get("backup_refs"))):
         if value is None or value == {}:
@@ -261,6 +271,7 @@ def restore_bone_collections(armature):
         else:
             data[PROFILE_KEY] = original["profile"]
         data[AUTO_KEY] = 0
+        data.pop(NATIVE_ONLY_KEY, None)
         data.pop(BACKUP_KEY, None)
         data.pop(BACKUP_REFS_KEY, None)
         return {"restored": len(original["collections"]), "preserved": len(preserved)}
@@ -308,6 +319,115 @@ def _animation_names(armature, inventory, native, foot=None, torso=None, eyes=No
             - foot.get("hidden_base", set()) - spine["hidden_fk"])
 
 
+def show_original_after_removal(armature):
+    """Keep one native-body view after the last generated Body control is gone.
+
+    Idempotent repair for older saved scenes as well as the normal RGC path.
+    Only owned, redundant collections are removed. No bone transforms, shape
+    assignments, constraints or skin data are changed.
+    """
+    from . import body_setup, hair_bones_rig as hair, limb_ik
+    if (armature is None or armature.type != "ARMATURE" or armature.mode == "EDIT"
+            or armature.library or armature.data.library or not armature.is_editable
+            or armature.data.users != 1):
+        raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
+    _structural_edit_guard(armature)
+    if body_setup.has_generated(armature):
+        return {"changed": False, "removed_collections": [], "reason": "Generated Body controls still exist."}
+    data = armature.data
+    original = data.collections_all.get("Original")
+    if original is not None and original.get(GROUP_KEY) != "Original":
+        raise ValueError("Bone Collection 'Original' belongs to an artist-created group; keep or rename that group before repairing the native view.")
+    hair_names = {bone.name for bone in data.bones if bone.get(hair.OWNER_KEY) == hair.OWNER_VALUE}
+    hair_group = data.collections_all.get("Hair")
+    if hair_group is not None:
+        stack = [hair_group]
+        while stack:
+            current = stack.pop()
+            hair_names.update(current.bones.keys())
+            stack.extend(current.children)
+    native = _native_body_names(armature, set(), hair_names)
+    roles = {"Body", "Animation", "Controls", INTERNAL_NAME}
+    redundant = {collection for collection in data.collections_all
+                 if ((collection.get(GROUP_KEY) in roles)
+                     or (collection.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
+                         and collection.get(limb_ik.ROLE_KEY) == "CONTROL_COLLECTION"))
+                 and set(collection.bones.keys()) <= native}
+    private_roots = {collection for collection in data.collections_all
+                     if collection.get(GROUP_KEY) == OTHER_NAME and not collection.children}
+    # A user-created child makes that parent a useful container. Retain both
+    # instead of deleting or silently reparenting the artist's own hierarchy.
+    while True:
+        kept = {collection for collection in redundant
+                if any(child not in redundant and child not in private_roots for child in collection.children)}
+        if not kept:
+            break
+        redundant -= kept
+    before = snapshot_layout(armature)
+    try:
+        removed = []
+        for collection in private_roots:
+            if collection.parent in redundant:
+                collection.parent = None
+        for collection in reversed(tuple(data.collections_all)):
+            if collection in redundant:
+                removed.append(collection.name)
+                data.collections.remove(collection)
+        if original is None:
+            original = data.collections.new("Original")
+        original[GROUP_KEY] = "Original"
+        original.parent = None
+        _assign_exact(original, data, native)
+        original.is_visible = True
+        # Preserve artist solo switches, while ensuring Original is visible
+        # even when a preserved collection was soloed before RGC.
+        original.is_solo = any(collection.is_solo for collection in data.collections_all)
+        data.collections.active = original
+        for name in native:
+            data.bones[name].hide = False
+            pb = armature.pose.bones.get(name)
+            if pb is not None and hasattr(pb, "hide"):
+                pb.hide = False
+        data[PROFILE_KEY] = 2
+        data[AUTO_KEY] = 1
+        data[NATIVE_ONLY_KEY] = 1
+        _save_backup(armature, before)
+        _FRAME_CACHE.pop(armature.as_pointer(), None)
+        return {"changed": snapshot_layout(armature) != before,
+                "removed_collections": removed, "original_bones": len(native)}
+    except Exception:
+        restore_layout(armature, before)
+        raise
+
+
+def migrate_removed_body_layouts(scene=None, *, objects=None):
+    """One-shot register/load repair of old owned layouts, never a frame policy.
+
+    The marker prevents later refreshes from overriding the user's subsequent
+    visibility choices. Ordinary artist collections and live setups are ignored.
+    """
+    from . import body_setup
+    result = {"repaired": [], "skipped": []}
+    scene = scene or bpy.context.scene
+    objects = scene.objects if objects is None else objects
+    for rig in tuple(objects):
+        if (rig.name not in scene.objects or rig.type != "ARMATURE" or rig.mode == "EDIT" or rig.library or rig.data.library
+                or not rig.is_editable or rig.data.users != 1 or rig.data.get(NATIVE_ONLY_KEY)
+                or VIEW_KEY in rig.data):
+            continue
+        original = rig.data.collections_all.get("Original")
+        body = body_collection(rig)
+        if (body is None or original is None or original.get(GROUP_KEY) != "Original"
+                or body_setup.has_generated(rig)):
+            continue
+        try:
+            repaired = show_original_after_removal(rig)
+            result["repaired"].append({"rig": rig.name, **repaired})
+        except (ValueError, RuntimeError) as error:
+            result["skipped"].append({"rig": rig.name, "reason": str(error)})
+    return result
+
+
 def simplify_body_collections(armature, *, compact=True, visibility=None, original_layout=None):
     """Expose Body/Hair/Original; keep owned implementation bones nested and hidden."""
     from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls, spine_ik_fk, root_control
@@ -317,6 +437,10 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
             or armature.data.users != 1):
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
     _structural_edit_guard(armature)
+    if armature.data.get(NATIVE_ONLY_KEY):
+        from . import body_setup
+        if not body_setup.has_generated(armature):
+            return show_original_after_removal(armature)
     data = armature.data
     inventory = limb_ik._validate_inventory(armature)
     foot = foot_controls.collection_members(armature)
@@ -447,13 +571,24 @@ def finish_rig_edit(armature, previous, *, failed=False):
         restore_layout(armature, previous)
     elif previous.get("automatic") == 0:
         return
+    elif previous.get("profile"):
+        from . import body_setup
+        if not body_setup.has_generated(armature):
+            show_original_after_removal(armature)
+            return
+        visibility = {c["name"]: (c["visible"], c["solo"]) for c in previous["collections"]}
+        if previous.get("native_only"):
+            visibility.update({"Body": (True, False), "Original": (False, False),
+                               INTERNAL_NAME: (False, False)})
+            # A preserved artist solo group must not hide newly generated Body.
+            if any(c["solo"] for c in previous["collections"] if c["name"] != "Original"):
+                visibility["Body"] = (True, True)
+        simplify_body_collections(armature, compact=False, visibility=visibility)
+        armature.data.pop(NATIVE_ONLY_KEY, None)
     elif not previous.get("profile"):
         from . import limb_ik
         if limb_ik._validate_inventory(armature)["bones"]:
             simplify_body_collections(armature, original_layout=previous)
-    else:
-        visibility = {c["name"]: (c["visible"], c["solo"]) for c in previous["collections"]}
-        simplify_body_collections(armature, compact=False, visibility=visibility)
 
 
 @bpy.app.handlers.persistent
@@ -519,16 +654,66 @@ def _frame_visibility(scene, _depsgraph=None):
             continue
 
 
+def _native_migration_once():
+    global _MIGRATION_TIMER
+    _MIGRATION_TIMER = None
+    if _MIGRATION_REGISTERED:
+        try:
+            from . import character_setup
+            scene = bpy.context.scene
+            rig = character_setup.preferred_rig(bpy.context)
+            if rig is None or rig.name not in scene.objects:
+                rig = bpy.context.view_layer.objects.active
+            # Automatic refresh is scoped to the current character. Backup rigs
+            # elsewhere in this scene or file are not migration targets.
+            result = migrate_removed_body_layouts(scene, objects=(rig,) if rig else ())
+            for entry in result["skipped"]:
+                print(f'Character Designer: native display repair skipped {entry["rig"]}: {entry["reason"]}')
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as error:
+            print(f'Character Designer: native display repair deferred: {error}')
+    return None
+
+
+def _schedule_native_migration():
+    global _MIGRATION_TIMER
+    if not _MIGRATION_REGISTERED:
+        return
+    if _MIGRATION_TIMER is not None and bpy.app.timers.is_registered(_MIGRATION_TIMER):
+        bpy.app.timers.unregister(_MIGRATION_TIMER)
+    _MIGRATION_TIMER = _native_migration_once
+    bpy.app.timers.register(_MIGRATION_TIMER, first_interval=0.1)
+
+
+@bpy.app.handlers.persistent
+def _load_native_migration(_unused):
+    _schedule_native_migration()
+
+
 def register_handlers():
+    global _MIGRATION_REGISTERED
     unregister_handlers()
+    _MIGRATION_REGISTERED = True
     bpy.app.handlers.frame_change_post.append(_frame_visibility)
+    bpy.app.handlers.load_post.append(_load_native_migration)
+    # Blender restricts data access while an add-on is being registered. Run
+    # once after registration, never in playback or undo/redo callbacks.
+    _schedule_native_migration()
 
 
 def unregister_handlers():
+    global _MIGRATION_REGISTERED, _MIGRATION_TIMER
+    _MIGRATION_REGISTERED = False
+    if _MIGRATION_TIMER is not None and bpy.app.timers.is_registered(_MIGRATION_TIMER):
+        bpy.app.timers.unregister(_MIGRATION_TIMER)
+    _MIGRATION_TIMER = None
     for handler in tuple(bpy.app.handlers.frame_change_post):
         if (getattr(handler, "__module__", "") == __name__
                 and getattr(handler, "__name__", "") == "_frame_visibility"):
             bpy.app.handlers.frame_change_post.remove(handler)
+    for handler in tuple(bpy.app.handlers.load_post):
+        if (getattr(handler, "__module__", "") == __name__
+                and getattr(handler, "__name__", "") == "_load_native_migration"):
+            bpy.app.handlers.load_post.remove(handler)
     _FRAME_CACHE.clear()
 
 

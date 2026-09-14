@@ -12,11 +12,14 @@ import math
 import struct
 
 import bpy
+from mathutils import Matrix
 
 from .selected_bone_weights import _capture_vertex_groups, _restore_vertex_groups
 
 BACKUP_KEY = "character_designer_quick_binding_v1"
 RIG_KEY = "character_designer_quick_binding_rig"
+REMOVED_KEY = "character_designer_removed_binding_v1"
+REMOVED_RIG_KEY = "character_designer_removed_binding_rig"
 
 
 class QuickBindError(ValueError):
@@ -25,6 +28,120 @@ class QuickBindError(ValueError):
 
 def has_binding_backup(target):
     return isinstance(target, bpy.types.Object) and (BACKUP_KEY in target or RIG_KEY in target)
+
+
+def has_removed_binding(target):
+    return isinstance(target, bpy.types.Object) and (REMOVED_KEY in target or REMOVED_RIG_KEY in target)
+
+
+def binding_modifier(target, armature):
+    if target is None or target.type != 'MESH' or armature is None:
+        return None
+    return next((item for item in target.modifiers
+                 if item.type == 'ARMATURE' and item.object == armature), None)
+
+
+def _connection_target(context, target):
+    if context.mode != 'OBJECT' or target is None or target.type != 'MESH':
+        raise QuickBindError("Choose a mesh in Object Mode to change its binding.")
+    if target.library:
+        raise QuickBindError("Make the target object local before changing its binding.")
+
+
+def remove_binding(context, target, armature):
+    """Disconnect this rig without deleting weights or the modifier's identity.
+
+    Keeping the empty modifier slot preserves its settings, stack order and
+    animation paths. This connection-only operation also works after mesh edits.
+    """
+    _connection_target(context, target)
+    if has_removed_binding(target):
+        raise QuickBindError("Restore the saved binding before removing another binding.")
+    if armature is None or armature.type != 'ARMATURE':
+        raise QuickBindError("Choose the character's Main Rig.")
+    modifier = _armature_modifier(target, armature)
+    if modifier is None:
+        raise QuickBindError("This mesh has no Armature binding to Main Rig.")
+    parent = target.parent
+    parent_type, parent_bone = target.parent_type, target.parent_bone
+    inverse, world = target.matrix_parent_inverse.copy(), target.matrix_world.copy()
+    record = {"version": 1, "uid": modifier.persistent_uid,
+              "parent_removed": parent == armature,
+              "parent_type": parent_type, "parent_bone": parent_bone,
+              "parent_inverse": [list(row) for row in inverse]}
+    try:
+        target[REMOVED_KEY] = json.dumps(record, separators=(',', ':'))
+        target[REMOVED_RIG_KEY] = armature
+        modifier.object = None
+        if parent == armature:
+            target.parent = None
+            target.matrix_world = world
+    except Exception as exc:
+        modifier.object = armature
+        target.parent = parent
+        target.parent_type, target.parent_bone = parent_type, parent_bone
+        target.matrix_parent_inverse = inverse
+        target.matrix_world = world
+        for key in (REMOVED_KEY, REMOVED_RIG_KEY):
+            if key in target:
+                del target[key]
+        raise QuickBindError(f"Removing binding failed; the connection was kept: {exc}") from exc
+
+
+def restore_removed_binding(context, target):
+    """Reconnect the saved rig using current weights, without recalculating them."""
+    _connection_target(context, target)
+    try:
+        raw = target[REMOVED_KEY]
+        record = json.loads(raw)
+        armature = target.get(REMOVED_RIG_KEY)
+        assert record['version'] == 1 and isinstance(record['uid'], int)
+        assert isinstance(record['parent_removed'], bool)
+        assert record['parent_type'] in {'OBJECT', 'BONE', 'BONE_RELATIVE', 'VERTEX', 'VERTEX_3'}
+        assert isinstance(record['parent_bone'], str)
+        inverse = Matrix(record['parent_inverse'])
+        assert len(inverse) == 4 and len(inverse[0]) == 4
+        assert all(math.isfinite(v) for row in inverse for v in row)
+        assert armature is not None and armature.type == 'ARMATURE'
+    except (KeyError, ValueError, TypeError, AssertionError):
+        raise QuickBindError("The saved binding connection is missing or damaged; its record was kept.") from None
+    modifiers = [item for item in target.modifiers if item.type == 'ARMATURE']
+    if (len(modifiers) != 1 or modifiers[0].persistent_uid != record['uid']
+            or modifiers[0].object is not None):
+        raise QuickBindError("The saved Armature modifier was removed or reassigned; restore left it untouched.")
+    if record['parent_removed']:
+        if target.parent is not None:
+            raise QuickBindError("The mesh has a new parent; restore left it untouched.")
+        ancestor = armature
+        while ancestor is not None:
+            if ancestor == target:
+                raise QuickBindError("Restoring this parent would create a cycle; restore left it untouched.")
+            ancestor = ancestor.parent
+        if record['parent_type'] in {'BONE', 'BONE_RELATIVE'} and record['parent_bone'] not in armature.data.bones:
+            raise QuickBindError("The saved parent bone no longer exists; restore left it untouched.")
+    modifier = modifiers[0]
+    world = target.matrix_world.copy()
+    previous_inverse = target.matrix_parent_inverse.copy()
+    previous_type, previous_bone = target.parent_type, target.parent_bone
+    try:
+        modifier.object = armature
+        if record['parent_removed']:
+            target.parent = armature
+            target.parent_type = record['parent_type']
+            target.parent_bone = record['parent_bone']
+            target.matrix_parent_inverse = inverse
+            target.matrix_world = world
+        del target[REMOVED_KEY]
+        del target[REMOVED_RIG_KEY]
+    except Exception as exc:
+        modifier.object = None
+        if record['parent_removed']:
+            target.parent = None
+            target.parent_type, target.parent_bone = previous_type, previous_bone
+            target.matrix_parent_inverse = previous_inverse
+            target.matrix_world = world
+        target[REMOVED_KEY], target[REMOVED_RIG_KEY] = raw, armature
+        raise QuickBindError(f"Restoring binding failed; the saved connection was kept: {exc}") from exc
 
 
 def _topology_signature(target):
@@ -110,6 +227,8 @@ def restore_binding(context, target):
         raise QuickBindError("Choose a mesh in Object Mode to restore its previous binding.")
     if target.library or target.data.library or target.data.users != 1:
         raise QuickBindError("Make the target mesh local and single-user before restoring.")
+    if has_removed_binding(target):
+        raise QuickBindError("Restore Binding before restoring the earlier weights.")
     record = _read_backup(target)
     _check_backup_topology(target, record)
     modifier = _backup_modifier(target, record, allow_missing=True)
@@ -161,6 +280,8 @@ def _validate(context, target, armature, body, mode):
         raise QuickBindError("Switch to Object Mode before Quick Bind.")
     if target is None or target.type != 'MESH' or not target.data.vertices:
         raise QuickBindError("Choose a non-empty target mesh.")
+    if has_removed_binding(target):
+        raise QuickBindError("Restore Binding before recalculating its weights.")
     if armature is None or armature.type != 'ARMATURE' or armature.mode == 'EDIT':
         raise QuickBindError("Choose the character's main Armature outside Edit Mode.")
     if target.library or target.data.library or target.data.users != 1:

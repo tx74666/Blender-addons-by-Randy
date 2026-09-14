@@ -32,6 +32,10 @@ $selectedTests = @(
     'test_animation_import_blender.py'
     'test_animation_retarget_blender.py'
     'test_forearm_twist_addon_enable_blender.py'
+    'test_unity_export_blender.py'
+    'test_unity_export_worker_blender.py'
+    'test_unity_export_ui_blender.py'
+    'test_unity_forearm_blender.py'
     'test_skirt_ui_blender.py'
     'test_skirt_physics_blender.py'
     'test_hair_bones_mirror_controls_blender.py'
@@ -80,6 +84,46 @@ Limb IK 测试验证新建默认 Auto Align 开启，以及保存重开和 Rebui
 私人角色模型、真实场景验收脚本及实时 GUI 测试保留在 Blender 项目中。
 RR Helper 此前使用 Builder6 的完整导出对比属于历史验证，见
 [升级记录](../docs/releases/RRHelper_0.2.5_upgrade_20260908.md)。
+
+## Unity export and Forearm Correction
+
+`test_unity_warning_actions_blender.py` runs current-source vertex location,
+hidden-point reveal, geometry/weights/Shape Key preservation, material choice
+persistence and actual Undo/Redo. `test_unity_diagnostics_blender.py` checks
+deform-only live source indices and disabled/invalid rigs. The material suite
+`test_unity_materials_blender.py` exercises simple export copies, image/alpha
+retention, procedural fallback, original/shared-data preservation and FBX round
+trip. An isolated current Cosha action selected exactly vertices 3574 and 3575;
+its geometry, weights and Shape Keys were unchanged. Live viewport presentation
+and the final Unity shader appearance were not verified in this update.
+
+`test_unity_export_blender.py` covers export scope, publication ownership and
+rollback. `test_unity_export_ui_blender.py` checks displayed scope and warning
+status. `test_unity_export_worker_blender.py` performs real FBX export/reimport,
+artist Shape Keys, modifiers, textures and skin-weight diagnostics; it also checks
+the empty `.forearm.json` removal marker when a previously exported calibration
+has been removed.
+
+`test_unity_forearm_blender.py` checks saved range gating, authored ratios, disabled
+sides, masked artist-key input, repeated capture without mutation, invalid records
+and transforms, measured Subdivision stencils, and actual FBX vertex-ID UV survival.
+The runtime companion is in `addons/character_designer/unity_runtime`. Its Editor
+validation utilities exercise math, synthetic runtime meshes, FBX mapping and
+real-model golden comparisons; its optional PlayMode test exercises Animator
+ordering and restoration. Install with `tools/deploy_unity_runtime.py` before
+running those Unity checks. Stop Play Mode before copying or refreshing scripts.
+
+The 0.58.0 integration run passed 687 math cases, 11 synthetic runtime cases,
+16 real Cosha comparisons, seven importer rollback/removal checks, and one Animator PlayMode test. Real-model fixtures and
+reports remain under X's `outputs/unity_forearm_implementation`. This validates
+the extra correction against actual skinned mesh deltas; it does not claim an
+identical Blender baseline, normals, shader appearance or arbitrary game-script
+execution order. Automatic sidecar reimport also rebuilt the runtime prefab and
+data asset while preserving the prefab GUID. Editor measurements on Cosha were
+0.223 ms median for unchanged inputs and 5.714 ms for changing poses, with zero
+managed allocations during those samples; these are diagnostics, not Player-build
+performance guarantees.
+
 # Quick binding and saved character references
 
 `test_quick_bind_blender.py` verifies native nearest-face interpolation and bone
@@ -87,6 +131,10 @@ heat, normalized deform-only weights, mirrored side assignment and deformation,
 unchanged mesh/shape-key/helper data, modifier reuse, and rollback on failure.
 It also checks first-bind backup persistence, repeated recalculation, restoration
 after saving/reopening, later unrelated edits, and refusal after incompatible topology changes.
+`test_quick_bind_remove_blender.py` checks connection-only removal/restoration,
+actual evaluated skin deformation, unchanged painted groups/Shape Keys/modifier
+identity, topology edits, the older first-bind backup, parent world transforms,
+save/reopen, conflicts and Blender operator Undo/Redo.
 `test_character_setup_accessories_blender.py` verifies saved references across
 rename, reload and add-on registration, multiple Hair meshes, explicit overrides,
 and Hair/Skirt binding through the saved main rig.

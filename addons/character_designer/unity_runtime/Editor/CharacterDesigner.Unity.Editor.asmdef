@@ -1,0 +1,6 @@
+{
+  "name": "CharacterDesigner.Unity.Editor",
+  "references": ["CharacterDesigner.Unity.Runtime", "Unity.Collections"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

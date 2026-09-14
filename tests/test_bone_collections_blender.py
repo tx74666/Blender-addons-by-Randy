@@ -32,6 +32,12 @@ def fixture(method):
 
 
 def check(rig, original, built_chains):
+    if rig.data.get(groups.NATIVE_ONLY_KEY):
+        assert not built_chains
+        assert tuple(rig.data.collections.keys()) == ("Original",)
+        assert members(rig, "Original") == original
+        assert rig.data.collections["Original"].is_visible
+        return
     assert tuple(rig.data.collections.keys()) == groups.BODY_NAMES
     assert members(rig, "Original") == original
     inventory = limb_ik._validate_inventory(rig)
@@ -157,7 +163,8 @@ def test_first_build_and_manual_visibility():
     assert members(rig, "Artist Picks") == {"Hips"}
     assert groups._load_backup(rig)["original"]["collections"] == before["collections"]
     assert bpy.ops.character_designer.limb_ik_remove() == {"FINISHED"}
-    assert members(rig, "Body") == original
+    assert "Body" not in rig.data.collections_all
+    assert members(rig, "Original") == original
     assert rig.data.collections["Original"].is_solo
 
 

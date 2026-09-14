@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 56, 1),
+    "version": (0, 58, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -67,6 +67,7 @@ from .bone_collections import (
     unregister_handlers as unregister_bone_collection_handlers,
 )
 from .character_setup import CHARACTER_SETUP_CLASSES, CharacterDesignerSetup
+from .unity_export_ui import UNITY_EXPORT_CLASSES, CharacterDesignerUnityExport, stop_export_ui
 from .bone_display import BONE_DISPLAY_CLASSES
 from .widget_collections import WIDGET_COLLECTION_CLASSES
 from .bone_display_sync import register as register_bone_display_sync, unregister as unregister_bone_display_sync
@@ -8380,6 +8381,7 @@ CLASSES = (
     CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
     *CHARACTER_SETUP_CLASSES,
+    *UNITY_EXPORT_CLASSES,
     *HAIR_BONES_CLASSES,
     *SKIRT_CLASSES,
     *ANIMATION_CLASSES,
@@ -8468,6 +8470,11 @@ def _validate_registration_integrity():
             or setup_property.fixed_type != CharacterDesignerSetup.bl_rna):
         errors.append("missing or stale Scene character setup")
 
+    export_property = bpy.types.Object.bl_rna.properties.get("character_designer_unity_export")
+    if (export_property is None or export_property.type != "POINTER"
+            or export_property.fixed_type != CharacterDesignerUnityExport.bl_rna):
+        errors.append("missing or stale Object Unity export settings")
+
     if errors:
         details = "; ".join(errors)
         raise RuntimeError(f"Character Designer registration is inconsistent: {details}.")
@@ -8496,6 +8503,7 @@ def register():
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
     animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
     setup_registered = hasattr(bpy.types.Scene, "character_designer_setup")
+    unity_export_registered = hasattr(bpy.types.Object, "character_designer_unity_export")
     registration_state = (
         centerline_registered,
         delta_registered,
@@ -8507,6 +8515,7 @@ def register():
         skirt_registered,
         animation_registered,
         setup_registered,
+        unity_export_registered,
     )
     if all(registration_state):
         _validate_registration_integrity()
@@ -8525,12 +8534,15 @@ def register():
     registered = []
     added_properties = []
     added_setup = False
+    added_export = False
     try:
         for cls in CLASSES:
             bpy.utils.register_class(cls)
             registered.append(cls)
         bpy.types.Scene.character_designer_setup = PointerProperty(type=CharacterDesignerSetup)
         added_setup = True
+        bpy.types.Object.character_designer_unity_export = PointerProperty(type=CharacterDesignerUnityExport)
+        added_export = True
         bpy.types.WindowManager.character_designer = PointerProperty(
             type=CharacterDesignerState,
             options={"SKIP_SAVE"},
@@ -8596,6 +8608,8 @@ def register():
         _unregister_source_watch()
         if added_setup and hasattr(bpy.types.Scene, "character_designer_setup"):
             del bpy.types.Scene.character_designer_setup
+        if added_export and hasattr(bpy.types.Object, "character_designer_unity_export"):
+            del bpy.types.Object.character_designer_unity_export
         for property_name in reversed(added_properties):
             if hasattr(bpy.types.WindowManager, property_name):
                 delattr(bpy.types.WindowManager, property_name)
@@ -8608,6 +8622,7 @@ def register():
 
 
 def unregister():
+    stop_export_ui()
     unregister_animation_runtime()
     stop_skirt_runtime()
     unregister_forearm_twist_runtime()
@@ -8621,6 +8636,8 @@ def unregister():
     _unregister_source_watch()
     if hasattr(bpy.types.Scene, "character_designer_setup"):
         del bpy.types.Scene.character_designer_setup
+    if hasattr(bpy.types.Object, "character_designer_unity_export"):
+        del bpy.types.Object.character_designer_unity_export
     if hasattr(bpy.types.WindowManager, "character_designer_skirt"):
         del bpy.types.WindowManager.character_designer_skirt
     if hasattr(bpy.types.WindowManager, "character_designer_animation"):

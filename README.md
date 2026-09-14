@@ -5,7 +5,19 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.56.1 | [character_designer](addons/character_designer) | [character_designer-0.56.1.zip](dist/character_designer-0.56.1.zip) |
+| Character Designer | 0.58.1 | [character_designer](addons/character_designer) | [character_designer-0.58.1.zip](dist/character_designer-0.58.1.zip) |
+
+Character Designer 0.58.1 在 Unity 导出警告中加入缺权重顶点定位，以及可撤回的“仅导出时使用简化 BSDF”选项。定位重新检查当前原始网格；简化材质只作用于导出副本，原着色器和权重保留。
+
+Character Designer 0.58.0 为小臂校正增加 Unity 运行组件。**Misc → Unity Export** 将已确认的校准写入 FBX 旁的 `.forearm.json`；安装随包的 Unity companion 后，导入器自动生成例如 **Cosha.Runtime.prefab**。组件根据实际手腕扭转运行，保留原有蒙皮、表情和动画；停用／移除可恢复原网格。支持 ±120°、已保存的逐圈比例与边界，以及 Armature 后固定层级 Subdivision。转移的是额外校正；Unity 基础蒙皮的细分顺序与表面法线近似仍可能与 Blender 有差异。安装和限制见 [Unity companion 说明](addons/character_designer/unity_runtime/README.md)。
+
+Character Designer 0.57.5 将 Unity 导出的正常 Skip 移到报告 notices，不再计入警告。面板显示真实警告概要，并兼容旧报告；导出完成与 Unity 导入未验证的状态分开，权重遗漏和材质适配需求继续明确提示。
+
+Character Designer 0.57.4 为 Quick Bind 增加 **Remove Binding / Restore Binding**：解除骨架连接并保留已画权重，恢复时不重新计算。已绑定物体显示 **Rebind Weights**，旧的绑定前状态回退收进 **Previous Weights**；解除连接独立于拓扑相关的权重备份。
+
+Character Designer 0.57.3 简化 Unity Export 的 Objects 显示：省去跳过项提示，主骨架仍在上方，身体权重源（如 Cosha）排在网格首位。
+
+Character Designer 0.57.2 在完整移除 Generated Controls 后显示 Original，清理插件留下的冗余 Body 分类；**Misc → Unity Export** 只导出启用 Armature 绑定的网格，旧的未绑定额外物体名单不能绕过。独立进程处理导出副本，保留原场景、权重和表情 Shape Key；重复导出保留 Unity `.meta`，遇到外部修改或文件冲突时停止，失败时恢复此前输出。当前为模型交接，动画、Unity 材质适配与运行时物理不在此版本自动完成。
 
 Character Designer 0.56.1 补全校准撤销与双侧移除：相同数值不产生空撤销步骤、不清空重做；两侧 Shape Key 名称冲突在移除前一并检查。
 

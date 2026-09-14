@@ -15,7 +15,7 @@ UI_PAGE_ITEMS = (
     (UI_PAGE_RIG, "Rig", "Body, hair, and skirt rigs and attachment", 2),
     (UI_PAGE_CLOTHING, "Clothing", "Legacy shortcut to Rig / Skirt", 5),
     (UI_PAGE_ANIMATION, "Animation", "Free local motion generation and body Actions", 6),
-    (UI_PAGE_MISC, "Miscellaneous", "Modeling symmetry and reference view sets", 3),
+    (UI_PAGE_MISC, "Miscellaneous", "Unity export, modeling symmetry, and reference view sets", 3),
 )
 UI_PAGES = frozenset(item[0] for item in UI_PAGE_ITEMS)
 

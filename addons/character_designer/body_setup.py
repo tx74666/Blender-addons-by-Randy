@@ -173,9 +173,16 @@ def remove(context, rig, *, keep_native_rest=True):
 
     def commit():
         result = body_setup_removal.execute(context, rig, prepared)
+        result['display'] = bone_collections.show_original_after_removal(rig)
         control_colors.cleanup(rig)
         context.view_layer.update()
         _verify_skin(rig, before, tolerance=2e-4)
         return result
 
     return _atomic(context, rig, commit)
+
+
+def restore_original_display(context, rig):
+    """Repair a previously removed Body setup, including a temporary view."""
+    _require_rig(context, rig)
+    return _atomic(context, rig, lambda: bone_collections.show_original_after_removal(rig))

@@ -1,7 +1,7 @@
 """Saved character references and the two common weight binding actions."""
 
 import bpy
-from bpy.props import CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
 from .ui_constants import (
@@ -268,6 +268,7 @@ class CharacterDesignerSetup(PropertyGroup):
     active_asset: IntProperty(default=-1)
     add_role: EnumProperty(name='Role', items=ASSET_ROLES)
     binding_method: EnumProperty(name='Method', items=BINDING_METHODS, default='TRANSFER')
+    show_binding_backup: BoolProperty(name='Previous Weights', default=False, options={'SKIP_SAVE'})
     last_message: StringProperty(options={'SKIP_SAVE'})
 
 
@@ -350,14 +351,16 @@ class CHARACTERDESIGNER_OT_character_asset(Operator):
 class CHARACTERDESIGNER_OT_quick_bind(Operator):
     bl_idname = 'character_designer.quick_bind'
     bl_label = 'Bind Weights'
-    bl_description = 'Bind the active mesh to Main Rig; keep the original weights for Restore Previous Binding'
+    bl_description = 'Calculate and replace Main Rig weights using the selected method; keep the first pre-bind state under Previous Weights'
     bl_options = {'REGISTER', 'UNDO'}
     mode: EnumProperty(items=BINDING_METHODS, default='TRANSFER')
 
     @classmethod
     def poll(cls, context):
+        from .quick_bind import has_removed_binding
         return (context.mode == 'OBJECT' and quick_bind_target(context) is not None
-                and preferred_rig(context) is not None)
+                and preferred_rig(context) is not None
+                and not has_removed_binding(_selected_mesh(context)))
 
     def execute(self, context):
         from .quick_bind import bind_weights
@@ -421,8 +424,9 @@ class CHARACTERDESIGNER_OT_restore_quick_binding(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .quick_bind import has_binding_backup
-        return context.mode == 'OBJECT' and has_binding_backup(_selected_mesh(context))
+        from .quick_bind import has_binding_backup, has_removed_binding
+        target = _selected_mesh(context)
+        return context.mode == 'OBJECT' and has_binding_backup(target) and not has_removed_binding(target)
 
     def execute(self, context):
         from .quick_bind import restore_binding
@@ -436,6 +440,53 @@ class CHARACTERDESIGNER_OT_restore_quick_binding(Operator):
         return {'FINISHED'}
 
 
+class CHARACTERDESIGNER_OT_remove_quick_binding(Operator):
+    bl_idname = 'character_designer.remove_quick_binding'
+    bl_label = 'Remove Binding'
+    bl_description = 'Disconnect Main Rig and its parenting; keep weights and modifier settings for Restore Binding'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        from .quick_bind import binding_modifier, has_removed_binding
+        target = quick_bind_target(context)
+        return (context.mode == 'OBJECT' and target is not None
+                and not has_removed_binding(target)
+                and binding_modifier(target, preferred_rig(context)) is not None)
+
+    def execute(self, context):
+        from .quick_bind import remove_binding
+        try:
+            remove_binding(context, context.active_object, preferred_rig(context))
+        except (ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, 'Binding removed; painted weights kept. Restore Binding reconnects them.')
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_restore_removed_quick_binding(Operator):
+    bl_idname = 'character_designer.restore_removed_quick_binding'
+    bl_label = 'Restore Binding'
+    bl_description = 'Reconnect the saved rig with your existing painted weights; no weight calculation'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        from .quick_bind import has_removed_binding
+        return context.mode == 'OBJECT' and has_removed_binding(_selected_mesh(context))
+
+    def execute(self, context):
+        from .quick_bind import restore_removed_binding
+        try:
+            restore_removed_binding(context, context.active_object)
+        except (ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, 'Binding restored with existing painted weights.')
+        return {'FINISHED'}
+
+
 class CHARACTERDESIGNER_PT_quick_bind(Panel):
     bl_label = 'Quick Bind'
     bl_idname = 'CHARACTERDESIGNER_PT_quick_bind'
@@ -446,10 +497,11 @@ class CHARACTERDESIGNER_PT_quick_bind(Panel):
 
     @classmethod
     def poll(cls, context):
-        from .quick_bind import has_binding_backup
+        from .quick_bind import has_binding_backup, has_removed_binding
         return active_ui_page(context) == UI_PAGE_WEIGHT and (
             quick_bind_target(context) is not None
             or has_binding_backup(_selected_mesh(context))
+            or has_removed_binding(_selected_mesh(context))
         )
 
     def draw(self, context):
@@ -457,6 +509,12 @@ class CHARACTERDESIGNER_PT_quick_bind(Panel):
         state = settings(context)
         target = context.active_object
         layout.label(text=target.name, icon='OUTLINER_OB_MESH')
+        from .quick_bind import binding_modifier, has_binding_backup, has_removed_binding
+        if has_removed_binding(target):
+            layout.label(text='Unbound · weights kept', icon='UNLINKED')
+            layout.operator('character_designer.restore_removed_quick_binding', icon='LOOP_BACK')
+            return
+        bound = binding_modifier(target, state.rig) is not None
         if quick_bind_target(context) is not None:
             layout.prop(state, 'binding_method')
             transfer = state.binding_method == 'TRANSFER'
@@ -471,11 +529,18 @@ class CHARACTERDESIGNER_PT_quick_bind(Panel):
             row = layout.row()
             row.enabled = not transfer or state.body is not None
             row.operator('character_designer.quick_bind',
+                         text='Rebind Weights' if bound else 'Bind Weights',
                          icon='MOD_DATA_TRANSFER' if transfer else 'ARMATURE_DATA').mode = state.binding_method
-        from .quick_bind import has_binding_backup
+            if bound:
+                row = layout.row()
+                row.alert = True
+                row.operator('character_designer.remove_quick_binding', icon='UNLINKED')
         if has_binding_backup(target):
             row = layout.row()
-            row.operator('character_designer.restore_quick_binding', icon='LOOP_BACK')
+            row.prop(state, 'show_binding_backup', emboss=False,
+                     icon='TRIA_DOWN' if state.show_binding_backup else 'TRIA_RIGHT')
+            if state.show_binding_backup:
+                layout.operator('character_designer.restore_quick_binding', icon='LOOP_BACK')
 
 
 CHARACTER_SETUP_CLASSES = (
@@ -483,6 +548,7 @@ CHARACTER_SETUP_CLASSES = (
     CHARACTERDESIGNER_OT_capture_character_bone,
     CHARACTERDESIGNER_OT_register_assets, CHARACTERDESIGNER_OT_character_asset,
     CHARACTERDESIGNER_OT_quick_bind, CHARACTERDESIGNER_OT_restore_quick_binding,
+    CHARACTERDESIGNER_OT_remove_quick_binding, CHARACTERDESIGNER_OT_restore_removed_quick_binding,
     CHARACTERDESIGNER_PT_character_setup,
     CHARACTERDESIGNER_PT_quick_bind,
 )

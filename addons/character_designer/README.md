@@ -1,4 +1,19 @@
-# Character Designer 0.56.1
+# Character Designer 0.58.1
+
+Version 0.58.1 makes Unity export warnings actionable. **Locate Unweighted
+Vertices** rechecks the current original mesh, selects missing deform-bone weights
+in Edit Mode, enables X-Ray and frames the selection. It does not use stale FBX
+vertex indices or assign weights. A modifier-only problem with no missing source
+vertices is reported for separate inspection rather than selecting guessed points.
+
+**Use Simple BSDF for Export** records a reversible per-material choice on the
+character. On the next export, only the disposable snapshot receives a simple
+Principled material, retaining safe base-color/image inputs and standard values.
+Procedural patterns and advanced shader effects are approximated; details are in
+the export report. **Use Original on Next Export** restores the original export
+choice. Both choices support Undo and saving/reopening; the live shader graph is
+never rewritten. Unity uses its own material shader, and authored Unity material
+remaps are not overwritten by this option.
 
 Character Designer is Randy's personal Blender add-on. It stays separate from
 RR Helper and focuses on character-modeling tools.
@@ -6,6 +21,95 @@ RR Helper and focuses on character-modeling tools.
 Workflow principle: generated bindings and setups should remain editable and
 provide an explicit remove/restore path. Preserve the artist's original state
 and unrelated data; support saving/reopening where restoration depends on a backup.
+
+## Quick Bind: remove and restore a connection
+
+Version 0.57.4 shows **Rebind Weights** and a red **Remove Binding** for an
+ordinary mesh connected to Main Rig. Rebind recalculates weights; Remove
+disconnects the rig without deleting painted vertex groups. It retains the
+empty Armature modifier slot, settings and stack order for **Restore Binding**,
+which reconnects the current weights without running a solver. Matching rig
+parenting is disconnected/restored while keeping the object world transform.
+The connection record survives save/reopen and does not depend on vertex
+indices, so topology edits do not prevent disconnection or reconnection.
+
+The older **Restore Previous Binding** action is under **Previous Weights**.
+It restores the first pre-Quick-Bind weights/state, rather than merely removing
+the current connection; it still requires unchanged topology. Its baseline is
+preserved through Remove/Restore Binding. Conflicting or missing modifier slots
+are refused without discarding recovery data. These actions support Blender Undo.
+
+## Unity Export
+
+Version 0.58.0 includes a Unity companion for saved Forearm Correction. After
+installing it once with `tools/deploy_unity_runtime.py --project <Unity project>`,
+the usual **Export / Update to Unity** writes the FBX and a matching
+`<name>.forearm.json`. Unity verifies their association and automatically builds
+`<name>.Runtime.prefab` (for example, `Cosha.Runtime.prefab`) with the correction
+component. Use a variant of that prefab for your Animator and game setup; Blender
+remains the place to edit loop calibration. See the [companion setup and scope](unity_runtime/README.md).
+
+Version 0.57.5 reports successful exports separately from actionable warnings.
+Expected skips remain in the JSON report's `notices`, not its warning count.
+The panel reads the last successful report (including older reports) and shows
+concise, expandable warning summaries. Skin-weight gaps and custom material needs
+remain visible; they are not silently repaired.
+Cancelled or failed attempts retain their own status rather than displaying an
+older success. Unity import remains unverified until it is checked in Unity.
+
+Version 0.57.3 omits skipped-item notices from Objects and lists the body weight source (such as Cosha) first among meshes, after the armatures.
+
+In **Misc → Unity Export**, choose the shared Main Rig and a character folder
+inside the Unity project's `Assets`, then click **Export / Update to Unity**.
+The folder, filename and mesh exclusions are saved on that rig in the blend.
+Only meshes with an enabled Armature modifier bound to this character are
+included, even if the mesh object is hidden. Attached accessory rigs are included
+when used by those meshes. Parenting alone, Body Weight Source, asset registration
+and legacy additional-mesh entries do not qualify an unbound mesh for export.
+Disabled bindings and unbound hair or clothing are skipped; export never creates
+weights or enables a modifier. Expand **Objects** to inspect the actual scope or
+exclude/restore a bound mesh. Missing saved references, another character's rig,
+and controller widgets are rejected.
+
+Conversion runs in a disposable Blender process. The live scene's pose, rig,
+constraints, geometry, weights, Shape Keys, materials and selection are preserved.
+The result is a rest-model FBX, texture files and `<name>.cdesigner.json` report.
+Artist relative Shape Keys become FBX BlendShapes; supported topology modifiers
+are evaluated for each key with correspondence checks. The managed forearm keys
+are replaced by portable calibration in the sidecar; the Unity component computes
+their extra deformation from actual wrist-relative rotation, saved ratios and
+range transitions. It supports the existing ±120° range, ordinary Armature-first
+linear skinning and fixed Subdivision. It preserves artist BlendShapes, original
+weights and the shared mesh asset; disabling or removing the component restores
+the original mesh. Removing calibration in Blender and re-exporting updates the
+owned runtime prefab back to ordinary skinning. Controls and helpers are excluded.
+Separate accessory skeletons are
+combined only in the export copy, retaining attachment relationships; the source
+rigs stay separate. Unsupported conversions fail before publishing any files.
+
+Later exports update the same owned files and preserve Unity `.meta` files/GUIDs.
+Foreign files or externally modified prior outputs are not overwritten. Every
+publication backs up previous outputs under Blender's user data directory,
+`character_designer/export_backups`; its `restore.json` identifies the destination
+and prior files. A publication failure rolls back files already replaced. Esc
+cancels a running conversion. Blender Undo does not undo published files.
+
+The companion transfers additional correction, not Blender's entire deformation
+pipeline. Blender normally skins before Subdivision; Unity skins the exported
+subdivided mesh. Their ordinary baseline can differ. Local normal/tangent updates
+are approximate and do not reproduce all Blender custom-normal behavior.
+This version does not export animation, configure a Humanoid Avatar,
+translate custom shaders, or install runtime hair/skirt physics.
+**Exported** means files were written; the panel/report explicitly distinguish
+that from verification inside Unity. Keep the canonical blend as the editable
+source. The scoped exporter and publication regression tests are in
+`tests/test_unity_export_blender.py`.
+
+Version 0.57.2 also restores the Original collection after removing all generated
+body controls. Redundant add-on-owned Body/internal collections are removed while
+artist collections, hair and native bones are retained. Generating body controls
+again recreates their Body display. Refreshing the add-on repairs the recognized
+legacy post-removal layout without rebuilding the rig.
 
 Version 0.56.1 also prevents unchanged UI field commits from consuming local
 Undo or clearing Redo, and checks both owned Shape Key names before paired
@@ -39,7 +143,8 @@ Keyed or driven wrist targets can edit the current pose without moving animation
 Mirrored edits preflight both sides and roll back their outputs together. Disable
 and Remove retain the existing ownership and dependency checks. The existing
 prototype limits still apply: linear Armature skinning, relative shape keys,
-and correction up to ±120 degrees; the add-on must remain enabled at runtime.
+and correction up to ±120 degrees. In Blender the add-on must remain enabled;
+exported Unity characters use the 0.58.0 companion described above.
 
 The existing wrist local-axis mechanism is retained. New / rebuilt controls and
 160 actual-X rotation cases were checked for Local Y, Global and View rotation,
@@ -699,7 +804,9 @@ Armature is supported. Preserve Volume, envelopes, modifier masks, preceding
 Mirror/deformation modifiers, and affected Bendy Bones are refused explicitly.
 Calibrate before animating the Hand Target. Playback and rendering then follow
 its animation with the add-on enabled; a saved key alone cannot reproduce the
-dynamic result in another application or with the add-on disabled. While a
+dynamic result in another application or with the add-on disabled. The Unity
+companion introduced in 0.58.0 carries the saved calibration separately and
+computes this extra correction in Unity. While a
 correction is enabled, Render > Lock Interface is managed to prevent concurrent
 viewport/render writes; disabling/removing the last correction or unloading the
 add-on restores the prior setting. Invalid topology, Rest changes, or unsupported
