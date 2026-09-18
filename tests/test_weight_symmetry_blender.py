@@ -35,7 +35,10 @@ SECOND_LEFT_GROUP = "upper_arm.L"
 SECOND_RIGHT_GROUP = "upper_arm.R"
 POSITIVE_INDICES = (3, 4, 8, 9)
 NEGATIVE_INDICES = (1, 0, 6, 5)
-CENTER_INDICES = (2, 7)
+# The middle row vertices 2 and 7 are unweighted bridges in the main Mesh.
+# Separate center-only support must not connect legitimate source weights to
+# the deliberately wrong-side island used by most repair tests.
+CENTER_INDICES = (10, 11)
 POSITIVE_TO_NEGATIVE = tuple(zip(POSITIVE_INDICES, NEGATIVE_INDICES))
 LEFT_SOURCE_WEIGHTS = {
     3: 0.20,
@@ -120,6 +123,8 @@ def symmetric_geometry(
         (0.0, 1.0, 0.0),
         (1.0, 1.0, 0.0),
         (2.0, 1.0, 0.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, 1.0),
     ]
     if unpaired:
         vertices[1] = (-1.34, -1.0, 0.0)
@@ -166,6 +171,7 @@ def make_fixture(
     include_second_pair=False,
     include_second_target=True,
     second_target_locked=False,
+    direct_crossing_edge=False,
 ):
     reset_scene()
     armature_obj = make_armature()
@@ -175,7 +181,12 @@ def make_fixture(
         unrelated_asymmetry=unrelated_asymmetry,
     )
     mesh = bpy.data.meshes.new("WeightSymmetryMesh_Data")
-    mesh.from_pydata(vertices, (), faces)
+    # The whole Mesh stays connected, but zero-support vertices 2 and 7
+    # separate the positive source, opposite-side and center-only components.
+    edges = ((2, 10), (7, 11))
+    if direct_crossing_edge:
+        edges += ((1, 3),)
+    mesh.from_pydata(vertices, edges, faces)
     mesh.update()
     mesh_obj = bpy.data.objects.new("WeightSymmetryMesh", mesh)
     bpy.context.scene.collection.objects.link(mesh_obj)
@@ -196,7 +207,7 @@ def make_fixture(
                 for positive, negative in POSITIVE_TO_NEGATIVE
             }
         )
-        left_weights[2] = 0.19
+        left_weights[CENTER_INDICES[0]] = 0.19
         right_weights = {
             negative: LEFT_SOURCE_WEIGHTS[positive] * 0.35
             for positive, negative in POSITIVE_TO_NEGATIVE
@@ -204,7 +215,7 @@ def make_fixture(
         # Explicit zero memberships are still wrong-side assignments and must
         # be removed, without inventing a budget change.
         right_weights.update({positive: 0.0 for positive in POSITIVE_INDICES})
-        right_weights[7] = 0.27
+        right_weights[CENTER_INDICES[1]] = 0.27
     elif active_group == RIGHT_GROUP:
         # The exact mirror contract for R -> L.
         right_weights = dict(RIGHT_SOURCE_WEIGHTS)
@@ -214,13 +225,13 @@ def make_fixture(
                 for positive, negative in POSITIVE_TO_NEGATIVE
             }
         )
-        right_weights[7] = 0.27
+        right_weights[CENTER_INDICES[1]] = 0.27
         left_weights = {
             positive: RIGHT_SOURCE_WEIGHTS[negative] * 0.35
             for positive, negative in POSITIVE_TO_NEGATIVE
         }
         left_weights.update({negative: 0.0 for negative in NEGATIVE_INDICES})
-        left_weights[2] = 0.19
+        left_weights[CENTER_INDICES[0]] = 0.19
     else:
         raise ValueError(f"Unsupported active fixture group: {active_group}")
     add_group(mesh_obj, LEFT_GROUP, left_weights)
@@ -452,6 +463,174 @@ def assert_second_left_to_right_contract(mesh_obj):
         assert_no_membership(mesh_obj, SECOND_RIGHT_GROUP, positive)
 
 
+def geometry_snapshot(mesh_obj):
+    return (
+        tuple(tuple(vertex.co) for vertex in mesh_obj.data.vertices),
+        tuple(tuple(edge.vertices) for edge in mesh_obj.data.edges),
+        tuple(tuple(face.vertices) for face in mesh_obj.data.polygons),
+    )
+
+
+def wrong_side_islands(fixture, group_name=LEFT_GROUP):
+    """Exercise the positive-support topology decision independently of writes."""
+
+    mesh_obj = fixture["mesh_obj"]
+    tolerance = weight_symmetry._automatic_tolerance(mesh_obj)
+    side = weight_symmetry._bone_source_side(
+        mesh_obj,
+        fixture["armature_obj"],
+        group_name,
+        weight_symmetry._strict_opposite_name(group_name),
+        tolerance,
+    )
+    source, _target, center = weight_symmetry._classify_mesh_halves(
+        mesh_obj, side, tolerance
+    )
+    weights = {
+        index: membership(mesh_obj, group_name, index)
+        for index in range(len(mesh_obj.data.vertices))
+        if membership(mesh_obj, group_name, index) is not None
+    }
+    return weight_symmetry._wrong_side_weight_islands(
+        mesh_obj, weights, source, center
+    )
+
+
+def make_continuous_shoulder_fixture(*, direct_crossing_edge=False):
+    """A legitimate shoulder influence and its already-correct full reflection."""
+
+    fixture = make_fixture(direct_crossing_edge=direct_crossing_edge)
+    mesh_obj = fixture["mesh_obj"]
+    armature_obj = fixture["armature_obj"]
+    left = mesh_obj.vertex_groups[LEFT_GROUP]
+    right = mesh_obj.vertex_groups[RIGHT_GROUP]
+    # Renaming a bound bone also updates the matching Vertex Group in Blender.
+    armature_obj.data.bones[LEFT_GROUP].name = "shoulder.L"
+    armature_obj.data.bones[RIGHT_GROUP].name = "shoulder.R"
+    left.name = "shoulder.L"
+    right.name = "shoulder.R"
+    if not direct_crossing_edge:
+        # This positive center vertex joins the two halves through real edges.
+        left.add((2,), 0.19, "REPLACE")
+    # Preserve a deliberately unequal spill on the opposite half, and set the
+    # target's complete reflection so this copy has a valid unchanged budget.
+    for positive, negative in POSITIVE_TO_NEGATIVE:
+        right.add((positive,), membership(mesh_obj, left.name, negative), "REPLACE")
+        right.add((negative,), membership(mesh_obj, left.name, positive), "REPLACE")
+    return fixture
+
+
+def test_whole_mesh_connection_does_not_join_disconnected_weight_support():
+    fixture = make_fixture()
+    mesh_obj = fixture["mesh_obj"]
+    edges = tuple(tuple(edge.vertices) for edge in mesh_obj.data.edges)
+    reached = {0}
+    while True:
+        expanded = reached | {
+            other
+            for a, b in edges
+            for current, other in ((a, b), (b, a))
+            if current in reached
+        }
+        if expanded == reached:
+            break
+        reached = expanded
+    if len(reached) != len(mesh_obj.data.vertices):
+        raise AssertionError("Regression fixture must be one connected Mesh")
+    if wrong_side_islands(fixture) != tuple(sorted(NEGATIVE_INDICES)):
+        raise AssertionError("Unweighted bridge connected independent support islands")
+    before_geometry = geometry_snapshot(mesh_obj)
+    if invoke_operator() != {"FINISHED"}:
+        raise AssertionError("Disconnected wrong-side support could not be repaired")
+    assert_left_to_right_contract(mesh_obj)
+    if geometry_snapshot(mesh_obj) != before_geometry:
+        raise AssertionError("Weight support cleanup changed Mesh geometry")
+
+
+def test_continuous_shoulder_crossing_center_is_preserved():
+    fixture = make_continuous_shoulder_fixture()
+    mesh_obj = fixture["mesh_obj"]
+    if wrong_side_islands(fixture, "shoulder.L"):
+        raise AssertionError("Continuous shoulder influence was classified as an island")
+    before = capture_groups(mesh_obj)
+    before_geometry = geometry_snapshot(mesh_obj)
+    if invoke_operator() != {"FINISHED"}:
+        raise AssertionError("Continuous cross-center shoulder copy failed")
+    if capture_groups(mesh_obj) != before:
+        raise AssertionError("Copy deleted or changed a legitimate shoulder spill")
+    if geometry_snapshot(mesh_obj) != before_geometry:
+        raise AssertionError("Cross-center copy changed Mesh geometry")
+    if invoke_operator() != {"FINISHED"} or capture_groups(mesh_obj) != before:
+        raise AssertionError("Cross-center shoulder copy was not idempotent")
+
+
+def test_continuous_shoulder_crossing_edge_without_center_vertex_is_preserved():
+    fixture = make_continuous_shoulder_fixture(direct_crossing_edge=True)
+    mesh_obj = fixture["mesh_obj"]
+    if not any(set(edge.vertices) == {1, 3} for edge in mesh_obj.data.edges):
+        raise AssertionError("Fixture lacks its direct edge across the center plane")
+    if mesh_obj.data.vertices[1].co.x >= 0 or mesh_obj.data.vertices[3].co.x <= 0:
+        raise AssertionError("Crossing edge endpoints must be on opposite sides")
+    if wrong_side_islands(fixture, "shoulder.L"):
+        raise AssertionError("A real crossing edge was ignored without a center vertex")
+    before = capture_groups(mesh_obj)
+    if invoke_operator() != {"FINISHED"} or capture_groups(mesh_obj) != before:
+        raise AssertionError("Copy changed shoulder weights linked by a crossing edge")
+
+
+def test_center_attached_opposite_component_is_preserved_without_source_connection():
+    fixture = make_fixture()
+    mesh_obj = fixture["mesh_obj"]
+    left = mesh_obj.vertex_groups[LEFT_GROUP]
+    # Source vertex 3 is unweighted, so the component attached through vertex 2
+    # reaches only the center and opposite side. Center attachment alone protects it.
+    left.remove(POSITIVE_INDICES)
+    left.add((2,), 0.19, "REPLACE")
+    if wrong_side_islands(fixture):
+        raise AssertionError("A component attached to the center was discarded")
+    before = capture_groups(mesh_obj)
+    assert_cancelled_atomically(fixture)
+    if capture_groups(mesh_obj) != before:
+        raise AssertionError("A source-less rejected plan changed center-connected weights")
+
+
+def test_same_side_and_center_only_components_are_preserved():
+    fixture = make_fixture()
+    mesh_obj = fixture["mesh_obj"]
+    left = mesh_obj.vertex_groups[LEFT_GROUP]
+    # Keep an explicit source-side zero membership and a center-only positive
+    # component while clearing the separate positive opposite component.
+    left.add((7,), 0.0, "REPLACE")
+    source_before = {
+        index: membership(mesh_obj, LEFT_GROUP, index)
+        for index in (*POSITIVE_INDICES, *CENTER_INDICES, 7)
+    }
+    before = capture_groups(mesh_obj)
+    weight_symmetry.build_weight_symmetry_plan(bpy.context)
+    if capture_groups(mesh_obj) != before:
+        raise AssertionError("Planning changed Vertex Groups before the copy")
+    if invoke_operator() != {"FINISHED"}:
+        raise AssertionError("Same-side and center-only preservation repair failed")
+    for index, expected in source_before.items():
+        if membership(mesh_obj, LEFT_GROUP, index) != expected:
+            raise AssertionError(f"Protected source membership changed at {index}")
+
+
+def test_zero_and_sub_epsilon_weights_do_not_bridge_positive_components():
+    for bridge_weight in (0.0, weight_symmetry.WEIGHT_EPSILON * 0.5):
+        fixture = make_fixture()
+        mesh_obj = fixture["mesh_obj"]
+        mesh_obj.vertex_groups[LEFT_GROUP].add((2,), bridge_weight, "REPLACE")
+        if wrong_side_islands(fixture) != tuple(sorted(NEGATIVE_INDICES)):
+            raise AssertionError("A nonpositive-support center bridge joined components")
+        before_bridge = membership(mesh_obj, LEFT_GROUP, 2)
+        if invoke_operator() != {"FINISHED"}:
+            raise AssertionError("Zero-support bridge blocked an otherwise valid repair")
+        if membership(mesh_obj, LEFT_GROUP, 2) != before_bridge:
+            raise AssertionError("Cleanup changed the protected center membership")
+        assert_left_to_right_contract(mesh_obj)
+
+
 def test_registration_undo_and_weight_page_integration():
     reset_scene()
     operator_class = weight_symmetry.CHARACTERDESIGNER_OT_copy_weight_to_opposite
@@ -569,7 +748,8 @@ def test_weight_paint_selected_bones_copy_and_dynamic_label():
     )
     layout = OperatorCaptureLayout()
     weight_symmetry.draw_weight_symmetry(layout, bpy.context)
-    if layout.calls != [
+    strict_calls = [call for call in layout.calls if call[0] == OPERATOR_ID]
+    if strict_calls != [
         (
             OPERATOR_ID,
             "Copy Selected 2 Bones to Opposite",
@@ -577,6 +757,12 @@ def test_weight_paint_selected_bones_copy_and_dynamic_label():
         )
     ]:
         raise AssertionError(f"Unexpected multi-bone UI action: {layout.calls}")
+    for action in (
+        "character_designer.surface_weight_mirror",
+        "character_designer.locate_weight_symmetry",
+    ):
+        if sum(call[0] == action for call in layout.calls) != 1:
+            raise AssertionError(f"Missing or duplicated Weight Symmetry action: {action}")
     result = invoke_operator()
     if result != {"FINISHED"}:
         raise AssertionError(f"Weight Paint multi-bone copy failed: {result}")
@@ -593,7 +779,8 @@ def test_weight_paint_batch_scales_to_fifteen_selected_bones():
 
     layout = OperatorCaptureLayout()
     weight_symmetry.draw_weight_symmetry(layout, bpy.context)
-    if layout.calls[0][1] != "Copy Selected 15 Bones to Opposite":
+    strict_calls = [call for call in layout.calls if call[0] == OPERATOR_ID]
+    if len(strict_calls) != 1 or strict_calls[0][1] != "Copy Selected 15 Bones to Opposite":
         raise AssertionError(f"Fifteen-bone label is wrong: {layout.calls}")
     plan = weight_symmetry.build_weight_symmetry_batch_plan(bpy.context)
     if len(plan.plans) != 15:
@@ -886,6 +1073,48 @@ def test_budget_changing_cleanup_refuses_with_zero_writes():
     assert_cancelled_atomically(fixture)
 
 
+def test_auto_normalize_repairs_only_the_active_mesh_budget():
+    fixture = make_fixture(active_group=LEFT_GROUP)
+    mesh_obj = fixture["mesh_obj"]
+    before_totals = tuple(
+        vertex_total(mesh_obj, index)
+        for index in range(len(mesh_obj.data.vertices))
+    )
+    # Make the opposite shin group intentionally too small on one target
+    # vertex.  A strict copy would change that vertex's deform total, while
+    # Auto Normalize should rebalance the other unlocked deform group locally.
+    negative = POSITIVE_TO_NEGATIVE[0][1]
+    mesh_obj.vertex_groups[RIGHT_GROUP].add((negative,), 0.04, "REPLACE")
+    before_total = vertex_total(mesh_obj, negative)
+    before_spine = membership(mesh_obj, "spine", negative)
+    bpy.context.scene.tool_settings.use_auto_normalize = True
+    try:
+        result = invoke_operator()
+        if result != {"FINISHED"}:
+            raise AssertionError(f"Auto-normalized Weight Symmetry failed: {result}")
+        after_total = vertex_total(mesh_obj, negative)
+        if not math.isclose(after_total, before_total, abs_tol=TOLERANCE):
+            raise AssertionError(
+                f"Auto Normalize changed the target budget: "
+                f"{before_total} -> {after_total}"
+            )
+        assert_close(
+            membership(mesh_obj, RIGHT_GROUP, negative),
+            LEFT_SOURCE_WEIGHTS[3],
+        )
+        after_spine = membership(mesh_obj, "spine", negative)
+        if after_spine is None or math.isclose(
+            after_spine, before_spine, abs_tol=TOLERANCE
+        ):
+            raise AssertionError("Auto Normalize did not rebalance the local Mesh")
+        # No other object is selected or touched by the operation; this is a
+        # contract check on the object-scoped implementation.
+        if bpy.data.objects.get("WeightSymmetryMesh") is not mesh_obj:
+            raise AssertionError("The active Mesh fixture was replaced unexpectedly")
+    finally:
+        bpy.context.scene.tool_settings.use_auto_normalize = False
+
+
 def test_group_edit_after_planning_refuses_without_reverting_artist_edit():
     fixture = make_fixture(active_group=LEFT_GROUP)
     mesh_obj = fixture["mesh_obj"]
@@ -1060,6 +1289,12 @@ def main():
     character_designer.register()
     tests = (
         test_registration_undo_and_weight_page_integration,
+        test_whole_mesh_connection_does_not_join_disconnected_weight_support,
+        test_continuous_shoulder_crossing_center_is_preserved,
+        test_continuous_shoulder_crossing_edge_without_center_vertex_is_preserved,
+        test_center_attached_opposite_component_is_preserved_without_source_connection,
+        test_same_side_and_center_only_components_are_preserved,
+        test_zero_and_sub_epsilon_weights_do_not_bridge_positive_components,
         test_left_to_right_replaces_target_and_cleans_both_wrong_sides,
         test_right_to_left_is_the_same_one_way_operation,
         test_pose_bone_entry_uses_the_selected_bound_mesh,
@@ -1081,6 +1316,7 @@ def main():
         test_ambiguous_vertex_refuses_with_zero_writes,
         test_unrelated_one_sided_vertices_do_not_require_whole_mesh_pairing,
         test_budget_changing_cleanup_refuses_with_zero_writes,
+        test_auto_normalize_repairs_only_the_active_mesh_budget,
         test_group_edit_after_planning_refuses_without_reverting_artist_edit,
         test_post_write_failure_restores_every_group_exactly,
         test_centerline_and_unrelated_groups_are_unchanged,

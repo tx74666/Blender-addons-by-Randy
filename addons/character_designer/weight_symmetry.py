@@ -1,9 +1,10 @@
 """Safe, directed Vertex Group weight symmetry for paired deform bones.
 
 The tool copies either the active side-named Deform group or a same-side Pose
-bone selection to the corresponding opposite groups.  It does not run
-Blender's bidirectional Weight Mirror operator, normalize other groups, or
-guess through asymmetric geometry.  A multi-bone operation is planned and
+bone selection to the corresponding opposite groups.  It never crosses to
+another Mesh object.  When Blender's Auto Normalize setting is enabled, only
+the affected vertices on the active Mesh are locally rebalanced after the
+copy; locked groups remain protected.  A multi-bone operation is planned and
 validated as one transaction before the first Vertex Group is changed.
 """
 
@@ -32,6 +33,11 @@ REMOVE_CHUNK_SIZE = 32768
 
 class WeightSymmetryError(ValueError):
     """A safe, artist-facing preflight or directed-copy failure."""
+
+    def __init__(self, message, *, mesh_obj=None, vertex_indices=()):
+        super().__init__(message)
+        self.mesh_obj = mesh_obj
+        self.vertex_indices = tuple(sorted(set(vertex_indices)))
 
 
 class WeightSymmetryRollbackError(RuntimeError):
@@ -71,6 +77,7 @@ class WeightSymmetryPlan:
     changed_count: int
     cleared_count: int
     affected_count: int
+    additional_group_changes: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,7 @@ class WeightSymmetryBatchPlan:
     source_side: int
     tolerance: float
     affected_count: int
+    additional_group_changes: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -566,13 +574,58 @@ def _classify_mesh_halves(mesh_obj, source_side, tolerance):
     return tuple(source_indices), tuple(target_indices), tuple(center_indices)
 
 
+def _wrong_side_weight_islands(mesh_obj, weights, source_indices, center_indices):
+    """Return positive-weight components confined to the opposite Mesh half.
+
+    Connectivity follows Mesh edges whose two endpoints both have usable
+    weights in this group.  A zero-weight bridge therefore does not join two
+    weight islands, while a weighted edge crossing X=0 is sufficient even if
+    the Mesh has no vertex exactly on its center line.  Every component that
+    reaches the source half or the center is retained, including detached
+    same-side Mesh parts and center-only components.
+    """
+
+    support = {
+        index for index, weight in weights.items() if weight > WEIGHT_EPSILON
+    }
+    anchors = set(source_indices) | set(center_indices)
+    neighbors = {index: [] for index in support}
+    for edge in mesh_obj.data.edges:
+        first, second = edge.vertices
+        if first in support and second in support:
+            neighbors[first].append(second)
+            neighbors[second].append(first)
+
+    remaining = set(support)
+    islands = []
+    while remaining:
+        start = remaining.pop()
+        component = [start]
+        pending = [start]
+        anchored = start in anchors
+        while pending:
+            current = pending.pop()
+            for neighbor in neighbors[current]:
+                if neighbor not in remaining:
+                    continue
+                remaining.remove(neighbor)
+                component.append(neighbor)
+                pending.append(neighbor)
+                anchored = anchored or neighbor in anchors
+        if not anchored:
+            islands.extend(component)
+    return tuple(sorted(islands))
+
+
 def _spatial_pairs(mesh_obj, source_indices, target_indices, tolerance):
     """Pair only the source group's weighted support, not the entire character.
 
     A character Mesh may contain intentionally asymmetric face, hair, or outfit
     vertices in the same datablock.  Those unrelated vertices must not block a
-    directed forearm copy.  Every supplied source-support vertex still requires
-    exactly one reflected target, and targets remain one-to-one.
+    directed forearm copy.  Retained cross-center support is also reflected,
+    so the supplied target candidates may cover both non-center Mesh halves.
+    Every supplied source-support vertex still requires exactly one reflected
+    target, and targets remain one-to-one.
     """
 
     if not source_indices:
@@ -614,14 +667,29 @@ def _spatial_pairs(mesh_obj, source_indices, target_indices, tolerance):
     if ambiguous:
         raise WeightSymmetryError(
             "Spatial symmetry is ambiguous near source vertex "
-            f"{ambiguous[0]} ({len(ambiguous)} ambiguous). No weights were changed."
+            f"{ambiguous[0]} ({len(ambiguous)} ambiguous; tolerance {tolerance:.6g}). "
+            "Multiple reflected matches cannot be chosen safely. No weights were changed.",
+            mesh_obj=mesh_obj,
+            vertex_indices=ambiguous,
         )
     if unmatched:
+        reflected = vertices[unmatched[0]].co.copy()
+        reflected.x = -reflected.x
+        _nearest_co, nearest_index, nearest_distance = tree.find(reflected)
+        nearest_detail = (
+            f"nearest reflected candidate {nearest_index} is {nearest_distance:.6g} away"
+            if nearest_index is not None
+            else "no reflected candidates exist"
+        )
         raise WeightSymmetryError(
             f"Spatial symmetry could not pair source vertex {unmatched[0]}; "
             f"{len(unmatched)} weighted source vert"
             f"{'ices are' if len(unmatched) != 1 else 'ex is'} unmatched. "
-            "No weights were changed."
+            f"Tolerance {tolerance:.6g}; {nearest_detail}. "
+            "Edited geometry or topology may no longer have exact mirrored vertices. "
+            "No weights were changed.",
+            mesh_obj=mesh_obj,
+            vertex_indices=unmatched,
         )
     return tuple(sorted(pairs))
 
@@ -705,6 +773,149 @@ def _validate_deform_budget_batch(snapshot, armature_obj, group_changes):
             "No weights were changed; repair or normalize that region separately."
         )
     return tuple(sorted(affected))
+
+
+def _normalize_deform_changes(
+    snapshot,
+    armature_obj,
+    group_changes,
+    normalization_indices,
+):
+    """Locally rebalance changed columns while keeping copied groups exact.
+
+    The active Mesh may contain an already-painted, slightly asymmetric
+    influence budget.  The directed copy must still put the source value into
+    the opposite group, so when Auto Normalize is enabled we preserve all
+    planned source/target columns and proportionally adjust only other
+    unlocked Deform groups on affected opposite-side vertices.  This keeps the
+    operation local to the selected Mesh and avoids touching unrelated objects.
+    """
+
+    states = _state_map(snapshot)
+    deform_names = tuple(
+        bone.name for bone in armature_obj.data.bones if bone.use_deform
+    )
+    before_maps = {
+        name: _weight_map(states.get(name)) for name in deform_names
+    }
+    updated = {
+        name: dict(weights)
+        for name, weights in group_changes.items()
+    }
+    after_maps = {
+        name: dict(group_changes.get(name, before_maps[name]))
+        for name in deform_names
+    }
+    affected = set()
+    for name, weights in group_changes.items():
+        after = dict(weights)
+        before = _weight_map(states.get(name))
+        affected.update(
+            vertex_index
+            for vertex_index in set(before) | set(after)
+            if _maps_semantically_differ(before, after, vertex_index)
+        )
+
+    changed_names = set(group_changes)
+    locked_names = {
+        name for name in deform_names
+        if states.get(name) is not None and states[name].lock_weight
+    }
+    adjustable_names = tuple(
+        name for name in deform_names
+        if name not in changed_names and name not in locked_names
+    )
+    normalized_vertices = set()
+    for vertex_index in sorted(affected & set(normalization_indices)):
+        before_total = sum(
+            weights.get(vertex_index, 0.0) for weights in before_maps.values()
+        )
+        after_total = sum(
+            weights.get(vertex_index, 0.0) for weights in after_maps.values()
+        )
+        if not math.isfinite(before_total) or not math.isfinite(after_total):
+            raise WeightSymmetryError(
+                f"Vertex {vertex_index} has a non-finite Deform weight total."
+            )
+        if abs(after_total - before_total) <= WEIGHT_TOLERANCE:
+            continue
+        # A vertex that had no usable deform budget cannot be normalized
+        # without inventing an influence.  Keep the copied value exact.
+        if before_total <= WEIGHT_EPSILON:
+            continue
+
+        locked_total = sum(
+            after_maps[name].get(vertex_index, 0.0)
+            for name in locked_names
+        )
+        planned_total = sum(
+            after_maps[name].get(vertex_index, 0.0)
+            for name in changed_names
+        )
+        remaining = before_total - locked_total - planned_total
+        if remaining < -WEIGHT_TOLERANCE:
+            raise WeightSymmetryError(
+                "Auto Normalize could not preserve the copied weight at "
+                f"vertex {vertex_index}: locked and copied Deform weights "
+                f"already total {locked_total + planned_total:.6g}, above the "
+                f"existing budget {before_total:.6g}."
+            )
+
+        adjustable_total = sum(
+            after_maps[name].get(vertex_index, 0.0)
+            for name in adjustable_names
+        )
+        if adjustable_total <= WEIGHT_EPSILON:
+            # There is no unlocked influence available to rebalance.  The
+            # exact copied group remains more important than fabricating one.
+            continue
+        scale = max(0.0, remaining) / adjustable_total
+        for name in adjustable_names:
+            old_weight = after_maps[name].get(vertex_index, 0.0)
+            new_weight = old_weight * scale
+            if new_weight <= WEIGHT_EPSILON:
+                after_maps[name].pop(vertex_index, None)
+            else:
+                if new_weight > 1.0 + WEIGHT_TOLERANCE:
+                    raise WeightSymmetryError(
+                        f"Auto Normalize produced an invalid weight at vertex "
+                        f"{vertex_index} in group \"{name}\"."
+                    )
+                after_maps[name][vertex_index] = min(1.0, new_weight)
+        normalized_vertices.add(vertex_index)
+
+    for name in group_changes:
+        updated[name] = after_maps[name]
+    additional = tuple(
+        (
+            name,
+            tuple(sorted(after_maps[name].items())),
+        )
+        for name in deform_names
+        if name not in group_changes
+        and before_maps[name] != after_maps[name]
+    )
+    updated_changes = {
+        name: tuple(sorted(weights.items()))
+        for name, weights in updated.items()
+    }
+    return updated_changes, additional, tuple(sorted(normalized_vertices))
+
+
+def _all_group_changes_for_batch(batch):
+    changes = _group_changes_for_plans(batch.plans)
+    for name, weights in batch.additional_group_changes:
+        if name in changes:
+            raise WeightSymmetryError(
+                f'Vertex Group "{name}" would be written twice in one transaction.'
+            )
+        changes[name] = tuple(weights)
+    return changes
+
+
+def _auto_normalize_enabled(context):
+    tool_settings = getattr(getattr(context, "scene", None), "tool_settings", None)
+    return bool(getattr(tool_settings, "use_auto_normalize", False))
 
 
 def _preflight_mesh(context, mesh_obj):
@@ -802,40 +1013,54 @@ def _build_plan_for_names(
                 f"at vertex {vertex_index}."
             )
 
-    pairs = _spatial_pairs(
-        mesh_obj,
-        weighted_source_indices,
-        target_indices,
-        tolerance,
+    wrong_side_islands = set(
+        _wrong_side_weight_islands(
+            mesh_obj, source_before, source_indices, center_indices
+        )
     )
-
     source_after = {
         vertex_index: weight
         for vertex_index, weight in source_before.items()
-        if vertex_index not in target_set
+        if vertex_index not in wrong_side_islands
     }
+    retained_support = tuple(
+        sorted(
+            vertex_index
+            for vertex_index, weight in source_after.items()
+            if vertex_index not in center_set and weight > WEIGHT_EPSILON
+        )
+    )
+    try:
+        pairs = _spatial_pairs(
+            mesh_obj,
+            retained_support,
+            tuple(sorted(source_set | target_set)),
+            tolerance,
+        )
+    except WeightSymmetryError as exc:
+        raise WeightSymmetryError(
+            f'Group "{source_name}": {exc}',
+            mesh_obj=mesh_obj,
+            vertex_indices=exc.vertex_indices,
+        ) from exc
+
     target_after = {
         vertex_index: weight
         for vertex_index, weight in target_before.items()
         if vertex_index in center_set
     }
     for source_index, target_index in pairs:
-        if source_index in source_before:
-            target_after[target_index] = source_before[source_index]
+        target_after[target_index] = source_after[source_index]
 
     changed_count = sum(
         _maps_semantically_differ(target_before, target_after, vertex_index)
-        for vertex_index in target_set
+        for vertex_index in set(target_before) | set(target_after)
     )
-    cleared_count = sum(
-        weight > WEIGHT_EPSILON
-        for vertex_index, weight in source_before.items()
-        if vertex_index in target_set
-    )
+    cleared_count = len(wrong_side_islands)
     cleared_count += sum(
         weight > WEIGHT_EPSILON
         for vertex_index, weight in target_before.items()
-        if vertex_index in source_set
+        if vertex_index not in target_after
     )
     paired_count = len(pairs)
     return WeightSymmetryPlan(
@@ -930,20 +1155,51 @@ def _build_batch_for_sources(
         )
 
     group_changes = _group_changes_for_plans(plans)
+    additional_group_changes = ()
+    normalized_vertices = ()
+    if _auto_normalize_enabled(context):
+        normalization_indices = set()
+        for plan in plans:
+            normalization_indices.update(plan.target_indices)
+            normalization_indices.update(plan.center_indices)
+        group_changes, additional_group_changes, normalized_vertices = (
+            _normalize_deform_changes(
+                snapshot,
+                armature_obj,
+                group_changes,
+                normalization_indices,
+            )
+        )
+        effective_plans = tuple(
+            replace(
+                plan,
+                source_after=group_changes[plan.source_name],
+                target_after=group_changes[plan.target_name],
+                additional_group_changes=(
+                    additional_group_changes if len(plans) == 1 else ()
+                ),
+            )
+            for plan in plans
+        )
+    else:
+        effective_plans = plans
+    effective_changes = _group_changes_for_plans(effective_plans)
+    effective_changes.update(dict(additional_group_changes))
     affected = _validate_deform_budget_batch(
         snapshot,
         armature_obj,
-        group_changes,
+        effective_changes,
     )
     return WeightSymmetryBatchPlan(
         mesh_obj=mesh_obj,
         armature_obj=armature_obj,
-        plans=plans,
+        plans=effective_plans,
         group_snapshot=snapshot,
         active_group_index=active_group_index,
-        source_side=plans[0].source_side,
+        source_side=effective_plans[0].source_side,
         tolerance=tolerance,
         affected_count=len(affected),
+        additional_group_changes=additional_group_changes,
     )
 
 
@@ -1050,7 +1306,7 @@ def _states_match_batch_expected(mesh_obj, batch):
     if tuple(state.name for state in after) != expected_names:
         raise WeightSymmetryError("The operation changed Vertex Group definitions.")
 
-    changes = _group_changes_for_plans(batch.plans)
+    changes = _all_group_changes_for_batch(batch)
     for name, before in before_map.items():
         current = after_map.get(name)
         if current is None or current.index != before.index:
@@ -1128,28 +1384,21 @@ def _commit_weight_symmetry_batch(batch, verify):
                     )
 
         snapshot_map = _state_map(batch.group_snapshot)
-        for plan in batch.plans:
-            source_group = mesh_obj.vertex_groups[plan.source_name]
-            target_group = mesh_obj.vertex_groups[plan.target_name]
-            source_before = _weight_map(snapshot_map[plan.source_name])
-            target_before = _weight_map(snapshot_map.get(plan.target_name))
-            target_set = set(plan.target_indices)
-            source_set = set(plan.source_indices)
+        changes = _all_group_changes_for_batch(batch)
+        for name, after_items in changes.items():
+            group = mesh_obj.vertex_groups.get(name)
+            if group is None:
+                raise WeightSymmetryError(
+                    f'Vertex Group "{name}" is missing during commit.'
+                )
+            before = _weight_map(snapshot_map.get(name))
+            after = dict(after_items)
             _remove_indices(
-                source_group,
-                tuple(index for index in source_before if index in target_set),
+                group, tuple(index for index in before if index not in after)
             )
-            _remove_indices(
-                target_group,
-                tuple(
-                    index
-                    for index in target_before
-                    if index in source_set or index in target_set
-                ),
-            )
-            for vertex_index, weight in plan.target_after:
-                if vertex_index in target_set:
-                    target_group.add((vertex_index,), weight, "REPLACE")
+            for vertex_index, weight in after_items:
+                if vertex_index not in before or before[vertex_index] != weight:
+                    group.add((vertex_index,), weight, "REPLACE")
 
         if mesh_obj.vertex_groups:
             mesh_obj.vertex_groups.active_index = min(
@@ -1187,11 +1436,14 @@ def apply_weight_symmetry_plan(plan):
         source_side=plan.source_side,
         tolerance=plan.tolerance,
         affected_count=plan.affected_count,
+        additional_group_changes=plan.additional_group_changes,
     )
-    _commit_weight_symmetry_batch(
-        batch,
-        lambda mesh_obj: _states_match_expected(mesh_obj, plan),
+    verifier = (
+        (lambda mesh_obj: _states_match_batch_expected(mesh_obj, batch))
+        if batch.additional_group_changes
+        else (lambda mesh_obj: _states_match_expected(mesh_obj, plan))
     )
+    _commit_weight_symmetry_batch(batch, verifier)
 
     return WeightSymmetryResult(
         source_name=plan.source_name,
@@ -1257,8 +1509,8 @@ class CHARACTERDESIGNER_OT_copy_weight_to_opposite(Operator):
     bl_label = "Copy Weight to Opposite"
     bl_description = (
         "Copy selected same-side Pose bones, or the active .L/.R Deform group, "
-        "to opposite groups as one transaction; wrong-side assignments are "
-        "cleaned only when per-vertex Deform totals remain unchanged"
+        "to opposite groups as one transaction; when Auto Normalize is enabled, "
+        "rebalance only affected vertices on the active Mesh"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -1310,10 +1562,15 @@ class CHARACTERDESIGNER_OT_copy_weight_to_opposite(Operator):
             direction = f"{result.source_names[0]} -> {result.target_names[0]}"
         else:
             direction = f"{len(result.source_names)} bones -> opposite"
+        detail = (
+            "Auto Normalize adjusted only affected Deform weights on the active Mesh."
+            if _auto_normalize_enabled(context)
+            else "Other Vertex Groups and Mesh objects were left unchanged."
+        )
         self.report(
             {"INFO"},
             f"{direction}: paired {result.paired}, changed {result.changed}, "
-            f"cleared {result.cleared}; other groups unchanged.",
+            f"cleared {result.cleared}; {detail}",
         )
         return {"FINISHED"}
 
@@ -1367,6 +1624,26 @@ def draw_weight_symmetry(layout, context):
         "character_designer.copy_weight_to_opposite",
         text=text,
         icon="MOD_MIRROR",
+    )
+    layout.operator(
+        "character_designer.surface_weight_mirror",
+        text="Surface Mirror · Different Topology",
+        icon="MOD_DATA_TRANSFER",
+    )
+    layout.operator(
+        "character_designer.locate_weight_symmetry",
+        text="Locate Unmatched Vertices",
+        icon="RESTRICT_SELECT_OFF",
+    )
+    layout.operator(
+        "character_designer.topology_mirror",
+        text="Topology Mirror · Copy Selection to Opposite",
+        icon="MOD_MIRROR",
+    )
+    layout.operator(
+        "character_designer.topology_mirror_repair",
+        text="Topology Mirror · Repair Selection",
+        icon="SNAP_ON",
     )
 
 

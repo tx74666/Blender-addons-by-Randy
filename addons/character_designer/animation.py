@@ -95,7 +95,10 @@ def unregister_animation_runtime():
 
 def _can_restore(context):
     from .animation_retarget import VERSION_KEY, TARGET_KEY
+    from .unity_animation import active_preview
     target = _target(context)
+    if target and active_preview(target):
+        return True
     action = target.animation_data.action if target and target.animation_data else None
     return bool(action and action.get(VERSION_KEY) == 1 and action.get(TARGET_KEY) is target)
 
@@ -116,6 +119,113 @@ class CharacterDesignerAnimationState(PropertyGroup):
     result_path: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
     log_path: StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
     source: PointerProperty(type=bpy.types.Object, poll=_armature_poll, options={"SKIP_SAVE"})
+    unity_directory: StringProperty(name="Unity Exchange Folder", subtype="DIR_PATH")
+    show_unity_files: BoolProperty(name="Files", options={"SKIP_SAVE"})
+    show_local_motion: BoolProperty(name="Local Motion Generation", options={"SKIP_SAVE"})
+
+
+def unity_exchange_folder(context):
+    settings = _settings(context)
+    if settings.unity_directory:
+        return Path(bpy.path.abspath(settings.unity_directory))
+    target = _target(context)
+    saved = target.get("character_designer_unity_animation_folder") if target else None
+    if saved:
+        return Path(saved)
+    if bpy.data.filepath:
+        return Path(bpy.data.filepath).parent.parent / "Animation" / "UnityExports"
+    return Path.home() / "Documents" / "CharacterDesigner" / "UnityAnimations"
+
+
+def latest_unity_animation(folder):
+    files = list(Path(folder).glob("*.cdanim.json"))
+    if not files:
+        raise ValueError("Send an animation from Unity first, or select its .cdanim.json file.")
+    return max(files, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+
+class CHARACTERDESIGNER_OT_animation_unity_import(Operator):
+    bl_idname = "character_designer.animation_unity_import"
+    bl_label = "Import Unity Test Action"
+    bl_description = "Apply the evaluated character motion sent by Unity as a reversible test Action"
+    bl_options = {"REGISTER", "UNDO"}
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.cdanim.json", options={"HIDDEN"})
+    use_latest: BoolProperty(default=True, options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        from .unity_animation import active_preview
+        target = _target(context)
+        return bool(target and _job is None and not active_preview(target))
+
+    def invoke(self, context, _event):
+        if self.use_latest:
+            return self.execute(context)
+        self.filepath = str(unity_exchange_folder(context)) + "/"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        from .unity_animation import import_test_action
+        target = _target(context)
+        settings = _settings(context)
+        try:
+            path = latest_unity_animation(unity_exchange_folder(context)) if self.use_latest else Path(bpy.path.abspath(self.filepath))
+            result = import_test_action(context, target, path, start_frame=settings.start_frame)
+        except Exception as exc:
+            settings.has_error = True
+            settings.status = str(exc)
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        settings.target = target
+        settings.unity_directory = str(path.parent)
+        target["character_designer_unity_animation_folder"] = str(path.parent)
+        settings.has_error = False
+        settings.status = f"{result.action.name}: {result.sample_count} samples. Play or scrub the timeline; Restore returns to the previous Action."
+        _redraw()
+        return {"FINISHED"}
+
+
+class CHARACTERDESIGNER_OT_animation_play_pause(Operator):
+    bl_idname = "character_designer.animation_play_pause"
+    bl_label = "Play / Pause"
+    bl_description = "Play or pause the current Action using Blender's timeline"
+
+    @classmethod
+    def poll(cls, context):
+        return context.screen is not None and _target(context) is not None
+
+    def execute(self, context):
+        if context.screen.is_animation_playing:
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+        else:
+            bpy.ops.screen.animation_play()
+        return {"FINISHED"}
+
+
+class CHARACTERDESIGNER_OT_animation_unity_cancel(Operator):
+    bl_idname = "character_designer.animation_unity_cancel"
+    bl_label = "Cancel Preview"
+    bl_description = "Leave this test and restore the complete previous animation state; retain the test Action"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        from .unity_animation import active_preview
+        target = _target(context)
+        return bool(target and active_preview(target))
+
+    def execute(self, context):
+        from .unity_animation import restore_preview
+        try:
+            restore_preview(context, _target(context))
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        _settings(context).status = "Preview cancelled. Previous animation state restored; test Action retained."
+        _settings(context).has_error = False
+        return {"FINISHED"}
 
 
 class CHARACTERDESIGNER_OT_animation_generate(Operator):
@@ -273,12 +383,18 @@ class CHARACTERDESIGNER_OT_animation_restore(Operator):
 
     def execute(self, context):
         from .animation_retarget import restore_previous_action
+        from .unity_animation import active_preview, restore_preview
         try:
-            restore_previous_action(context, _target(context))
+            target = _target(context)
+            if active_preview(target):
+                restore_preview(context, target)
+            else:
+                restore_previous_action(context, target)
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         _settings(context).status = "Previous Action restored; generated Action is retained."
+        _settings(context).has_error = False
         return {"FINISHED"}
 
 
@@ -308,10 +424,57 @@ class CHARACTERDESIGNER_PT_animation(Panel):
     def draw(self, context):
         layout = self.layout
         settings = _settings(context)
-        layout.label(text="Kimodo · Free local generation", icon="ARMATURE_DATA")
         layout.prop(settings, "target")
         if not settings.target and _target(context):
             layout.label(text=f"Using: {_target(context).name}")
+        from .unity_animation import active_preview, preview_time_seconds
+        target = _target(context)
+        preview = active_preview(target) if target else None
+        unity = layout.box()
+        unity.label(text="Unity Animation", icon="ACTION")
+        row = unity.row(align=True)
+        row.enabled = not preview and _job is None
+        row.operator("character_designer.animation_unity_import", text="Import Latest from Unity", icon="IMPORT").use_latest = True
+        row.operator("character_designer.animation_unity_import", text="", icon="FILE_FOLDER").use_latest = False
+        if preview:
+            unity.label(text=preview.name, icon="ACTION")
+            playing = context.screen and context.screen.is_animation_playing
+            unity.operator("character_designer.animation_play_pause", text="Pause" if playing else "Play", icon="PAUSE" if playing else "PLAY")
+            row = unity.row(align=True)
+            row.prop(context.scene, "frame_current", text="Frame")
+            row.prop(context.scene, "frame_subframe", text="Subframe")
+            unity.label(text=f"Time: {preview_time_seconds(context, target):.3f} s")
+            unity.operator("character_designer.animation_restore", icon="LOOP_BACK")
+            unity.operator("character_designer.animation_unity_cancel", icon="CANCEL")
+            from .forearm_twist import _ERRORS as forearm_errors
+            import textwrap
+            for name, error in forearm_errors.items():
+                mesh = context.scene.objects.get(name)
+                if mesh and any(mod.type == "ARMATURE" and mod.object == target for mod in mesh.modifiers):
+                    warning = unity.box()
+                    warning.alert = True
+                    warning.label(text=f"{name}: Forearm Correction", icon="ERROR")
+                    for line in textwrap.wrap(error, width=38):
+                        warning.label(text=line)
+        else:
+            unity.prop(settings, "start_frame")
+        unity.prop(settings, "show_unity_files", icon="TRIA_DOWN" if settings.show_unity_files else "TRIA_RIGHT", emboss=False)
+        if settings.show_unity_files:
+            unity.prop(settings, "unity_directory", text="Folder")
+            if not settings.unity_directory:
+                unity.label(text=str(unity_exchange_folder(context)))
+        if settings.status:
+            box = layout.box()
+            box.alert = settings.has_error
+            import textwrap
+            for line in textwrap.wrap(settings.status, width=40):
+                box.label(text=line)
+        layout.prop(settings, "show_local_motion", icon="TRIA_DOWN" if settings.show_local_motion else "TRIA_RIGHT", emboss=False)
+        if not settings.show_local_motion:
+            return
+        layout = layout.column()
+        layout.enabled = not preview
+        layout.label(text="Kimodo · Free local generation", icon="ARMATURE_DATA")
         controls = layout.column()
         controls.enabled = _job is None
         controls.prop(settings, "prompt")
@@ -322,19 +485,13 @@ class CHARACTERDESIGNER_PT_animation(Panel):
         controls.operator("character_designer.animation_generate", icon="PLAY")
         if _job:
             layout.operator("character_designer.animation_cancel", icon="CANCEL")
-        if settings.status:
-            box = layout.box()
-            box.alert = settings.has_error
-            import textwrap
-            for line in textwrap.wrap(settings.status, width=40):
-                box.label(text=line)
         row = layout.row()
         row.enabled = bool(settings.result_path) and _job is None
         row.operator("character_designer.animation_import", icon="IMPORT")
         if settings.source:
             layout.label(text=f"Preview: {settings.source.name}")
             layout.operator("character_designer.animation_apply", icon="ACTION")
-        if _can_restore(context):
+        if not preview and _can_restore(context):
             layout.operator("character_designer.animation_restore", icon="LOOP_BACK")
         if settings.log_path:
             layout.operator("character_designer.animation_open_log", icon="FILE_FOLDER")
@@ -353,6 +510,9 @@ class CHARACTERDESIGNER_PT_animation(Panel):
 
 ANIMATION_CLASSES = (
     CharacterDesignerAnimationState,
+    CHARACTERDESIGNER_OT_animation_unity_import,
+    CHARACTERDESIGNER_OT_animation_play_pause,
+    CHARACTERDESIGNER_OT_animation_unity_cancel,
     CHARACTERDESIGNER_OT_animation_generate,
     CHARACTERDESIGNER_OT_animation_cancel,
     CHARACTERDESIGNER_OT_animation_import,

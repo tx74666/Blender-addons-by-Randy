@@ -4,8 +4,18 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
-| RR Helper | 0.2.5 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.5.zip](dist/rr_helper-0.2.5.zip) |
-| Character Designer | 0.58.1 | [character_designer](addons/character_designer) | [character_designer-0.58.1.zip](dist/character_designer-0.58.1.zip) |
+| RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
+| Character Designer | 0.61.8 | [character_designer](addons/character_designer) | [character_designer-0.61.8.zip](dist/character_designer-0.61.8.zip) |
+
+Character Designer 0.61.8 在 Weight → Weight Symmetry 增加 **Topology Mirror · Repair Selection**。选中完整的单侧源面区后，修复模式把源面镜像到另一侧，按 Merge Distance 复用近处顶点，缺失顶点自动创建，删除由焊接顶点组成的旧目标面并重新接回源面；权重、Shape Key、UV 和网格属性继续事务验证。它专门处理局部删点／破洞，不会放宽原来的严格 Topology Mirror 匹配规则。
+
+Character Designer 0.61.7 在 **Rig → Body → Fingers** 增加手指骨骼 Roll 检查、预览和校正。选中的身体骨骼会被忽略；预览用红色显示当前局部轴、绿色显示校正方向；只有在 Armature Edit Mode 明确应用时才改选中的指骨 Roll，保留 Head/Tail、长度、权重和网格。默认按每根手指的第一节作为参考，也可以使用当前活动的指骨作为共同参考。Local X 对应 `R X X`，也可选择 Local Z。
+
+Character Designer 0.61.4 增加 **Topology Mirror · Replace Selected Region**。在网格编辑模式中把目标 `.L`/`.R` 组设为活动组，然后可选择左手源区域复制到右手，也可选择右手目标区域进行替换；插件检查单一边界环和对侧可匹配拓扑后，镜像替换目标并将接缝边界对齐，同时转移权重、Shape Key、UV 与网格属性。完成后源区与目标区会同时保持选中，便于确认范围，其他身体区域保持未选中。边界不闭合、匹配不唯一、共享网格或锁定组等情况会在写入前拒绝。
+
+Character Designer 0.59.0 统一角色动画入口。Unity **Tools → Character Designer → Animation** 选择角色和已有动作，发送实际评估后的骨骼运动；Blender **Animation → Import Latest from Unity** 生成独立测试 Action，可播放、暂停、拖时间轴、完整恢复，并支持 Undo/Redo 与保存重开恢复。详见[动画流程](addons/character_designer/unity_runtime/ANIMATION.md)。这期只做 Unity → Blender，原 Kimodo 与旧回传服务保留兼容。
+
+RR Helper 0.2.12 合入本机 0.2.11 的建筑导出、HDRI 和预览修复，再移除重复 Animation 页面。已有 Animation.blend、Unity Avatar／Controller、动画资源和武器调试功能保留。
 
 Character Designer 0.58.1 在 Unity 导出警告中加入缺权重顶点定位，以及可撤回的“仅导出时使用简化 BSDF”选项。定位重新检查当前原始网格；简化材质只作用于导出副本，原着色器和权重保留。
 

@@ -1,4 +1,11 @@
-# Character Designer Unity forearm correction
+# Character Designer Unity companion
+
+Version 0.59.0 adds **Tools > Character Designer > Animation**: choose an existing
+character prefab and clip, preview/play/pause/scrub, then send evaluated motion to
+Blender's Character Designer Animation page. The original scene, Avatar and
+Controller are preserved. See [animation workflow](ANIMATION.md).
+
+The forearm correction component below is independent of this animation entry.
 
 Character Designer 0.58.0 includes this companion. From the add-on repository,
 stop Unity Play Mode and install it once with:

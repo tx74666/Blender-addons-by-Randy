@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 58, 1),
+    "version": (0, 61, 8),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -99,11 +99,20 @@ from .ui_constants import (
     active_ui_page,
 )
 from .weight_symmetry import WEIGHT_SYMMETRY_CLASSES
+from .weight_surface import WEIGHT_SURFACE_CLASSES
+from .topology_symmetry import TOPOLOGY_SYMMETRY_CLASSES
 from .forearm_twist import (
     FOREARM_TWIST_CLASSES,
     CharacterDesignerForearmTwistState,
     register_forearm_twist_runtime,
     unregister_forearm_twist_runtime,
+)
+from .finger_bones import (
+    FINGER_AXIS_ITEMS,
+    FINGER_BONES_CLASSES,
+    FINGER_REFERENCE_ITEMS,
+    register_finger_bones_runtime,
+    unregister_finger_bones_runtime,
 )
 
 
@@ -703,6 +712,23 @@ class CharacterDesignerState(PropertyGroup):
         default=UI_PAGE_DEFAULT,
         options={"SKIP_SAVE"},
     )
+    finger_axis: EnumProperty(
+        name="Flex Axis",
+        description="Choose the local bone axis that should point along the finger flexion direction",
+        items=FINGER_AXIS_ITEMS,
+        default="X",
+        options={"SKIP_SAVE"},
+    )
+    finger_reference: EnumProperty(
+        name="Roll Reference",
+        description="Choose whether each finger uses its own base or the active finger bone as the roll reference",
+        items=FINGER_REFERENCE_ITEMS,
+        default="CHAIN_ROOT",
+        options={"SKIP_SAVE"},
+    )
+    finger_preview_active: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+    finger_status_level: StringProperty(default="NONE", options={"HIDDEN", "SKIP_SAVE"})
+    finger_status: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     normalize_affected_deform_weights: BoolProperty(
         name="Full Auto Blend (Normalized)",
         description=(
@@ -8380,6 +8406,7 @@ CLASSES = (
     CHARACTERDESIGNER_OT_set_ui_page,
     CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
+    *FINGER_BONES_CLASSES,
     *CHARACTER_SETUP_CLASSES,
     *UNITY_EXPORT_CLASSES,
     *HAIR_BONES_CLASSES,
@@ -8390,6 +8417,8 @@ CLASSES = (
     *BONE_DISPLAY_CLASSES,
     *WIDGET_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
+    *WEIGHT_SURFACE_CLASSES,
+    *TOPOLOGY_SYMMETRY_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
     *TORSO_UI_CLASSES,
@@ -8519,6 +8548,7 @@ def register():
     )
     if all(registration_state):
         _validate_registration_integrity()
+        register_finger_bones_runtime()
         register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
@@ -8588,6 +8618,7 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_references")
+        register_finger_bones_runtime()
         register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
@@ -8598,6 +8629,7 @@ def register():
         _register_source_watch()
     except Exception:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
+        unregister_finger_bones_runtime()
         unregister_animation_runtime()
         unregister_forearm_twist_runtime()
         unregister_limb_ik_viewport_handler()
@@ -8623,6 +8655,7 @@ def register():
 
 def unregister():
     stop_export_ui()
+    unregister_finger_bones_runtime()
     unregister_animation_runtime()
     stop_skirt_runtime()
     unregister_forearm_twist_runtime()

@@ -17,6 +17,7 @@ from character_designer import (
     animation,
     character_setup,
     delta_symmetry,
+    finger_bones,
     forearm_twist,
     hair_bones,
     limb_ik,
@@ -67,6 +68,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "rig": spline_ik_setup.CHARACTERDESIGNER_PT_spline_ik_setup.poll(bpy.context),
         "limb_ik": limb_ik.CHARACTERDESIGNER_PT_limb_ik.poll(bpy.context),
         "forearm_twist": forearm_twist.CHARACTERDESIGNER_PT_forearm_twist.poll(bpy.context),
+        "fingers": finger_bones.CHARACTERDESIGNER_PT_fingers.poll(bpy.context),
         "limb_preroll": limb_ik.CHARACTERDESIGNER_PT_limb_ik_direct_preroll.poll(
             bpy.context
         ),
@@ -86,6 +88,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "rig": rig,
         "limb_ik": rig,
         "forearm_twist": rig,
+        "fingers": rig,
         "limb_preroll": rig and limb_settings.show_body_setup_advanced and limb_settings.build_method == "DIRECT_PREROLL",
         "reference": reference,
         "clothing": clothing,

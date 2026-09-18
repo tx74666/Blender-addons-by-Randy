@@ -1,10 +1,10 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 5),
+    "version": (0, 2, 12),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
-    "description": "RandomRealm helper tools for Unity handoff, builder assets, and animation sync.",
+    "description": "RandomRealm helper tools for Unity handoff and builder assets.",
     "category": "RandomRealm",
 }
 
@@ -25,6 +25,7 @@ from bpy.app.handlers import persistent
 from mathutils import Matrix, Vector
 
 try:
+    from . import rr_icon_lighting
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
     from .rr_layout_snapshot import *
@@ -41,6 +42,7 @@ try:
         set_pbr_bake_runtime_pending,
     )
 except ImportError:
+    import rr_icon_lighting
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
     from rr_layout_snapshot import *
@@ -77,6 +79,10 @@ OBJECT_MANAGER_LAST_ROW_CLICK_TIME = 0.0
 OBJECT_MANAGER_RUNTIME_OBJECT_UIDS = set()
 OBJECT_MANAGER_DUPLICATE_GUARD_READY = False
 OBJECT_MANAGER_DUPLICATE_KEYMAPS = []
+OBJECT_MANAGER_NAME_SYNC_STATE = {}
+OBJECT_MANAGER_NAME_SYNC_READY = False
+OBJECT_MANAGER_NAMES_SYNCING = False
+OBJECT_MANAGER_SYNCED_NAMES_PROP = "rr_object_manager_synced_names"
 PREVIEW_COLLECTIONS = {}
 RR_ANIMATION_BLEND_PATH = r"D:\Blender\Projects\Character\Animation\Animation.blend"
 RR_ANIMATION_SOURCE_FOLDER = os.path.dirname(RR_ANIMATION_BLEND_PATH)
@@ -212,6 +218,18 @@ def rr_addon_reload_deferred():
     old_main = old_modules.get(module_name)
     persistent = bool(getattr(old_main, "__addon_persistent__", False)) if old_main is not None else False
 
+    def cleanup_failed_registration(exception):
+        # addon_utils removes the failed module immediately after this callback.
+        # Unregister its partial classes/keymaps/timers before restoring old_main.
+        failed_main = sys.modules.get(module_name)
+        cleanup = getattr(failed_main, "unregister", None)
+        if failed_main is not old_main and callable(cleanup):
+            try:
+                cleanup()
+            except Exception:
+                traceback.print_exc()
+        traceback.print_exception(type(exception), exception, exception.__traceback__)
+
     try:
         addon_utils.disable(module_name, default_set=False, refresh_handled=True)
         for name in old_modules:
@@ -222,6 +240,7 @@ def rr_addon_reload_deferred():
             default_set=False,
             persistent=persistent,
             refresh_handled=True,
+            handle_error=cleanup_failed_registration,
         )
         if reloaded is None:
             raise RuntimeError("Blender could not enable the refreshed RR Helper module.")
@@ -620,44 +639,22 @@ def snapshot_export_identity(root):
 
 
 def rename_export_asset_preserving_identity(root, new_name):
-    global OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME, OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME
-
     if root is None:
         return ""
-
-    snapshot_export_identity(root)
     if is_object_manager_assembly_root(root):
         return set_object_manager_assembly_display_name(root, new_name)
 
     old_name = root.name
+    snapshot_export_identity(root)
     desired_name = sanitize_id(new_name)
     if desired_name != old_name and desired_name in bpy.data.objects:
         desired_name = unique_object_name(desired_name)
     root.name = desired_name
     if root.type == "MESH" and root.data is not None:
         root.data.name = unique_datablock_name(bpy.data.meshes, f"{root.name}_Mesh")
-
-    if root.name != old_name:
-        for candidate in bpy.data.objects:
-            if candidate.get(OBJECT_MANAGER_ASSEMBLY_ACTIVE_MEMBER_PROP) == old_name:
-                candidate[OBJECT_MANAGER_ASSEMBLY_ACTIVE_MEMBER_PROP] = root.name
-            if candidate.get(OBJECT_MANAGER_VARIANT_ICON_SOURCE_NAME_PROP) == old_name:
-                candidate[OBJECT_MANAGER_VARIANT_ICON_SOURCE_NAME_PROP] = root.name
-            if candidate.get("rr_collider_target") == old_name:
-                candidate["rr_collider_target"] = root.name
-        for scene in bpy.data.scenes:
-            settings = getattr(scene, "rr_builder_export_settings", None)
-            if settings is None:
-                continue
-            for item in settings.export_queue:
-                if item.object_name == old_name:
-                    item.object_name = root.name
-                if item.icon_preview_root_name == old_name:
-                    item.icon_preview_root_name = root.name
-        if OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME == old_name:
-            OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME = root.name
-        if OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME == old_name:
-            OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME = root.name
+    update_object_manager_name_references({old_name: root.name})
+    ensure_export_identity(root, export_asset_id(root))
+    remember_object_manager_name_sync_state(root)
     return root.name
 
 
@@ -699,17 +696,279 @@ def unique_export_group_name(base_name, ignore_root=None):
         index += 1
 
 
-def set_object_manager_assembly_display_name(root, name):
+def unique_object_manager_synced_name(name, root=None):
+    """Use one valid name for both the Blender object and its export group."""
+    base = sanitize_id(name)
+    # Blender Object names are limited to 63 UTF-8 bytes in supported versions.
+    # Sanitization makes this ASCII, so reserve suffix space without byte slicing.
+    base = base[:63]
+    other_objects = {
+        key
+        for obj in bpy.data.objects if obj is not root
+        for key in (obj.name.casefold(), sanitize_id(obj.name).casefold())
+    }
+    other_groups = {
+        object_manager_display_name(obj).casefold()
+        for obj in bpy.data.objects
+        if obj is not root and is_object_manager_assembly_root(obj)
+    }
+    used = other_objects | other_groups
+    candidate = base
+    index = 1
+    while candidate.casefold() in used:
+        suffix = f"_{index:03d}"
+        candidate = base[:63 - len(suffix)] + suffix
+        index += 1
+    return candidate
+
+
+def update_object_manager_name_references(renames):
+    """Retarget each stored name once, including simultaneous native renames."""
+    global OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME, OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME
+    global LAST_SCENE_SELECTION_KEY, LAST_OBJECT_MANAGER_SELECTION_KEY, OBJECT_MANAGER_DETAIL_SELECTION_KEY
+    global OBJECT_MANAGER_LAST_ROW_CLICK_KEY, OBJECT_MANAGER_LAST_ROW_CLICK_TIME
+    global ICON_LIGHT_AUTOSAVE_SIGNATURES
+
+    renames = {old: new for old, new in renames.items() if old and new and old != new}
+    if not renames:
+        return
+    name_properties = (
+        OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP,
+        OBJECT_MANAGER_PARENT_ASSEMBLY_ROOT_PROP,
+        OBJECT_MANAGER_ASSEMBLY_ACTIVE_MEMBER_PROP,
+        OBJECT_MANAGER_VARIANT_ICON_SOURCE_NAME_PROP,
+        "rr_collider_target",
+        "rr_icon_preview_light_target",
+    )
+    for obj in bpy.data.objects:
+        if not getattr(obj, "is_editable", True):
+            continue
+        for prop in name_properties:
+            old_value = obj.get(prop)
+            if isinstance(old_value, str) and old_value in renames:
+                obj[prop] = renames[old_value]
+    for scene in bpy.data.scenes:
+        if not getattr(scene, "is_editable", True):
+            continue
+        settings = getattr(scene, "rr_builder_export_settings", None)
+        if settings is None:
+            continue
+        for item in settings.export_queue:
+            if item.object_name in renames:
+                item.object_name = renames[item.object_name]
+            if item.icon_preview_root_name in renames:
+                item.icon_preview_root_name = renames[item.icon_preview_root_name]
+        for prop in ("object_manager_current_group_root", "icon_light_edit_root_name"):
+            old_value = getattr(settings, prop, "")
+            if old_value in renames:
+                setattr(settings, prop, renames[old_value])
+    OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME = renames.get(
+        OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME, OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME
+    )
+    OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME = renames.get(
+        OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME, OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME
+    )
+    LAST_SCENE_SELECTION_KEY = None
+    LAST_OBJECT_MANAGER_SELECTION_KEY = None
+    OBJECT_MANAGER_DETAIL_SELECTION_KEY = None
+    OBJECT_MANAGER_LAST_ROW_CLICK_KEY = ""
+    OBJECT_MANAGER_LAST_ROW_CLICK_TIME = 0.0
+    ICON_LIGHT_AUTOSAVE_SIGNATURES = {}
+
+
+def object_manager_synced_names(root):
+    raw = root.get(OBJECT_MANAGER_SYNCED_NAMES_PROP, "")
+    try:
+        values = json.loads(raw) if isinstance(raw, str) and raw else None
+    except (ValueError, TypeError):
+        return None
+    if isinstance(values, list) and len(values) == 2 and all(isinstance(value, str) and value for value in values):
+        return tuple(values)
+    return None
+
+
+def object_manager_has_name_sync_identity(obj):
+    return any(
+        obj.get(prop)
+        for prop in (
+            OBJECT_MANAGER_ASSEMBLY_ROOT_PROP,
+            OBJECT_MANAGER_ASSEMBLY_ID_PROP,
+            OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP,
+            OBJECT_MANAGER_PARENT_ASSEMBLY_ROOT_PROP,
+            EXPORT_STABLE_ID_PROP,
+            EXPORT_LAST_ID_PROP,
+        )
+    )
+
+
+def remember_object_manager_name_sync_state(obj, preserve_marker=False):
+    if obj is None:
+        return
+    state = (obj.name, object_manager_display_name(obj))
+    OBJECT_MANAGER_NAME_SYNC_STATE[object_manager_runtime_object_uid(obj)] = state
+    if (
+        getattr(obj, "is_editable", True)
+        and object_manager_has_name_sync_identity(obj)
+        and (not preserve_marker or object_manager_synced_names(obj) is None)
+    ):
+        obj[OBJECT_MANAGER_SYNCED_NAMES_PROP] = json.dumps(state, ensure_ascii=True)
+
+
+def reset_object_manager_name_sync_state():
+    """Baseline legacy mismatches; keep saved markers so undo/redo can replay a rename."""
+    global OBJECT_MANAGER_NAME_SYNC_READY
+
+    OBJECT_MANAGER_NAME_SYNC_READY = False
+    OBJECT_MANAGER_NAME_SYNC_STATE.clear()
+    data_objects = getattr(bpy.data, "objects", None)
+    if data_objects is None:
+        return False
+    for obj in data_objects:
+        remember_object_manager_name_sync_state(obj, preserve_marker=True)
+    OBJECT_MANAGER_NAME_SYNC_READY = True
+    return True
+
+
+def set_object_manager_assembly_display_name(root, name, old_name=None, old_export_id=None, update_references=True):
     if root is None:
         return ""
-    display_name = unique_export_group_name(name, root)
-    root[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = display_name
+    if not getattr(root, "is_editable", True):
+        raise RuntimeError("This linked group is read-only; make it local before renaming it.")
+    current_object_name = root.name
+    old_name = old_name if old_name is not None else current_object_name
+    old_export_id = old_export_id or object_manager_display_name(root)
+    display_name = unique_object_manager_synced_name(name, root)
+    ensure_export_identity(root, old_export_id)
+
     assembly_id = root.get(OBJECT_MANAGER_ASSEMBLY_ID_PROP)
-    if assembly_id:
-        for obj in bpy.data.objects:
-            if obj.get(OBJECT_MANAGER_ASSEMBLY_ID_PROP) == assembly_id:
-                obj[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = display_name
+    unique_assembly_id = assembly_id and not any(
+        obj is not root and is_object_manager_assembly_root(obj)
+        and obj.get(OBJECT_MANAGER_ASSEMBLY_ID_PROP) == assembly_id
+        for obj in bpy.data.objects
+    )
+    # Capture ownership before changing root.name. A copied group may carry the
+    # same ID; never propagate its label into the original group or a nested root.
+    members = []
+    for obj in bpy.data.objects:
+        if obj is root or is_object_manager_assembly_root(obj) or not getattr(obj, "is_editable", True):
+            continue
+        ancestor = obj.parent
+        while ancestor is not None and not is_object_manager_assembly_root(ancestor):
+            ancestor = ancestor.parent
+        if ancestor is not None and ancestor is not root:
+            continue
+        member_root = obj.get(OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP)
+        if (
+            member_root in {old_name, current_object_name}
+            or obj.parent is root
+            or (
+                unique_assembly_id
+                and obj.get(OBJECT_MANAGER_ASSEMBLY_ID_PROP) == assembly_id
+                and not member_root
+                and (obj.parent is None or not is_object_manager_assembly_root(obj.parent))
+            )
+        ):
+            members.append(obj)
+
+    root.name = display_name
+    # Use Blender's accepted name even if another handler changed the request.
+    display_name = root.name
+    root[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = display_name
+    for obj in members:
+        obj[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = display_name
+        # Actual ownership also repairs legacy tags left behind by past native
+        # renames; do not reinterpret an old alias elsewhere in the scene.
+        obj[OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP] = display_name
+    for obj in bpy.data.objects:
+        if (
+            obj is not root and is_object_manager_assembly_root(obj)
+            and obj.parent is root and getattr(obj, "is_editable", True)
+        ):
+            obj[OBJECT_MANAGER_PARENT_ASSEMBLY_ROOT_PROP] = display_name
+            if assembly_id:
+                obj[OBJECT_MANAGER_PARENT_ASSEMBLY_ID_PROP] = assembly_id
+    if update_references:
+        update_object_manager_name_references({old_name: display_name, current_object_name: display_name})
+    ensure_export_identity(root, display_name)
+    remember_object_manager_name_sync_state(root)
+    root[EXPORT_NAME_HINT_DISMISSED_PROP] = False
     return display_name
+
+
+def sync_object_manager_names():
+    """Apply confirmed Outliner/group edits, without migrating old mismatches."""
+    global OBJECT_MANAGER_NAMES_SYNCING
+    if OBJECT_MANAGER_NAMES_SYNCING or not OBJECT_MANAGER_REPAIR_ALLOWED:
+        return False
+    if not OBJECT_MANAGER_NAME_SYNC_READY and not reset_object_manager_name_sync_state():
+        return False
+    OBJECT_MANAGER_NAMES_SYNCING = True
+    changed = False
+    try:
+        objects = list(bpy.data.objects)
+        known_uids = set(OBJECT_MANAGER_NAME_SYNC_STATE)
+        current_uids = set()
+        renames = {}
+        for obj in objects:
+            uid = object_manager_runtime_object_uid(obj)
+            current_uids.add(uid)
+            if uid not in known_uids:
+                # A native duplicate inherits properties. Treat its current
+                # names as baseline until the existing duplicate guard clears it.
+                remember_object_manager_name_sync_state(obj)
+                continue
+            if not getattr(obj, "is_editable", True):
+                remember_object_manager_name_sync_state(obj, preserve_marker=True)
+                continue
+            previous = OBJECT_MANAGER_NAME_SYNC_STATE[uid]
+            if object_manager_has_name_sync_identity(obj):
+                previous = object_manager_synced_names(obj) or previous
+            if is_object_manager_assembly_root(obj):
+                current = (obj.name, object_manager_display_name(obj))
+                if current == previous:
+                    continue
+                old_name, old_display = previous
+                current_name, current_display = current
+                desired_name = current_name if current_name != old_name else current_display
+                applied = set_object_manager_assembly_display_name(
+                    obj, desired_name, old_name=old_name, old_export_id=old_display, update_references=False
+                )
+                renames[old_name] = applied
+                # Native names may require sanitizing before becoming export IDs.
+                if current_name != old_name and current_name != applied:
+                    renames.setdefault(current_name, applied)
+                changed = True
+            elif obj.name != previous[0]:
+                renames[previous[0]] = obj.name
+                if obj.get(EXPORT_STABLE_ID_PROP) or obj.get(EXPORT_LAST_ID_PROP):
+                    ensure_export_identity(obj, previous[1])
+                    ensure_export_identity(obj, export_asset_id(obj))
+                remember_object_manager_name_sync_state(obj)
+                changed = True
+        update_object_manager_name_references(renames)
+        for uid in set(OBJECT_MANAGER_NAME_SYNC_STATE) - current_uids:
+            OBJECT_MANAGER_NAME_SYNC_STATE.pop(uid, None)
+        if changed:
+            tag_rr_addon_view3d_redraw()
+        return changed
+    finally:
+        OBJECT_MANAGER_NAMES_SYNCING = False
+
+
+@persistent
+def sync_object_manager_names_after_history(_dummy):
+    # Timer writes can survive an undo that only restores the Object name.
+    # Repair these references from the pre-undo runtime names before rebuilding
+    # the baseline. Group display/identity replay still follows saved markers.
+    renames = {}
+    for obj in bpy.data.objects:
+        previous = OBJECT_MANAGER_NAME_SYNC_STATE.get(object_manager_runtime_object_uid(obj))
+        if previous is not None and previous[0] != obj.name:
+            renames[previous[0]] = obj.name
+    update_object_manager_name_references(renames)
+    reset_object_manager_duplicate_guard()
+    reset_object_manager_name_sync_state()
+    sync_object_manager_names()
 
 
 def ensure_object_manager_assembly_display_name_prop(root):
@@ -1453,7 +1712,7 @@ def parent_object_keep_world(obj, parent):
 
 
 def create_object_manager_container_root(context, base, members, anchor=None):
-    root = bpy.data.objects.new(unique_object_name(base), None)
+    root = bpy.data.objects.new(unique_object_manager_synced_name(base), None)
     root.empty_display_type = "PLAIN_AXES"
     try:
         center, size = object_manager_world_bounds(members)
@@ -1479,7 +1738,7 @@ def create_object_manager_assembly(context, name="", group_type=OBJECT_MANAGER_A
     member_world_matrices = {obj: obj.matrix_world.copy() for obj in members}
 
     root = create_object_manager_container_root(context, base, members, anchor)
-    display_name = unique_export_group_name(base)
+    display_name = root.name
     root[OBJECT_MANAGER_ASSEMBLY_ROOT_PROP] = True
     root[OBJECT_MANAGER_ASSEMBLY_ID_PROP] = f"assembly_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
     root[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = display_name
@@ -1513,6 +1772,7 @@ def create_object_manager_assembly(context, name="", group_type=OBJECT_MANAGER_A
     selectable_members = object_manager_selection_objects(root)
     root[OBJECT_MANAGER_ASSEMBLY_ACTIVE_MEMBER_PROP] = active.name if active in selectable_members else root.name
 
+    remember_object_manager_name_sync_state(root)
     select_object_manager_assembly(context, root)
     return root, members
 
@@ -1685,6 +1945,7 @@ def promote_object_manager_assembly_root(root, new_root, remaining_entries):
     if parent_root_name and root.parent is not None:
         root.parent = None
         root.matrix_world = root_world
+    set_object_manager_assembly_display_name(new_root, display_name)
     return new_root
 
 
@@ -1823,6 +2084,7 @@ def ungroup_selected_object_manager_members(context, root):
 
 def clear_object_manager_props(obj):
     for prop in (
+        OBJECT_MANAGER_SYNCED_NAMES_PROP,
         OBJECT_MANAGER_ASSEMBLY_ROOT_PROP,
         OBJECT_MANAGER_ASSEMBLY_ID_PROP,
         OBJECT_MANAGER_ASSEMBLY_NAME_PROP,
@@ -1900,6 +2162,7 @@ def object_has_inherited_rr_identity(obj):
     return any(
         prop in obj
         for prop in (
+            OBJECT_MANAGER_SYNCED_NAMES_PROP,
             OBJECT_MANAGER_ASSEMBLY_ROOT_PROP,
             OBJECT_MANAGER_ASSEMBLY_ID_PROP,
             OBJECT_MANAGER_ASSEMBLY_NAME_PROP,
@@ -1986,14 +2249,17 @@ def clear_inherited_rr_identity_from_native_duplicates():
 @persistent
 def reset_object_manager_duplicate_guard_on_load(_dummy):
     reset_object_manager_duplicate_guard()
+    reset_object_manager_name_sync_state()
+    sync_object_manager_names()
 
 
 @persistent
 def clear_inherited_rr_identity_before_save(_dummy):
     try:
         clear_inherited_rr_identity_from_native_duplicates()
+        sync_object_manager_names()
     except Exception as exc:
-        print(f"[RR Helper] Could not apply native duplicate guard before save: {exc}")
+        print(f"[RR Helper] Could not apply native duplicate guard/name sync before save: {exc}")
 
 
 def object_manager_subtree_objects(root):
@@ -2133,6 +2399,19 @@ def duplicate_object_manager_group(context, root):
                 break
             parent = parent.parent
 
+    for meta in root_meta.values():
+        copied_root = meta["copy"]
+        # These are new identities; choose the common object/display name before
+        # the first identity snapshot, rather than recording a temporary alias.
+        old_copy_name = copied_root.name
+        copied_root.name = unique_object_manager_synced_name(meta["display_name"], copied_root)
+        copied_root[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = copied_root.name
+        for copied in copies.values():
+            if not is_object_manager_assembly_root(copied) and copied.get(OBJECT_MANAGER_ASSEMBLY_ID_PROP) == meta["new_id"]:
+                copied[OBJECT_MANAGER_ASSEMBLY_NAME_PROP] = copied_root.name
+        update_object_manager_name_references({old_copy_name: copied_root.name})
+        remember_object_manager_name_sync_state(copied_root)
+
     new_root = copies[root]
     bpy.ops.object.select_all(action="DESELECT")
     move_entries = object_manager_group_entries(root)
@@ -2195,7 +2474,7 @@ def ensure_object_manager_variants_parent(context, original_root, new_root):
     outer_parent = parent_roots[0] if parent_roots else None
     base = object_manager_variants_parent_base_name(original_root)
     variants_parent = create_object_manager_container_root(context, base, (original_root, new_root))
-    display_name = unique_export_group_name(base)
+    display_name = variants_parent.name
     assembly_id = f"assembly_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
     variants_parent[OBJECT_MANAGER_ASSEMBLY_ROOT_PROP] = True
     variants_parent[OBJECT_MANAGER_ASSEMBLY_ID_PROP] = assembly_id
@@ -2217,6 +2496,7 @@ def ensure_object_manager_variants_parent(context, original_root, new_root):
         child_root[OBJECT_MANAGER_PARENT_ASSEMBLY_ID_PROP] = assembly_id
         parent_object_keep_world(child_root, variants_parent)
 
+    remember_object_manager_name_sync_state(variants_parent)
     remember_object_manager_detail_selection(context, variants_parent)
     return variants_parent, True
 
@@ -2723,9 +3003,16 @@ def sync_object_manager_selection(context):
 def scene_selection_queue_sync_timer():
     if not SCENE_SELECTION_QUEUE_SYNC_ENABLED:
         return None
+    if not OBJECT_MANAGER_NAME_SYNC_READY and not reset_object_manager_name_sync_state():
+        return 0.2
 
     if not OBJECT_MANAGER_DUPLICATE_GUARD_READY:
         reset_object_manager_duplicate_guard()
+
+    try:
+        sync_object_manager_names()
+    except Exception as exc:
+        print(f"[RR Helper] Object/group name sync failed: {exc}")
 
     try:
         sync_queue_active_index_to_scene_selection(bpy.context)
@@ -2755,7 +3042,7 @@ def scene_selection_queue_sync_timer():
 def register_scene_selection_queue_sync():
     global SCENE_SELECTION_QUEUE_SYNC_ENABLED, LAST_SCENE_SELECTION_KEY, LAST_OBJECT_MANAGER_SELECTION_KEY
     global OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME, OBJECT_MANAGER_DETAIL_SELECTION_ROOT_NAME, OBJECT_MANAGER_DETAIL_SELECTION_KEY
-    global ICON_LIGHT_AUTOSAVE_SIGNATURES
+    global ICON_LIGHT_AUTOSAVE_SIGNATURES, OBJECT_MANAGER_NAME_SYNC_READY
 
     SCENE_SELECTION_QUEUE_SYNC_ENABLED = True
     LAST_SCENE_SELECTION_KEY = None
@@ -2765,6 +3052,10 @@ def register_scene_selection_queue_sync():
     OBJECT_MANAGER_DETAIL_SELECTION_KEY = None
     ICON_LIGHT_AUTOSAVE_SIGNATURES = {}
     reset_object_manager_duplicate_guard()
+    # Standard addon_utils.enable runs register() with _RestrictData. Initialize
+    # scene names on the first normal timer tick, preserving existing markers.
+    OBJECT_MANAGER_NAME_SYNC_READY = False
+    OBJECT_MANAGER_NAME_SYNC_STATE.clear()
     try:
         if not bpy.app.timers.is_registered(scene_selection_queue_sync_timer):
             bpy.app.timers.register(scene_selection_queue_sync_timer, first_interval=0.2, persistent=True)
@@ -2774,10 +3065,13 @@ def register_scene_selection_queue_sync():
 
 def unregister_scene_selection_queue_sync():
     global SCENE_SELECTION_QUEUE_SYNC_ENABLED, LAST_SCENE_SELECTION_KEY, ICON_LIGHT_AUTOSAVE_SIGNATURES
+    global OBJECT_MANAGER_NAME_SYNC_READY
 
     SCENE_SELECTION_QUEUE_SYNC_ENABLED = False
     LAST_SCENE_SELECTION_KEY = None
     ICON_LIGHT_AUTOSAVE_SIGNATURES = {}
+    OBJECT_MANAGER_NAME_SYNC_READY = False
+    OBJECT_MANAGER_NAME_SYNC_STATE.clear()
     try:
         if bpy.app.timers.is_registered(scene_selection_queue_sync_timer):
             bpy.app.timers.unregister(scene_selection_queue_sync_timer)
@@ -2908,16 +3202,18 @@ def save_icon_framing_to_object(root, settings):
     if root is None or settings is None:
         return
 
+    lighting = rr_icon_lighting.read_profile(root, bpy.context.scene, check_file=False)
     root["rr_icon_framing_initialized"] = True
     root["rr_icon_zoom"] = float(settings.icon_zoom)
     root["rr_icon_offset_x"] = float(settings.icon_offset_x)
     root["rr_icon_offset_y"] = float(settings.icon_offset_y)
     root["rr_icon_view_yaw"] = float(settings.icon_view_yaw)
     root["rr_icon_view_pitch"] = float(settings.icon_view_pitch)
-    root["rr_icon_light_brightness"] = float(settings.icon_light_brightness)
-    root["rr_icon_key_light_ratio"] = float(settings.icon_key_light_ratio)
-    root["rr_icon_fill_light_ratio"] = float(settings.icon_fill_light_ratio)
-    root["rr_icon_back_light_ratio"] = float(settings.icon_back_light_ratio)
+    if lighting["mode"] == "LEGACY":
+        root["rr_icon_light_brightness"] = float(settings.icon_light_brightness)
+        root["rr_icon_key_light_ratio"] = float(settings.icon_key_light_ratio)
+        root["rr_icon_fill_light_ratio"] = float(settings.icon_fill_light_ratio)
+        root["rr_icon_back_light_ratio"] = float(settings.icon_back_light_ratio)
     root["rr_icon_outline_enabled"] = bool(settings.icon_outline_enabled)
     root["rr_icon_outline_color"] = [float(channel) for channel in settings.icon_outline_color]
     root["rr_icon_outline_pixels"] = int(settings.icon_outline_pixels)
@@ -3930,6 +4226,12 @@ def save_icon_light_transform_to_object(root, light, spec):
         return False
     if light.get("rr_icon_preview_light_target") != root.name:
         return False
+    try:
+        if rr_icon_lighting.read_profile(root, bpy.context.scene, check_file=False)["mode"] != "LEGACY":
+            return False
+    except rr_icon_lighting.ProfileError:
+        # Background autosave must not replace a damaged or unavailable profile.
+        return False
 
     root[icon_light_transform_property(spec)] = [
         float(value)
@@ -4342,7 +4644,8 @@ def ensure_icon_preview_objects(root, settings, scene):
     camera.data[ICON_PREVIEW_HELPER_MARKER] = True
     state = configure_icon_camera(camera, root, settings)
 
-    lights = ensure_icon_preview_lights(scene, state, root, settings)
+    lighting = rr_icon_lighting.read_profile(root, scene, check_file=False)
+    lights = ensure_icon_preview_lights(scene, state, root, settings) if lighting["mode"] == "LEGACY" else []
     if scene.camera != camera:
         scene[ICON_PREVIEW_PREVIOUS_CAMERA_SET] = True
         scene[ICON_PREVIEW_PREVIOUS_CAMERA_NAME] = scene.camera.name if scene.camera is not None else ""
@@ -8089,18 +8392,31 @@ def image_source_path(image):
     return bpy.path.abspath(filepath)
 
 
-def unique_texture_filename(used_names, material, map_name, image):
+def unique_texture_filename(used_names, material, map_name, image, max_length=64):
     source_path = image_source_path(image)
     source_name = os.path.basename(source_path) if source_path else image.name
     stem, ext = os.path.splitext(source_name)
     if not ext:
         ext = ".png"
 
-    base_name = sanitize_id(f"{material.name}_{map_name}_{stem}") + ext.lower()
-    candidate = base_name
+    full_stem = sanitize_id(f"{material.name}_{map_name}_{stem}")
+    ext = ext.lower()
+    digest = hashlib.sha256((full_stem + ext).encode("utf-8")).hexdigest()[:12]
+
+    def bounded_name(suffix=""):
+        candidate = full_stem + suffix + ext
+        if len(candidate) <= max_length:
+            return candidate
+        tail = f"_{digest}{suffix}{ext}"
+        prefix_length = max_length - len(tail)
+        if prefix_length < 1:
+            raise RuntimeError("Export texture path has no room for a unique filename; choose a shorter output folder.")
+        return full_stem[:prefix_length] + tail
+
+    candidate = bounded_name()
     index = 2
     while candidate.lower() in used_names:
-        candidate = sanitize_id(f"{material.name}_{map_name}_{stem}_{index}") + ext.lower()
+        candidate = bounded_name(f"_{index}")
         index += 1
 
     used_names.add(candidate.lower())
@@ -8111,25 +8427,39 @@ def copy_image_for_manifest(root_name, material, map_name, image, texture_dir, u
     if image is None:
         return ""
 
+    # Windows CopyFile2 and Blender image.save can reject long transaction paths
+    # even when Python reports that both the source and destination folder exist.
+    # Keep short names unchanged; bound long names with a stable identity suffix.
+    filename_budget = min(64, 240 - len(os.path.abspath(texture_dir)) - 1)
+    if filename_budget < 20:
+        raise RuntimeError(
+            f"{root_name}: export texture folder is too long: '{texture_dir}'. Choose a shorter output folder."
+        )
+    filename = unique_texture_filename(used_names, material, map_name, image, filename_budget)
     os.makedirs(texture_dir, exist_ok=True)
-    filename = unique_texture_filename(used_names, material, map_name, image)
     destination = os.path.join(texture_dir, filename)
     source_path = image_source_path(image)
 
-    if source_path and os.path.exists(source_path):
-        shutil.copy2(source_path, destination)
-    elif getattr(image, "packed_file", None) is not None:
-        original_filepath = image.filepath_raw
-        try:
-            image.filepath_raw = destination
-            image.save()
-        finally:
-            image.filepath_raw = original_filepath
-    else:
-        warnings.append(
-            f"{root_name}: material '{material.name}' {map_name} map '{image.name}' has no readable file path."
-        )
-        return ""
+    try:
+        if source_path and os.path.exists(source_path):
+            shutil.copy2(source_path, destination)
+        elif getattr(image, "packed_file", None) is not None:
+            original_filepath = image.filepath_raw
+            try:
+                image.filepath_raw = destination
+                image.save()
+            finally:
+                image.filepath_raw = original_filepath
+        else:
+            warnings.append(
+                f"{root_name}: material '{material.name}' {map_name} map '{image.name}' has no readable file path."
+            )
+            return ""
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"{root_name}: could not write {map_name} texture '{image.name}' to '{destination}' "
+            f"({len(os.path.abspath(destination))} path characters): {exc}"
+        ) from exc
 
     return "textures/" + filename
 
@@ -8324,10 +8654,13 @@ def export_fbx(root, model_path):
 
 def render_icon(root, icon_path, resolution, settings=None):
     scene = bpy.context.scene
+    lighting = rr_icon_lighting.read_profile(root, scene)
+    use_environment = lighting["mode"] == "HDRI"
     original_camera = scene.camera
     render = scene.render
     image_settings = render.image_settings
     original_render_state = {
+        "engine": render.engine,
         "filepath": render.filepath,
         "resolution_x": render.resolution_x,
         "resolution_y": render.resolution_y,
@@ -8341,7 +8674,7 @@ def render_icon(root, icon_path, resolution, settings=None):
         "color_depth": image_settings.color_depth,
     }
     hide_states = [(item, item.hide_render) for item in scene.objects]
-    preview_light_states = capture_icon_preview_light_states(scene)
+    preview_light_states = capture_icon_preview_light_states(scene) if not use_environment else None
     temp_camera = None
     camera_data = None
     preview_lights = []
@@ -8355,9 +8688,16 @@ def render_icon(root, icon_path, resolution, settings=None):
         state = configure_icon_camera(temp_camera, root, settings)
         scene.camera = temp_camera
 
-        preview_lights = ensure_icon_preview_lights(scene, state, root, settings)
-        save_icon_light_transforms_to_object(root, scene)
-        visible_for_render = {temp_camera, *get_icon_render_lights(scene, preview_lights), *asset_meshes}
+        if use_environment:
+            visible_for_render = {temp_camera, *asset_meshes}
+            try:
+                render.engine = "BLENDER_EEVEE"
+            except TypeError:
+                render.engine = "BLENDER_EEVEE_NEXT"
+        else:
+            preview_lights = ensure_icon_preview_lights(scene, state, root, settings)
+            save_icon_light_transforms_to_object(root, scene)
+            visible_for_render = {temp_camera, *get_icon_render_lights(scene, preview_lights), *asset_meshes}
         for item in scene.objects:
             item.hide_render = item not in visible_for_render
 
@@ -8369,9 +8709,12 @@ def render_icon(root, icon_path, resolution, settings=None):
         image_settings.file_format = "PNG"
         image_settings.color_mode = "RGBA"
         image_settings.color_depth = "8"
-        bpy.ops.render.render(write_still=True)
-        remember_icon_outline_source(icon_path, overwrite=True)
-        apply_icon_outline_to_png(icon_path, settings)
+        with rr_icon_lighting.temporary_world(scene, lighting):
+            result = bpy.ops.render.render(write_still=True)
+            if "FINISHED" not in result:
+                raise RuntimeError("Icon rendering was cancelled.")
+            remember_icon_outline_source(icon_path, overwrite=True)
+            apply_icon_outline_to_png(icon_path, settings)
     except BaseException as exception:
         render_exception = exception
         raise
@@ -8396,7 +8739,8 @@ def render_icon(root, icon_path, resolution, settings=None):
             restore(lambda: bpy.data.objects.remove(temp_camera, do_unlink=True))
         if camera_data is not None:
             restore(lambda: bpy.data.cameras.remove(camera_data) if camera_data.users == 0 else None)
-        restore(lambda: restore_icon_preview_light_states(scene, preview_light_states))
+        if preview_light_states is not None:
+            restore(lambda: restore_icon_preview_light_states(scene, preview_light_states))
         if cleanup_errors:
             message = (
                 f"{getattr(root, 'name', '<asset>')}: icon render state could not be fully "
@@ -8823,7 +9167,8 @@ def render_or_copy_shared_icon(
     reuse_render = False
     if icon_render_cache is not None:
         source_icon_path = icon_path if render_root == root else shared_icon_path
-        cache_key = (render_root, normalized_path(source_icon_path))
+        lighting_key = rr_icon_lighting.serialize_profile(rr_icon_lighting.read_profile(render_root, bpy.context.scene))
+        cache_key = (render_root, normalized_path(source_icon_path), lighting_key)
         reuse_render = (
             icon_render_cache.get(cache_key, False)
             and os.path.isfile(source_icon_path)
@@ -10170,19 +10515,151 @@ def exported_icon_path(settings, root):
     return os.path.join(settings.output_root, asset_id, "icon.png")
 
 
-def existing_preview_path(settings, root, item=None):
-    candidates = []
-    if item is not None and item.preview_path:
-        candidates.append(item.preview_path)
-    if root is not None:
-        candidates.append(exported_icon_path(settings, root))
-        candidates.append(preview_cache_path(settings, root))
+def preview_asset_roots(obj, context=None):
+    """Resolve an asset's existing pictures without preparing its render state."""
+    if obj is None:
+        return []
+    if is_owned_icon_preview_light(obj):
+        obj = icon_light_root_from_light(obj)
+    if obj is None or obj.type not in {"EMPTY", "MESH"}:
+        return []
+    owner = object_manager_assembly_root_for_object(obj) or obj
+    group = object_manager_variant_group_root(owner)
+    if group is None:
+        return [owner]
 
+    members = object_manager_variant_member_roots(group)
+    member = next(
+        (candidate for candidate in members if obj == candidate or obj in candidate.children_recursive),
+        None,
+    )
+    member = member or (owner if owner in members else None)
+    member = member or active_variant_preview_root(group, context)
+    source = object_manager_variant_icon_source_root(group)
+    # A Variants container has no exported icon of its own. Its stored icon
+    # source and real member packages remain available after the queue clears.
+    candidates = [member, source] + (members if member is None else [])
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate is not None))
+
+
+def current_icon_lighting_root(context, settings=None):
+    """Find the selected icon's real render owner without changing group metadata."""
+    global OBJECT_MANAGER_REPAIR_ALLOWED
+    if context is None:
+        return None
+    if settings is None:
+        settings = getattr(context.scene, "rr_builder_export_settings", None)
+    previous_repair = OBJECT_MANAGER_REPAIR_ALLOWED
+    OBJECT_MANAGER_REPAIR_ALLOWED = False
+    try:
+        objects = getattr(getattr(context, "view_layer", None), "objects", None)
+        active = objects.active if objects is not None else None
+        selected = list(getattr(context, "selected_objects", ()) or ())
+        targets = [active] if active is not None else selected[:1]
+        if not targets and settings is not None:
+            target = queue_item_object(get_active_queue_item(settings))
+            targets = [target] if target is not None else []
+        for target in targets:
+            for root in preview_asset_roots(target, context):
+                source = requested_variant_icon_source_root(root, context) or shared_builder_icon_root(root) or root
+                if get_export_asset_meshes(source):
+                    return source
+        return None
+    finally:
+        OBJECT_MANAGER_REPAIR_ALLOWED = previous_repair
+
+
+def set_current_icon_lighting(context, profile, *, scene_default=False):
+    root = current_icon_lighting_root(context)
+    if root is None:
+        raise rr_icon_lighting.ProfileError("Select an asset or one of its members first.")
+    owners = [root, context.scene] if scene_default else [root]
+    payload = rr_icon_lighting.serialize_profile(profile)
+    key = rr_icon_lighting.PROFILE_KEY
+    changes = [(owner, key, payload) for owner in owners]
+    group = object_manager_variant_group_root(root)
+    if group is not None:
+        # Capture and Export must agree on which Variant supplies the shared icon.
+        # Existing name/stable-ID fields resolve the member without minting identities.
+        changes.extend((
+            (group, OBJECT_MANAGER_VARIANT_ICON_SOURCE_NAME_PROP, root.name),
+            (group, OBJECT_MANAGER_VARIANT_ICON_SOURCE_STABLE_ID_PROP, str(root.get(EXPORT_STABLE_ID_PROP, "") or "")),
+        ))
+    if any(not getattr(owner, "is_editable", True) for owner, _key, _value in changes):
+        raise rr_icon_lighting.ProfileError("The selected asset or scene is read-only.")
+    previous = [(owner, key, key in owner, owner.get(key)) for owner, key, _value in changes]
+    try:
+        for owner, key, value in changes:
+            owner[key] = value
+    except Exception:
+        for owner, key, existed, value in reversed(previous):
+            if existed:
+                owner[key] = value
+            elif key in owner:
+                del owner[key]
+        raise
+    return root
+
+
+_SELECTED_PREVIEW_INDEX_CACHE = None
+
+
+def indexed_asset_preview_paths(asset_id):
+    """Read exact asset matches, including Props/Material outside the reference pool."""
+    global _SELECTED_PREVIEW_INDEX_CACHE
+    index_path = bpy.path.abspath(UNITY_BUILDER_REFERENCE_INDEX)
+    try:
+        stat = os.stat(index_path)
+        signature = (index_path, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return []
+    if _SELECTED_PREVIEW_INDEX_CACHE is None or _SELECTED_PREVIEW_INDEX_CACHE[0] != signature:
+        try:
+            with open(index_path, "r", encoding="utf-8") as handle:
+                index = json.load(handle)
+        except (OSError, ValueError):
+            return []
+        by_id = {}
+        entries = index.get("entries", []) if isinstance(index, dict) else []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            paths = by_id.setdefault(str(entry["id"]).casefold(), [])
+            for key in ("iconFile", "iconPath"):
+                if entry.get(key):
+                    paths.append(unity_asset_path_to_file_path(entry[key]))
+        _SELECTED_PREVIEW_INDEX_CACHE = (signature, by_id)
+    return list(_SELECTED_PREVIEW_INDEX_CACHE[1].get(asset_id.casefold(), []))
+
+
+def existing_preview_path(settings, root, item=None):
+    if settings is None or root is None:
+        return ""
+    candidates = []
+    for asset in preview_asset_roots(root):
+        candidates.extend((preview_cache_path(settings, asset), exported_icon_path(settings, asset)))
+        if item is not None and item.preview_path and asset.name in {item.object_name, item.icon_preview_root_name}:
+            candidates.append(item.preview_path)
+        asset_id = export_asset_id(asset)
+        candidates.extend(path for _source, path in unity_reference_icon_candidates(asset_id, settings))
+        candidates.extend(indexed_asset_preview_paths(asset_id))
+
+    existing = []
+    seen = set()
     for path in candidates:
         absolute = bpy.path.abspath(path)
-        if absolute and os.path.exists(absolute):
-            return absolute
-    return ""
+        key = os.path.normcase(os.path.abspath(absolute))
+        if not absolute or key in seen:
+            continue
+        seen.add(key)
+        try:
+            if os.path.isfile(absolute):
+                existing.append((os.path.getmtime(absolute), absolute))
+        except OSError:
+            continue
+    # Preview and Export write different files. Show whichever picture was
+    # updated most recently, rather than an older export hiding a fresh preview.
+    return max(existing, key=lambda value: value[0])[1] if existing else ""
 
 
 def load_image_for_preview(settings, context, image_path):
@@ -10229,13 +10706,7 @@ def refresh_selected_preview_image(settings, context):
     if settings is None or context is None:
         return False
 
-    item = get_active_queue_item(settings)
-    root = queue_item_object(item) if item is not None else None
-    if root is None:
-        roots = get_context_export_roots(context)
-        root = roots[0] if roots else None
-
-    image_path = existing_preview_path(settings, root, item)
+    image_path = current_preview_display_path(context, settings)
     if not image_path:
         return False
 
@@ -10278,6 +10749,11 @@ def get_preview_icon_id(image_path):
         preview = collection.get(key)
         if preview is None:
             preview = collection.load(key, path, "IMAGE")
+            # Capture replaces the file: retain only its newest loaded thumbnail.
+            # Load first so a failed replacement does not discard the old cache.
+            for previous_key in list(collection.keys()):
+                if previous_key != key and previous_key.rpartition("|")[0] == path:
+                    del collection[previous_key]
         return preview.icon_id
     except Exception:
         return 0
@@ -10462,20 +10938,34 @@ def unity_reference_icon_candidates(asset_id, settings=None):
 
 
 def current_preview_display_path(context, settings):
-    item = get_active_queue_item(settings)
-    root = queue_item_object(item) if item is not None else None
-    if root is None:
-        roots = get_context_export_roots(context)
-        root = roots[0] if roots else None
-
-    path = existing_preview_path(settings, root, item)
-    if path:
-        return path
-
-    if settings.preview_image_path and os.path.exists(bpy.path.abspath(settings.preview_image_path)):
-        return bpy.path.abspath(settings.preview_image_path)
-
-    return ""
+    global OBJECT_MANAGER_REPAIR_ALLOWED
+    if settings is None:
+        return ""
+    previous_repair = OBJECT_MANAGER_REPAIR_ALLOWED
+    OBJECT_MANAGER_REPAIR_ALLOWED = False
+    try:
+        objects = getattr(getattr(context, "view_layer", None), "objects", None)
+        active = objects.active if objects is not None else None
+        selected = list(getattr(context, "selected_objects", ()) or ())
+        targets = [active] if active is not None else selected[:1]
+        if not targets:
+            item = get_active_queue_item(settings)
+            target = queue_item_object(item)
+            targets = [target] if target is not None else []
+        for target in targets:
+            for root in preview_asset_roots(target, context):
+                item = queue_item_for_root(settings, root)
+                if item is None:
+                    group = object_manager_variant_group_root(root)
+                    item = queue_item_for_root(settings, group)
+                path = existing_preview_path(settings, root, item)
+                if path:
+                    return path
+        # A global last-loaded image may belong to another asset or Reference.
+        # Never show it under Selected when this asset has no existing picture.
+        return ""
+    finally:
+        OBJECT_MANAGER_REPAIR_ALLOWED = previous_repair
 
 
 def draw_preview_reference_pair(layout, context, settings):
@@ -10625,33 +11115,91 @@ class RR_OT_select_queue_item(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class RR_OT_use_viewport_icon_lighting(bpy.types.Operator):
+    bl_idname = "rr_builder.use_viewport_icon_lighting"
+    bl_label = "Use 3D View Environment"
+    bl_description = "Save the Material Preview environment for this icon and as the scene default"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            profile = rr_icon_lighting.capture_profile(context)
+            settings = context.scene.rr_builder_export_settings
+            if settings.icon_light_edit_role != "NONE":
+                capture_icon_light_editor_scene_state(settings, context)
+            root = set_current_icon_lighting(context, profile, scene_default=True)
+            settings.icon_light_edit_role = "NONE"
+            settings.icon_light_edit_root_name = ""
+            refresh_rr_helper_ui(context)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{profile['studio_name']} saved for {root.name} and as the scene default. Render to update the icon.")
+        return {"FINISHED"}
+
+
+class RR_OT_use_three_point_icon_lighting(bpy.types.Operator):
+    bl_idname = "rr_builder.use_three_point_icon_lighting"
+    bl_label = "Use Three Lights"
+    bl_description = "Use the saved three-light setup for this icon; keep the scene environment default"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        global SYNCING_QUEUE_SETTINGS
+        try:
+            root = set_current_icon_lighting(context, {"version": 1, "mode": "LEGACY"})
+            settings = context.scene.rr_builder_export_settings
+            previous_sync = SYNCING_QUEUE_SETTINGS
+            SYNCING_QUEUE_SETTINGS = True
+            try:
+                for attr, default in (
+                    ("icon_light_brightness", ICON_LIGHT_BRIGHTNESS_DEFAULT),
+                    ("icon_key_light_ratio", ICON_KEY_LIGHT_RATIO_DEFAULT),
+                    ("icon_fill_light_ratio", ICON_FILL_LIGHT_RATIO_DEFAULT),
+                    ("icon_back_light_ratio", ICON_BACK_LIGHT_RATIO_DEFAULT),
+                ):
+                    setattr(settings, attr, float(root.get("rr_" + attr, default)))
+            finally:
+                SYNCING_QUEUE_SETTINGS = previous_sync
+            refresh_rr_helper_ui(context)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Three-light setup restored for {root.name}.")
+        return {"FINISHED"}
+
+
 class RR_OT_preview_icon(bpy.types.Operator):
     bl_idname = "rr_builder.preview_icon"
     bl_label = "Preview Icon"
+    bl_description = "Render the selected asset's saved lighting into a preview image"
 
     def execute(self, context):
         settings = context.scene.rr_builder_export_settings
-        root = get_current_framing_root(context, settings)
+        root = current_icon_lighting_root(context, settings)
         if root is None:
             active_name = context.object.name if context.object else "None"
             self.report({"ERROR"}, f"No queue item or exportable selected root. Active object is {active_name}.")
             return {"CANCELLED"}
 
-        copy_settings_to_queue_item(settings, get_active_queue_item(settings))
-        apply_icon_render_resolution(context.scene, settings)
-        image_path = current_preview_path(settings, root)
-        shared_root = shared_builder_icon_root(root)
-        shared_preview_path = current_preview_path(settings, shared_root) if shared_root is not root else image_path
-        render_or_copy_shared_icon(
-            root,
-            settings,
-            image_path,
-            shared_icon_root=shared_root,
-            shared_icon_path=shared_preview_path,
-            force_render=True,
-        )
-        load_image_for_preview(settings, context, image_path)
-        store_preview_path_for_current_item(settings, image_path)
+        try:
+            rr_icon_lighting.read_profile(root, context.scene)
+            if not settings.icon_framing_adjusting:
+                prepare_framing_for_root(root, settings, queue_item_for_root(settings, root))
+            image_path = current_preview_path(settings, root)
+            render_or_copy_shared_icon(
+                root, settings, image_path,
+                shared_icon_root=root, shared_icon_path=image_path, force_render=True,
+            )
+            if object_manager_variant_group_root(root) is not None:
+                remember_object_manager_variant_icon_source(root, root)
+            load_image_for_preview(settings, context, image_path)
+            item = queue_item_for_root(settings, root)
+            if item is not None:
+                item.preview_path = image_path
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not render preview: {exc}")
+            return {"CANCELLED"}
         self.report({"INFO"}, f"Preview rendered: {os.path.basename(image_path)}")
         return {"FINISHED"}
 
@@ -10737,6 +11285,7 @@ class RR_OT_export_queue(bpy.types.Operator):
     include_icon: bpy.props.BoolProperty(name="With Icons", default=True)
 
     def execute(self, context):
+        sync_object_manager_names()
         export_started = time.perf_counter()
         if not ensure_object_mode(context):
             self.report({"ERROR"}, "Could not leave Edit Mode for export.")
@@ -12433,7 +12982,8 @@ class RR_OT_set_ui_page(bpy.types.Operator):
     )
 
     def execute(self, context):
-        context.scene.rr_builder_export_settings.ui_page = self.page
+        # Keep the saved ANIMATION enum ordinal and old scripts compatible.
+        context.scene.rr_builder_export_settings.ui_page = "EXPORTER" if self.page == "ANIMATION" else self.page
         return {"FINISHED"}
 
 
@@ -12478,6 +13028,7 @@ class RR_OT_open_animation_blend(bpy.types.Operator):
     bl_idname = "rr_helper.open_animation_blend"
     bl_label = "Open Animation.blend"
     bl_description = "Open the RandomRealm character Animation.blend source file"
+    bl_options = {"INTERNAL"}
 
     def execute(self, _context):
         if not os.path.exists(RR_ANIMATION_BLEND_PATH):
@@ -12492,6 +13043,7 @@ class RR_OT_open_unity_animation_import_folder(bpy.types.Operator):
     bl_idname = "rr_helper.open_unity_animation_import_folder"
     bl_label = "Open Unity Animation Folder"
     bl_description = "Open the Unity folder that receives Blender animation sync imports"
+    bl_options = {"INTERNAL"}
 
     def execute(self, _context):
         rr_helper_reveal_folder(RR_UNITY_ANIMATION_IMPORT_FOLDER)
@@ -12502,6 +13054,7 @@ class RR_OT_request_unity_animation_import(bpy.types.Operator):
     bl_idname = "rr_helper.request_unity_animation_import"
     bl_label = "Request Unity Import"
     bl_description = "Ask the Unity editor to import or refresh Animation.blend"
+    bl_options = {"INTERNAL"}
 
     def execute(self, _context):
         if not os.path.exists(RR_ANIMATION_BLEND_PATH):
@@ -12543,7 +13096,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             settings = context.scene.rr_builder_export_settings
             layout = self.layout
 
-            active_page = settings.ui_page if settings.ui_page in {"EXPORTER", "BAKE", "MODELING", "LAYOUT", "ANIMATION"} else "EXPORTER"
+            active_page = settings.ui_page if settings.ui_page in {"EXPORTER", "BAKE", "MODELING", "LAYOUT"} else "EXPORTER"
             self.draw_page_tabs(layout, active_page)
 
             if active_page == "EXPORTER":
@@ -12554,23 +13107,9 @@ class RR_PT_builder_exporter(bpy.types.Panel):
                 self.draw_modeling_page(layout, context, settings)
             elif active_page == "LAYOUT":
                 self.draw_layout_page(layout, settings)
-            elif active_page == "ANIMATION":
-                self.draw_animation_page(layout)
         finally:
             _EXPORT_IDENTITY_LOOKUP_CACHE = previous_lookup_cache
             OBJECT_MANAGER_REPAIR_ALLOWED = previous_repair_state
-
-    def draw_animation_page(self, layout):
-        box = layout.box()
-        box.label(text="Animation Sync")
-        animation_ready = os.path.exists(RR_ANIMATION_BLEND_PATH)
-        state_icon = "CHECKMARK" if animation_ready else "ERROR"
-        state_text = "Animation.blend ready" if animation_ready else "Animation.blend missing"
-        box.label(text=state_text, icon=state_icon)
-        row = box.row(align=True)
-        row.operator("rr_helper.open_animation_blend", text="Open Blend", icon="FILE_BLEND")
-        row.operator("rr_helper.request_unity_animation_import", text="Import in Unity", icon="IMPORT")
-        box.operator("rr_helper.open_unity_animation_import_folder", text="Open Unity Import Folder", icon="FILE_FOLDER")
 
     def draw_page_tabs(self, layout, active_page):
         tab_box = layout.box()
@@ -12580,7 +13119,6 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         self.draw_page_tab(first_row, active_page, "MODELING", "Modeling", "MESH_DATA")
         second_row = tab_box.row(align=True)
         self.draw_page_tab(second_row, active_page, "LAYOUT", "Layout", "FILE_TICK")
-        self.draw_page_tab(second_row, active_page, "ANIMATION", "Animation", "ACTION")
         if RR_ADDON_REFRESH_PENDING or RR_ADDON_REFRESH_LAST_STATE:
             refresh_row = tab_box.row(align=True)
             refresh_row.alert = bool(RR_ADDON_REFRESH_LAST_ERROR)
@@ -13107,48 +13645,35 @@ class RR_PT_builder_exporter(bpy.types.Panel):
                 icon="CHECKMARK",
             )
         box.prop(settings, "icon_zoom", text="Size", slider=True)
-        box.prop(settings, "icon_light_brightness", text="Brightness", slider=True)
-        ratio_box = box.column(align=True)
-        ratio_box.label(text="Light Ratio")
-        for role, spec in ((icon_light_role(spec), spec) for spec in ICON_PREVIEW_LIGHT_SPECS):
-            light_row = ratio_box.row(align=True)
-            light_row.prop(settings, spec["ratio_attr"], text=role.title(), slider=True)
-            edit_light = light_row.operator(
-                "rr_builder.edit_icon_preview_light",
-                text="",
-                icon="MODIFIER",
-                depress=settings.icon_light_edit_role == role,
-            )
-            edit_light.role = role
-
-        editor_spec = icon_light_spec_for_role(settings.icon_light_edit_role)
-        editor_light = bpy.data.objects.get(editor_spec["name"]) if editor_spec is not None else None
-        if editor_spec is not None and editor_light is not None:
-            ratio_box.separator(factor=0.35)
-            header = ratio_box.row(align=True)
-            header.label(text=editor_spec["label"], icon="LIGHT_SPOT")
-            header.operator("rr_builder.save_icon_preview_light", text="", icon="CHECKMARK")
-            header.operator("rr_builder.reset_icon_preview_light", text="", icon="LOOP_BACK")
-            close_editor = header.operator("rr_builder.edit_icon_preview_light", text="", icon="X")
-            close_editor.role = settings.icon_light_edit_role
-
-            ratio_box.prop(settings, "icon_light_position", text="Position")
-            ratio_box.prop(settings, "icon_light_focus", text="Focus")
-            range_row = ratio_box.row(align=True)
-            range_row.prop(settings, "icon_light_use_custom_distance", text="")
-            range_value = range_row.row(align=True)
-            range_value.enabled = settings.icon_light_use_custom_distance
-            range_value.prop(settings, "icon_light_range", text="Range")
-            beam_row = ratio_box.row(align=True)
-            beam_row.prop(settings, "icon_light_spot_size", text="Beam")
-            beam_row.prop(settings, "icon_light_spot_blend", text="Blend", slider=True)
-            ratio_box.prop(settings, "icon_light_radius", text="Radius")
+        lighting_box = box.box()
+        lighting_box.label(text="Icon Lighting")
+        lighting_root = current_icon_lighting_root(context, settings)
+        lighting = None
+        try:
+            lighting = rr_icon_lighting.read_profile(lighting_root, context.scene, check_file=False)
+        except rr_icon_lighting.ProfileError:
+            error_row = lighting_box.row()
+            error_row.alert = True
+            error_row.label(text="Lighting unavailable; capture again", icon="ERROR")
+        use_environment = lighting is not None and lighting["mode"] == "HDRI"
+        mode_row = lighting_box.row(align=True)
+        mode_row.enabled = lighting_root is not None
+        mode_row.operator("rr_builder.use_viewport_icon_lighting", text="3D Environment", icon="WORLD", depress=use_environment)
+        mode_row.operator("rr_builder.use_three_point_icon_lighting", text="Three Lights", depress=lighting is not None and not use_environment)
+        if use_environment:
+            lighting_box.label(text=f"{lighting['studio_name']}  |  Strength {lighting['intensity']:g}")
+            lighting_box.label(text=f"Rotation {math.degrees(lighting['rotation_z']):.1f}\u00b0  |  Saved environment")
+            lighting_box.label(text="Click 3D Environment to capture changes")
+        elif lighting is not None:
+            self.draw_three_light_controls(lighting_box, settings)
         row = box.row(align=True)
         if settings.icon_framing_adjusting:
             row.operator("rr_builder.confirm_icon_framing", text="Confirm", icon="CHECKMARK")
         else:
             row.operator("rr_builder.adjust_icon_framing", text="Adjust", icon="VIEW_CAMERA")
         row.operator("rr_builder.reset_icon_framing", text="Reset", icon="LOOP_BACK")
+        row = box.row(align=True)
+        row.operator("rr_builder.preview_icon", text="Preview", icon="IMAGE_DATA")
         row = box.row(align=True)
         row.operator("rr_builder.render_selected_icons", text="Render / Update Icon", icon="RENDER_STILL")
         draw_preview_reference_pair(box, context, settings)
@@ -13171,8 +13696,43 @@ class RR_PT_builder_exporter(bpy.types.Panel):
                 rows=2,
             )
 
+    def draw_three_light_controls(self, box, settings):
+        box.prop(settings, "icon_light_brightness", text="Brightness", slider=True)
+        ratio_box = box.column(align=True)
+        ratio_box.label(text="Light Ratio")
+        for role, spec in ((icon_light_role(spec), spec) for spec in ICON_PREVIEW_LIGHT_SPECS):
+            light_row = ratio_box.row(align=True)
+            light_row.prop(settings, spec["ratio_attr"], text=role.title(), slider=True)
+            edit_light = light_row.operator(
+                "rr_builder.edit_icon_preview_light", text="", icon="MODIFIER",
+                depress=settings.icon_light_edit_role == role,
+            )
+            edit_light.role = role
+        editor_spec = icon_light_spec_for_role(settings.icon_light_edit_role)
+        editor_light = bpy.data.objects.get(editor_spec["name"]) if editor_spec is not None else None
+        if editor_spec is not None and editor_light is not None:
+            ratio_box.separator(factor=0.35)
+            header = ratio_box.row(align=True)
+            header.label(text=editor_spec["label"], icon="LIGHT_SPOT")
+            header.operator("rr_builder.save_icon_preview_light", text="", icon="CHECKMARK")
+            header.operator("rr_builder.reset_icon_preview_light", text="", icon="LOOP_BACK")
+            close_editor = header.operator("rr_builder.edit_icon_preview_light", text="", icon="X")
+            close_editor.role = settings.icon_light_edit_role
+            ratio_box.prop(settings, "icon_light_position", text="Position")
+            ratio_box.prop(settings, "icon_light_focus", text="Focus")
+            range_row = ratio_box.row(align=True)
+            range_row.prop(settings, "icon_light_use_custom_distance", text="")
+            range_value = range_row.row(align=True)
+            range_value.enabled = settings.icon_light_use_custom_distance
+            range_value.prop(settings, "icon_light_range", text="Range")
+            beam_row = ratio_box.row(align=True)
+            beam_row.prop(settings, "icon_light_spot_size", text="Beam")
+            beam_row.prop(settings, "icon_light_spot_blend", text="Blend", slider=True)
+            ratio_box.prop(settings, "icon_light_radius", text="Radius")
+
 
 def export_objects(mesh_objects, settings, context, source_label, export_model, include_icon):
+    sync_object_manager_names()
     export_started = time.perf_counter()
     mesh_objects = expand_related_export_roots(mesh_objects)
     exported = []
@@ -13302,6 +13862,7 @@ def restore_file_contents(snapshot):
 
 
 def render_icon_objects(mesh_objects, settings, context, source_label):
+    sync_object_manager_names()
     requested_roots = list(mesh_objects)
     variant_sources = {}
     active_variant_group_name = ""
@@ -13533,6 +14094,8 @@ CLASSES = (
     RR_OT_clear_queue,
     RR_OT_step_queue_item,
     RR_OT_select_queue_item,
+    RR_OT_use_viewport_icon_lighting,
+    RR_OT_use_three_point_icon_lighting,
     RR_OT_preview_icon,
     RR_OT_preview_queue_icons,
     RR_OT_export_queue,
@@ -13683,9 +14246,15 @@ def register():
         bpy.app.handlers.load_post.append(reset_object_manager_duplicate_guard_on_load)
     if clear_inherited_rr_identity_before_save not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(clear_inherited_rr_identity_before_save)
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if sync_object_manager_names_after_history not in handlers:
+            handlers.append(sync_object_manager_names_after_history)
     register_rr_startup_deferred_timers()
 
 def unregister():
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if sync_object_manager_names_after_history in handlers:
+            handlers.remove(sync_object_manager_names_after_history)
     unregister_object_manager_duplicate_keymap()
     unregister_rr_addon_change_watch()
     unregister_scene_selection_queue_sync()
@@ -13726,7 +14295,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
-
-
-
