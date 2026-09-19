@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 61, 8),
+    "version": (0, 61, 19),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -38,6 +38,8 @@ from .delta_symmetry import (
     CharacterDesignerDeltaState,
     stop_delta_symmetry_runtime,
 )
+from .shape_key_tools import SHAPE_KEY_CLASSES
+from .finger_joint import FINGER_JOINT_CLASSES, CharacterDesignerFingerJointState
 from .reference_views import (
     REFERENCE_VIEW_CLASSES,
     CharacterDesignerReferenceState,
@@ -99,7 +101,6 @@ from .ui_constants import (
     active_ui_page,
 )
 from .weight_symmetry import WEIGHT_SYMMETRY_CLASSES
-from .weight_surface import WEIGHT_SURFACE_CLASSES
 from .topology_symmetry import TOPOLOGY_SYMMETRY_CLASSES
 from .forearm_twist import (
     FOREARM_TWIST_CLASSES,
@@ -113,6 +114,12 @@ from .finger_bones import (
     FINGER_REFERENCE_ITEMS,
     register_finger_bones_runtime,
     unregister_finger_bones_runtime,
+)
+from .finger_root import (
+    FINGER_ROOT_CLASSES,
+    CharacterDesignerFingerRootState,
+    register_finger_root_runtime,
+    unregister_finger_root_runtime,
 )
 
 
@@ -8406,6 +8413,7 @@ CLASSES = (
     CHARACTERDESIGNER_OT_set_ui_page,
     CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
+    *FINGER_ROOT_CLASSES,
     *FINGER_BONES_CLASSES,
     *CHARACTER_SETUP_CLASSES,
     *UNITY_EXPORT_CLASSES,
@@ -8417,8 +8425,9 @@ CLASSES = (
     *BONE_DISPLAY_CLASSES,
     *WIDGET_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
-    *WEIGHT_SURFACE_CLASSES,
     *TOPOLOGY_SYMMETRY_CLASSES,
+    *SHAPE_KEY_CLASSES,
+    *FINGER_JOINT_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
     *TORSO_UI_CLASSES,
@@ -8439,6 +8448,8 @@ _WINDOW_MANAGER_POINTER_TYPES = (
     ("character_designer_delta", CharacterDesignerDeltaState),
     ("character_designer_limb_ik", CharacterDesignerLimbIKState),
     ("character_designer_forearm_twist", CharacterDesignerForearmTwistState),
+    ("character_designer_finger_joint", CharacterDesignerFingerJointState),
+    ("character_designer_finger_root", CharacterDesignerFingerRootState),
     ("character_designer_spline_ik", CharacterDesignerSplineIKState),
     ("character_designer_references", CharacterDesignerReferenceState),
 )
@@ -8528,6 +8539,8 @@ def register():
         "character_designer_limb_ik",
     )
     forearm_twist_registered = hasattr(bpy.types.WindowManager, "character_designer_forearm_twist")
+    finger_joint_registered = hasattr(bpy.types.WindowManager, "character_designer_finger_joint")
+    finger_root_registered = hasattr(bpy.types.WindowManager, "character_designer_finger_root")
     hair_bones_registered = hasattr(bpy.types.WindowManager, "character_designer_hair_bones")
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
     animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
@@ -8540,6 +8553,8 @@ def register():
         spline_ik_registered,
         references_registered,
         forearm_twist_registered,
+        finger_joint_registered,
+        finger_root_registered,
         hair_bones_registered,
         skirt_registered,
         animation_registered,
@@ -8549,6 +8564,7 @@ def register():
     if all(registration_state):
         _validate_registration_integrity()
         register_finger_bones_runtime()
+        register_finger_root_runtime()
         register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
@@ -8608,6 +8624,16 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_forearm_twist")
+        bpy.types.WindowManager.character_designer_finger_joint = PointerProperty(
+            type=CharacterDesignerFingerJointState,
+            options={"SKIP_SAVE"},
+        )
+        added_properties.append("character_designer_finger_joint")
+        bpy.types.WindowManager.character_designer_finger_root = PointerProperty(
+            type=CharacterDesignerFingerRootState,
+            options={"SKIP_SAVE"},
+        )
+        added_properties.append("character_designer_finger_root")
         bpy.types.WindowManager.character_designer_spline_ik = PointerProperty(
             type=CharacterDesignerSplineIKState,
             options={"SKIP_SAVE"},
@@ -8619,6 +8645,7 @@ def register():
         )
         added_properties.append("character_designer_references")
         register_finger_bones_runtime()
+        register_finger_root_runtime()
         register_animation_runtime()
         register_reference_view_handlers()
         register_limb_ik_viewport_handler()
@@ -8630,6 +8657,7 @@ def register():
     except Exception:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
         unregister_finger_bones_runtime()
+        unregister_finger_root_runtime()
         unregister_animation_runtime()
         unregister_forearm_twist_runtime()
         unregister_limb_ik_viewport_handler()
@@ -8656,6 +8684,7 @@ def register():
 def unregister():
     stop_export_ui()
     unregister_finger_bones_runtime()
+    unregister_finger_root_runtime()
     unregister_animation_runtime()
     stop_skirt_runtime()
     unregister_forearm_twist_runtime()
@@ -8685,6 +8714,10 @@ def unregister():
         del bpy.types.WindowManager.character_designer_limb_ik
     if hasattr(bpy.types.WindowManager, "character_designer_forearm_twist"):
         del bpy.types.WindowManager.character_designer_forearm_twist
+    if hasattr(bpy.types.WindowManager, "character_designer_finger_joint"):
+        del bpy.types.WindowManager.character_designer_finger_joint
+    if hasattr(bpy.types.WindowManager, "character_designer_finger_root"):
+        del bpy.types.WindowManager.character_designer_finger_root
     if hasattr(bpy.types.WindowManager, "character_designer_delta"):
         del bpy.types.WindowManager.character_designer_delta
     if hasattr(bpy.types.WindowManager, "character_designer"):

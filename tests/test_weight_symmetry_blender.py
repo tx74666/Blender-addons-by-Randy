@@ -638,8 +638,20 @@ def test_registration_undo_and_weight_page_integration():
     if "UNDO" not in operator_class.bl_options:
         raise AssertionError("Weight Symmetry is not a single Undo operator")
     namespace, name = OPERATOR_ID.split(".", 1)
-    if not hasattr(getattr(bpy.ops, namespace), name):
+    try:
+        getattr(getattr(bpy.ops, namespace), name).get_rna_type()
+    except (AttributeError, KeyError):
         raise AssertionError(f"Operator is not registered: {OPERATOR_ID}")
+    try:
+        bpy.ops.character_designer.locate_weight_symmetry.get_rna_type()
+    except (AttributeError, KeyError):
+        raise AssertionError("Locate Unmatched Vertices is not registered")
+    try:
+        bpy.ops.character_designer.surface_weight_mirror.get_rna_type()
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("Removed Surface Mirror operator is still registered")
     if not hasattr(bpy.types, panel_class.bl_idname):
         raise AssertionError("The separate Weight Symmetry panel is not registered")
     draw_source = inspect.getsource(weight_symmetry.draw_weight_symmetry)
@@ -648,6 +660,22 @@ def test_registration_undo_and_weight_page_integration():
         raise AssertionError("Weight Symmetry draw helper does not expose the operator")
     if "draw_weight_symmetry" not in panel_source and OPERATOR_ID not in panel_source:
         raise AssertionError("The Weight Symmetry panel does not expose its action")
+
+
+def test_locate_unmatched_vertices_is_diagnostic_only():
+    fixture = make_fixture(active_group=LEFT_GROUP, unpaired=True)
+    mesh_obj = fixture["mesh_obj"]
+    before = capture_groups(mesh_obj)
+    result = bpy.ops.character_designer.locate_weight_symmetry()
+    if result != {"FINISHED"}:
+        raise AssertionError(f"Locate Unmatched Vertices failed: {result}")
+    if bpy.context.object is not mesh_obj or mesh_obj.mode != "EDIT":
+        raise AssertionError("Locate Unmatched Vertices did not enter Mesh Edit Mode")
+    selected = {vertex.index for vertex in mesh_obj.data.vertices if vertex.select}
+    if not selected:
+        raise AssertionError("Locate Unmatched Vertices selected no vertices")
+    if capture_groups(mesh_obj) != before:
+        raise AssertionError("Locate Unmatched Vertices changed weights")
 
 
 def test_left_to_right_replaces_target_and_cleans_both_wrong_sides():
@@ -757,12 +785,9 @@ def test_weight_paint_selected_bones_copy_and_dynamic_label():
         )
     ]:
         raise AssertionError(f"Unexpected multi-bone UI action: {layout.calls}")
-    for action in (
-        "character_designer.surface_weight_mirror",
-        "character_designer.locate_weight_symmetry",
-    ):
-        if sum(call[0] == action for call in layout.calls) != 1:
-            raise AssertionError(f"Missing or duplicated Weight Symmetry action: {action}")
+    action = "character_designer.locate_weight_symmetry"
+    if sum(call[0] == action for call in layout.calls) != 1:
+        raise AssertionError(f"Missing or duplicated Weight Symmetry action: {action}")
     result = invoke_operator()
     if result != {"FINISHED"}:
         raise AssertionError(f"Weight Paint multi-bone copy failed: {result}")
@@ -1289,6 +1314,7 @@ def main():
     character_designer.register()
     tests = (
         test_registration_undo_and_weight_page_integration,
+        test_locate_unmatched_vertices_is_diagnostic_only,
         test_whole_mesh_connection_does_not_join_disconnected_weight_support,
         test_continuous_shoulder_crossing_center_is_preserved,
         test_continuous_shoulder_crossing_edge_without_center_vertex_is_preserved,

@@ -1,10 +1,11 @@
 """Transactional replacement of the opposite side with a selected mirror.
 
-Weight Symmetry and Surface Mirror deliberately leave topology alone.  This
+Weight Symmetry deliberately leaves topology alone.  This
 module is the explicit, selection-driven topology operation: the selected
 face patch is always the source/baseline, its one boundary loop is matched to
-the opposite side, and only the opposite patch is replaced.  A boundary-loop
-failure never falls back to a nearest arbitrary face.
+the opposite side, and only the opposite patch is replaced.  Boundary
+analysis also exposes a read-only descriptor that can represent a centerline
+as a virtual attachment boundary before any geometry is changed.
 """
 
 from dataclasses import dataclass
@@ -103,6 +104,19 @@ class TopologyRepairResult:
     added_vertices: int
     removed_faces: int
     selected_vertices: tuple
+
+
+@dataclass(frozen=True)
+class BoundaryDescriptor:
+    """Read-only description of a selected source region's attachment seam."""
+
+    source_side: int
+    boundary_type: str
+    selected_vertices: tuple
+    selected_faces: tuple
+    physical_boundary: tuple
+    center_vertices: tuple
+    virtual_center_segments: tuple
 
 
 def _mirror_point(point):
@@ -264,6 +278,175 @@ def _selected_patch(bm, expected_side, tolerance):
     if len(ordered) != len(boundary_neighbors):
         raise TopologySymmetryError("The selected boundary contains multiple Loops.")
     return tuple(sorted(selected_vertices)), tuple(sorted(selected_face_set)), tuple(ordered)
+
+
+def _walk_boundary_graph(neighbors, *, allow_open=False, center_vertices=()):
+    """Return one ordered boundary path/cycle after topology validation."""
+
+    if not neighbors:
+        raise TopologySymmetryError("The selected region has no physical attachment boundary.")
+    center_vertices = set(center_vertices)
+    degrees = {index: len(items) for index, items in neighbors.items()}
+    endpoints = {index for index, degree in degrees.items() if degree == 1}
+    if any(degree not in {1, 2} for degree in degrees.values()):
+        raise TopologySymmetryError(
+            "The selected source boundary branches; select one continuous attachment region."
+        )
+    if endpoints:
+        if not allow_open or len(endpoints) != 2 or not endpoints <= center_vertices:
+            raise TopologySymmetryError(
+                "The physical boundary is open away from the Mesh center line."
+            )
+        start = min(endpoints)
+    else:
+        start = min(neighbors)
+
+    ordered = [start]
+    previous = None
+    current = start
+    while True:
+        candidates = sorted(
+            neighbors[current] - ({previous} if previous is not None else set())
+        )
+        if not candidates:
+            if endpoints and current in endpoints:
+                break
+            raise TopologySymmetryError("The selected physical boundary is not continuous.")
+        following = candidates[0]
+        if following == start:
+            if endpoints:
+                raise TopologySymmetryError("The selected centerline boundary is malformed.")
+            break
+        if following in ordered:
+            raise TopologySymmetryError("The selected physical boundary self-intersects.")
+        ordered.append(following)
+        previous, current = current, following
+    if len(ordered) != len(neighbors):
+        raise TopologySymmetryError("The selected boundary contains multiple physical components.")
+    return tuple(ordered)
+
+
+def _build_boundary_descriptor_from_bmesh(bm, tolerance):
+    """Analyze one selected face component without changing the Edit BMesh."""
+
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    bm.verts.index_update()
+    bm.edges.index_update()
+    bm.faces.index_update()
+
+    explicitly_selected = {vertex.index for vertex in bm.verts if vertex.select}
+    selected_faces = {
+        face.index
+        for face in bm.faces
+        if face.select or all(vertex.select for vertex in face.verts)
+    }
+    if not selected_faces:
+        raise TopologySymmetryError(
+            "Select one connected source face region before analyzing its boundary."
+        )
+    selected_vertices = {
+        vertex.index
+        for face in bm.faces
+        if face.index in selected_faces
+        for vertex in face.verts
+    }
+    if explicitly_selected - selected_vertices:
+        raise TopologySymmetryError(
+            "Some selected vertices do not belong to the selected source faces."
+        )
+
+    remaining = set(selected_faces)
+    components = []
+    while remaining:
+        start = remaining.pop()
+        component = {start}
+        pending = [start]
+        while pending:
+            current = bm.faces[pending.pop()]
+            for edge in current.edges:
+                for neighbor in edge.link_faces:
+                    if neighbor.index in remaining:
+                        remaining.remove(neighbor.index)
+                        component.add(neighbor.index)
+                        pending.append(neighbor.index)
+        components.append(component)
+    if len(components) != 1:
+        raise TopologySymmetryError(
+            f"Select one connected source face region; found {len(components)}."
+        )
+    selected_face_set = components[0]
+
+    positive = any(bm.verts[index].co.x > tolerance for index in selected_vertices)
+    negative = any(bm.verts[index].co.x < -tolerance for index in selected_vertices)
+    if positive and negative:
+        raise TopologySymmetryError(
+            "The selected source region contains both sides of the Mesh center line."
+        )
+    if not positive and not negative:
+        raise TopologySymmetryError(
+            "The selected source region contains only centerline vertices; select one side too."
+        )
+    source_side = 1 if positive else -1
+    center_vertices = tuple(
+        sorted(index for index in selected_vertices
+               if abs(bm.verts[index].co.x) <= tolerance)
+    )
+
+    boundary_edges = []
+    for edge in bm.edges:
+        selected_count = sum(face.index in selected_face_set for face in edge.link_faces)
+        if selected_count == 1:
+            boundary_edges.append(edge)
+    if not boundary_edges:
+        raise TopologySymmetryError("The selected region has no attachment boundary.")
+
+    virtual_edges = []
+    physical_edges = []
+    center_set = set(center_vertices)
+    for edge in boundary_edges:
+        indices = tuple(vertex.index for vertex in edge.verts)
+        if len(indices) == 2 and set(indices) <= center_set:
+            virtual_edges.append(tuple(sorted(indices)))
+        else:
+            physical_edges.append(edge)
+
+    physical_neighbors = {}
+    for edge in physical_edges:
+        first, second = (vertex.index for vertex in edge.verts)
+        physical_neighbors.setdefault(first, set()).add(second)
+        physical_neighbors.setdefault(second, set()).add(first)
+    physical_boundary = _walk_boundary_graph(
+        physical_neighbors,
+        allow_open=bool(center_vertices),
+        center_vertices=center_set,
+    )
+    virtual_segments = tuple(sorted(virtual_edges))
+    boundary_type = "CENTERLINE_VIRTUAL" if center_vertices else "CLOSED_LOOP"
+    if not virtual_segments and any(
+            len(physical_neighbors.get(index, ())) == 1 for index in center_set
+    ):
+        virtual_segments = (
+            (physical_boundary[0], physical_boundary[-1]),
+        )
+    return BoundaryDescriptor(
+        source_side=source_side,
+        boundary_type=boundary_type,
+        selected_vertices=tuple(sorted(selected_vertices)),
+        selected_faces=tuple(sorted(selected_face_set)),
+        physical_boundary=physical_boundary,
+        center_vertices=center_vertices,
+        virtual_center_segments=virtual_segments,
+    )
+
+
+def build_boundary_descriptor(context):
+    """Analyze the selected source region without changing geometry or weights."""
+
+    mesh_obj, _armature_obj, _active_name, _opposite_name, _active_side, tolerance = _active_pair(context)
+    bm = bmesh.from_edit_mesh(mesh_obj.data)
+    return _build_boundary_descriptor_from_bmesh(bm, tolerance)
 
 
 def _match_boundary(mesh_obj, target_boundary, source_side, tolerance, boundary_tolerance):
@@ -1324,6 +1507,43 @@ def _select_result_region(obj, selected_vertices):
     bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
 
+class CHARACTERDESIGNER_OT_analyze_topology_boundary(Operator):
+    bl_idname = "character_designer.analyze_topology_boundary"
+    bl_label = "Analyze Topology Boundary"
+    bl_description = (
+        "Read-only analysis of the selected source region, including a virtual centerline boundary"
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.view_layer is not None
+            and context.view_layer.objects.active is not None
+            and context.view_layer.objects.active.type == "MESH"
+            and context.mode == "EDIT_MESH"
+        )
+
+    def execute(self, context):
+        try:
+            descriptor = build_boundary_descriptor(context)
+        except TopologySymmetryError as error:
+            self.report({"WARNING"}, str(error))
+            return {"CANCELLED"}
+        side = "+X" if descriptor.source_side > 0 else "-X"
+        virtual = len(descriptor.virtual_center_segments)
+        self.report(
+            {"INFO"},
+            f"Source {side}; {descriptor.boundary_type}; "
+            f"{len(descriptor.selected_faces)} face(s), "
+            f"{len(descriptor.selected_vertices)} vertex/vertices, "
+            f"physical boundary {len(descriptor.physical_boundary)}, "
+            f"centerline vertices {len(descriptor.center_vertices)}, "
+            f"virtual segment(s) {virtual}.",
+        )
+        return {"FINISHED"}
+
+
 class CHARACTERDESIGNER_OT_topology_mirror(Operator):
     bl_idname = "character_designer.topology_mirror"
     bl_label = "Topology Mirror"
@@ -1445,6 +1665,7 @@ class CHARACTERDESIGNER_OT_topology_mirror_repair(Operator):
 
 
 TOPOLOGY_SYMMETRY_CLASSES = (
+    CHARACTERDESIGNER_OT_analyze_topology_boundary,
     CHARACTERDESIGNER_OT_topology_mirror,
     CHARACTERDESIGNER_OT_topology_mirror_repair,
 )

@@ -1575,6 +1575,45 @@ class CHARACTERDESIGNER_OT_copy_weight_to_opposite(Operator):
         return {"FINISHED"}
 
 
+class CHARACTERDESIGNER_OT_locate_weight_symmetry(Operator):
+    bl_idname = "character_designer.locate_weight_symmetry"
+    bl_label = "Locate Unmatched Vertices"
+    bl_description = "Select the actual vertices that prevent exact weight mirroring"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return CHARACTERDESIGNER_OT_copy_weight_to_opposite.poll(context)
+
+    def execute(self, context):
+        try:
+            build_weight_symmetry_batch_plan(context)
+        except WeightSymmetryError as exc:
+            obj, indices = exc.mesh_obj, exc.vertex_indices
+            if obj is None or not indices:
+                self.report({"WARNING"}, str(exc))
+                return {"CANCELLED"}
+            if context.object and context.object.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            for selected in context.selected_objects:
+                selected.select_set(False)
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            selected = set(indices)
+            for vertex in obj.data.vertices:
+                vertex.select = vertex.index in selected
+            for edge in obj.data.edges:
+                edge.select = all(index in selected for index in edge.vertices)
+            for polygon in obj.data.polygons:
+                polygon.select = all(index in selected for index in polygon.vertices)
+            context.tool_settings.mesh_select_mode = (True, False, False)
+            bpy.ops.object.mode_set(mode="EDIT")
+            self.report({"INFO"}, f"Selected {len(indices)} unmatched vertices; weights unchanged.")
+            return {"FINISHED"}
+        self.report({"INFO"}, "No unmatched vertices in the selected weight region.")
+        return {"FINISHED"}
+
+
 def _selected_pose_count_for_ui(context):
     """Return an intentional multi-bone count without running heavy preflight."""
 
@@ -1626,14 +1665,14 @@ def draw_weight_symmetry(layout, context):
         icon="MOD_MIRROR",
     )
     layout.operator(
-        "character_designer.surface_weight_mirror",
-        text="Surface Mirror · Different Topology",
-        icon="MOD_DATA_TRANSFER",
-    )
-    layout.operator(
         "character_designer.locate_weight_symmetry",
         text="Locate Unmatched Vertices",
         icon="RESTRICT_SELECT_OFF",
+    )
+    layout.operator(
+        "character_designer.analyze_topology_boundary",
+        text="Analyze Topology Boundary",
+        icon="VIEWZOOM",
     )
     layout.operator(
         "character_designer.topology_mirror",
@@ -1665,5 +1704,6 @@ class CHARACTERDESIGNER_PT_weight_symmetry(Panel):
 
 WEIGHT_SYMMETRY_CLASSES = (
     CHARACTERDESIGNER_OT_copy_weight_to_opposite,
+    CHARACTERDESIGNER_OT_locate_weight_symmetry,
     CHARACTERDESIGNER_PT_weight_symmetry,
 )

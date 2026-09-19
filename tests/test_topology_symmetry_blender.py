@@ -282,6 +282,22 @@ def test_repair_selection_fills_hole_and_welds_opposite_boundary():
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
+def test_centerline_virtual_boundary_accepts_source_touching_center():
+    obj, _rig = make_fixture()
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    for index in (0, 1):
+        bm.verts[index].co.x = 0.0
+    bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+    descriptor = topology.build_boundary_descriptor(bpy.context)
+    assert descriptor.source_side == 1
+    assert descriptor.boundary_type == "CENTERLINE_VIRTUAL"
+    assert set(descriptor.center_vertices) == {0, 1}
+    assert set(descriptor.selected_vertices) == {0, 1, 2, 3, 4}
+    assert len(descriptor.physical_boundary) == 4
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
 def test_registration_and_operator_poll():
     reset_scene()
     character_designer.register()
@@ -290,6 +306,7 @@ def test_registration_and_operator_poll():
         assert "UNDO" in cls.bl_options
         assert bpy.ops.character_designer.topology_mirror.get_rna_type()
         assert bpy.ops.character_designer.topology_mirror_repair.get_rna_type()
+        assert bpy.ops.character_designer.analyze_topology_boundary.get_rna_type()
         assert not cls.poll(bpy.context)
     finally:
         character_designer.unregister()
@@ -301,6 +318,7 @@ TESTS = (
     test_locked_target_refuses_before_mesh_swap,
     test_selected_source_overrides_active_group_side,
     test_repair_selection_fills_hole_and_welds_opposite_boundary,
+    test_centerline_virtual_boundary_accepts_source_touching_center,
     test_registration_and_operator_poll,
 )
 

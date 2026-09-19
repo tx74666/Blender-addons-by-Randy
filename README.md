@@ -5,7 +5,29 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.8 | [character_designer](addons/character_designer) | [character_designer-0.61.8.zip](dist/character_designer-0.61.8.zip) |
+| Character Designer | 0.61.19 | [character_designer](addons/character_designer) | [character_designer-0.61.19.zip](dist/character_designer-0.61.19.zip) |
+
+Character Designer 0.61.19 按“手指顶面”解释面选择，支持沿手指延伸的一整条连续四边形面带，默认朝顶面内侧弯折。骨架编辑模式的预览用红线显示当前轴、紫色骨架轮廓显示目标 Roll，并把横向转轴和弧线放在原有关节中心。**Calibrate Bone Roll** 按钮始终可见，捕获顶面后选择一条指骨链即可应用；只校准 Roll，不移动骨骼 Head/Tail。旧版已保存的方向保持原样，重新捕获后采用顶面约定。
+
+Character Designer 0.61.18 在 **Rig → Body → Fingers** 增加面/边定义的弯折方向：蓝箭头指向指尖，橙箭头由面法向定义弯折侧，绿弧线预览正向弯曲；支持翻转箭头。确认后在骨架编辑模式选择一条手指链并校准，使每节骨骼的 Local X 正角度朝橙箭头弯。定义随文件保存，应用支持回滚与 Undo；网格、权重及 Shape Keys 不变。详见插件 README。
+
+Character Designer 0.61.17 增加保守的 **Miscellaneous → Finger Joint Prototype**：选中一个闭合环线后，只在两侧连续四边形带中各插入一圈，保留中间圈，支持 Side A / Side B 不同间距，并创建可追踪的关节标记。不支持的拓扑会拒绝执行；不改骨骼、权重或 Shape Key 值。
+
+Character Designer 0.61.16 增强 Shape Key 清理的写入验收：现在同时核验 Mesh KeyBlock、Edit Mode 的 BMesh Shape Key 层，以及当前活动 Shape Key 的 BMesh 坐标；写入或回滚任一层不一致都会安全失败并报告，而不是留下拖动滑块后复发的假成功。
+
+Character Designer 0.61.15 修正 Shape Key 清理的 Edit Mode 写回：同时更新 KeyBlock、BMesh Shape Key 层和活动 Shape Key 的 BMesh 坐标，并按正确顺序提交，避免清理后拖动滑块又恢复旧位移。完整双侧网格也会按 Basis 坐标清理两侧。
+
+Character Designer 0.61.14 修正 Shape Key 清理：完整双侧网格即使没有 Mirror Modifier，也会按 Basis 坐标寻找真实对侧顶点，同时清理并选中两侧；半模型仍由 Mirror Modifier 生成对侧。这样脸部 Shape Key 不会只清左手而留下右手位移。
+
+Character Designer 0.61.13 修正 Shape Key 清理的镜像场景：镜像配对使用 Basis 坐标而不是当前表情坐标；启用 object-local X Mirror 且存在真实对侧顶点时，会同时清理并选中两侧对应点。半模型没有真实对侧点时，清理源点即可由 Mirror Modifier 生成另一侧。
+
+Character Designer 0.61.12 修正 Shape Key 清理：不再使用容易误解的 Active/All 两种模式，而是读取 Shape Keys 列表中通过 Shift 多选得到的 `ShapeKey.select`。点击 **Clear Selected from Chosen Keys** 后，只清除当前选中 Mesh 顶点在这些 Shape Key 中的变形；未选 Shape Key 和未选顶点保持不变。
+
+Character Designer 0.61.11 为 Topology Mirror 增加只读 **Analyze Topology Boundary**。它把选中的单侧面区、中心线顶点、真实边界和虚拟中心线段整理成 Boundary Descriptor；触碰 X=0 中线的合法源区不再在分析层被直接判错。此版本只验证边界识别，不改变现有拓扑替换执行流程。
+
+Character Designer 0.61.10 在 **Miscellaneous → Shape Key** 增加两个局部清理按钮。Edit Mode 选中顶点后，可只从当前 Shape Key 或所有相对 Shape Key 中清除这些顶点的变形，恢复到各自的 `relative_key`；未选顶点、Basis、权重、拓扑和 Shape Key 动画设置不变，操作支持 Undo。共享 Mesh、绝对 Shape Key、锁定 Shape Key 会在写入前拒绝。
+
+Character Designer 0.61.9 移除容易混淆的 **Surface Mirror · Different Topology**。保留的 **Locate Unmatched Vertices** 已归入 Weight Symmetry，用来定位严格权重镜像失败的顶点；不同拓扑的权重插值不再作为主流程。局部删点／破洞请使用 **Topology Mirror · Repair Selection**。
 
 Character Designer 0.61.8 在 Weight → Weight Symmetry 增加 **Topology Mirror · Repair Selection**。选中完整的单侧源面区后，修复模式把源面镜像到另一侧，按 Merge Distance 复用近处顶点，缺失顶点自动创建，删除由焊接顶点组成的旧目标面并重新接回源面；权重、Shape Key、UV 和网格属性继续事务验证。它专门处理局部删点／破洞，不会放宽原来的严格 Topology Mirror 匹配规则。
 

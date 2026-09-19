@@ -13,3 +13,6 @@
   committed, or pushed; follow the user's authorization for Git operations.
 - Blender installation directories remain deployment copies. Do not describe
   them as junctions or physically shared files unless that has been verified.
+- For Finger Joint geometry work, read `docs/finger_joint_tool.md` first.
+  Preserve Shape Keys and existing weights, keep topology validation
+  conservative, and do not add runtime AI dependencies.

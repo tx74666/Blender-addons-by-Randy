@@ -10,6 +10,9 @@ from bpy.props import EnumProperty
 from bpy.types import Operator, Panel
 from mathutils import Vector
 
+from .finger_joint import draw_finger_joint_controls
+from .finger_root import draw_finger_root_controls
+from . import finger_flex
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
@@ -110,15 +113,17 @@ def _sort_key(bone):
 
 
 def _head(bone):
-    return Vector(bone.head)
+    return Vector(bone.head if isinstance(bone, bpy.types.EditBone) else bone.head_local)
 
 
 def _tail(bone):
-    return Vector(bone.tail)
+    return Vector(bone.tail if isinstance(bone, bpy.types.EditBone) else bone.tail_local)
 
 
 def _axis(bone, axis):
-    return Vector(bone.x_axis if axis == "X" else bone.z_axis).normalized()
+    if isinstance(bone, bpy.types.EditBone):
+        return Vector(bone.x_axis if axis == "X" else bone.z_axis).normalized()
+    return bone.matrix_local.to_3x3().col[0 if axis == "X" else 2].normalized()
 
 
 def _bone_direction(bone):
@@ -495,35 +500,49 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
         if settings is None:
             layout.label(text="Character Designer state is unavailable.", icon="ERROR")
             return
-        if armature is None:
-            layout.label(text="Select the main Armature.", icon="INFO")
-            return
+        mesh_edit = context.mode == "EDIT_MESH" and context.edit_object is not None
 
-        layout.label(text="Selected finger bones only; body bones are ignored.", icon="BONE_DATA")
-        layout.prop(settings, "finger_axis", text="Flex Axis")
-        layout.prop(settings, "finger_reference", text="Roll Reference")
+        finger_flex.draw_controls(layout, context)
 
-        row = layout.row(align=True)
-        row.operator("character_designer.finger_roll", text="Check", icon="VIEWZOOM").action = "CHECK"
-        if settings.finger_preview_active:
-            row.operator("character_designer.finger_roll", text="Hide Preview", icon="HIDE_OFF").action = "HIDE_PREVIEW"
-        else:
-            row.operator("character_designer.finger_roll", text="Preview", icon="HIDE_ON").action = "PREVIEW"
-        apply_row = layout.row()
-        apply_row.enabled = armature.mode == "EDIT"
-        apply_row.operator("character_designer.finger_roll", text="Apply Correction", icon="FILE_TICK").action = "APPLY"
-        if armature.mode != "EDIT":
-            layout.label(text="Apply requires Armature Edit Mode.", icon="INFO")
-        if settings.finger_status:
-            icon = {
-                "SUCCESS": "CHECKMARK",
-                "WARNING": "ERROR",
-                "ERROR": "ERROR",
-            }.get(settings.finger_status_level, "INFO")
-            layout.label(text=settings.finger_status, icon=icon)
+        if armature is not None:
+            layout.prop(finger_flex.state(context), "show_legacy")
+
+        if armature is not None and finger_flex.state(context).show_legacy:
+            roll_box = layout.box()
+            roll_box.label(text="Legacy Roll Reference", icon="BONE_DATA")
+            roll_box.label(text="Matches existing axes; does not define the bend side.")
+            roll_box.label(text="Selected finger bones only; body bones are ignored.", icon="BONE_DATA")
+            roll_box.prop(settings, "finger_axis", text="Flex Axis")
+            roll_box.prop(settings, "finger_reference", text="Roll Reference")
+
+            row = roll_box.row(align=True)
+            row.operator("character_designer.finger_roll", text="Check", icon="VIEWZOOM").action = "CHECK"
+            if settings.finger_preview_active:
+                row.operator("character_designer.finger_roll", text="Hide Preview", icon="HIDE_OFF").action = "HIDE_PREVIEW"
+            else:
+                row.operator("character_designer.finger_roll", text="Preview", icon="HIDE_ON").action = "PREVIEW"
+            apply_row = roll_box.row()
+            apply_row.enabled = armature.mode == "EDIT"
+            apply_row.operator("character_designer.finger_roll", text="Apply Correction", icon="FILE_TICK").action = "APPLY"
+            if armature.mode != "EDIT":
+                roll_box.label(text="Apply requires Armature Edit Mode.", icon="INFO")
+            if settings.finger_status:
+                icon = {
+                    "SUCCESS": "CHECKMARK",
+                    "WARNING": "ERROR",
+                    "ERROR": "ERROR",
+                }.get(settings.finger_status_level, "INFO")
+                roll_box.label(text=settings.finger_status, icon=icon)
+        elif armature is None and not mesh_edit:
+            layout.label(text="Select the mesh or main Armature.", icon="INFO")
+
+        draw_finger_root_controls(layout, context)
+        if mesh_edit:
+            draw_finger_joint_controls(layout, context)
 
 
 FINGER_BONES_CLASSES = (
+    *finger_flex.CLASSES,
     CHARACTERDESIGNER_OT_finger_roll,
     CHARACTERDESIGNER_PT_fingers,
 )
@@ -531,9 +550,11 @@ FINGER_BONES_CLASSES = (
 
 def register_finger_bones_runtime():
     """Keep the preview handler lazy; no viewport draw hook is needed until Preview."""
+    finger_flex.register_runtime()
 
 
 def unregister_finger_bones_runtime():
+    finger_flex.unregister_runtime()
     global _PREVIEW_HANDLE, _PREVIEW_SHADER
     _clear_preview(bpy.context)
     if _PREVIEW_HANDLE is not None:

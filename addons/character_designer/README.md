@@ -1,4 +1,111 @@
-# Character Designer 0.61.8
+# Character Designer 0.61.19
+
+Version 0.61.19 corrects the surface workflow to treat the artist's selection as
+the **top of the finger**. **Finger Top Surface / Bone Roll > Capture Top Strip
+/ Edge** accepts a connected, one-quad-wide row of top faces (including short
+or square quads), a single elongated quad, or one longitudinal edge with an
+active adjacent top face. The strip's end cross-edges establish its length;
+an area-weighted surface normal establishes its top. New captures bend inward,
+opposite the outward top normal. Branches, loops, disconnected patches and rows
+that turn across the finger are refused. Existing saved 0.61.18 guides retain
+their original sign; recapture them to adopt the top-surface convention.
+
+Select the finger chain in Armature Edit Mode and use **Preview Roll + Bend**:
+red shows the current Local X axis, purple shows the proposed transverse hinge
+and wire bone orientation, and green shows a positive bend arc. Each hinge
+passes through its original bone Head inside the finger. **Calibrate Bone
+Roll** is always visible, enabled after capture in Armature Edit Mode. It
+aligns Local X across the finger; positive `R X X` in Pose Mode curls inward.
+This corrects Roll only; it does not reposition joint centers or move the
+longitudinal bone direction. The mesh-mode surface arc is only a direction
+guide, not a joint-position proposal.
+
+Version 0.61.18 adds **Rig > Body > Fingers > Bend Direction from Surface**.
+In Mesh Edit Mode on the Basis shape key, select one lengthwise quad and use
+**Capture Face / Edge**. Blue points toward the fingertip, orange follows the
+face normal (the bend side), and green previews a positive 45-degree arc.
+Use **Reverse Tip Arrow** or **Reverse Bend Arrow** to confirm the direction.
+For square/ambiguous faces, select the intended face first, switch to Edge
+Select and select one longitudinal edge; its active adjacent face supplies
+the normal. An edge with two sides and no active adjacent face is refused.
+
+Switch to Armature Edit Mode, select one continuous finger chain, preview,
+then **Align Selected Finger**. Every selected segment, including the first,
+gets a Local X axis whose positive rotation bends toward orange. Head/Tail,
+weights and Shape Keys stay unchanged. Apply supports Undo and rolls back on
+failure. Calibration requires a local, single-user, uniformly scaled armature,
+neutral finger/descendant pose transforms and no affected constraints;
+rig animation/drivers are currently refused. This is rest-axis calibration,
+not a new pose controller or weight correction.
+
+One current guide is saved per scene and follows its source object's transform.
+Recapture after changing the captured face or topology. The guide uses base edit
+geometry, not modifier-evaluated or posed surface normals. Existing Bone Roll
+Tools remain available in a collapsed optional section; they match existing
+axes and do not establish an anatomical bend side.
+
+Version 0.61.17 adds the unified **Rig > Body > Fingers** workflow. The
+**Joint Topology** section keeps the conservative closed-loop operation:
+select one loop in Mesh Edit Mode, lock it as the center loop, validate its two
+neighboring quad bands, and create one new loop on each side with independent
+Side A / Side B ratios. All three rings remain selected after creation.
+The **Finger Root / Placement** section provides five named finger slots;
+each locks one center face and uses the nearest matching Main Rig finger chain
+as the direction line, with two selected vertices as a manual fallback. It
+checks the face-normal-line/centerline intersection, previews the construction,
+and places the selected existing bone chain without changing weights or bone
+rolls.
+
+Version 0.61.16 hardens Shape Key cleanup verification. The operator now
+checks the Mesh KeyBlock, the Edit Mode BMesh Shape Key layer, and the active
+Shape Key's BMesh coordinates after every write and after rollback. Any
+mismatch is treated as a failure instead of being reported as a false success.
+
+Version 0.61.15 fixes Edit Mode Shape Key write-back. Cleanup now updates
+KeyBlock data, the BMesh Shape Key layer, and the active Shape Key's BMesh
+coordinates before committing the edit mesh, so dragging a key cannot restore
+the old accidental deformation. Full bilateral meshes are also paired from
+Basis coordinates.
+
+Version 0.61.14 fixes Shape Key cleanup for complete bilateral meshes without
+a Mirror modifier. Real opposite vertices are paired from Basis coordinates,
+so both sides are cleared and selected; half-meshes still rely on the Mirror
+modifier to generate the opposite side.
+
+Version 0.61.13 fixes Shape Key cleanup for mirrored meshes. Mirror pairing
+uses Basis coordinates rather than the currently edited expression coordinates,
+so a deformed source point can still find its real opposite. With an enabled
+object-local X Mirror and real opposite vertices, both sides are cleared and
+selected. A half-Mesh has no second base vertex, so clearing the source is
+enough for the Mirror modifier's generated side.
+
+Version 0.61.12 changes Shape Key cleanup to use Blender's native
+`ShapeKey.select` multi-selection. In Mesh Edit Mode, Shift-select the desired
+relative Shape Keys in the Shape Keys list, select the affected Mesh vertices,
+and click **Clear Selected from Chosen Keys**. Only those chosen keys and
+vertices are restored to their own `relative_key`; there is no broad All Keys
+operation.
+
+Version 0.61.11 adds the read-only **Analyze Topology Boundary** action to
+Topology Mirror. It builds a `BoundaryDescriptor` for a selected one-sided
+face region, including selected centerline vertices and a virtual centerline
+segment when the physical seam is not a closed loop. This release validates
+the analysis layer only; existing topology replacement and repair writes are
+unchanged until the descriptor is proven on more real meshes.
+
+Version 0.61.10 adds **Miscellaneous → Shape Key**. In Mesh Edit Mode,
+select the vertices whose accidental deformation should be removed, then clear
+them from the active relative Shape Key or from all editable relative keys.
+Each selected point is restored to that key's own `relative_key`; unselected
+points, Basis, topology, weights and animation settings stay unchanged. Shared
+Meshes, absolute keys and locked keys refuse before writing, and the operation
+is one Undo step.
+
+Version 0.61.9 removes **Surface Mirror · Different Topology**. The retained
+**Locate Unmatched Vertices** diagnostic now lives in Weight Symmetry and only
+selects the vertices that block strict weight copying. Different-topology
+weight interpolation is no longer registered or shown; repair actual local
+holes with **Topology Mirror · Repair Selection**.
 
 Version 0.61.8 adds **Topology Mirror · Repair Selection** beside the strict
 topology replacement action. Select a connected intact source face patch on
@@ -1135,23 +1242,6 @@ preserves each group's original center-line memberships and every other group, a
 cancels the entire batch before writing if any pair is invalid or a per-vertex
 Deform total would change. A completed single- or multi-pair operation is one
 Blender Undo step.
-
-For edited meshes with unequal vertex counts/positions, use **Surface Mirror ·
-Different Topology** explicitly. It reflects each destination position into the
-source half and samples actual base-mesh triangles with barycentric interpolation.
-The selected bone's region receives the complete mirrored Deform weight vector,
-including shoulder/elbow/finger blends; every destination keeps its original
-Deform total. This can change several Deform groups in that region. Source half,
-center vertices, non-Deform groups, and vertices outside the sampled region stay
-unchanged. No geometry, topology, Shape Key, rest bone or pose is edited.
-
-The default surface-distance bound is 2% of the shortest selected bone's local
-length. The operator's **Max Surface Distance** option is in mesh-local units;
-zero uses that default. Excessive distance, inconsistent normals, ambiguous
-nearby surfaces, missing opposite bones, locked changed groups or zero skin
-budget cancel the complete operation. This mode does not bind unweighted points
-or silently increase distance to force a match. Both modes verify their complete
-result and roll back on failure; repeated successful copies are idempotent.
 
 **Locate Unmatched Vertices** selects the exact vertices that block strict
 mirroring and enters vertex Edit Mode without changing weights. Return to Weight
