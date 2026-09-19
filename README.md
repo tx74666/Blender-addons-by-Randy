@@ -5,7 +5,11 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.19 | [character_designer](addons/character_designer) | [character_designer-0.61.19.zip](dist/character_designer-0.61.19.zip) |
+| Character Designer | 0.61.21 | [character_designer](addons/character_designer) | [character_designer-0.61.21.zip](dist/character_designer-0.61.21.zip) |
+
+Character Designer 0.61.21 改进 **Mirror Selected Region** 的整束识别：比较双向表面覆盖、截面宽度和沿长度的偏差分布，不再把仅包围盒重叠的其他头发都当成对应束。完整选择时整体替换唯一对侧连通块，包括相连残边；局部选择以边界 loop 为界，保留根部。绑定与未绑定共用操作，已有权重随网格镜像，现有骨架不动。编辑模式面板只保留 **Mirror Selected Region / Preview Replacement**，移除绑定区分、Local X=0、Shift 设置提示和 Shift-click 特殊行为。可选参考平面设置仍可通过 F3 的 **Mirror Settings** 调用。
+
+Character Designer 0.61.20 将几何镜像独立为 **Weight → Weight Symmetry → Mirror Selected Region**：无需骨骼、Armature 修改器或顶点组，支持整束封闭头发、单侧＋中线和安全接缝修补。默认平面为 Mesh Local X=0；Shift-click 主按钮设置独立参考对象和接缝容差。**Preview Mirror Plane / Target** 显示源侧、结果、平面和编号候选，对侧有歧义时由用户指定，不随意覆盖或追加重叠网格。保留 UV、材质、边属性、自定义法线、相对 Shape Keys 和权重；不支持安全保留的数据提前拒绝，支持事务回滚及单步 Undo/Redo。详见 [几何镜像说明](docs/mesh-mirror.md)。
 
 Character Designer 0.61.19 按“手指顶面”解释面选择，支持沿手指延伸的一整条连续四边形面带，默认朝顶面内侧弯折。骨架编辑模式的预览用红线显示当前轴、紫色骨架轮廓显示目标 Roll，并把横向转轴和弧线放在原有关节中心。**Calibrate Bone Roll** 按钮始终可见，捕获顶面后选择一条指骨链即可应用；只校准 Roll，不移动骨骼 Head/Tail。旧版已保存的方向保持原样，重新捕获后采用顶面约定。
 

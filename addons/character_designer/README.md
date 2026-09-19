@@ -1,4 +1,84 @@
-# Character Designer 0.61.19
+# Character Designer 0.61.21
+
+Version 0.61.21 makes **Mirror Selected Region** one geometry-and-weights action
+for both bound and unbound meshes; existing armatures/bones are retained unchanged.
+In Mesh Edit Mode the section now contains only **Mirror Selected Region** and
+**Preview Replacement**. Binding-status, coordinate and Shift-settings hint lines
+are removed, as is Shift-click interception. Optional reference/tolerance settings
+remain accessible through F3 **Mirror Settings**, without a permanent advanced box.
+
+A complete selected strand replaces ONE opposite vertex-connected island, not a
+union of nearby strands and not just vertices that individually match. Holes,
+different face counts and connected dangling edges do not force a repair workflow:
+the old target island is removed in full and rebuilt from the immutable source.
+Partial face selections instead define attachment boundary loops (or paths ending
+on an existing open mesh border). Replacement stops at those boundaries, including
+damaged/dangling geometry inside them, and preserves the outside/root region.
+
+Matching uses deterministic area-uniform samples, bidirectional surface coverage,
+width-aware proximity and longitudinal cross-section offset/continuity. A clipped
+tip or smooth positional drift can match without equal vertex/face counts. A strong
+match separated from other plausible candidates is automatic; mere bounding-box
+overlap with neighboring layers no longer blocks it. Equally plausible targets or
+insufficient surface evidence require an explicit choice. Scores are geometric
+heuristics, not confidence probabilities. Disconnected fragments are not combined
+into one replacement. Unknown loose remnants prevent automatic deletion.
+
+Validation: 12 data/transaction regressions, 6 whole-strand/boundary/UI regressions
+(including an actual armature), GUI Undo/Redo and UI screenshot checks. The latest
+saved X Hair was tested unchanged, with an in-memory damaged counterpart, and with
+that whole counterpart deleted. All three automatically reconstruct exactly one
+118-face strand, preserve neighboring hair/UV/materials and remain idempotent.
+No test saves the user's X.blend or edits the live scene.
+
+The following version notes describe the earlier interfaces; the current entry
+points and matching behavior are documented above.
+
+Version 0.61.20 introduces **Weight > Weight Symmetry > Mirror Selected Region**.
+Geometry mirroring no longer requires an active vertex group, .L/.R bones, or an
+Armature modifier. Select one connected source face region or an entire unbound
+hair island in Mesh Edit Mode. Closed islands without boundary loops are valid.
+The selected source is unchanged and stays selected after execution. A single
+action creates a missing opposite region or replaces/repairs an identified target.
+
+The default plane is explicitly **Mesh Local X=0** (not Global X). **Shift-click
+Mirror Selected Region** opens its plane/seam settings: choose any reference
+object, including an Empty, to use that object's X=0 plane. Object transforms are
+handled without Apply Transform or binding. **Preview Mirror Plane / Target**
+shows cyan source, green mirrored result, grey plane and numbered target outlines;
+click again to clear. Changed geometry/selection/transforms invalidate the overlay.
+No modifier-evaluated or posed geometry is used.
+
+A unique close surface match is automatic. Multiple spatially overlapping islands
+or a weak match require a numbered target choice; there is no "append anyway"
+fallback. Matching uses whole regions, not nearest-vertex deletion. Attachments
+must have a uniquely matched seam; only those seam vertices can weld. Single-side
+selections may include centerline boundary edges, but truly cross-plane faces are
+not automatically cut. Repeated execution cannot append another copy over an
+existing candidate. Legacy Copy/Repair/Boundary operators remain registered for
+script compatibility but are no longer the displayed geometry workflow.
+
+UV coordinates/pins, material assignments, smooth/sharp/seam/crease/bevel data,
+supported point/edge/face/corner attributes, custom split normals, relative Shape
+Keys and weights are remapped transactionally. Generic attribute values are copied
+verbatim; only geometric positions and custom normals are reflected. .L/.R group
+names swap and missing opposite groups are created without bones; unsuffixed names
+stay unchanged. Locked groups cannot be altered. Unrelated loose edges/vertices
+and neighboring hair are retained. UV coordinates are copied, not flipped in UV space.
+
+Preflight refuses shared/linked meshes, non-Basis editing, locked or animated/driven
+or absolute Shape Keys, side-named Shape Key masks, vertex-parenting and unsupported
+bound/simulation/index-based modifier data. An enabled Mirror modifier must be
+explicitly disabled for viewport AND render first to prevent duplicate geometry.
+The tool never applies modifiers or disables them itself. Unsupported attributes
+fail during staging, before the original data is swapped. Shape Keys that move a
+shared centerline off the plane are refused rather than changing the source.
+Failure rolls back; successful replacement is one Blender Undo/Redo step.
+
+Validated with 12 synthetic regressions, a real GUI single-step Undo/Redo test and
+the saved X Hair mesh (unbound, asymmetric 118-face / 163-face strands). Neighboring
+hair, source positions, UV/materials and repeated-run counts were checked. Neither
+the saved X.blend nor the user's live scene was changed by validation.
 
 Version 0.61.19 corrects the surface workflow to treat the artist's selection as
 the **top of the finger**. **Finger Top Surface / Bone Roll > Capture Top Strip

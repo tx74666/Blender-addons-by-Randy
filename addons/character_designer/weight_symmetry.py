@@ -1649,6 +1649,11 @@ def _active_direction_label(context):
 def draw_weight_symmetry(layout, context):
     """Draw the intentionally minimal Weight-page action."""
 
+    if context.mode == "EDIT_MESH":
+        layout.operator("character_designer.mirror_selected_region", text="Mirror Selected Region", icon="MOD_MIRROR")
+        layout.operator("character_designer.mesh_mirror_preview", text="Preview Replacement", icon="HIDE_OFF")
+        return
+
     selected_count = _selected_pose_count_for_ui(context)
     if selected_count >= 2:
         text = f"Copy Selected {selected_count} Bones to Opposite"
@@ -1668,21 +1673,6 @@ def draw_weight_symmetry(layout, context):
         "character_designer.locate_weight_symmetry",
         text="Locate Unmatched Vertices",
         icon="RESTRICT_SELECT_OFF",
-    )
-    layout.operator(
-        "character_designer.analyze_topology_boundary",
-        text="Analyze Topology Boundary",
-        icon="VIEWZOOM",
-    )
-    layout.operator(
-        "character_designer.topology_mirror",
-        text="Topology Mirror · Copy Selection to Opposite",
-        icon="MOD_MIRROR",
-    )
-    layout.operator(
-        "character_designer.topology_mirror_repair",
-        text="Topology Mirror · Repair Selection",
-        icon="SNAP_ON",
     )
 
 

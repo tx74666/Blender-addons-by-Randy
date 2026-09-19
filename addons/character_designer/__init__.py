@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 61, 19),
+    "version": (0, 61, 21),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -102,6 +102,9 @@ from .ui_constants import (
 )
 from .weight_symmetry import WEIGHT_SYMMETRY_CLASSES
 from .topology_symmetry import TOPOLOGY_SYMMETRY_CLASSES
+from .mesh_mirror_ui import (
+    MESH_MIRROR_CLASSES, register_mesh_mirror_runtime, unregister_mesh_mirror_runtime,
+)
 from .forearm_twist import (
     FOREARM_TWIST_CLASSES,
     CharacterDesignerForearmTwistState,
@@ -8426,6 +8429,7 @@ CLASSES = (
     *WIDGET_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
     *TOPOLOGY_SYMMETRY_CLASSES,
+    *MESH_MIRROR_CLASSES,
     *SHAPE_KEY_CLASSES,
     *FINGER_JOINT_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
@@ -8563,6 +8567,7 @@ def register():
     )
     if all(registration_state):
         _validate_registration_integrity()
+        register_mesh_mirror_runtime()
         register_finger_bones_runtime()
         register_finger_root_runtime()
         register_animation_runtime()
@@ -8644,6 +8649,7 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_references")
+        register_mesh_mirror_runtime()
         register_finger_bones_runtime()
         register_finger_root_runtime()
         register_animation_runtime()
@@ -8656,6 +8662,7 @@ def register():
         _register_source_watch()
     except Exception:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
+        unregister_mesh_mirror_runtime()
         unregister_finger_bones_runtime()
         unregister_finger_root_runtime()
         unregister_animation_runtime()
@@ -8683,6 +8690,7 @@ def register():
 
 def unregister():
     stop_export_ui()
+    unregister_mesh_mirror_runtime()
     unregister_finger_bones_runtime()
     unregister_finger_root_runtime()
     unregister_animation_runtime()

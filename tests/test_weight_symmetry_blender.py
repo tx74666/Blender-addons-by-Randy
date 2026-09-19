@@ -379,6 +379,9 @@ class OperatorCaptureLayout:
         self.calls.append((operator_id, text, icon))
         return object()
 
+    def label(self, *, text):
+        pass
+
 
 def membership(mesh_obj, group_name, vertex_index):
     group = mesh_obj.vertex_groups.get(group_name)
