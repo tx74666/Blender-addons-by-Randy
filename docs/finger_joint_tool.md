@@ -1,6 +1,69 @@
 # Finger Joint Tool
 
-## Scope
+## Two-joint layout (0.61.22)
+
+The main Mesh Edit Mode entry is now **Rig > Body > Fingers > Finger Ring Layout**.
+`finger_layout.py` owns capture, surface sampling, staged topology and data
+verification; `finger_layout_ui.py` owns persistent scene state and lazy overlays.
+The old one-loop operator remains available via F3 **Finger Joint Rings**, with
+its original Side A/B spacing settings in the confirmation dialog.
+
+1. Select one longitudinal row of at least two top quads on the finger body.
+   Capture expands each band around the circumference, stopping with an error
+   at incompatible ring sizes, hidden faces, open boundaries or branches. It
+   never silently includes palm webbing or rebuilds a fingertip cap. A valid
+   previous `finger_flex` top-strip guide can be reused when no faces are selected.
+2. The captured section's ends remain fixed. Centerline arc-length fractions
+   specify the two joint positions; original per-vertex longitudinal rails
+   interpolate the real non-circular cross-sections. A valid flex guide supplies
+   root-to-tip order, otherwise the artist verifies the labelled boundaries and
+   can reverse them. Coral/cyan numbered rings mark joint centers; support and
+   between-joint rings are muted grey. Numeric sliders update preview only.
+3. Three-ring width is a half-width on either side of each center, separately
+   adjustable per joint. Between-joint count excludes those support rings and
+   all original artist rings. Roots, tips and **all original vertex coordinates**
+   remain unchanged. Original shape loops are never dissolved; adding rings to
+   non-planar quads/Subdivision can still affect evaluated shading/surface shape.
+4. Generate / Update stages a fresh copy of the captured mesh, subdivides only
+   the matching longitudinal connectors and interpolates loop/point data. Source
+   data is stored as a private Mesh referenced by the Scene recipe (one current
+   layout). Save/reopen keeps the update workflow. Repeated update is idempotent;
+   changing counts rebuilds from the same source, not from the last result.
+5. A full current-data fingerprint prevents overwriting intervening geometry,
+   UV/attribute, Shape Key, transform or weight edits. Because Edit Mode hides
+   some RNA attribute buffers, fingerprinting uses an unlinked synchronized
+   snapshot. The real scene is not switched or edited during preview/capture.
+
+Shape Keys remain present with original coordinates, values and relationships;
+new coordinates and weights are interpolated. No bone or group definitions are
+rewritten. Custom normals use a temporary float-vector loop layer for interpolation;
+unaffected vertices retain original packed normals to avoid re-quantization of
+the rest of the character. The affected normal-space encode permits a 0.005
+vector tolerance, while unaffected normal vectors are checked at 1e-6. Supported
+original attributes/UVs, faces, seam/sharp flags, weights and Shape Keys are
+verified before swapping meshes. Commit exceptions restore the old mesh/recipe.
+
+Source capture and previews require the Basis key and one local single-user mesh.
+Animated/driven/absolute/locked keys, Skin data, index-parented children,
+Multires levels, baked or index-dependent modifiers and unsupported attribute
+types are rejected. Armature/Subdivision/Mirror modifiers are retained, not
+applied; guide lines refer to base Edit Mode coordinates, not posed evaluation.
+Hidden preview is not cancellation of applied geometry; use Undo to revert, or
+X to release the editable recipe without deleting geometry. Load/Undo/Redo clear
+transient drawing handlers' cached geometry. No H/S/Shift keymap is installed.
+
+Not implemented here: direct viewport ring dragging, removal/relocation of original
+shape rings, asymmetric bend-side spacing, automatic bone placement, reweighting,
+or 45/90-degree deformation acceptance. These are separate from retaining and
+interpolating the character's existing weights. This scope intentionally keeps
+the first geometry workflow predictable.
+
+Tests: `tests/test_finger_layout_blender.py`, `tests/test_finger_layout_gui.py`.
+X integration: `X/tests/test_real_x_finger_layout_blender.py`, run against the saved
+X.blend only in a disposable Blender process. All ten real fingers pass with six
+top quads and 48 added vertices each; the file hash and rig remain unchanged.
+
+## Earlier single-loop prototype
 
 The prototype logic lives in `addons/character_designer/finger_joint.py` and is
 exposed under `Rig > Body > Fingers > Joint Topology`. The same Fingers panel
@@ -79,7 +142,7 @@ checks. X's `tests/test_real_x_finger_flex_blender.py` exercises both hands' 30
 real bones in a disposable process without saving the source asset.
 
 Still not implemented: automatic anatomical face/direction discovery, weight presets,
-pose preview, multi-joint batch creation, and complex finger-root or webbing
+pose preview, and complex finger-root or webbing
 topology. These should be added only after real test meshes show a stable need.
 
 ## Verification

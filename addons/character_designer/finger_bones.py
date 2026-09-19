@@ -10,9 +10,8 @@ from bpy.props import EnumProperty
 from bpy.types import Operator, Panel
 from mathutils import Vector
 
-from .finger_joint import draw_finger_joint_controls
 from .finger_root import draw_finger_root_controls
-from . import finger_flex
+from . import finger_flex, finger_layout_ui
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
@@ -502,6 +501,8 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
             return
         mesh_edit = context.mode == "EDIT_MESH" and context.edit_object is not None
 
+        if mesh_edit:
+            finger_layout_ui.draw_controls(layout, context)
         finger_flex.draw_controls(layout, context)
 
         if armature is not None:
@@ -537,12 +538,11 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
             layout.label(text="Select the mesh or main Armature.", icon="INFO")
 
         draw_finger_root_controls(layout, context)
-        if mesh_edit:
-            draw_finger_joint_controls(layout, context)
 
 
 FINGER_BONES_CLASSES = (
     *finger_flex.CLASSES,
+    *finger_layout_ui.CLASSES,
     CHARACTERDESIGNER_OT_finger_roll,
     CHARACTERDESIGNER_PT_fingers,
 )
@@ -551,9 +551,11 @@ FINGER_BONES_CLASSES = (
 def register_finger_bones_runtime():
     """Keep the preview handler lazy; no viewport draw hook is needed until Preview."""
     finger_flex.register_runtime()
+    finger_layout_ui.register_runtime()
 
 
 def unregister_finger_bones_runtime():
+    finger_layout_ui.unregister_runtime()
     finger_flex.unregister_runtime()
     global _PREVIEW_HANDLE, _PREVIEW_SHADER
     _clear_preview(bpy.context)

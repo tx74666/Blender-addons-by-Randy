@@ -1,4 +1,41 @@
-# Character Designer 0.61.21
+# Character Designer 0.61.22
+
+Version 0.61.22 adds **Rig > Body > Fingers > Finger Ring Layout** in Mesh Edit
+Mode. Select one continuous top row of quads along the finger body, excluding the
+palm/webbing and fingertip cap, and click **Capture Top Strip**. Coral 1 and cyan 2
+are complete surface-following joint preview rings. Drag the numeric sliders to
+place them; choose single or three-ring joints, independent half-widths, and 0–8
+additional rings between joints. Root/tip boundary labels and Reverse Root / Tip
+make the chosen ordering explicit. Preview changes no mesh, bones or weights.
+
+**Generate / Update Rings** inserts missing rings and reuses coincident original
+rings. Original shape rings/vertices and both boundaries stay fixed; this is not
+arbitrary remeshing or removal of artist support loops. Every update is rebuilt
+from an immutable mesh snapshot saved with the scene, so reducing the added-ring
+count removes only this layout's generated rings. Capture a new strip to work on
+another finger; X releases the stored layout without deleting its applied result.
+Outside mesh/data edits invalidate the recipe rather than being overwritten.
+
+UVs, materials, supported attributes, existing weights and all relative Shape
+Keys are retained; new data is interpolated. Custom normals outside the section
+keep their original packed data; affected normals are interpolated/re-encoded
+with Blender's angular quantization. Validation occurs on a staged mesh, with
+rollback and real Undo/Redo. No rig is required; existing rigs are untouched.
+Animated/absolute/locked Shape Keys, baked/index-dependent modifiers, shared
+meshes, open/branched/nonquad bands and unsafe attributes are rejected up front.
+The overlay follows the undeformed base cage, not evaluated modifiers/poses.
+
+The existing one-loop-to-three-ring operator remains available through F3
+**Finger Joint Rings**, now with a Side A/B spacing dialog. Its old invalid
+Blender 5.2 icon is fixed. Viewport ring dragging, asymmetric inside/outside
+spacing, bone repositioning, automatic reweighting and bend-quality pose tests
+are not part of this first layout release. Numeric placement is live-previewed.
+
+Validation: 7 dedicated headless cases, existing finger/roll/root/page regressions,
+GUI preview plus actual Undo/Redo and post-redo update, and all 10 real X fingers
+(6 selected top quads each, 48 inserted vertices, idempotent repeat, 10 Shape Keys
+and custom normals preserved). The user's X.blend and live scene are not saved
+or modified by tests. See `docs/finger_joint_tool.md` in the source repository.
 
 Version 0.61.21 makes **Mirror Selected Region** one geometry-and-weights action
 for both bound and unbound meshes; existing armatures/bones are retained unchanged.

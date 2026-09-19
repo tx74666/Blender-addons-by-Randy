@@ -505,6 +505,17 @@ class CHARACTERDESIGNER_OT_finger_joint(Operator):
             self.report({"WARNING"}, str(exc))
             return {"CANCELLED"}
 
+    def invoke(self, context, event):
+        if self.action == 'CREATE':
+            return context.window_manager.invoke_props_dialog(self)
+        return self.execute(context)
+
+    def draw(self, context):
+        self.layout.label(text='One selected center loop becomes three rings.')
+        settings = _settings(context)
+        self.layout.prop(settings, 'side_a_ratio')
+        self.layout.prop(settings, 'side_b_ratio')
+
 
 def draw_finger_joint_controls(layout, context):
     """Draw the topology part inside the unified Fingers panel."""
@@ -531,7 +542,7 @@ def draw_finger_joint_controls(layout, context):
     row = box.row(align=True)
     row.enabled = context.mode == "EDIT_MESH"
     row.operator("character_designer.finger_joint", text="Check", icon="VIEWZOOM").action = "CHECK"
-    row.operator("character_designer.finger_joint", text="Create 3 Rings", icon="LOOP_CUT_AND_SLIDE").action = "CREATE"
+    row.operator("character_designer.finger_joint", text="Create 3 Rings", icon="MESH_GRID").action = "CREATE"
     if settings.last_message:
         box.label(text=settings.last_message, icon="CHECKMARK")
 

@@ -5,7 +5,9 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.21 | [character_designer](addons/character_designer) | [character_designer-0.61.21.zip](dist/character_designer-0.61.21.zip) |
+| Character Designer | 0.61.22 | [character_designer](addons/character_designer) | [character_designer-0.61.22.zip](dist/character_designer-0.61.22.zip) |
+
+Character Designer 0.61.22 在 **Rig → Body → Fingers** 增加 **Finger Ring Layout**：选择一条指身顶面长条后，显示珊瑚红／青蓝两个贴合截面的关节预览环；位置、各自三环宽度、中间补充环数量分别可调。点击 **Generate / Update Rings** 才修改网格。保留原有形体环、根端边界和指尖封口，反复更新从保存的原网格重新生成，不累积加边；保持已有权重并插值新点，保护 UV、Shape Keys 与自定义法线，不修改骨骼。支持保存重开继续调整、Undo/Redo 和失败回滚。第一版限规则四边面指身，暂不删除原有形体环、不自动重算权重或改变骨骼。旧单环工具移至 F3 **Finger Joint Rings**，避免面板重复。详见 [手指工具说明](docs/finger_joint_tool.md)。
 
 Character Designer 0.61.21 改进 **Mirror Selected Region** 的整束识别：比较双向表面覆盖、截面宽度和沿长度的偏差分布，不再把仅包围盒重叠的其他头发都当成对应束。完整选择时整体替换唯一对侧连通块，包括相连残边；局部选择以边界 loop 为界，保留根部。绑定与未绑定共用操作，已有权重随网格镜像，现有骨架不动。编辑模式面板只保留 **Mirror Selected Region / Preview Replacement**，移除绑定区分、Local X=0、Shift 设置提示和 Shift-click 特殊行为。可选参考平面设置仍可通过 F3 的 **Mirror Settings** 调用。
 
