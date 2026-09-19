@@ -14,7 +14,7 @@ from character_designer import finger_layout as layout
 from character_designer.mesh_mirror import _fingerprint
 
 
-def fixture():
+def fixture(rooted=False):
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     bpy.ops.object.select_all(action='SELECT')
@@ -26,8 +26,21 @@ def fixture():
     faces = [(i*8+j, i*8+(j+1)%8, (i+1)*8+(j+1)%8, (i+1)*8+j)
              for i in range(6) for j in range(8)]
     faces += [tuple(reversed(range(8))), tuple(range(48, 56))]
+    root_faces = []
+    if rooted:
+        faces.pop(48)
+        # Deliberately irregular triangulated palm transition, not a 3-to-1 fan.
+        for z, radius in ((-.4, .35), (-3., 2.)):
+            vertices += [(math.cos(j*math.tau/8)*radius, math.sin(j*math.tau/8)*radius, z) for j in range(8)]
+        for j in range(8):
+            a, b, c, d = j, (j+1)%8, 56+(j+1)%8, 56+j
+            if j == 0: root_faces.extend((len(faces), len(faces)+1))
+            faces.extend(((a, d, c), (a, c, b)))
+            faces.append((56+j, 64+j, 64+(j+1)%8, 56+(j+1)%8))
+        faces.append(tuple(reversed(range(64, 72))))
+    extra = len(vertices)
     vertices += [(5, 0, 0), (6, 0, 0), (5, 1, 0)]
-    faces += [(56, 57, 58)]
+    faces += [(extra, extra+1, extra+2)]
     mesh = bpy.data.meshes.new('FingerLayoutFixture')
     mesh.from_pydata(vertices, [], faces)
     obj = bpy.data.objects.new('FingerLayoutFixture', mesh)
@@ -57,6 +70,8 @@ def fixture():
     for seq in (bm.faces, bm.edges, bm.verts):
         for item in seq: item.select_set(False)
     for i in range(6): bm.faces[i*8].select_set(True)
+    if rooted:
+        for i in root_faces: bm.faces[i].select_set(True)
     bmesh.update_edit_mesh(mesh)
     return obj
 
@@ -68,7 +83,7 @@ def snap(obj):
 def test_preview_update_data():
     obj = fixture()
     before = snap(obj)
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     settings = layout.state(bpy.context)
     settings.joint_one, settings.joint_two = .31, .69
     settings.three_rings = True
@@ -115,7 +130,7 @@ def test_preview_update_data():
 
 def test_guards_and_rollback():
     obj = fixture()
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     settings = layout.state(bpy.context)
     before = snap(obj)
     settings.joint_one, settings.joint_two = .65, .35
@@ -145,7 +160,7 @@ def test_guards_and_rollback():
 
 def test_source_ring_reuse_and_direction():
     obj = fixture()
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     s = layout.state(bpy.context)
     s.three_rings, s.between_rings = False, 0
     s.joint_one, s.joint_two = 1/3, 2/3
@@ -166,12 +181,12 @@ def test_invalid_strip_and_stale_attributes():
     bm.faces[49].select_set(True)  # Fingertip cap must not silently be rebuilt.
     before = snap(obj)
     try:
-        layout.capture(bpy.context)
+        layout.capture(bpy.context, legacy=True)
         assert False, 'Nonquad selection accepted'
     except ValueError: pass
     assert snap(obj) == before
     obj = fixture()
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     bpy.ops.object.mode_set(mode='OBJECT')
     obj.data.attributes['ArtistFloat'].data[58].value = 77
     bpy.ops.object.mode_set(mode='EDIT')
@@ -185,7 +200,7 @@ def test_invalid_strip_and_stale_attributes():
 
 def test_save_reopen_update():
     obj = fixture()
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     s = layout.state(bpy.context)
     s.reverse = False
     s.joint_one, s.joint_two = .3, .7
@@ -214,7 +229,7 @@ def test_custom_normals_and_uv_seams():
             e.use_edge_sharp = True
     obj.data.normals_split_custom_set([expected]*len(obj.data.loops))
     bpy.ops.object.mode_set(mode='EDIT')
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     layout.apply_layout(bpy.context)
     bpy.ops.object.mode_set(mode='OBJECT')
     assert obj.data.has_custom_normals
@@ -233,7 +248,7 @@ def test_unbound_transforms_and_open_band():
     obj.matrix_world = Matrix.Translation((3, -2, 1)) @ Matrix.Rotation(.5, 4, 'Y') @ Matrix.Diagonal((-2, .7, 1.5, 1))
     bpy.context.view_layer.update()
     bpy.ops.object.mode_set(mode='EDIT')
-    layout.capture(bpy.context)
+    layout.capture(bpy.context, legacy=True)
     original = [tuple(v.co) for v in layout.state(bpy.context).source.vertices]
     layout.apply_layout(bpy.context)
     obj.update_from_editmode()
@@ -246,7 +261,7 @@ def test_unbound_transforms_and_open_band():
     bmesh.update_edit_mesh(obj.data)
     before = snap(obj)
     try:
-        layout.capture(bpy.context)
+        layout.capture(bpy.context, legacy=True)
         assert False, 'Open finger band accepted'
     except ValueError as exc: assert 'open' in str(exc) or 'non-manifold' in str(exc)
     assert snap(obj) == before

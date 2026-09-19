@@ -5,9 +5,13 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.22 | [character_designer](addons/character_designer) | [character_designer-0.61.22.zip](dist/character_designer-0.61.22.zip) |
+| Character Designer | 0.61.25 | [character_designer](addons/character_designer) | [character_designer-0.61.25.zip](dist/character_designer-0.61.25.zip) |
 
-Character Designer 0.61.22 在 **Rig → Body → Fingers** 增加 **Finger Ring Layout**：选择一条指身顶面长条后，显示珊瑚红／青蓝两个贴合截面的关节预览环；位置、各自三环宽度、中间补充环数量分别可调。点击 **Generate / Update Rings** 才修改网格。保留原有形体环、根端边界和指尖封口，反复更新从保存的原网格重新生成，不累积加边；保持已有权重并插值新点，保护 UV、Shape Keys 与自定义法线，不修改骨骼。支持保存重开继续调整、Undo/Redo 和失败回滚。第一版限规则四边面指身，暂不删除原有形体环、不自动重算权重或改变骨骼。旧单环工具移至 F3 **Finger Joint Rings**，避免面板重复。详见 [手指工具说明](docs/finger_joint_tool.md)。
+Character Designer 0.61.25 增加统一的 **Finger Definition**：先选择一条表面／边路径、两端标记或现有骨链，**Capture Selection → Confirm**，显示起点、终点、蓝色方向和可选的橙色弯折方向。定义不要求根部闭环、规则三合一或骨骼绑定，也不缩短你选择的跨度；非 Basis Shape Key 下可以先标记。**Use Basis Reference** 只切换参考数据，不替你切换当前 Shape Key。确认后 **Prepare Rings** 与 **Calibrate Both Hands** 复用该定义，真正修改仍检查 Basis 和安全条件。标记是独立参考设置，用 X 清除，不占用网格撤销步骤；环线和双侧骨骼修改保留原生 Undo/Redo。详见 [手指工具说明](docs/finger_joint_tool.md)。
+
+Character Designer 0.61.24 将手指骨骼校正改为**左右同步**：按顶面校正时选一侧骨链，点击 **Calibrate Both Hands**，自动处理已有的对应 `.L/.R` 骨骼，预览同时显示两边。镜像的是弯折方向而不是 Roll 数字，正向 Local X 在两手都朝各自内侧弯。旧 Roll Reference 入口也同步对应侧；两边同时选中会去重。按骨架本地 X 校验配对，缺失、锁定、连接不匹配或任一侧姿态不安全时整次停止；失败回滚两侧，并恢复 Blender 的 X Mirror 状态。不改骨骼位置、长度、网格或权重，不新建骨骼。
+
+Character Designer 0.61.23 升级 **Rig → Body → Fingers → Finger Ring Layout**：选中一片根部表面（也可延伸选到指身），点击 **Capture Finger Root**，不要求三合一或闭环；工具根据封闭指尖与继续通向手掌的连接判断方向，以选区靠根部的极端位置定义长度基准。虚线根环只作参考，不重建复杂根部。珊瑚红／青蓝关节目标、三环宽度和中间补充环可调；**Slide Nearby Rings** 默认把合适的附近旧环滑到目标，缺少的才补环。滑移同步插值 UV、Shape Keys、权重和支持的属性，横向接缝／材质边界保留不动。仅修改规则指身，掌指连接、指尖封口和骨架保持不变。支持预览、重复更新、保存重开及 Undo/Redo；方向有歧义、指尖缺口或关节目标超出安全指身时拒绝修改。旧布局保持旧语义，重新捕获才使用新功能。详见 [手指工具说明](docs/finger_joint_tool.md)。
 
 Character Designer 0.61.21 改进 **Mirror Selected Region** 的整束识别：比较双向表面覆盖、截面宽度和沿长度的偏差分布，不再把仅包围盒重叠的其他头发都当成对应束。完整选择时整体替换唯一对侧连通块，包括相连残边；局部选择以边界 loop 为界，保留根部。绑定与未绑定共用操作，已有权重随网格镜像，现有骨架不动。编辑模式面板只保留 **Mirror Selected Region / Preview Replacement**，移除绑定区分、Local X=0、Shift 设置提示和 Shift-click 特殊行为。可选参考平面设置仍可通过 F3 的 **Mirror Settings** 调用。
 

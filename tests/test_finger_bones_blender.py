@@ -3,9 +3,10 @@
 import math
 import os
 import sys
+from types import SimpleNamespace
 
 import bpy
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(ROOT, "addons")]
@@ -40,6 +41,12 @@ def fixture():
     body = bone("upperarm.L", (0, 0, -1), (0, 0, -2))
     for item in (index_01, index_02, index_03, pinky_01, pinky_02, body):
         item.select = True
+    for source in (index_01, index_02, index_03, pinky_01, pinky_02):
+        name = bpy.utils.flip_name(source.name)
+        parent = data.edit_bones.get(bpy.utils.flip_name(source.parent.name)) if source.parent else None
+        target = bone(name, (-source.head.x, source.head.y, source.head.z),
+                      (-source.tail.x, source.tail.y, source.tail.z), parent, -.83)
+        target.select = target.select_head = target.select_tail = False
     data.edit_bones.active = index_01
     return rig, (index_01, index_02, index_03, pinky_01, pinky_02, body)
 
@@ -55,7 +62,7 @@ def test_selection_is_finger_only_and_check_is_read_only():
     result = bpy.ops.character_designer.finger_roll(action="CHECK")
     assert result == {"FINISHED"}
     assert "Ignored 1 non-finger selection(s)" in settings.finger_status
-    assert "3 target segment(s)" in settings.finger_status
+    assert "8 target segment(s)" in settings.finger_status
     assert {bone.name: bone.roll for bone in bones} == rolls
 
 
@@ -94,6 +101,9 @@ def test_preview_is_non_destructive_and_apply_only_changes_roll():
             bones[0 if bone.name.startswith("f_index") else 3],
         )
         assert finger_bones._axis(bone, "X").dot(target) > 0.9999
+    for source in bones[:-1]:
+        other = rig.data.edit_bones[bpy.utils.flip_name(source.name)]
+        assert finger_bones._axis(other, 'X').dot(-finger_bones.symmetry.reflect(finger_bones._axis(source, 'X'))) > .9999
 
 
 def test_active_reference_requires_active_finger():
@@ -108,6 +118,53 @@ def test_active_reference_requires_active_finger():
     assert "Active Bone must be a selected finger bone" in settings.finger_status
 
 
+def test_both_selected_active_z_and_pair_guard():
+    rig, bones = fixture()
+    settings = bpy.context.window_manager.character_designer
+    settings.finger_axis, settings.finger_reference = 'Z', 'ACTIVE'
+    for bone in rig.data.edit_bones:
+        bone.select = bone.name.startswith('f_')
+    plan = finger_bones._build_plan(bpy.context)
+    assert len({r['name'] for r in plan['records']}) == len(plan['records']) == 9
+    assert bpy.ops.character_designer.finger_roll(action='APPLY') == {'FINISHED'}
+    for bone in bones[:-1]:
+        other = rig.data.edit_bones[bpy.utils.flip_name(bone.name)]
+        a = Quaternion(bone.z_axis, .1) @ (bone.tail-bone.head)-(bone.tail-bone.head)
+        b = Quaternion(other.z_axis, .1) @ (other.tail-other.head)-(other.tail-other.head)
+        assert (b-finger_bones.symmetry.reflect(a)).length < 1e-5
+    rig.data.edit_bones['f_index.03.R'].name = 'unpaired'
+    before = {b.name: b.roll for b in rig.data.edit_bones}
+    assert bpy.ops.character_designer.finger_roll(action='APPLY') == {'CANCELLED'}
+    assert before == {b.name: b.roll for b in rig.data.edit_bones}
+
+
+def test_bilateral_transaction_and_opposite_pose():
+    rig, bones = fixture()
+    settings = bpy.context.window_manager.character_designer
+    settings.finger_axis, settings.finger_reference = 'X', 'CHAIN_ROOT'
+    plan = finger_bones._build_plan(bpy.context)
+    before = {b.name: b.roll for b in rig.data.edit_bones}
+    rig.data.use_mirror_x = True
+    calls = []
+    def update():
+        calls.append(1)
+        if len(calls) == 1: raise RuntimeError('Pair rollback')
+    context = SimpleNamespace(object=rig, view_layer=SimpleNamespace(update=update))
+    try: finger_bones._apply_plan(context, plan)
+    except RuntimeError as exc: assert str(exc) == 'Pair rollback'
+    else: assert False
+    assert rig.data.use_mirror_x and before == {b.name: b.roll for b in rig.data.edit_bones}
+    bpy.ops.object.mode_set(mode='OBJECT')
+    pb = rig.pose.bones['f_index.02.R']
+    pb.rotation_mode = 'XYZ'
+    pb.rotation_euler.x = .2
+    bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode='EDIT')
+    before = {b.name: b.roll for b in rig.data.edit_bones}
+    assert bpy.ops.character_designer.finger_roll(action='APPLY') == {'CANCELLED'}
+    assert before == {b.name: b.roll for b in rig.data.edit_bones}
+
+
 def main():
     character_designer.register()
     try:
@@ -115,6 +172,8 @@ def main():
             test_selection_is_finger_only_and_check_is_read_only,
             test_preview_is_non_destructive_and_apply_only_changes_roll,
             test_active_reference_requires_active_finger,
+            test_both_selected_active_z_and_pair_guard,
+            test_bilateral_transaction_and_opposite_pose,
         )
         for test in tests:
             test()

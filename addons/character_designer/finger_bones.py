@@ -11,7 +11,7 @@ from bpy.types import Operator, Panel
 from mathutils import Vector
 
 from .finger_root import draw_finger_root_controls
-from . import finger_flex, finger_layout_ui
+from . import finger_flex, finger_layout_ui, finger_definition_ui, finger_symmetry as symmetry
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
@@ -162,7 +162,7 @@ def _selected_finger_groups(armature):
 
 def _reference_bone_for_group(group, active, reference_mode):
     if reference_mode == "ACTIVE":
-        if active is None or _finger_key(active.name) is None:
+        if active is None or not active.select or _finger_key(active.name) is None:
             raise ValueError(
                 "Active Bone must be a selected finger bone when Active Bone is the reference."
             )
@@ -193,50 +193,67 @@ def _build_plan(context):
         raise ValueError(
             "Select one or more finger bones. Body bones are ignored by this tool."
         )
-    if reference_mode == "ACTIVE" and (active is None or _finger_key(active.name) is None):
+    if reference_mode == "ACTIVE" and (active is None or not active.select or _finger_key(active.name) is None):
         raise ValueError(
             "Active Bone must be a selected finger bone when Active Bone is the reference."
         )
 
-    records = []
-    anchors = []
-    issues = []
-    for group_key, group in sorted(groups.items()):
+    symmetry.guard_rig(armature)
+    collection = _bone_collection(armature)
+    source_groups = {}
+    # One authoritative side per finger, including when both sides are selected.
+    # Active side wins if selected; otherwise use the sole selected side or L.
+    for finger in sorted({key[0] for key in groups}):
+        sides = {key[1] for key in groups if key[0] == finger}
+        if "?" in sides:
+            raise ValueError("Finger correction needs explicit L/R bone names for synchronized pairs.")
+        preferred = _side_key(active.name) if active and _finger_key(active.name) == finger and active.select else None
+        side = preferred if preferred in sides else sorted(sides)[0]
+        source = {}
+        for key, group in groups.items():
+            if key[0] != finger: continue
+            for bone in group:
+                other = symmetry.opposite(collection, bone)
+                symmetry.validate_pair(collection, bone, other)
+                chosen = bone if _side_key(bone.name) == side else other
+                source[chosen.name] = chosen
+        source_groups[(finger, side)] = sorted(source.values(), key=_sort_key)
+
+    records, anchors, issues = [], [], []
+    for group_key, group in sorted(source_groups.items()):
         reference_bone = _reference_bone_for_group(group, active, reference_mode)
         reference_axis = _axis(reference_bone, axis)
+        fallback = _axis(reference_bone, "Z" if axis == "X" else "X")
+        if _side_key(reference_bone.name) != group_key[1]:
+            # Rotation axes are axial vectors: reflection also reverses sign.
+            reference_axis, fallback = -symmetry.reflect(reference_axis), -symmetry.reflect(fallback)
         anchors.append(reference_bone.name)
         for bone in group:
-            if bone.name == reference_bone.name:
-                continue
-            try:
-                current_axis = _axis(bone, axis)
-                target_axis = _target_axis_for_bone(
-                    reference_axis,
-                    bone,
-                    axis,
-                    reference_bone,
-                )
-                direction = _bone_direction(bone)
-                length = (_tail(bone) - _head(bone)).length
-                records.append(
-                    {
-                        "name": bone.name,
-                        "group": f"{group_key[0]}.{group_key[1]}",
-                        "reference": reference_bone.name,
-                        "current_axis": current_axis.copy(),
-                        "target_axis": target_axis.copy(),
-                        "direction": direction.copy(),
-                        "center": ((_head(bone) + _tail(bone)) * 0.5).copy(),
-                        "length": float(length),
-                        "angle": float(current_axis.angle(target_axis)),
-                    }
-                )
-            except ValueError as exc:
-                issues.append(str(exc))
+            target = _project_axis(reference_axis, _bone_direction(bone), fallback=(fallback,))
+            if target is None:
+                raise ValueError(f"Cannot find a stable axis for '{bone.name}'.")
+            other = symmetry.opposite(collection, bone)
+            opposite_target = _project_axis(-symmetry.reflect(target), _bone_direction(other))
+            if opposite_target is None:
+                raise ValueError(f"Cannot find a stable opposite axis for '{other.name}'.")
+            for item, proposed in ((bone, target), (other, opposite_target)):
+                if item.name == reference_bone.name: continue
+                current = _axis(item, axis)
+                records.append({
+                    "name": item.name,
+                    "group": f"{group_key[0]}.{_side_key(item.name)}",
+                    "reference": reference_bone.name,
+                    "current_axis": current.copy(),
+                    "target_axis": proposed.copy(),
+                    "direction": _bone_direction(item),
+                    "center": ((_head(item)+_tail(item))*.5).copy(),
+                    "length": float((_tail(item)-_head(item)).length),
+                    "angle": float(current.angle(proposed)),
+                })
 
     if not records:
         raise ValueError(
-            "Select at least two segments from a finger chain; the first selected segment is the reference."
+            "Select finger segments with existing matching L/R bones."
         )
     return {
         "armature": armature,
@@ -386,8 +403,11 @@ def _apply_plan(context, plan):
         raise ValueError("The active Armature changed; run Check again before applying.")
 
     edit_bones = armature.data.edit_bones
+    symmetry.guard_pose(armature, [r['name'] for r in plan['records']])
+    mirror_x = armature.data.use_mirror_x
     before = {}
     try:
+        armature.data.use_mirror_x = False
         for record in plan["records"]:
             bone = edit_bones.get(record["name"])
             if bone is None:
@@ -409,6 +429,8 @@ def _apply_plan(context, plan):
         armature.update_tag(refresh={"DATA"})
         context.view_layer.update()
         raise
+    finally:
+        armature.data.use_mirror_x = mirror_x
 
     changed = 0
     for name, old_roll in before.items():
@@ -428,7 +450,7 @@ class CHARACTERDESIGNER_OT_finger_roll(Operator):
             ("CHECK", "Check", "Inspect selected finger bone axes without changing the rig."),
             ("PREVIEW", "Preview", "Show current axes in red and proposed axes in green without changing the rig."),
             ("HIDE_PREVIEW", "Hide Preview", "Remove the non-destructive viewport preview."),
-            ("APPLY", "Apply Correction", "Apply the proposed roll correction to selected finger segments."),
+            ("APPLY", "Apply Correction", "Apply the proposed roll correction to selected finger segments and their existing L/R counterparts."),
         ),
         default="CHECK",
     )
@@ -469,7 +491,7 @@ class CHARACTERDESIGNER_OT_finger_roll(Operator):
 
             changed = _apply_plan(context, plan)
             _clear_preview(context)
-            message = f"Corrected {changed} finger bone roll(s) on selected finger chains; Head/Tail and weights were unchanged."
+            message = f"Corrected {changed} finger bone roll(s) across both hands; Head/Tail and weights were unchanged."
             _set_status(settings, "SUCCESS", message)
             self.report({"INFO"}, message)
             return {"FINISHED"}
@@ -501,9 +523,10 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
             return
         mesh_edit = context.mode == "EDIT_MESH" and context.edit_object is not None
 
+        finger_definition_ui.draw_controls(layout, context)
         if mesh_edit:
             finger_layout_ui.draw_controls(layout, context)
-        finger_flex.draw_controls(layout, context)
+        finger_flex.draw_definition_controls(layout, context)
 
         if armature is not None:
             layout.prop(finger_flex.state(context), "show_legacy")
@@ -512,7 +535,7 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
             roll_box = layout.box()
             roll_box.label(text="Legacy Roll Reference", icon="BONE_DATA")
             roll_box.label(text="Matches existing axes; does not define the bend side.")
-            roll_box.label(text="Selected finger bones only; body bones are ignored.", icon="BONE_DATA")
+            roll_box.label(text="Selected fingers + matching L/R bones.", icon="BONE_DATA")
             roll_box.prop(settings, "finger_axis", text="Flex Axis")
             roll_box.prop(settings, "finger_reference", text="Roll Reference")
 
@@ -537,10 +560,13 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
         elif armature is None and not mesh_edit:
             layout.label(text="Select the mesh or main Armature.", icon="INFO")
 
-        draw_finger_root_controls(layout, context)
+        if finger_flex.state(context).show_legacy:
+            finger_flex.draw_controls(layout, context)
+            draw_finger_root_controls(layout, context)
 
 
 FINGER_BONES_CLASSES = (
+    *finger_definition_ui.CLASSES,
     *finger_flex.CLASSES,
     *finger_layout_ui.CLASSES,
     CHARACTERDESIGNER_OT_finger_roll,
@@ -550,6 +576,7 @@ FINGER_BONES_CLASSES = (
 
 def register_finger_bones_runtime():
     """Keep the preview handler lazy; no viewport draw hook is needed until Preview."""
+    finger_definition_ui.register_runtime()
     finger_flex.register_runtime()
     finger_layout_ui.register_runtime()
 
@@ -557,6 +584,7 @@ def register_finger_bones_runtime():
 def unregister_finger_bones_runtime():
     finger_layout_ui.unregister_runtime()
     finger_flex.unregister_runtime()
+    finger_definition_ui.unregister_runtime()
     global _PREVIEW_HANDLE, _PREVIEW_SHADER
     _clear_preview(bpy.context)
     if _PREVIEW_HANDLE is not None:

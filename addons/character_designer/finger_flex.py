@@ -11,7 +11,9 @@ import bmesh
 import bpy
 from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
 from bpy.types import Operator, PropertyGroup
-from mathutils import Matrix, Quaternion, Vector
+from mathutils import Quaternion, Vector
+
+from . import finger_symmetry as symmetry
 
 EPS = 1e-8
 _handle = None
@@ -191,57 +193,60 @@ def guide_frame(context):
     return obj.matrix_world @ Vector(record['origin']), t, b, a, record['size']
 
 
-def plan(context):
+def plan(context, *, preview=False):
     from . import finger_bones as bones
     rig = context.object
     if rig is None or rig.type != 'ARMATURE' or rig.mode != 'EDIT':
         raise ValueError('Enter Armature Edit Mode and select one continuous finger chain.')
-    if rig.data.users != 1 or rig.library or rig.data.library or rig.override_library:
-        raise ValueError('Use a local, single-user armature for rest-axis calibration.')
+    symmetry.guard_rig(rig)
     groups, ignored, _ = bones._selected_finger_groups(rig)
-    if ignored or len(groups) != 1:
-        raise ValueError('Select only one finger chain on one hand.')
-    chain = sorted(next(iter(groups.values())), key=bones._parent_depth)
+    if ignored or not groups or len({key[0] for key in groups}) != 1 or any(key[1] == '?' for key in groups):
+        raise ValueError('Select only one finger chain (one side or its matching L/R pair).')
+    collection = rig.data.edit_bones
+    selected = [bone for group in groups.values() for bone in group]
+    paired = {}
+    for bone in selected:
+        other = symmetry.opposite(collection, bone)
+        symmetry.validate_pair(collection, bone, other)
+        paired[bone.name], paired[other.name] = bone, other
+    chains = [[b for b in paired.values() if bones._side_key(b.name) == side] for side in ('L', 'R')]
+    chains = [sorted(chain, key=bones._parent_depth) for chain in chains]
+    origin, forward, bend, _, _ = working_frame(context, rest=True, preview=preview)
+    def distance(chain):
+        result = []
+        for bone in chain:
+            head, tail = rig.matrix_world @ bone.head, rig.matrix_world @ bone.tail
+            delta = tail-head
+            t = max(0., min(1., (origin-head).dot(delta)/delta.length_squared))
+            result.append((origin-head-delta*t).length)
+        return min(result)
+    chains.sort(key=distance)
+    chain = chains[0]
+    if abs(distance(chains[1])-distance(chain)) < max(sum((b.tail-b.head).length for b in chain)*1e-4, 1e-6):
+        raise ValueError('The captured surface is equally close to both hands. Capture a top surface on one finger.')
     if any(b.parent != a for a, b in zip(chain, chain[1:])):
         raise ValueError('Select a continuous parent-child finger chain.')
     world = rig.matrix_world.to_3x3()
-    scales = [v.length for v in world.col]
-    unit = [v.normalized() for v in world.col]
-    if min(scales) < EPS or max(scales) - min(scales) > max(scales) * 1e-5 or world.determinant() <= 0 or any(
-        abs(unit[i].dot(unit[j])) > 1e-5 for i, j in ((0, 1), (0, 2), (1, 2))
-    ):
-        raise ValueError('Apply non-uniform or mirrored armature scale before calibrating finger roll.')
-    _, forward, bend, _, _ = guide_frame(context)
+    local_bend = world.inverted() @ bend
     records = []
     for bone in chain:
         direction = (bone.tail - bone.head).normalized()
         if (world @ direction).normalized().dot(forward) < .5:
             raise ValueError('The blue arrow must point toward this finger tip. Reverse the Tip Arrow or capture a better lengthwise edge.')
-        t, b, axis = frame(direction, world.inverted() @ bend)
-        records.append({'name': bone.name, 'axis': axis, 'bend': b,
-                        'head': bone.head.copy(), 'tail': bone.tail.copy(),
-                        'roll': float(bone.roll), 'direction': t})
+        for target, bend_side in ((bone, local_bend), (symmetry.opposite(collection, bone), symmetry.reflect(local_bend))):
+            t, b, axis = frame(target.tail-target.head, bend_side)
+            records.append({'name': target.name, 'axis': axis, 'bend': b,
+                            'head': target.head.copy(), 'tail': target.tail.copy(),
+                            'roll': float(target.roll), 'direction': t})
     return rig, records
 
 
 def apply(context):
     rig, records = plan(context)
-    # Reorienting animated bind axes needs animation conversion, outside this tool.
-    if rig.animation_data and (rig.animation_data.action or rig.animation_data.nla_tracks or rig.animation_data.drivers):
-        raise ValueError('This rig has animation or drivers; calibrate its rest axes before animation.')
-    affected = {record['name'] for record in records}
-    for record in records:
-        affected.update(b.name for b in rig.data.edit_bones[record['name']].children_recursive)
-    for name in affected:
-        pb = rig.pose.bones.get(name)
-        if pb is not None and (pb.constraints or any(
-            # Neutral poses reconstructed through matrices can retain a few
-            # single-precision ULPs (real X scale residual: 1.2e-6).
-            abs(pb.matrix_basis[i][j] - Matrix.Identity(4)[i][j]) > 2e-6
-            for i in range(4) for j in range(4)
-        )):
-            raise ValueError(f"'{name}' needs neutral pose transforms and no constraints before changing rest axes.")
+    symmetry.guard_pose(rig, [r['name'] for r in records])
+    mirror_x = rig.data.use_mirror_x
     try:
+        rig.data.use_mirror_x = False  # The explicit pair plan owns both writes.
         for record in records:
             bone = rig.data.edit_bones[record['name']]
             bone.align_roll(record['axis'].cross(record['direction']))
@@ -257,6 +262,8 @@ def apply(context):
         rig.update_tag(refresh={'DATA'})
         context.view_layer.update()
         raise
+    finally:
+        rig.data.use_mirror_x = mirror_x
     return len(records)
 
 
@@ -278,13 +285,13 @@ def arc(lines, origin, tangent, axis, length):
           axis.cross(direction), length * .15, direction)
 
 
-def preview_lines(context):
-    origin, t, b, a, size = guide_frame(context)
+def preview_lines(context, *, drawing=False):
+    origin, t, b, a, size = working_frame(context, preview=drawing)
     forward, bend, curves, target_axes, current_axes = [], [], [], [], []
     arrow(forward, origin, t, size, b)
     arrow(bend, origin, b, size * .7, t)
     if context.object and context.object.type == 'ARMATURE' and context.object.mode == 'EDIT':
-        rig, records = plan(context)
+        rig, records = plan(context, preview=drawing)
         for record in records:
             head = rig.matrix_world @ record['head']
             tail = rig.matrix_world @ record['tail']
@@ -319,7 +326,7 @@ def _draw():
     try:
         import gpu
         from gpu_extras.batch import batch_for_shader
-        groups = preview_lines(bpy.context)
+        groups = preview_lines(bpy.context, drawing=True)
         shader = gpu.shader.from_builtin('UNIFORM_COLOR')
         depth, width = gpu.state.depth_test_get(), gpu.state.line_width_get()
         try:
@@ -345,6 +352,44 @@ def show_preview():
         _handle = bpy.types.SpaceView3D.draw_handler_add(_draw, (), 'WINDOW', 'POST_VIEW')
 
 
+def working_frame(context, *, rest=False, preview=False):
+    from . import finger_definition as definition
+    if definition.state(context).record:
+        if preview:
+            from . import finger_definition_ui
+            data, error = finger_definition_ui.cached_frame(context)
+            if not data: raise ValueError(error)
+            if data['bend'] is None: raise ValueError('Bend direction is undefined.')
+            if rest and (not data['basis'] or not definition.state(context).confirmed):
+                raise ValueError('Confirm the Basis reference before previewing bone axes.')
+        else:
+            data = definition.frame(context, require_basis=rest, require_bend=True, require_confirmed=rest)
+        t, b, a = frame(data['direction'], data['bend'])
+        return data['midpoint'], t, b, a, data['length']*.25
+    return guide_frame(context)
+
+
+def draw_definition_controls(layout, context):
+    from . import finger_definition as definition, finger_definition_ui
+    if not definition.state(context).record: return
+    data, _ = finger_definition_ui.cached_frame(context)
+    box = layout.box()
+    box.label(text='Bone Roll', icon='BONE_DATA')
+    if not data or data['bend'] is None:
+        box.label(text='Set a top surface to define the bend side.')
+        return
+    row = box.row(align=True)
+    row.operator('character_designer.finger_flex', text='Preview Bend').action = 'PREVIEW'
+    row.operator('character_designer.finger_flex', text='Hide').action = 'HIDE'
+    row = box.row()
+    row.enabled = context.mode == 'EDIT_ARMATURE' and data['basis'] and definition.state(context).confirmed
+    row.operator('character_designer.finger_flex', text='Calibrate Both Hands').action = 'APPLY'
+    if context.mode != 'EDIT_ARMATURE': box.label(text='Select a finger chain in Armature Edit Mode.')
+    if state(context).status:
+        import textwrap
+        for line in textwrap.wrap(state(context).status, width=43): box.label(text=line)
+
+
 class CHARACTERDESIGNER_OT_finger_flex(Operator):
     bl_idname = 'character_designer.finger_flex'
     bl_label = 'Finger Bend Direction'
@@ -352,7 +397,7 @@ class CHARACTERDESIGNER_OT_finger_flex(Operator):
 
     action: EnumProperty(items=[(key, label, label) for key, label in (
         ('CAPTURE', 'Capture Top Strip / Edge'), ('PREVIEW', 'Preview Roll + Bend'),
-        ('HIDE', 'Hide Preview'), ('APPLY', 'Calibrate Bone Roll'))])
+        ('HIDE', 'Hide Preview'), ('APPLY', 'Calibrate Both Hands'))])
 
     def execute(self, context):
         global _visible
@@ -371,7 +416,7 @@ class CHARACTERDESIGNER_OT_finger_flex(Operator):
                 settings.status = 'Bend preview hidden.'
             else:
                 count = apply(context)
-                settings.status = f'Aligned {count} finger bones. Positive Local X bends toward orange.'
+                settings.status = f'Aligned {count} finger bones across both hands. Positive Local X bends toward each inward arrow.'
             from .finger_bones import _tag_redraw
             _tag_redraw()
             self.report({'INFO'}, settings.status)
@@ -402,10 +447,10 @@ def draw_controls(layout, context):
     else:
         box.label(text='Select the top row of faces along one finger,')
         box.label(text='or a lengthwise edge on its top face.')
-    box.label(text='2. Select finger bones in Armature Edit Mode.')
+    box.label(text='2. Select one side; its L/R pair follows.')
     row = box.row()
     row.enabled = context.mode == 'EDIT_ARMATURE' and bool(settings.guide and settings.mesh)
-    row.operator('character_designer.finger_flex', text='3. Calibrate Bone Roll').action = 'APPLY'
+    row.operator('character_designer.finger_flex', text='3. Calibrate Both Hands').action = 'APPLY'
     box.label(text='Pose Mode: R X X, positive angle bends inward.')
     if settings.status:
         # Wrap long diagnostic messages instead of widening the sidebar.

@@ -34,7 +34,7 @@ def fixture(transform=None):
     for obj in list(bpy.data.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
     mesh = bpy.data.meshes.new('Surface')
-    mesh.from_pydata([(-.1, 0, 0), (.1, 0, 0), (.1, 1, 0), (-.1, 1, 0)], [], [(0, 1, 2, 3)])
+    mesh.from_pydata([(.5, 0, 0), (.7, 0, 0), (.7, 1, 0), (.5, 1, 0)], [], [(0, 1, 2, 3)])
     obj = bpy.data.objects.new('Surface', mesh)
     bpy.context.collection.objects.link(obj)
     obj.shape_key_add(name='Basis')
@@ -49,16 +49,17 @@ def fixture(transform=None):
         obj.matrix_world = transform
         rig.matrix_world = transform
     activate(rig, 'EDIT')
-    prev = None
-    for i in range(3):
-        bone = arm.edit_bones.new(f'f_index.0{i+1}.L')
-        bone.head, bone.tail = (0, i, 0), (0, i+1, 0)
-        bone.parent = prev
-        bone.roll = .4 + i * .3
-        prev = bone
-    body = arm.edit_bones.new('hand.L')
-    body.head, body.tail = (0, -1, 0), (0, 0, 0)
-    arm.edit_bones['f_index.01.L'].parent = body
+    for side, x in (('L', .6), ('R', -.6)):
+        prev = None
+        for i in range(3):
+            bone = arm.edit_bones.new(f'f_index.0{i+1}.{side}')
+            bone.head, bone.tail = (x, i, 0), (x, i+1, 0)
+            bone.parent = prev
+            bone.roll = (.4 + i*.3) * (1 if side == 'L' else -1)
+            prev = bone
+        body = arm.edit_bones.new(f'hand.{side}')
+        body.head, body.tail = (x, -1, 0), (x, 0, 0)
+        arm.edit_bones[f'f_index.01.{side}'].parent = body
     activate(obj, 'EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
     flex.capture(bpy.context)
@@ -71,7 +72,7 @@ def fixture(transform=None):
 def select_chain(rig):
     activate(rig, 'EDIT')
     for b in rig.data.edit_bones:
-        b.select = b.name.startswith('f_index')
+        b.select = b.name.startswith('f_index') and b.name.endswith('.L')
     rig.data.edit_bones.active = rig.data.edit_bones['f_index.01.L']
 
 
@@ -96,7 +97,7 @@ def test_rotation_preview_and_preservation():
     before = snapshot(rig)
     assert all(flex.preview_lines(bpy.context))
     assert snapshot(rig) == before
-    assert flex.apply(bpy.context) == 3
+    assert flex.apply(bpy.context) == 6
     after = snapshot(rig)
     assert after['hand.L'] == before['hand.L']
     assert all(after[n][:2] == before[n][:2] and after[n][3] == before[n][3] for n in after)
@@ -120,7 +121,7 @@ def test_flip_and_invalid_selection():
     obj, rig = fixture()
     select_chain(rig)
     flex.state(bpy.context).flip_bend = True
-    assert flex.apply(bpy.context) == 3
+    assert flex.apply(bpy.context) == 6
     for b in rig.data.edit_bones:
         if b.select:
             delta = Quaternion(b.x_axis, .1) @ (b.tail - b.head) - (b.tail - b.head)
@@ -217,7 +218,7 @@ def make_top_grid(columns=1, rows=8):
     _, rig = fixture()
     object_mode()
     mesh = bpy.data.meshes.new('Top Strip')
-    verts = [(x * .2 - .1, y * 3 / rows, .15) for y in range(rows + 1) for x in range(columns + 1)]
+    verts = [(x * .2 + .5, y * 3 / rows, .15) for y in range(rows + 1) for x in range(columns + 1)]
     faces = []
     for y in range(rows):
         for x in range(columns):
@@ -295,16 +296,83 @@ def test_saved_guide():
         assert flex.state(bpy.context).flip_bend
 
 
-character_designer.register()
-try:
-    tests = [test_rotation_preview_and_preservation, test_flip_and_invalid_selection,
-             test_edge_ambiguity_and_stale_guide, test_rollback_and_pose_guard,
-             test_shared_edge_and_scaled_normal, test_object_edit_axis_equivalence,
-             test_eight_face_top_strip_and_center_hinges, test_invalid_strips_and_legacy_direction,
-             test_saved_guide]
-    for test in tests:
-        test()
-        print('PASS', test.__name__, flush=True)
-    print('FINGER_FLEX_PASSED', len(tests), flush=True)
-finally:
-    character_designer.unregister()
+def test_bilateral_bend_and_deduplication():
+    obj, rig = fixture()
+    obj.rotation_euler.y = .5
+    bpy.context.view_layer.update()
+    select_chain(rig)
+    rig.data.use_mirror_x = True
+    before = snapshot(rig)
+    _, records = flex.plan(bpy.context)
+    assert len(records) == 6
+    assert flex.apply(bpy.context) == 6 and rig.data.use_mirror_x
+    for record in records:
+        bone = rig.data.edit_bones[record['name']]
+        assert snapshot(rig)[bone.name][:2] == before[bone.name][:2]
+        assert (Quaternion(bone.x_axis, .1) @ record['direction']-record['direction']).dot(record['bend']) > 0
+    for i in (1, 2, 3):
+        left = next(r for r in records if r['name'] == f'f_index.0{i}.L')
+        right = next(r for r in records if r['name'] == f'f_index.0{i}.R')
+        assert left['bend'].x < -.1 and right['bend'].x > .1
+        assert (right['bend']-flex.symmetry.reflect(left['bend'])).length < 1e-6
+        assert (right['axis']+flex.symmetry.reflect(left['axis'])).length < 1e-6
+    once = snapshot(rig)
+    for b in rig.data.edit_bones: b.select = b.name.startswith('f_index')
+    assert len(flex.plan(bpy.context)[1]) == 6
+    assert flex.apply(bpy.context) == 6
+    assert snapshot(rig) == once
+    # Even when only the opposite side is selected, the captured surface owns
+    # the source direction; the pair must not be mirrored a second time.
+    for b in rig.data.edit_bones: b.select = b.name.startswith('f_index') and b.name.endswith('.R')
+    assert flex.apply(bpy.context) == 6
+    assert snapshot(rig) == once
+
+
+def test_opposite_side_guards_and_atomic_rollback():
+    obj, rig = fixture()
+    select_chain(rig)
+    rig.data.edit_bones['f_index.03.R'].name = 'unpaired'
+    before = snapshot(rig)
+    refused(lambda: flex.apply(bpy.context), 'no matching')
+    assert snapshot(rig) == before
+    obj, rig = fixture()
+    object_mode()
+    rig.pose.bones['f_index.02.R'].rotation_mode = 'XYZ'
+    rig.pose.bones['f_index.02.R'].rotation_euler.x = .3
+    select_chain(rig)
+    before = snapshot(rig)
+    refused(lambda: flex.apply(bpy.context), 'neutral pose')
+    assert snapshot(rig) == before
+    obj, rig = fixture()
+    select_chain(rig)
+    rig.data.use_mirror_x = True
+    before = snapshot(rig)
+    calls = []
+    def update():
+        calls.append(1)
+        if len(calls) == 1: raise RuntimeError('Pair rollback')
+    context = SimpleNamespace(object=rig, scene=bpy.context.scene, view_layer=SimpleNamespace(update=update))
+    try: flex.apply(context)
+    except RuntimeError as exc: assert str(exc) == 'Pair rollback'
+    else: assert False
+    assert snapshot(rig) == before and rig.data.use_mirror_x
+
+
+def main():
+    character_designer.register()
+    try:
+        tests = [test_rotation_preview_and_preservation, test_flip_and_invalid_selection,
+                 test_edge_ambiguity_and_stale_guide, test_rollback_and_pose_guard,
+                 test_shared_edge_and_scaled_normal, test_object_edit_axis_equivalence,
+                 test_eight_face_top_strip_and_center_hinges, test_invalid_strips_and_legacy_direction,
+                 test_saved_guide, test_bilateral_bend_and_deduplication,
+                 test_opposite_side_guards_and_atomic_rollback]
+        for test in tests:
+            test()
+            print('PASS', test.__name__, flush=True)
+        print('FINGER_FLEX_PASSED', len(tests), flush=True)
+    finally:
+        character_designer.unregister()
+
+
+if __name__ == '__main__': main()

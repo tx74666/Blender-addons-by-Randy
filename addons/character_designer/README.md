@@ -1,4 +1,108 @@
-# Character Designer 0.61.22
+# Character Designer 0.61.25
+
+**Rig > Body > Fingers > Finger Definition** is now the shared starting point.
+Select a longitudinal surface or open edge path, two endpoint patches, or one
+existing bone chain, then **Capture Selection**. Alternatively mark **Start**
+and **End** separately using faces, edges or vertices; neither marker needs to
+be a closed loop. Amber Start, mint End and a blue path/arrow show the exact
+reference span. A reliable selected top surface adds the orange inward bend
+arrow; edges/bones alone leave bend undefined. **Set Top Surface** supplies it
+without changing the length. Review the arrow, **Swap Ends** if necessary, and
+**Confirm** before an action. No prescribed root fan, binding or quad sleeve is
+required just to define a finger.
+
+Capture is read-only, including with a non-Basis active Shape Key. Current-key
+and Basis samples are distinct; **Use Basis Reference** does not change the
+active key or its values. Before topology editing, explicitly return the mesh
+to Basis. **Prepare Rings** checks the safe quad body inside the defined span;
+**Calibrate Both Hands** uses the same bend reference and existing L/R pairing.
+The immutable topology recipe remains reusable after its own generated edits.
+Manual changes to reference geometry or generated results are detected before
+another action. An ambiguous direction is labelled for confirmation, not
+advertised as detected anatomy.
+
+References are persistent Scene settings, cleared with X. They intentionally
+do not consume Edit Mode Ctrl+Z steps (Blender does not restore these Scene
+settings in mesh undo). Actual ring generation and bilateral Roll changes keep
+their native Undo/Redo and rollback. The workflow currently holds **one active
+definition**. Guides sample base mesh/key coordinates or rest bone coordinates,
+not evaluated modifiers/pose deformation; a surface path is not a bone center.
+No automatic placement/reweighting or arbitrary root remeshing was added.
+
+Validation: 51 focused finger/layout/UI tests, isolated GUI checks, and all ten
+X fingers through non-Basis capture, Basis ring updates and paired Roll reuse.
+The X test retains ten Shape Keys/custom normals and verifies the saved file
+hash and bone heads/tails. See [finger tool notes](../../docs/finger_joint_tool.md).
+
+## Bilateral bone-axis correction (0.61.24)
+
+Version 0.61.24 makes finger **Bone Roll calibration bilateral** by default.
+Capture the top surface on one hand, select finger bones on either hand, then
+**Calibrate Both Hands**. Existing matching `.L/.R` bones are included without
+selecting the other side; selecting both sides is deduplicated. Previews show
+both sets of hinges, proposed rolls and positive bend arcs. The captured
+surface's proximity identifies its hand; its inward direction is reflected
+about Armature Local X and projected against each counterpart's own length axis.
+Roll numbers are never copied. Positive Local X bends both hands inward.
+
+The legacy Roll Reference tool also includes matching counterparts (including
+the counterpart of the reference/base bone). When both sides are selected, the
+active selected side is authoritative, otherwise the sole selected side or L.
+Rotation axes use axial reflection, including the sign reversal, for Local X/Z.
+The source reference stays fixed. No new toggle/shortcut is required.
+
+Missing counterparts, incompatible directions/positions about Armature Local X,
+different parent/connect settings or locked bones stop the operation. Existing
+neutral-pose/constraint/animation and editable-rig guards now cover both sides
+and are shared with the legacy tool. Apply is one undoable transaction; errors
+restore both sides. Blender's X Mirror setting is temporarily disabled during
+explicit pair writes and always restored. Heads, tails, parents, lengths, mesh,
+Shape Keys and weights remain unchanged. No opposite bones are created.
+
+Validation: 40 focused finger/layout/UI regressions; real X tests from either
+hand calibrate six bones per selected three-bone chain and verify both hands'
+positive rotations, neutral skin matrices, geometry and unchanged asset/file.
+See [finger tool notes](../../docs/finger_joint_tool.md).
+
+## Root-surface layout (0.61.23)
+
+Version 0.61.23 upgrades **Rig > Body > Fingers > Finger Ring Layout**:
+
+- Select a connected root surface (optionally extending along the finger), then
+  **Capture Finger Root**. No prescribed 3-to-1 junction or root loop is needed.
+  A unique small closed cap versus continuing palm topology supplies direction;
+  open tips, two capped ends and ambiguous neighboring fingers are not guessed.
+- The proximal extreme of the selected surface defines the virtual root plane;
+  detected tip and centerline length set the two joint fractions. The dashed
+  root ring is a reference, not newly created topology or an exact palm contour.
+  The regular editable sleeve is separate from this full length definition.
+- **Slide Nearby Rings**, enabled by default for new captures, pulls suitable
+  existing rings to the coral/cyan targets along the captured surface rails.
+  Matching is one-to-one and bounded to less than half the adjacent spacing;
+  centers have priority, remaining support/filler targets insert missing rings.
+  Root/cap boundaries, transverse seams/sharp edges, face-data transitions and
+  unused original rings stay fixed. No original rings are dissolved.
+- Moved as well as new points receive interpolated relative Shape Keys, weights,
+  UVs, custom normals and supported attributes. Integers/booleans take the nearer
+  source endpoint. Existing rigs, group definitions and outside geometry/data
+  stay unchanged. This is surface-following relayout, not a guarantee that
+  Subdivision shape/shading or bending quality remains mathematically identical.
+- Preview stays read-only. Apply stages and validates the result; rollback,
+  Undo/Redo, idempotent updates and saved recipes remain supported. Targets in
+  protected root/cap regions can be previewed but cannot be applied. There is no
+  permanent controller association and no new shortcut or extra settings foldout.
+
+Existing schema-1 layouts keep their 0.61.22 semantics and Reverse Root / Tip;
+recapture to opt into automatic direction and nearby-ring sliding. The current
+capture needs a nearby sleeve of at least three regular quad bands. Arbitrary
+palm remeshing, open fingertips, direct viewport dragging and auto reweighting
+remain outside this release. See [finger joint documentation](../../docs/finger_joint_tool.md).
+
+Validation: 7 new root/slide cases, 29 existing regressions, actual GUI Undo/Redo,
+and both top-strip and root-only captures on all 10 real X fingers, retaining
+their 10 Shape Keys/custom normals and leaving the saved asset and rig unchanged.
+
+## Previous layout release
 
 Version 0.61.22 adds **Rig > Body > Fingers > Finger Ring Layout** in Mesh Edit
 Mode. Select one continuous top row of quads along the finger body, excluding the

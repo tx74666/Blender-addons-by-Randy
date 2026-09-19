@@ -1,4 +1,5 @@
 """Two colored, surface-following joint rings with live numeric placement."""
+import json
 import time
 
 import bmesh
@@ -44,10 +45,11 @@ class CharacterDesignerFingerLayoutState(PropertyGroup):
     applied: BoolProperty(options={'HIDDEN'})
     joint_one: FloatProperty(name='Joint 1', description='Coral ring, root-to-tip fraction of the captured section', default=.34, min=.01, max=.99, subtype='FACTOR', update=_update)
     joint_two: FloatProperty(name='Joint 2', description='Cyan ring, root-to-tip fraction of the captured section', default=.68, min=.01, max=.99, subtype='FACTOR', update=_update)
-    three_rings: BoolProperty(name='Three Rings per Joint', description='Keep the center ring, add one support ring on each side', default=True, update=_update)
+    three_rings: BoolProperty(name='Three Rings per Joint', description='One center and one support ring on each side; reuse suitable nearby rings before adding', default=True, update=_update)
     width_one: FloatProperty(name='Width 1', description='Half width around Joint 1, fraction of the captured section', default=.025, min=.002, max=.2, precision=3, subtype='FACTOR', update=_update)
     width_two: FloatProperty(name='Width 2', description='Half width around Joint 2, fraction of the captured section', default=.025, min=.002, max=.2, precision=3, subtype='FACTOR', update=_update)
     between_rings: IntProperty(name='Between Joints', description='Additional rings between the two joint support regions; original shape rings remain', default=1, min=0, max=8, update=_update)
+    slide_nearby: BoolProperty(name='Slide Nearby Rings', description='Pull suitable existing rings to the virtual targets; add only missing rings. Root/cap and seam boundaries stay fixed', default=True, update=_update)
     reverse: BoolProperty(name='Reverse Root / Tip', description='Swap the two fixed section boundaries; does not move geometry', update=_update)
     status: StringProperty(options={'SKIP_SAVE'})
 
@@ -84,7 +86,7 @@ def _valid():
         now = time.monotonic()
         if now-_preview['time'] > .25:
             if _stamp(obj) != _preview['stamp']:
-                layout.state(context).status = 'Mesh changed. Capture the top strip again before updating.'
+                layout.state(context).status = 'Mesh changed. Capture the finger again before updating.'
                 hide_preview()
                 return None
             _preview['time'] = now
@@ -106,11 +108,31 @@ def _draw_lines():
         gpu.state.blend_set('ALPHA')
         world = plan['obj'].matrix_world
         shader.bind()
+        if 'root_point' in plan and not plan.get('defined'):
+            # A dashed reference, deliberately not presented as real topology.
+            center = sum(plan['root'], Vector())/len(plan['root'])
+            root_ring = [p-center+plan['root_point'] for p in plan['root']]
+            for ring in (root_ring, plan['root'], plan['tip']):
+                segments = []
+                for i, a in enumerate(ring):
+                    b = ring[(i+1) % len(ring)]
+                    for t in (0., .5): segments.extend((world @ a.lerp(b, t), world @ a.lerp(b, t+.25)))
+                gpu.state.line_width_set(1.2)
+                shader.uniform_float('color', (.7, .7, .7, .7))
+                batch_for_shader(shader, 'LINES', {'pos': segments}).draw(shader)
+            # Movement hints refer to the immutable original rings, not new loops.
+            for i, t in plan.get('moves', {}).items():
+                ring = next(r for r in plan['rings'] if r.get('reuse') == i)
+                source = layout.state(bpy.context).source
+                a = world @ source.vertices[plan['rows'][i][0]].co
+                b = world @ ring['points'][0]
+                shader.uniform_float('color', (.95, .7, .25, .8))
+                batch_for_shader(shader, 'LINES', {'pos': [a, b]}).draw(shader)
         for ring in plan['rings']:
             points = [world @ p for p in ring['points']]
             segments = [p for i in range(len(points)) for p in (points[i], points[(i+1) % len(points)])]
             gpu.state.line_width_set(3.5 if ring['kind'].startswith('JOINT') else 1.2)
-            shader.uniform_float('color', COLORS[ring['kind']])
+            shader.uniform_float('color', (1., .3, .05, .9) if ring['blocked'] else COLORS[ring['kind']])
             batch_for_shader(shader, 'LINES', {'pos': segments}).draw(shader)
     finally:
         gpu.state.depth_test_set(depth)
@@ -127,8 +149,12 @@ def _draw_labels():
     if not context.region_data: return
     labels = [(r['points'][0], '1' if r['kind'] == 'JOINT_1' else '2', COLORS[r['kind']])
               for r in plan['rings'] if r['kind'].startswith('JOINT')]
-    labels += [(plan['root'][0], 'Root boundary', (.85, .85, .85, 1)),
-               (plan['tip'][0], 'Tip boundary', (.85, .85, .85, 1))]
+    if 'root_point' in plan and not plan.get('defined'):
+        labels += [(plan['root_point'], 'Root (virtual)', (.85, .85, .85, 1)),
+                   (plan['tip_point'], 'Tip', (.85, .85, .85, 1))]
+    elif not plan.get('defined'):
+        labels += [(plan['root'][0], 'Root boundary', (.85, .85, .85, 1)),
+                   (plan['tip'][0], 'Tip boundary', (.85, .85, .85, 1))]
     blf.size(0, 14)
     for point, text, color in labels:
         xy = location_3d_to_region_2d(context.region, context.region_data, plan['obj'].matrix_world @ point)
@@ -143,7 +169,7 @@ class CHARACTERDESIGNER_OT_finger_layout(Operator):
     bl_label = 'Finger Ring Layout'
     bl_options = {'REGISTER', 'UNDO'}
     action: EnumProperty(items=[(key, label, label) for key, label in (
-        ('CAPTURE', 'Capture Top Strip'), ('PREVIEW', 'Preview Joint Rings'),
+        ('CAPTURE', 'Capture Finger Root'), ('PREPARE', 'Prepare Rings from Definition'), ('PREVIEW', 'Preview Joint Rings'),
         ('HIDE', 'Hide Preview'), ('APPLY', 'Generate / Update Rings'), ('CLEAR', 'Release Layout'))])
 
     @classmethod
@@ -153,15 +179,20 @@ class CHARACTERDESIGNER_OT_finger_layout(Operator):
     def execute(self, context):
         settings = layout.state(context)
         try:
-            if self.action == 'CAPTURE':
+            if self.action == 'PREPARE':
+                hide_preview()
+                layout.capture_definition(context)
+                show_preview(context)
+                settings.status = 'Editable body checked. The defined Start / End span is unchanged; no topology was modified.'
+            elif self.action == 'CAPTURE':
                 hide_preview()
                 layout.capture(context)
                 show_preview(context)
-                settings.status = 'Coral 1 / Cyan 2. Adjust positions, then Generate / Update Rings.'
+                settings.status = 'Root / Tip detected. Coral 1 and Cyan 2 are joint targets; the dashed root is only a reference.'
             elif self.action == 'PREVIEW':
                 obj = layout._edit(context)
                 if layout.fingerprint(obj) != settings.signature:
-                    raise ValueError('The mesh or its data changed. Capture the strip again.')
+                    raise ValueError('The mesh or its data changed. Capture the finger again.')
                 show_preview(context)
                 settings.status = ''
             elif self.action == 'HIDE':
@@ -174,7 +205,8 @@ class CHARACTERDESIGNER_OT_finger_layout(Operator):
             else:
                 added = layout.apply_layout(context)
                 show_preview(context)
-                settings.status = f'Updated layout: {added} added vertices. Original shape rings and weights kept.'
+                moved = len(_preview['plan'].get('moves', {}))
+                settings.status = f'Updated: {moved} rings moved, {added} vertices added. Root/cap protected; existing data transferred.'
             _redraw()
             return {'FINISHED'}
         except (ValueError, RuntimeError, KeyError, ReferenceError, TypeError) as exc:
@@ -184,11 +216,16 @@ class CHARACTERDESIGNER_OT_finger_layout(Operator):
 
 
 def draw_controls(layout_ui, context):
+    from . import finger_definition as definition
     settings = layout.state(context)
+    guide = definition.state(context)
+    if not guide.record and not settings.source: return
     box = layout_ui.box()
     box.label(text='Finger Ring Layout', icon='MESH_GRID')
     row = box.row(align=True)
-    row.operator('character_designer.finger_layout', text='Capture Top Strip', icon='EYEDROPPER').action = 'CAPTURE'
+    prepare = row.row(align=True)
+    prepare.enabled = bool(guide.record and guide.confirmed and guide.use_basis)
+    prepare.operator('character_designer.finger_layout', text='Prepare Rings', icon='MESH_GRID').action = 'PREPARE'
     if settings.source:
         row.operator('character_designer.finger_layout', text='', icon='X').action = 'CLEAR'
         row = box.row(align=True)
@@ -200,15 +237,23 @@ def draw_controls(layout_ui, context):
             row.prop(settings, 'width_one')
             row.prop(settings, 'width_two')
         box.prop(settings, 'between_rings')
-        box.prop(settings, 'reverse')
+        data = json.loads(settings.record) if settings.record else {}
+        if data.get('schema', 1) >= 2:
+            box.prop(settings, 'slide_nearby')
+            units = context.scene.unit_settings
+            length = bpy.utils.units.to_string(units.system, 'LENGTH', data['length']*units.scale_length, precision=3)
+            box.label(text=f'Finger length: {length}')
+        else:
+            box.prop(settings, 'reverse')
+            box.label(text='Legacy layout; recapture for root detection.')
         row = box.row(align=True)
         row.operator('character_designer.finger_layout', text='Preview', icon='HIDE_OFF').action = 'PREVIEW'
         row.operator('character_designer.finger_layout', text='Hide', icon='HIDE_ON').action = 'HIDE'
         box.operator('character_designer.finger_layout', text='Generate / Update Rings', icon='MESH_GRID').action = 'APPLY'
-        box.label(text='Original rings kept; root and tip fixed.')
+        box.label(text='Root connection and fingertip stay fixed.')
     else:
-        box.label(text='Select one top row along the finger body.')
-        box.label(text='Keep the palm and fingertip cap outside.')
+        box.label(text='Confirm a Basis definition first.')
+        box.label(text='Topology is checked only when preparing.')
     if settings.status:
         import textwrap
         for line in textwrap.wrap(settings.status, width=45): box.label(text=line)

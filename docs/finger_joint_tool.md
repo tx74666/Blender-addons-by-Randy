@@ -1,5 +1,162 @@
 # Finger Joint Tool
 
+## Shared definition before actions (0.61.25)
+
+`finger_definition.py` owns one persistent Scene reference; the UI and lazy
+overlays live in `finger_definition_ui.py`. Definition capture only reads an
+owned BMesh copy and writes reference metadata. It never changes mesh/bone
+coordinates, mode, active Shape Key, selection, binding, UVs or weights.
+
+Inputs are a connected face path (including non-quads), an open edge path, two
+disconnected endpoint patches, separately marked Start/End, or one continuous
+rest bone chain selected in Edit/Pose Mode. A clear elongated patch can provide
+a PCA span. Ambiguous/nonelongated patches instead request explicit endpoints.
+Face/edge traversal preserves topology order; PCA signs are correlated by
+vertex identity across current-key and Basis samples, not world direction.
+The safe-sleeve discovery is only an orientation hint, preferably from Basis;
+its failure cannot block a valid reference or replace the chosen endpoints.
+Only unique cap/continuation evidence is called a detected tip. Other arrows
+are explicitly marked for review. The selected span is never silently reduced
+to the regular quad portion, and a surface path is never called a bone center.
+
+Amber Start and mint End transverse markers bracket a blue reference path;
+the optional orange arrow uses the negative projected top normal. Bare edges
+and bones do not supply a bend side. Set Top Surface is independent of the
+range. A pending Start is drawn immediately. There are no mesh color edits or
+helper objects. Object matrices are applied at display/action time. These are
+base Edit mesh/Shape Key or bone-rest references, not evaluated modifiers or
+posed geometry. The path length is world-space arc length.
+
+Capture on any active relative Shape Key is permitted. Current-key and Basis
+coordinates are sampled separately; Use Basis Reference changes metadata only,
+never the user's active key. Confirm is required before consumers modify data.
+Prepare Rings additionally requires the actual active Basis and the existing
+topology/data preflight; it maps regular ring centers into the confirmed path,
+keeps original safe rings inside that span, then stores an immutable recipe.
+Roots, end caps and unsafe transitions stay protected. Bone Roll uses the same
+confirmed Basis bend reference, retaining the 0.61.24 bilateral transaction.
+No automatic placement or weight recalculation is connected in this release.
+
+Reference topology/selected-coordinate stamps detect stale input. After the
+tool's own layout apply, the owned original source can validate reference data
+only if the full generated-mesh fingerprint still matches. Separate top
+references use that same check. A new range revision invalidates a previous
+prepared layout; clearing the definition prevents applying its old recipe.
+Existing legacy recipes and F3 operators remain compatible. The compact main
+panel no longer asks the artist to capture the same strip in three tools.
+
+Definition metadata is a reference setting, not an Edit Mesh undo edit: capture,
+confirm and clear deliberately omit UNDO rather than inserting steps which
+cannot restore Scene properties. X clears the markers without changing the
+model. Native Undo/Redo remains on topology and bone changes. Overlay caches
+are invalidated on load/undo/redo; Show restores the persistent guide. No H or
+other global keymap is added. Old guides aren't silently migrated.
+
+Tests: `test_finger_definition_blender.py` (11) plus the existing 40 focused
+cases. `test_finger_definition_gui.py` proves capture doesn't consume the prior
+mesh edit's real keyboard Undo/Redo. The layout and bilateral GUI fixtures now
+consume the shared definition. X's `test_real_x_finger_definition_blender.py`
+checks all ten fingers from non-Basis capture through ring updates and paired
+Roll, preserving ten Shape Keys, custom normals, heads/tails and source hash.
+`test_real_x_finger_long_definition_blender.py` also captures ten-face paths
+across the irregular root and fingertip on all ten fingers, verifies detected
+direction and full span beyond the regular sleeve, and checks no mesh/file write.
+Full snapshot validation runs outside draw callbacks, with a shared cached
+frame for the panel and bone overlay; actual actions validate synchronously.
+
+## Bilateral bone-axis correction (0.61.24)
+
+Both surface-defined calibration and the legacy Roll Reference entry now update
+existing matching L/R finger bones in one transaction. No new opposite bones are
+created. Selection and active bone are retained, and Head/Tail/parent/length,
+mesh, Shape Keys and weights are not written. This change is for bone Roll,
+not automatic bilateral topology editing or the separate bone-placement tool.
+
+`finger_symmetry.py` centralizes exact Blender name-flip pairing, Armature Local
+X reflection and shared rest-axis guards. Parent and connected-joint settings
+must agree. Reflected heads/tails must be within 25% of the longer paired bone
+length (minimum absolute tolerance 1e-5), and reflected direction dot must exceed
+0.9. These conservative checks allow small asymmetry without inferring a new
+symmetry plane for an arbitrarily oriented rig. Locked or missing counterparts
+abort the entire operation rather than silently falling back to one hand.
+
+`finger_flex.plan` accepts one finger's selected side or matching bilateral
+selection, completes/deduplicates the pair and identifies the captured guide's
+side by proximity. An equidistant guide is rejected. Source bend B is a polar
+vector, so the mate uses S(B), then its own tangent T to form A=T cross B.
+Legacy X/Z rotation axes are axial: their reflected target is -S(A), projected
+to the mate's transverse plane. Copying Roll floats or merely reflecting A
+without the sign reversal would give the wrong positive bend sense.
+
+For the legacy per-finger reference, one selected side supplies each reference
+(active selected side if both sides are present, otherwise the sole side or L).
+The source anchor is kept; its counterpart is synchronized, not left with an
+unrelated old Roll. Active Bone references across hands are reflected once.
+Previews cover both sides. Pose/constraint/animation guards cover all affected
+bones/descendants before any write. Native X Mirror is temporarily disabled
+during explicit writes/rollback and restored in finally to avoid double mirroring.
+
+Tests: `test_finger_flex_blender.py` now has 11 cases; `test_finger_bones_blender.py`
+has 5, including Local Z, both-selected deduplication, opposite-side pose refusal,
+missing counterparts and injected bilateral rollback. `test_finger_symmetry_gui.py`
+provides an isolated two-hand preview and actual keyboard Undo/Redo fixture.
+The X integration flex test applies six paired bones from each hand's guide,
+checks actual positive rotations and neutral skin matrices on all counterparts,
+and verifies source mesh/weights/Shape Keys and file hash remain unchanged.
+
+## Root-surface range and sliding (0.61.23)
+
+The 0.61.23 capture was **Capture Finger Root**. Select a connected surface at
+the desired start, optionally including a lengthwise surface to the tip. The
+root may contain triangles/poles or an irregular fan; no specific 3-to-1 pattern
+or closed loop is required there. `finger_range.py` searches within three face
+steps for a regular circumferential quad sleeve, extends it in both directions,
+then accepts only a unique small closed cap opposite a continuing surface.
+Direction is not derived from face indices, a global axis, or a bone binding.
+Open/hidden tips, two-ended capped tubes and ambiguous neighboring fingers are
+rejected with a selection hint, rather than silently reversing the finger.
+
+The minimum selected-vertex projection along the proximal sleeve tangent gives
+the root reference plane. The distal cap extreme supplies the tip; world-space
+centerline arc length (including root/cap offsets) normalizes joint positions.
+The virtual root is drawn dashed using a translated section outline, explicitly
+not an exact palm-surface intersection. The first/last safe real rings remain
+separate fixed edit boundaries. A target outside them is preview-only and blocks
+Apply; the user-defined root is never silently shortened to fit the safe sleeve.
+
+`finger_ring_slide.py` assigns nearby existing rings one-to-one to targets,
+preferring exact matches then joint centers, before support/filler rings.
+Each movement is restricted to 49% of the smaller neighboring spacing, so rings
+cannot pass each other or collapse onto one target. Transverse UV/data seams,
+sharp/marked edges and face/material discontinuities pin a ring. Missing targets
+are inserted after the assigned rows move, so the two flank rings remain on
+opposite sides of their center. No original artist loop is dissolved.
+
+Sampling always uses the immutable captured source rails, including independent
+corner-side interpolation for UV seams. Shape Keys and weights on moved/new
+vertices are interpolated from that same source, not from already moved points.
+Supported floating attributes interpolate; integers/booleans use the nearer
+endpoint. All original indices and all outside coordinates/data remain stable;
+staged verification checks moved coordinates/keys/weights and unchanged regions
+before swapping the mesh. Custom normal transfer retains the previous outside
+packed-normal protection. New captures cache seam-protected rows for responsive
+slider previews; changing the real mesh or its data requires recapture.
+
+Schema-2 scene recipes store the selected faces, full root/tip/length, ordered
+safe rows/fractions and protected rows. Schema-1 recipes preserve the old
+insert-only behavior; recapture is explicit migration, not automatic reinterpretation.
+No bones, bindings or group definitions are created/changed; no auto weights or
+root fan remeshing occurs. Sliding may change the polygon/Subdivision surface
+between sampled rails; it is not a promise of identical evaluated shape.
+
+Validation: `tests/test_finger_range_blender.py` (7 new cases), the 7 legacy
+layout cases and 22 previous finger/UI cases, plus the GUI fixture's actual
+Undo/Redo and update after Redo. Real X checks cover all 10 fingers both with
+longitudinal selections and with only a proximal root face, preserving 10 Shape
+Keys/custom normals, exact rig state and the source file hash. Root-only test:
+`X/tests/test_real_x_finger_root_range_blender.py`. All real checks are disposable;
+the user's working Blender and saved X.blend are not edited by testing.
+
 ## Two-joint layout (0.61.22)
 
 The main Mesh Edit Mode entry is now **Rig > Body > Fingers > Finger Ring Layout**.

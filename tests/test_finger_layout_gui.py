@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tests'))
 from test_finger_layout_blender import fixture, character_designer, layout, snap
 from character_designer import finger_layout_ui as ui
+from character_designer import finger_definition as definition, finger_definition_ui as definition_ui
 
 ARGS = sys.argv[sys.argv.index('--')+1:]
 STATE = {}
@@ -68,6 +69,7 @@ def setup():
     bpy.context.window_manager.keyconfigs.update()
     with bpy.context.temp_override(window=window, area=area, region=region):
         ui.show_preview(bpy.context)
+        definition_ui.show()
     bpy.app.timers.register(panel, first_interval=.7)
 
 
@@ -93,6 +95,7 @@ def applied():
     STATE['after'] = snap(obj)
     assert STATE['after'] != STATE['before']
     assert layout.state(bpy.context).applied
+    assert definition.frame(bpy.context)['basis']
     emit('Z', ctrl=True)
     bpy.app.timers.register(undone, first_interval=.8)
 
@@ -118,8 +121,11 @@ def redone():
 
 if ARGS[0] == '--build':
     character_designer.register()
-    obj = fixture()
-    layout.capture(bpy.context)
+    obj = fixture(rooted=True)
+    bpy.context.tool_settings.mesh_select_mode = (False, False, True)
+    definition.capture(bpy.context)
+    definition.confirm(bpy.context)
+    layout.capture_definition(bpy.context)
     state = layout.state(bpy.context)
     state.joint_one, state.joint_two = .31, .69
     state.between_rings = 2
