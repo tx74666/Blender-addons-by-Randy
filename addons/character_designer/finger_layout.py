@@ -218,7 +218,7 @@ def _store_capture(context, obj, data):
 
 def capture_definition(context):
     from . import finger_definition as definition
-    data = definition.frame(context, require_basis=True, require_confirmed=True)
+    data = definition.frame(context, require_basis=True, require_confirmed=True, purpose='TOPOLOGY')
     obj = _edit(context)
     s, d = state(context), definition.state(context)
     if s.mesh == obj and s.record and json.loads(s.record).get('definition_id') == d.revision:
@@ -228,8 +228,11 @@ def capture_definition(context):
     for seq in (bm.verts, bm.edges, bm.faces):
         seq.ensure_lookup_table()
         seq.index_update()
+    from . import finger_bank
+    candidate = finger_bank.current_candidate(context)
     selected = definition.seed_faces(context, bm)
-    record = finger_range.discover(bm, selected, _quad_band, obj.matrix_world)
+    record = ({'schema': 2, 'rings': candidate['rings'], 'selection': [f.index for f in selected]}
+              if candidate else finger_range.discover(bm, selected, _quad_band, obj.matrix_world))
     rows = record['rings']
     centers = [sum((obj.matrix_world @ bm.verts[i].co for i in row), Vector())/len(row) for row in rows]
     positions = [definition.project_distance(p, data['path'])/data['length'] for p in centers]
@@ -503,6 +506,8 @@ def apply_layout(context, after_commit=None):
         settings.signature = fingerprint(obj)
         settings.applied = True
         new.name = old.name
+        from . import finger_bank
+        finger_bank.after_layout(context)
         if old.users == 0 and old.get(RESULT_TAG): bpy.data.meshes.remove(old)
         return len(new.vertices)-len(source.vertices)
     except Exception:

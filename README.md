@@ -5,7 +5,15 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.25 | [character_designer](addons/character_designer) | [character_designer-0.61.25.zip](dist/character_designer-0.61.25.zip) |
+| Character Designer | 0.61.29 | [character_designer](addons/character_designer) | [character_designer-0.61.29.zip](dist/character_designer-0.61.29.zip) |
+
+Character Designer 0.61.29 修正内部直轴的横向偏移：长度方向面带／边路径作为横向中线依据，在整段体内安全与覆盖条件不变的前提下优先对齐选区拟合中线，深度仍自动求取；不再仅为了更大的表面间隙而向一侧偏移。排除指根大面和指尖封口对横向基准的干扰，左右参考及环线更新保留这项依据，无新增控件。旧参考不自动移动，重新 Capture 即可更新。详见 [手指工具说明](docs/finger_joint_tool.md)。
+
+Character Designer 0.61.28 修复包含指根过渡面的长面带 Capture 被误拒绝：此时用实际闭合网格表面验证内部直轴，不再让第一圈规则环的虚拟封口挡住合法指根范围。搜索仍限制在用户所选范围内，不向手掌找更长轴、不降低整段内部间隙校验。兼容指尖面带末端轻微绕回，原始选区仍保留。移除 Basic Setup 的 L/R 按钮和字样，默认成对更新；环数一致显示一个数，不一致才提示差异。成功捕获清除旧的下游错误状态。详见 [手指工具说明](docs/finger_joint_tool.md)。
+
+Character Designer 0.61.27 精简 **Finger → Basic Setup**：选面带、边路径或环线后一次 Capture，自动生成指体内部的单一直轴及左右参考，无需 Mark／Confirm／Swap。根据稳定截面厚度留出端部余量，用封闭指体和距离界限验证整段直线；不能安全覆盖时明确失败，不改成曲线、不静默大幅缩短。原始选区和拓扑范围独立保留，Ring Layout 不使用内缩后的两端。移除常驻 Basis、上表面和多步按钮，只保留状态、捕获、眼睛和清除等紧凑入口。修正旧定义与待完成 Start 十字叠显，失败保留旧结果并明确标注。本轮不创建或删除场景 Empty，不改模型／Shape Keys。详见 [手指工具说明](docs/finger_joint_tool.md)。
+
+Character Designer 0.61.26 将 **Finger → Basic Setup** 改为一套操作、五组成对记录。选中某根手指的面或内部环线，**Capture Detection** 根据指身环线、封闭指尖和五指排列自动识别归属，不依赖骨骼绑定或名称。有效捕获只覆盖该指，并建立对侧参考；五个状态位显示已完成／待确认／对称异常，显示两侧检测环数。左右形状、环数、连接不符或缺少对侧时明确报警，不自动修网格。Start/End 不允许跨指串用，失败保留旧记录。每个网格分别保存五对数据；编辑一指后局部重新对应，其他指不因整网格拓扑指纹变化而全部失效。工具自己的环线更新自动重新检测，手工编辑后可点刷新复查。首次需要一侧五根可区分的规则指身；不猜测模糊拇指顺序，不统计复杂掌部。详见 [手指工具说明](docs/finger_joint_tool.md)。
 
 Character Designer 0.61.25 增加统一的 **Finger Definition**：先选择一条表面／边路径、两端标记或现有骨链，**Capture Selection → Confirm**，显示起点、终点、蓝色方向和可选的橙色弯折方向。定义不要求根部闭环、规则三合一或骨骼绑定，也不缩短你选择的跨度；非 Basis Shape Key 下可以先标记。**Use Basis Reference** 只切换参考数据，不替你切换当前 Shape Key。确认后 **Prepare Rings** 与 **Calibrate Both Hands** 复用该定义，真正修改仍检查 Basis 和安全条件。标记是独立参考设置，用 X 清除，不占用网格撤销步骤；环线和双侧骨骼修改保留原生 Undo/Redo。详见 [手指工具说明](docs/finger_joint_tool.md)。
 

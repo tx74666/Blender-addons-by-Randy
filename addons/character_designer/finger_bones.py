@@ -11,7 +11,7 @@ from bpy.types import Operator, Panel
 from mathutils import Vector
 
 from .finger_root import draw_finger_root_controls
-from . import finger_flex, finger_layout_ui, finger_definition_ui, finger_symmetry as symmetry
+from . import finger_flex, finger_layout_ui, finger_definition_ui, finger_bank_ui, finger_symmetry as symmetry
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
@@ -567,6 +567,7 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
 
 FINGER_BONES_CLASSES = (
     *finger_definition_ui.CLASSES,
+    *finger_bank_ui.CLASSES,
     *finger_flex.CLASSES,
     *finger_layout_ui.CLASSES,
     CHARACTERDESIGNER_OT_finger_roll,
@@ -577,6 +578,7 @@ FINGER_BONES_CLASSES = (
 def register_finger_bones_runtime():
     """Keep the preview handler lazy; no viewport draw hook is needed until Preview."""
     finger_definition_ui.register_runtime()
+    finger_bank_ui.register_runtime()
     finger_flex.register_runtime()
     finger_layout_ui.register_runtime()
 
@@ -585,6 +587,7 @@ def unregister_finger_bones_runtime():
     finger_layout_ui.unregister_runtime()
     finger_flex.unregister_runtime()
     finger_definition_ui.unregister_runtime()
+    finger_bank_ui.unregister_runtime()
     global _PREVIEW_HANDLE, _PREVIEW_SHADER
     _clear_preview(bpy.context)
     if _PREVIEW_HANDLE is not None:

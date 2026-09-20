@@ -1,4 +1,153 @@
-# Character Designer 0.61.25
+# Character Designer 0.61.29
+
+## Surface-centered internal reference (0.61.29)
+
+A narrow selected longitudinal face strip or edge path now supplies the lateral
+center reference. Regular section/strip intersections fit a straight centerline;
+root fans and the final tip ring do not tilt the reference. After the existing
+coverage and whole-volume safety requirements, the search prefers lateral
+alignment to that line, then surface clearance and stability. Depth is still
+automatic: this is not a move back onto the surface or a screen-space offset.
+The guide remains straight; it cannot follow every local wiggle in the strip.
+If exact centering is unsafe, only certified alternatives are eligible.
+Broad/short/transverse inputs without a reliable longitudinal plane retain the
+volume-based reference, with no new required controls.
+
+The center reference is stored separately from the original selection and the
+uninset topology range, reflected with the paired record and retained through
+owned ring updates. Existing saved guides do not move until recaptured.
+No mesh, bone, Shape Key or scene Empty is changed by Capture.
+
+Validation: 69 focused headless cases, including an asymmetric cross-section
+where maximizing clearance alone moves sideways, physical mesh rotation,
+mirrored metadata and ring-update persistence. Real-X tests on all ten long
+strips verify lateral alignment and full-segment containment; a scripted GUI
+Ring capture is inspected in a surface-aligned orthographic view. These are
+automated checks, not a manual Shift-Numpad7 test of the user's live scene.
+
+## Knuckle-to-tip capture correction (0.61.28)
+
+Long surface strips can include the real knuckle transition before the first
+regular finger ring. The old virtual root cap wrongly excluded that valid part
+of the selection. These captures now validate against the actual closed,
+connected surface, while the straight-axis search remains bounded by the
+selected finger span. It does not search deeper into the palm or lower the
+whole-segment clearance requirement. Open or inconsistent proof surfaces still
+fail safely; explicit root extensions are limited to the local transition.
+
+A small terminal surface wrap around the fingertip is treated as the end of
+the selected range, not a reversed finger direction. The original surface path
+is preserved; interior folds/backtracking still fail. Ring Layout continues to
+use the uninset geometric range. Local records remain local, with live surface
+containment rechecked after topology changes.
+
+Basic Setup has no L/R switch or side suffix: **Index**, **Detected rings: 7**,
+and one Capture operation. Both sides remain automatically paired. Different
+counts display a compact mismatch; unsafe/missing opposites still warn.
+Successful capture/switch/clear also removes stale downstream status messages.
+
+Validation: 68 focused headless cases, plus disposable real-X captures on ten
+long, ten-face strips including the knuckle transition (the earlier tests used
+six regular sleeve faces). Consecutive Index/Middle layouts retain the other
+references, ten Shape Keys, custom normals and the unchanged saved-file hash.
+The automated GUI regression repeats keyboard capture, failure, visibility,
+switching, layout and Undo/Redo. A separate real-X GUI operator capture and
+inspected screenshot verify the long-strip preview. These are scripted GUI
+checks, not a manual mouse-click test. No live user scene or saved X.blend is modified.
+
+## One-capture internal straight axis (0.61.27)
+
+In **Finger > Basic Setup**, select a longitudinal surface strip/open edge path
+or a transverse loop, then **Capture Detection**. Identity, root-to-tip order,
+the internal Start/End segment and the verified opposite reference update in
+one operation. No Mark Start/End, Confirm, Swap, Basis switch or separate top
+capture is needed. The compact panel retains five pair indicators, identity,
+L/R viewing, detected ring counts, capture, one eye toggle, clear and recheck.
+Errors appear only when relevant; length is available in the eye tooltip.
+
+The result is **one straight segment**, not a surface path or ring-center
+polyline. Ordered sections estimate the main direction and stable thickness.
+A bounded search near that direction compares straight segments with small
+endpoint retreats (10–15% of stable local thickness). A temporary closed finger
+volume uses actual body/tip triangles and a virtual proximal cap, never the
+palm. Winding and conservative distance bounds validate the **entire** segment
+with surface clearance. Excessive bends, holes, collapsed sections or no safe
+full-range straight axis are refused; no curve or dramatically shorter success
+is substituted. This is a conservative bounded search, not a global optimizer
+for all possible anatomy, nor evaluated Subdivision/posed/modifier geometry.
+
+Raw selected input, its original coordinates/path and topology provenance are
+kept separately from the inset internal segment. **Ring Layout** explicitly
+consumes the uninset topology range; its boundaries and total length do not
+change because of endpoint clearance. Bone Roll uses the internal direction and
+an automatically captured reliable strip normal. A loop can define an axis
+without defining a bend side; only Bone Roll then asks for a top-strip capture.
+This does not move bones or force their joints onto a straight line.
+
+There is one rest reference per finger, not one setup per Shape Key. Capture
+reads the rest geometry without changing the active key, key values or key data.
+If an active deformation would leave the axis outside the visible finger, it
+is rejected explicitly. Actual topology writes retain their existing Basis-only
+and data-protection guards; this release does not rebuild that write pipeline.
+
+The old completed-guide + pending-Start cross could look like two Start markers.
+Basic Setup now replaces one definition atomically and does not draw a second
+pending cross. Capture/show creates no Empty. Repeated capture, switching,
+show/hide and load/Undo/Redo invalidate preview caches. Failed updates retain
+old records and label any visible old result **Previous result - update failed**.
+No user Empty or legacy joint-marker object is deleted.
+
+Validation: 67 focused headless tests, including eight new internal-axis cases;
+automated Blender GUI keyboard capture/repeated capture/failure, switching,
+visibility and real Undo/Redo, with inspected screenshots; disposable real-X
+ten-finger interior verification, non-Basis capture, five bilateral Roll actions
+and two consecutive finger layouts. No live user scene or saved X.blend changed.
+
+## Five paired records (0.61.26)
+
+**Finger > Basic Setup** now keeps five paired definitions per mesh. One shared
+**Capture Detection / Mark Start / Mark End** row serves all fingers. Select
+faces or an internal ring on either hand: capped quad sleeves and the geometric
+four-finger/offset-thumb arrangement establish identity independently of bones,
+weights, capture order or viewport orientation. A short selection/closed loop
+supplies the detected full finger span; a long selected path retains its span.
+Successful automatic capture is already confirmed, with the exact opposite
+reference populated when safe. Manual Start/End remains separately reviewable.
+
+The five indicators represent Thumb, Index, Middle, Ring and Pinky **pairs**.
+A check means captured/confirmed and symmetric, a question mark needs completion
+or confirmation, and a red warning means missing/asymmetric geometry, mismatched
+ordered rings/connections, or stale local references. L/R switches only the
+viewed member, not a second setup workflow. Detection counts real closed body
+rings; it does not claim to count complicated palm topology or desired rings.
+
+Mesh Local X (or the first existing X Mirror modifier's reference object)
+defines the comparison plane. Geometry is checked in Basis; current-key
+references are validated separately. Symmetry checks do not repair or delete
+geometry. Missing opposite tips can be fixed manually and recovered with the
+refresh/Recheck button. Failed captures preserve previous definitions, and
+pending Start cannot be completed on another finger. Reference settings are
+saved on their source mesh object, not in one global overwritten slot.
+
+Local coordinate/face evidence rebinds unaffected fingers after index changes.
+Verified tool-owned layout edits restamp the changed finger, recheck both sides
+and keep the other four definitions. One-sided ring changes deliberately raise
+that pair's warning. Manual edits request Recheck; unresolved local changes
+preserve settings but require recapture of the affected finger only. Changing
+the active finger hides stale ring previews and requires Prepare Rings for that
+finger. Bilateral Roll now also refuses a different named finger's bone chain.
+
+Initial recognition needs one identifiable group of five regular closed-tip
+finger bodies and a distinguishable thumb. Ambiguous order, open source tips,
+arbitrary branching topology and a wrongly positioned mirror plane are not
+silently guessed. Previous single-definition/F3 services remain available.
+No new remeshing, bilateral topology repair, bone creation or weighting was added.
+
+Validation: 59 focused headless cases, a five-indicator GUI with actual keyboard
+Undo/Redo, and unbound X geometry recognition on both hands plus per-finger
+layout persistence. See [finger tool notes](../../docs/finger_joint_tool.md).
+
+## Shared reference foundation (0.61.25)
 
 **Rig > Body > Fingers > Finger Definition** is now the shared starting point.
 Select a longitudinal surface or open edge path, two endpoint patches, or one

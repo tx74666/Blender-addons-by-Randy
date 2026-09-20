@@ -1,5 +1,250 @@
 # Finger Joint Tool
 
+## Lateral surface-center preference (0.61.29)
+
+The previous clearance-first solver could place an otherwise valid straight
+axis visibly to one side of the artist's selected center strip. `surface_centering`
+now intersects a narrow longitudinal input with regular ordered sections: a
+face strip contributes the midpoint of its two adjacent section vertices, and
+an edge rail contributes its section vertex. At least three well-spread samples
+and consistent transverse tangents are needed. Large root faces and the final
+cap ring are excluded. Broad/ambiguous or short inputs return no preference;
+the previous safe volume solve still handles transverse loops and markers.
+
+An equal-section least-squares fit estimates lateral slope against the detected
+root-to-tip direction. Averaged transverse tangents define the surface normal;
+the computation is mesh-local, independent of screen axes or click order.
+`surface.centering` holds a fitted path and normal, separate from immutable
+`surface.origin`, the original surface path and the uninset topology span.
+It is reflected with the rest of the record and retained during owned layouts.
+
+The solver adds center-plane candidates with independent depth offsets/slopes
+and small lateral alternatives. Coverage/retreat, direction limits, minimum
+clearance and the full-segment certificate are unchanged. Among eligible equal-
+coverage candidates, lateral deviation is preferred before clearance/stability.
+Dimensionless score quantization at 1e-4 suppresses float-noise tie changes under
+rigid rotations; it never quantizes geometry or relaxes certification. Exact
+alignment is not accepted if unsafe, and no curve fallback is introduced.
+The center hint does not define bend direction or alter the Bone Roll workflow.
+Saved older axes stay unchanged until a new Capture; there is no extra UI.
+
+Tests: 69 focused headless cases, including `test_selected_strip_controls_lateral_position_not_depth`.
+It shifts the unselected opposite surface, confirms the old volume-centered
+solution's lateral error, verifies a safe surface-centered solution, rotates
+actual geometry and checks mirrored/persistent hints after a ring update.
+X's long-strip regression now checks center-plane deviation on all ten fingers
+as well as containment, coverage, two consecutive layouts and no saved-file
+mutation. Its GUI test supports `--ring`, uses an aligned orthographic view and
+has an inspected preview screenshot. This is scripted View3D operator/render
+validation, not a manual keypress test in the user's open Blender session.
+
+## Real root-transition containment (0.61.28)
+
+This corrects .27's false refusal of long strips that include the knuckle before
+the first regular ring. `prepare_body()` retains the identified sleeve as local
+metadata but marks `root_extension` when an explicit selected start precedes it
+by more than 5% of stable root thickness. The extension must remain within both
+60% of sleeve length and twice root thickness; deeper palm selections fail.
+`Volume` then uses the actual face-connected closed surface for the proof, not
+an artificial cap through the selected root. A closed, consistently oriented,
+non-degenerate surface is still required. An opening elsewhere in this connected
+component causes a conservative refusal, not an open-mesh fallback.
+
+The larger proof domain does **not** expand the search range: candidates retain
+the selected longitudinal bounds and the same coverage, end retreat, direction
+and full-segment clearance constraints. Ordinary sleeve captures retain their
+small capped volume. No geometry is created or changed for either proof.
+
+Root-extended records keep local sleeve/selection evidence, not a fingerprint
+of the whole connected body. Definition validation rebuilds and checks the
+actual proof surface, including after unrelated edits and owned ring updates.
+Opposite and active-deformation checks use the same remapped root-extended body.
+Thus other fingers' topology updates need not invalidate every reference, but
+new holes or geometry making an existing axis unsafe still reject the guide.
+
+Long selected strips can wrap slightly around the very end of a capped finger.
+Only trailing backtracking within half a local radius, after an extremum within
+one radius of the detected tip, is trimmed from the working range. The immutable
+`surface.path` remains complete. This is not permission for interior folds or
+arbitrary path truncation. Internal retreat is still separate from the topology
+span consumed by Ring Layout.
+
+The paired UI now omits the L/R switch, side suffix and repeated side count
+labels. Equal counts display once; unequal counts warn. Bilateral records and
+opposite validation are unchanged. Successful capture/switch/clear clears stale
+layout/bend status without clearing the underlying safety checks.
+
+Validation this release: 68 focused headless cases (nine internal-axis cases),
+including a synthetic real-root closed/open proof and oversized-extension guard.
+X's `test_real_x_finger_long_internal_blender.py` captures ten ten-face strips
+covering the knuckle transition and tip, verifies actual whole-segment clearance
+on both sides, then applies Index/Middle layouts consecutively and revalidates
+all slots. Captures leave mesh data untouched; layouts preserve ten keys and
+custom normals; the saved X.blend hash is unchanged. Previous short-strip tests
+did not cover the reported selection type. `test_finger_bank_gui.py` also passes
+repeated keyboard Capture, failed replacement, visibility, switching and actual
+layout Undo/Redo in an isolated Blender GUI process.
+The separate X `test_real_x_finger_long_gui.py` invokes the Capture operator in
+a real View3D context and checks the resulting internal record and rendered
+preview; its screenshot was inspected. It does not claim a manual mouse-click
+test or run embedded asset scripts, and never saves the user's asset.
+
+## One-click straight interior reference (0.61.27)
+
+Normal `finger_bank.capture(CAPTURE)` builds a complete record from the existing
+five-finger census, before committing any reference metadata. Rest geometry is
+read automatically, independent of the active key; current deformation containment
+is also checked when applicable. No key choice/value/coordinates are changed.
+The successful record is intrinsically confirmed. The panel removes Mark,
+Confirm, Swap, Basis and top-surface controls; one eye toggle replaces Show/Hide.
+Legacy standalone APIs remain for backward-compatible scripts, not normal UI.
+
+The record separates:
+
+- `input` and `support_input`: live selection/support correspondences for validation;
+- `surface.origin`: immutable captured selection IDs, original coordinates,
+  topology fingerprint and source identity (historical IDs, not current indices);
+- `surface.path`: original selected path or marker, and SELECTED/DETECTED range mode;
+- `basis.path` / compatibility `current.path`: uninset geometric/topology span;
+- `body`: ordered body rings and closed-tip surface used for containment;
+- `internal.path`: exactly two points, the certified internal straight segment.
+
+Longitudinal selection retains its own range and is oriented using detected
+root-to-tip direction. A closed transverse loop or pointlike cross-section
+locates the existing full finger range. Backtracking/ambiguous paths are rejected.
+No original surface is overwritten merely to move a preview inside the mesh.
+After owned layout changes the live support/body is rebound and the interior
+segment recomputed; historical input and the uninset span remain intact.
+
+`finger_internal.py` uses existing rings to estimate a root-to-tip chord, a
+least-squares direction and stable transverse widths. It searches translations
+and small direction deviations (dot >= .97 with the longitudinal chord), not
+arbitrary longest diagonals. A root virtual cap closes only the detected sleeve;
+actual cap/body triangles form the remaining temporary volume. Open or
+inconsistently oriented/non-manifold surfaces and degenerate triangles fail.
+It never creates a scene mesh or extends into the palm to obtain more length.
+
+Endpoint retreat trials are 10%, 12.5%, then 15% of stable root/distal thickness.
+The distal estimate excludes the final possibly collapsed ring. At least 85%
+of the requested longitudinal coverage must remain; failure is explicit, not a
+short segment or curve fallback. The earliest feasible retreat maximizes axial
+coverage among these candidates; for equal coverage it prefers larger surface
+clearance, then less residual distance to section centers. Minimum clearance is
+4% of the smaller stable thickness. These are conservative automatic defaults,
+not five manual depth sliders or an assertion of global geometric optimality.
+
+BVH nearest-surface distance quickly ranks candidates. Solid-angle winding at
+the midpoint establishes the interior component. Recursive interval certificates
+use the distance field's 1-Lipschitz bound: for midpoint distance d and half-length
+h, every point in that interval has at least d-h clearance. Only a complete cover
+of certified intervals succeeds; refinement limits fail conservatively. Endpoint
+tests or finite sampling alone never authorize success. Reflected axes are
+separately certified inside the actual opposite body before reference replacement.
+
+`definition.frame(purpose='TOPOLOGY')` returns the original uninset path for Ring
+Layout. Default frame/preview and Bone Roll use the internal segment, with the
+reliable selected top normal if available. A bare ring's missing bend direction
+does not block Basic Setup; Bone Roll reports its own requirement. This does
+not straighten the mesh or move existing bone joints. Existing topology writes
+still retain their Basis-only preflight; captures do not require changing keys.
+Guides concern base Edit/rest geometry, not evaluated modifiers or posed skin.
+
+Duplicate-marker finding: .26 `mark(START)` retained the completed record while
+`_pending()` drew an additional 3-axis pending cross. It was GPU overlay geometry,
+not a Basic Setup Empty. Bank previews now suppress pending crosses, replacement
+clears pending state, and redraw clears queued/cache references. Failure keeps
+the old guide but puts an explicit old-result warning in both panel and viewport.
+Display/load/Undo/Redo do not accumulate handlers. No historical scene objects
+are removed: the independent legacy Joint tool's real Empty is not a start guide.
+
+Validation: 59 previous focused cases (bank key expectations updated for a single
+rest reference) plus 8 `test_finger_internal_blender.py` cases. Tests cover full
+segment containment, endpoint clearance, original-range layout boundaries,
+non-Basis safety/no writes, rotated transforms, open-edge capture, bad midpoint
+despite valid endpoints, concavity/holes, atomic failure, compact UI, repeated
+capture/no Empty, visibility and save/reopen. `test_finger_bank_gui.py` sends
+actual F7 capture events three times, a failed event with labelled old result,
+switches fingers/visibility, and uses F8 plus Ctrl-Z/Ctrl-Shift-Z for layout.
+Screenshots are inspected separately from headless assertions. X's disposable
+`test_real_x_finger_internal_blender.py` checks ten unbound finger identities and
+both interior segments while a non-Basis key is active, without Confirm/Top;
+then five paired Roll operations and Index/Middle layouts, retaining ten keys,
+custom normals and the saved file hash. It never saves the real asset.
+
+## Five paired Basic Setup records (0.61.26)
+
+`finger_detect.py` builds a read-only census of capped regular quad sleeves.
+It stops at nonregular palm transitions and rejects branches, open/hidden tips,
+collapsed regions and indistinguishable duplicate protrusions. Expanded root
+rows are trimmed; equivalent candidates sharing a cap are deduplicated. The
+selected vertices must intersect exactly one detected finger region (a local
+protrusion, not necessarily a disconnected mesh island). A nearby five-member
+group is identified using four approximately aligned roots/directions and a
+distinct, offset thumb. Sorting the remaining four toward/away from the thumb
+supplies Index/Middle/Ring/Pinky. Ambiguous order is refused, not derived from
+element indices, capture order, screen X, weights or bone names.
+
+Mesh Local X is the default reflection plane; an existing X Mirror modifier's
+mirror_object supplies its reference when present. Positive/negative plane X
+uses the L/R convention. Expected reflected roots/tips locate unique opposite
+candidates; a missing member remains a warning/anchor, not a fabricated mesh.
+Verification requires matching counts, a one-to-one reflected vertex map within
+max(length*1e-4, 1e-7) mesh-local units, reversed face winding/connectivity and
+the same root-to-tip ordered loops. Initial detection needs one complete,
+geometrically distinguishable five-finger hand. The other hand may be damaged.
+
+`finger_bank.py` owns object-scoped references through `finger_bank_ui.py`'s
+Object PropertyGroup: ten side records, one active identity, and a cached survey
+with five pair warnings, ordered rings and persistent missing-member anchors.
+The UI has five pair indicators and one Capture/Start/End row; L/R changes the
+displayed member only. Current-key/Basis samples, independent pending markers,
+optional top normals, revision and confirmation are retained per side. Normal
+automatic Capture orients the selected/full span from the detected finger and
+confirms it. A closed ring or short face uses full ordered body centers plus
+the cap extreme. A long path retains its selected span. Manual Start/End never
+cross identities and requires the existing explicit review step.
+
+Capture stages in a temporary legacy reference and commits only after unique
+identity and geometry validation. Only that digit is replaced; failure preserves
+old records. A verified opposite guide reflects path/normal and remaps actual
+mesh elements; asymmetric/absent mates get an error, not guessed geometry. Set
+Top Surface cannot take a different finger's patch. Range/bend operations sync
+the mate. This does not modify the mesh, rig, key values, selection or binding.
+
+Local evidence stores coordinate correspondences and oriented input-face/edge
+connectivity. Short-marker captures also retain every vertex and face supporting
+the detected full-body path; an unselected tip/key edit or a local face split
+cannot leave that path silently valid. After unrelated topology/index edits, exact coordinate matches and
+local connectivity permit rebinding; changed/ambiguous local geometry is refused
+while keeping the settings. Local validation never treats an unchanged vertex
+count as proof. Owned layout changes preserve reference span, restamp verified
+new body coordinates, re-run the census and report any asymmetry. Preparing a
+second finger no longer invalidates the first finger's saved reference. There
+is still only one active immutable layout recipe; switching fingers requires
+Prepare Rings and hides the previous ring overlay. This release does not make
+topology changes bilateral; the warning is the intended result of one-side edits.
+
+Recheck updates candidates/counts without changing geometry and can recover a
+previously missing opposite tip using its stored mirrored anchor. Manual mesh
+edits show a recheck warning; old records are not erased. Object-scoped pointers
+prevent another mesh from borrowing the first character's active definition.
+Reference metadata still does not consume Edit Mode mesh Undo. Geometry actions
+retain native Undo/Redo; transient caches/overlays are invalidated as before.
+Panel drawing only reads cached data; complete validation runs outside drawing.
+Legacy single-definition services remain for scripts/F3 compatibility.
+
+Validation: 8 new tests in `test_finger_bank_blender.py` plus 51 previous focused
+tests. They cover unbound geometry, arbitrary capture order, isolated overwrite,
+cross-finger failure, pending isolation, closed-ring/current-key capture,
+asymmetry/recovery, lost opposite cap/recovery, transformed objects, ambiguous
+order, save/reopen and consecutive topology edits on different fingers.
+`test_finger_bank_gui.py` verifies five indicators, one-side mismatch, keyboard
+Undo/Redo and an unaffected digit after Redo. X's disposable integration removes
+the Armature modifier and vertex groups before runtime detection, then uses
+ground-truth bone names only to select test inputs; both hands' ten identities
+are detected geometrically. It also tests paired Roll reuse and layout changes
+on Index followed by Middle, retaining the saved X.blend hash and ten Shape Keys.
+
 ## Shared definition before actions (0.61.25)
 
 `finger_definition.py` owns one persistent Scene reference; the UI and lazy

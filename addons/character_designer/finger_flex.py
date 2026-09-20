@@ -202,6 +202,13 @@ def plan(context, *, preview=False):
     groups, ignored, _ = bones._selected_finger_groups(rig)
     if ignored or not groups or len({key[0] for key in groups}) != 1 or any(key[1] == '?' for key in groups):
         raise ValueError('Select only one finger chain (one side or its matching L/R pair).')
+    from . import finger_bank
+    owner = finger_bank.active_object(context)
+    if owner:
+        digit = owner.character_designer_finger_bank.active.split('.')[0]
+        aliases = {'pointer': 'INDEX', 'little': 'PINKY'}
+        if any(aliases.get(key[0], key[0].upper()) != digit for key in groups):
+            raise ValueError('Selected bones belong to another finger. Choose its Basic Setup indicator first.')
     collection = rig.data.edit_bones
     selected = [bone for group in groups.values() for bone in group]
     paired = {}
@@ -222,6 +229,8 @@ def plan(context, *, preview=False):
         return min(result)
     chains.sort(key=distance)
     chain = chains[0]
+    if owner and distance(chain) > sum((rig.matrix_world.to_3x3() @ (b.tail-b.head)).length for b in chain)*.5:
+        raise ValueError('Selected bones are too far from this finger definition; check the character/chain.')
     if abs(distance(chains[1])-distance(chain)) < max(sum((b.tail-b.head).length for b in chain)*1e-4, 1e-6):
         raise ValueError('The captured surface is equally close to both hands. Capture a top surface on one finger.')
     if any(b.parent != a for a, b in zip(chain, chain[1:])):
@@ -376,7 +385,7 @@ def draw_definition_controls(layout, context):
     box = layout.box()
     box.label(text='Bone Roll', icon='BONE_DATA')
     if not data or data['bend'] is None:
-        box.label(text='Set a top surface to define the bend side.')
+        box.label(text='Bone Roll needs a top-strip capture.')
         return
     row = box.row(align=True)
     row.operator('character_designer.finger_flex', text='Preview Bend').action = 'PREVIEW'

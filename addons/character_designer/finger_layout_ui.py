@@ -86,8 +86,7 @@ def _valid():
         now = time.monotonic()
         if now-_preview['time'] > .25:
             if _stamp(obj) != _preview['stamp']:
-                layout.state(context).status = 'Mesh changed. Capture the finger again before updating.'
-                hide_preview()
+                _preview['error'] = 'Mesh changed. Recheck the finger before updating.'
                 return None
             _preview['time'] = now
         return _preview['plan']
@@ -226,7 +225,8 @@ def draw_controls(layout_ui, context):
     prepare = row.row(align=True)
     prepare.enabled = bool(guide.record and guide.confirmed and guide.use_basis)
     prepare.operator('character_designer.finger_layout', text='Prepare Rings', icon='MESH_GRID').action = 'PREPARE'
-    if settings.source:
+    same_definition = not settings.record or not json.loads(settings.record).get('definition_id') or json.loads(settings.record)['definition_id'] == guide.revision
+    if settings.source and same_definition:
         row.operator('character_designer.finger_layout', text='', icon='X').action = 'CLEAR'
         row = box.row(align=True)
         row.prop(settings, 'joint_one', slider=True)
@@ -252,8 +252,11 @@ def draw_controls(layout_ui, context):
         box.operator('character_designer.finger_layout', text='Generate / Update Rings', icon='MESH_GRID').action = 'APPLY'
         box.label(text='Root connection and fingertip stay fixed.')
     else:
-        box.label(text='Confirm a Basis definition first.')
+        box.label(text='Prepare the active finger definition.')
         box.label(text='Topology is checked only when preparing.')
+    if _preview and _preview.get('error'):
+        import textwrap
+        for line in textwrap.wrap(_preview['error'], width=43): box.label(text=line)
     if settings.status:
         import textwrap
         for line in textwrap.wrap(settings.status, width=45): box.label(text=line)

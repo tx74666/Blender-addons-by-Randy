@@ -16,6 +16,9 @@ EPS = 1e-7
 
 
 def state(context):
+    from . import finger_bank
+    active = finger_bank.active_state(context)
+    if active is not None: return active
     return context.scene.character_designer_finger_definition
 
 
@@ -298,6 +301,10 @@ def _validate_mesh(obj, record, basis, mesh=None):
     key = record['basis_key'] if basis else record['key']
     bm = _snapshot(obj, key, mesh)
     try:
+        if mesh is None and record.get('local_evidence') and _topology(bm) != record['topology']:
+            from . import finger_bank
+            finger_bank.validate_local(obj, record, basis, bm)
+            return
         if _topology(bm) != record['topology'] or any(i >= len(bm.verts) or (bm.verts[i].co-Vector(co)).length > 1e-6
                                                    for i, co in record[variant]['coordinates']):
             raise ValueError('The reference geometry changed. Capture the finger definition again.')
@@ -321,7 +328,7 @@ def _reference_mesh(context, obj, record):
     return None
 
 
-def frame(context, *, require_basis=False, require_bend=False, require_confirmed=False):
+def frame(context, *, require_basis=False, require_bend=False, require_confirmed=False, purpose='INTERNAL'):
     s = state(context)
     if not s.source or not s.record: raise ValueError('Capture a finger definition first.')
     if require_confirmed and not s.confirmed: raise ValueError('Review the markers and Confirm Definition first.')
@@ -338,9 +345,35 @@ def frame(context, *, require_basis=False, require_bend=False, require_confirmed
             if bone is None or (_head(bone)-Vector(item['head'])).length > 1e-6 or (_tail(bone)-Vector(item['tail'])).length > 1e-6 or (bone.parent.name if bone.parent else '') != item['parent']:
                 raise ValueError('The reference bone chain changed. Capture its definition again.')
     sample = record['basis' if s.use_basis else 'current']
+    if record.get('body', {}).get('root_extension'):
+        # The real connected shell is a live proof domain, not a huge global
+        # reference fingerprint. Unrelated valid topology edits may rebind;
+        # newly opened/intersecting root geometry must never keep a fake proof.
+        from . import finger_bank, finger_internal
+        base = _snapshot(s.source, record['basis_key'])
+        try:
+            resolved = finger_bank.remap_record(record, base) if _topology(base) != record['topology'] else record
+            finger_internal.verify(base, resolved['body'], resolved['internal'])
+        finally: base.free()
+    if record.get('internal') and purpose == 'INTERNAL' and not require_basis and _key_name(s.source) != record['basis_key']:
+        # A single rest definition, never one configuration per Shape Key. Do
+        # not display it as interior if the currently edited deformation moved
+        # the finger away from that line.
+        from . import finger_bank, finger_internal
+        base = _snapshot(s.source, record['basis_key'])
+        current = _snapshot(s.source, _key_name(s.source))
+        try:
+            display_record = finger_bank.remap_record(record, base) if _topology(base) != record['topology'] else record
+            finger_internal.verify(current, display_record['body'], display_record['internal'])
+        except ValueError as exc:
+            raise ValueError('The visible finger deformation does not contain this rest axis safely; the saved reference and Shape Keys are unchanged.') from exc
+        finally:
+            base.free()
+            current.free()
     world = s.source.matrix_world
     if abs(world.to_3x3().determinant()) < EPS: raise ValueError('The reference object has zero scale.')
-    path = [world @ Vector(p) for p in sample['path']]
+    internal = record.get('internal')
+    path = [world @ Vector(p) for p in (internal['path'] if internal and purpose == 'INTERNAL' else sample['path'])]
     length = sum((b-a).length for a, b in zip(path, path[1:]))
     if length < EPS or (path[-1]-path[0]).length < EPS: raise ValueError('The reference span is collapsed.')
     tangent = (path[-1]-path[0]).normalized()
@@ -367,10 +400,11 @@ def frame(context, *, require_basis=False, require_bend=False, require_confirmed
         projected = normal_world-tangent*normal_world.dot(tangent)
         if projected.length > EPS: bend = projected.normalized()*(1 if s.flip_bend else -1)
     if require_bend and bend is None:
-        raise ValueError(bend_error or 'Bend direction is undefined. Select a top surface and use Set Top Surface.')
+        raise ValueError(bend_error or ('Bone Roll needs a reliable bend side. Capture a longitudinal top-surface strip; the internal axis itself is already usable.' if internal else 'Bend direction is undefined. Select a top surface and use Set Top Surface.'))
     return {'path': path, 'root': path[0], 'tip': path[-1], 'midpoint': midpoint, 'direction': tangent, 'bend': bend,
             'length': length, 'basis': s.use_basis, 'key': record['basis_key'] if s.use_basis else record['key'],
-            'label': sample['label'], 'direction_label': record['direction'], 'bend_error': bend_error}
+            'label': sample['label'], 'direction_label': record['direction'], 'bend_error': bend_error,
+            'internal': bool(internal), 'purpose': purpose}
 
 
 def confirm(context):
