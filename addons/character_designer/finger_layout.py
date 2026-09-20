@@ -317,9 +317,12 @@ def _split_rings(bm, plan):
     rows = plan['rows']
     for band in range(len(rows)-1):
         first_ids, last_ids, previous = rows[band], rows[band+1], 0.
+        previous_columns = [0.]*len(first_ids)
         targets = sorted((r for r in plan['rings'] if r['band'] == band and r['fraction']), key=lambda r: r['fraction'])
         for ring in targets:
-            fraction = (ring['fraction']-previous)/(1-previous)
+            values = ring.get('fractions', [ring['fraction']]*len(first_ids))
+            fractions = [(f-p)/(1-p) for f, p in zip(values, previous_columns)]
+            if any(f <= 0 or f >= 1 for f in fractions): raise ValueError('Support rings cross or collapse along a surface rail.')
             bm.verts.ensure_lookup_table()
             first = [bm.verts[i] for i in first_ids]
             last = [bm.verts[i] for i in last_ids]
@@ -327,7 +330,7 @@ def _split_rings(bm, plan):
             if any(e is None for e in edges): raise ValueError('The captured ring correspondence changed.')
             before_count = len(bm.verts)
             bmesh.ops.subdivide_edges(bm, edges=edges, cuts=1, use_grid_fill=False,
-                                     edge_percents={e: fraction if e.verts[0] == a else 1-fraction for e, a in zip(edges, first)})
+                                     edge_percents={e: f if e.verts[0] == a else 1-f for e, a, f in zip(edges, first, fractions)})
             # CustomData allocation (notably shape layers) can invalidate all
             # Python BMVert wrappers. Reacquire using the preserved indices.
             bm.verts.ensure_lookup_table()
@@ -345,6 +348,7 @@ def _split_rings(bm, plan):
             if any((v.co-p).length > 1e-5 for v, p in zip(new_row, ring['points'])):
                 raise ValueError('Generated ring differs from preview; the original mesh was not changed.')
             first_ids, previous = [v.index for v in new_row], ring['fraction']
+            previous_columns = values
             ring['vertex_ids'] = first_ids
             if 'original_ring' in ring: ring['original_ring']['vertex_ids'] = first_ids
     # Select the two anatomical centers, not all incidental existing edges.
@@ -444,18 +448,16 @@ def _verify(source, mesh, touched, provenance=None):
                 raise ValueError('Original custom normals could not be preserved safely; update was discarded.')
 
 
-def apply_layout(context, after_commit=None):
-    obj = _edit(context)
-    settings, _ = _source(context)
-    if fingerprint(obj) != settings.signature:
-        raise ValueError('The mesh, Shape Keys or weights changed after capture. Capture the strip again; no edits were overwritten.')
-    plan = build_layout(context)
-    if any(r['blocked'] for r in plan['rings']):
-        raise ValueError('A joint/support target lies in the protected root or fingertip. Move it inside the editable body; no geometry was changed.')
-    source, old = settings.source, obj.data
-    touched = {i for row in plan['rows'] for i in row}
+def stage(source, plans):
+    """Shared data-preserving generator; build several disjoint fingers atomically."""
+    touched = set()
+    for plan in plans:
+        if any(r['blocked'] for r in plan['rings']):
+            raise ValueError('A joint/support target lies in the protected root or fingertip.')
+        ids = {i for row in plan['rows'] for i in row}
+        if touched & ids: raise ValueError('Two finger plans overlap; no geometry was changed.')
+        touched.update(ids)
     new, bm = source.copy(), bmesh.new()
-    old_signature, old_applied = settings.signature, settings.applied
     try:
         bm.from_mesh(source)
         normal_layer = None
@@ -468,22 +470,30 @@ def apply_layout(context, after_commit=None):
                 for loop in face.loops: loop[normal_layer] = normals[loop.vert.index]
             normal_name = normal_layer.name
         provenance, corners = {}, {}
-        if plan.get('sliding'):
-            bm.verts.ensure_lookup_table()
-            for row, t in plan['moves'].items():
-                points = _sample(source, plan['rows'], plan['positions'], t)[0]
-                for vi, point in zip(plan['rows'][row], points): bm.verts[vi].co = point
-            _split_rings(bm, finger_ring_slide.split_plan(plan, source))
-            provenance, corners = finger_ring_slide.transfer(bm, source, plan)
-            for seq in (bm.faces, bm.edges, bm.verts):
-                for item in seq: item.select_set(False)
-            for ring in plan['rings']:
-                if not ring['kind'].startswith('JOINT'): continue
-                ids = ring['vertex_ids']
-                for i, vi in enumerate(ids): bm.edges.get((bm.verts[vi], bm.verts[ids[(i+1) % len(ids)]])).select_set(True)
-            bm.select_flush_mode()
-        else:
-            _split_rings(bm, plan)
+        for plan in plans:
+            if plan.get('sliding'):
+                bm.verts.ensure_lookup_table()
+                for row, t in plan['moves'].items():
+                    points = _sample(source, plan['rows'], plan['positions'], t)[0]
+                    for vi, point in zip(plan['rows'][row], points): bm.verts[vi].co = point
+                _split_rings(bm, finger_ring_slide.split_plan(plan, source))
+                changed, corner_map = finger_ring_slide.transfer(bm, source, plan)
+                provenance.update(changed)
+                corners.update(corner_map)
+                for ring in plan['rings']:
+                    if not ring['kind'].startswith('JOINT'): continue
+                    ids = ring['vertex_ids']
+                    for i, vi in enumerate(ids): bm.edges.get((bm.verts[vi], bm.verts[ids[(i+1) % len(ids)]])).select_set(True)
+                bm.select_flush_mode()
+            else:
+                _split_rings(bm, plan)
+                for ring in plan['rings']:
+                    if not ring['fraction']: ring['vertex_ids'] = plan['rows'][ring['band']]
+                    else:
+                        for column, vi in enumerate(ring['vertex_ids']):
+                            band = ring['band']
+                            f = ring.get('fractions', [ring['fraction']]*len(ring['vertex_ids']))[column]
+                            provenance[vi] = (plan['rows'][band][column], plan['rows'][band+1][column], f)
         bm.to_mesh(new)
         new.update()
         if provenance: finger_ring_slide.transfer_point_attributes(source, new, provenance)
@@ -497,6 +507,23 @@ def apply_layout(context, after_commit=None):
         if SOURCE_TAG in new: del new[SOURCE_TAG]
         new[RESULT_TAG] = True
         _verify(source, new, touched, provenance)
+        return new
+    except Exception:
+        bpy.data.meshes.remove(new)
+        raise
+    finally: bm.free()
+
+
+def apply_layout(context, after_commit=None):
+    obj = _edit(context)
+    settings, _ = _source(context)
+    if fingerprint(obj) != settings.signature:
+        raise ValueError('The mesh, Shape Keys or weights changed after capture. Capture the strip again; no edits were overwritten.')
+    plan = build_layout(context)
+    source, old = settings.source, obj.data
+    new = stage(source, [plan])
+    old_signature, old_applied = settings.signature, settings.applied
+    try:
         bpy.ops.object.mode_set(mode='OBJECT')
         obj.data = new
         obj.active_shape_key_index = 0
@@ -518,7 +545,6 @@ def apply_layout(context, after_commit=None):
         settings.signature, settings.applied = old_signature, old_applied
         raise
     finally:
-        bm.free()
         if new.users == 0: bpy.data.meshes.remove(new)
 
 

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 61, 29),
+    "version": (0, 61, 43),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -8284,12 +8284,6 @@ class CHARACTERDESIGNER_PT_main(Panel):
 
         page = active_ui_page(context)
         _draw_page_tabs(layout, page)
-        if page == UI_PAGE_RIG:
-            row = layout.row(align=True)
-            section = active_rig_section(context)
-            for value, label, _description in UI_RIG_SECTION_ITEMS:
-                row.operator('character_designer.set_rig_section', text=label,
-                             depress=section == value).section = value
         if page != UI_PAGE_HAIR:
             _draw_refresh_action(layout)
             return
@@ -8398,6 +8392,29 @@ class CHARACTERDESIGNER_PT_main(Panel):
         _draw_refresh_action(layout)
 
 
+class CHARACTERDESIGNER_PT_rig_sections(Panel):
+    """Subcategory navigation follows the shared character context, not vice versa."""
+    bl_label = 'Rig Sections'
+    bl_idname = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = SIDEBAR_CATEGORY
+    bl_parent_id = 'CHARACTERDESIGNER_PT_main'
+    bl_options = {'HIDE_HEADER'}
+    bl_order = 2
+
+    @classmethod
+    def poll(cls, context):
+        return active_ui_page(context) == UI_PAGE_RIG
+
+    def draw(self, context):
+        row = self.layout.row(align=True)
+        section = active_rig_section(context)
+        for value, label, _description in UI_RIG_SECTION_ITEMS:
+            row.operator('character_designer.set_rig_section', text=label,
+                         depress=section == value).section = value
+
+
 CLASSES = (
     CharacterDesignerState,
     CHARACTERDESIGNER_OT_preview_selected_root,
@@ -8426,6 +8443,7 @@ CLASSES = (
     *SELECTED_BONE_WEIGHT_CLASSES,
     *BONE_COLLECTION_CLASSES,
     *BONE_DISPLAY_CLASSES,
+    CHARACTERDESIGNER_PT_rig_sections,
     *WIDGET_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
     *TOPOLOGY_SYMMETRY_CLASSES,

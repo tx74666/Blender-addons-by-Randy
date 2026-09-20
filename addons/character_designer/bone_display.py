@@ -350,7 +350,8 @@ class CHARACTERDESIGNER_PT_bone_display(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
-    bl_order = -1
+    bl_parent_id = 'CHARACTERDESIGNER_PT_main'
+    bl_order = 1
 
     @classmethod
     def poll(cls, context):

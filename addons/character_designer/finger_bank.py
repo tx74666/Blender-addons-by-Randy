@@ -240,6 +240,15 @@ def _mirror(context, obj, key, bm, report):
         if record.get('internal'):
             from . import finger_internal
             record['internal'].update(finger_internal.verify(bm, record['body'], record['internal']))
+        if mate.guide.record:
+            previous = json.loads(mate.guide.record)
+            origin = previous.get('capture_source', previous.get('surface', {}).get('origin', {}).get('bank_key'))
+            old_normal, new_normal = previous['basis'].get('normal'), record['basis'].get('normal')
+            if origin == mate_key and old_normal and new_normal:
+                old_bend = Vector(old_normal)*(1 if mate.guide.flip_bend else -1)
+                new_bend = Vector(new_normal)*(1 if slot.guide.flip_bend else -1)
+                if old_bend.normalized().dot(new_bend.normalized()) < .98:
+                    raise ValueError('Independently captured bend directions conflict; the opposite definition was retained. Review the top strips.')
         top = remap_record(json.loads(slot.guide.bend_record), bm, reflection=plane(obj), target=target) if slot.guide.bend_record else None
         # Stage everything before touching the previous opposite guide.
         for name in FIELDS: setattr(mate.guide, name, getattr(slot.guide, name))
@@ -248,6 +257,7 @@ def _mirror(context, obj, key, bm, report):
         mate.guide.pending_source, mate.guide.pending = None, ''
         mate.guide.revision = slot.guide.revision+'-mate'
         mate.guide.confirmed = slot.guide.confirmed
+        mate.bones = ''
         mate.error = ''
     except ValueError as exc:
         mate.error = str(exc)
@@ -295,13 +305,26 @@ def _internal_record(obj, bm, spec, candidate, key):
     body = finger_internal.prepare_body(bm, candidate, sample['path'])
     centering = None if marker else finger_internal.surface_centering(bm, body, spec)
     if centering: surface['centering'] = centering
+    if centering and spec['kind'] == 'FACES':
+        # Stable longitudinal sections, excluding the wrapped cap/root fan,
+        # provide the top normal from this same capture (never another finger).
+        stable = set(candidate['vertices'])
+        faces_for_normal = [bm.faces[i] for i in spec['ids']
+                            if len(bm.faces[i].verts) == 4 and all(v.index in stable for v in bm.faces[i].verts)]
+        normal = Vector(centering['normal'])
+        if not faces_for_normal or any(f.normal.dot(normal) < .2 for f in faces_for_normal
+                                      if abs(f.normal.dot(main)) < .8):
+            raise ValueError('The selected top strip has conflicting surface normals; keep a consistent longitudinal side.')
+        sample['normal'] = list(normal)
+    if spec['kind'] == 'FACES' and not marker and sample['normal'] is None:
+        raise ValueError('The longitudinal surface has no consistent top normal. Select one continuous side; the previous definition was retained.')
     faces = finger_internal.support_faces(body)
     support = sorted({v.index for i in faces for v in bm.faces[i].verts} | {v.index for v in vertices})
     sample['coordinates'] = [[i, list(bm.verts[i].co)] for i in support]
     sample['label'] = 'Internal straight axis'
     record = {'kind': 'MESH', 'input': copy.deepcopy(spec), 'support_input': {'kind': 'FACES', 'ids': faces},
               'topology': definition._topology(bm), 'key': definition._basis_name(obj), 'basis_key': definition._basis_name(obj),
-              'basis': sample, 'current': copy.deepcopy(sample), 'direction': 'Detected tip', 'bank_key': key,
+              'basis': sample, 'current': copy.deepcopy(sample), 'direction': 'Detected tip', 'bank_key': key, 'capture_source': key,
               'surface': surface, 'body': body, 'internal': finger_internal.solve(bm, body, sample['path'], centering)}
     definition._validate_mesh(obj, record, True)
     return enrich(record, bm)
@@ -337,8 +360,10 @@ def capture(context, action='CAPTURE'):
             guide.bend_source, guide.bend_record, guide.flip_bend = None, '', False
             guide.pending_source, guide.pending = None, ''
             guide.confirmed, guide.status, slot.error = True, '', ''
+            slot.bones = ''
             bank.active, bank.status = key, ''
             _mirror(context, obj, key, base, report)
+            select(context, key.split('.')[0], key[-1])
             return key
         if action == 'END' and (not slot or not slot.guide.pending):
             raise ValueError(f'Mark Start on {detect.LABELS[key.split(".")[0]]} {key[-1]} first. Start / End cannot cross fingers.')
@@ -374,12 +399,41 @@ def capture(context, action='CAPTURE'):
         base.free()
 
 
-def select(context, digit, side=None):
+def selected_digits(bank):
+    """Display selection is separate from the one active editing identity."""
+    chosen = set(bank.visible_digits) if bank.selection_initialized else {bank.active.split('.')[0]}
+    return tuple(d for d in detect.DIGITS if d in chosen)
+
+
+def select(context, digit, side=None, *, mode='SINGLE'):
     obj = active_object(context)
     if not obj: raise ValueError('Capture a finger on this mesh first.')
     bank = obj.character_designer_finger_bank
+    if digit not in detect.DIGITS or mode not in {'CLICK', 'SINGLE', 'TOGGLE', 'RANGE'}:
+        raise ValueError('Unknown finger display selection.')
     side = side or (bank.active[-1] if bank.active else 'L')
-    bank.active = f'{digit}.{side}'
+    chosen = set(selected_digits(bank))
+    if mode == 'CLICK':
+        # A visible button can always be switched off, including the last one.
+        # Internal callers retain SINGLE's explicit focus semantics (Capture).
+        if digit in chosen: chosen.remove(digit)
+        else: chosen = {digit}
+        bank.selection_anchor = digit
+    elif mode == 'SINGLE':
+        chosen, bank.selection_anchor = {digit}, digit
+    elif mode == 'TOGGLE':
+        chosen.symmetric_difference_update({digit})
+        bank.selection_anchor = digit
+    else:
+        anchor = bank.selection_anchor if bank.selection_anchor in detect.DIGITS else digit
+        a, b = sorted((detect.DIGITS.index(anchor), detect.DIGITS.index(digit)))
+        chosen.update(detect.DIGITS[a:b+1])
+        bank.selection_anchor = anchor
+    bank.visible_digits, bank.selection_initialized = chosen, True
+    if digit in chosen: bank.active = f'{digit}.{side}'
+    elif chosen and bank.active.split('.')[0] not in chosen:
+        closest = min(chosen, key=lambda d: (abs(detect.DIGITS.index(d)-detect.DIGITS.index(digit)), detect.DIGITS.index(d)))
+        bank.active = f'{closest}.{side}'
 
 
 def sync(context):
@@ -397,7 +451,7 @@ def sync(context):
     finally: base.free()
 
 
-def recheck(context, *, own_layout=False):
+def recheck(context, *, own_layout=False, updated_keys=None):
     obj = active_object(context)
     if not obj: raise ValueError('Capture a finger first.')
     bank = obj.character_designer_finger_bank
@@ -414,7 +468,7 @@ def recheck(context, *, own_layout=False):
                     text = getattr(guide, field)
                     if not text: continue
                     record = json.loads(text)
-                    if own_layout and slot.name == bank.active and field != 'pending':
+                    if own_layout and slot.name in (updated_keys or {bank.active}) and field != 'pending':
                         # The verified layout preserved the original reference
                         # span. Restamp against the newly generated local body.
                         c = report['candidates'][slot.name]

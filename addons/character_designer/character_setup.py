@@ -390,7 +390,8 @@ class CHARACTERDESIGNER_PT_character_setup(Panel):
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
     bl_options = {'DEFAULT_CLOSED'}
-    bl_order = -10
+    bl_parent_id = 'CHARACTERDESIGNER_PT_main'
+    bl_order = 0
 
     @classmethod
     def poll(cls, context):

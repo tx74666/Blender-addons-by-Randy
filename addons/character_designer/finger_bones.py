@@ -12,6 +12,7 @@ from mathutils import Vector
 
 from .finger_root import draw_finger_root_controls
 from . import finger_flex, finger_layout_ui, finger_definition_ui, finger_bank_ui, finger_symmetry as symmetry
+from . import finger_workflow_ui
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
 
@@ -524,9 +525,11 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
         mesh_edit = context.mode == "EDIT_MESH" and context.edit_object is not None
 
         finger_definition_ui.draw_controls(layout, context)
-        if mesh_edit:
-            finger_layout_ui.draw_controls(layout, context)
-        finger_flex.draw_definition_controls(layout, context)
+        if finger_bank_ui.bank.active_object(context):
+            finger_workflow_ui.draw_controls(layout, context)
+        else:
+            if mesh_edit: finger_layout_ui.draw_controls(layout, context)
+            finger_flex.draw_definition_controls(layout, context)
 
         if armature is not None:
             layout.prop(finger_flex.state(context), "show_legacy")
@@ -570,6 +573,7 @@ FINGER_BONES_CLASSES = (
     *finger_bank_ui.CLASSES,
     *finger_flex.CLASSES,
     *finger_layout_ui.CLASSES,
+    *finger_workflow_ui.CLASSES,
     CHARACTERDESIGNER_OT_finger_roll,
     CHARACTERDESIGNER_PT_fingers,
 )
@@ -581,9 +585,11 @@ def register_finger_bones_runtime():
     finger_bank_ui.register_runtime()
     finger_flex.register_runtime()
     finger_layout_ui.register_runtime()
+    finger_workflow_ui.register_runtime()
 
 
 def unregister_finger_bones_runtime():
+    finger_workflow_ui.unregister_runtime()
     finger_layout_ui.unregister_runtime()
     finger_flex.unregister_runtime()
     finger_definition_ui.unregister_runtime()
