@@ -11,7 +11,7 @@ import bmesh
 from mathutils import Vector, Matrix
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_bank_blender import fixture, select, refused, C, bank, definition, layout, character_designer
+from finger_tools_fixtures import hands_fixture as fixture, select, refused, C, bank, definition, fingerprint, character_designer
 from character_designer import finger_internal as internal, finger_definition_ui as ui
 
 
@@ -39,13 +39,11 @@ def check_axis(obj, record):
 
 def test_one_capture_internal_pair_and_no_objects():
     obj, chosen = fixture()
-    before, objects = layout.fingerprint(obj), set(bpy.data.objects.keys())
+    before, objects = fingerprint(obj), set(bpy.data.objects.keys())
     select(obj, chosen['INDEX.L'])
     bank.capture(C, 'START')  # Old pending reference must disappear on capture.
-    layout.state(C).status = 'Old topology error'
     for _ in range(3):
         assert bpy.ops.character_designer.finger_setup(action='CAPTURE') == {'FINISHED'}
-        assert not layout.state(C).status
         b = obj.character_designer_finger_bank
         assert len(b.slots) == 10 and not definition.state(C).pending
         assert definition.state(C).confirmed
@@ -58,10 +56,10 @@ def test_one_capture_internal_pair_and_no_objects():
         for a, p in zip(left['internal']['path'], right['internal']['path']):
             assert (Vector((-a[0], a[1], a[2]))-Vector(p)).length < 1e-6
     assert set(bpy.data.objects.keys()) == objects
-    assert layout.fingerprint(obj) == before
+    assert fingerprint(obj) == before
 
 
-def test_explicit_range_and_layout_are_not_retracted():
+def test_explicit_range_is_not_retracted():
     obj, chosen = fixture()
     select(obj, chosen['INDEX.L'][1:5])
     bank.capture(C)
@@ -71,21 +69,6 @@ def test_explicit_range_and_layout_are_not_retracted():
     assert axis['length'] < raw['length']
     assert record['surface']['range_mode'] == 'SELECTED'
     check_axis(obj, record)
-    layout.capture_definition(C)  # No Confirm / Set Top Surface.
-    recipe = json.loads(layout.state(C).record)
-    assert abs(recipe['length']-raw['length']) < 1e-6
-    assert (Vector(recipe['root'])-raw['root']).length < 1e-6
-    assert (Vector(recipe['tip'])-raw['tip']).length < 1e-6
-    bm = definition._snapshot(obj)
-    try: endpoints = [(i, list(bm.verts[i].co)) for row in (recipe['rings'][0], recipe['rings'][-1]) for i in row]
-    finally: bm.free()
-    origin = record['surface']['origin']
-    layout.apply_layout(C)
-    assert json.loads(definition.state(C).record)['surface']['origin'] == origin
-    bm = definition._snapshot(obj)
-    try: assert all((bm.verts[i].co-Vector(co)).length < 1e-6 for i, co in endpoints)
-    finally: bm.free()
-    check_axis(obj, json.loads(definition.state(C).record))
 
 
 def test_active_shape_key_is_not_a_configuration():
@@ -95,12 +78,12 @@ def test_active_shape_key_is_not_a_configuration():
     obj.data.shape_keys.key_blocks[1].value = .3
     bpy.ops.object.mode_set(mode='EDIT')
     select(obj, chosen['INDEX.L'])
-    before = layout.fingerprint(obj)
+    before = fingerprint(obj)
     bank.capture(C)
     record = json.loads(definition.state(C).record)
     assert record['key'] == record['basis_key'] == 'Basis'
     assert definition.state(C).use_basis and definition.state(C).confirmed
-    assert obj.active_shape_key_index == 1 and layout.fingerprint(obj) == before
+    assert obj.active_shape_key_index == 1 and fingerprint(obj) == before
     check_axis(obj, record)
     # A deformation that would leave the displayed rest line outside is refused,
     # not silently shown as an internal guide and not stored as another record.
@@ -188,15 +171,15 @@ def test_compact_ui_and_visibility_lifecycle():
             return SimpleNamespace()
     ui.draw_controls(UI(), C)
     labels = [c[1] for c in calls]
-    for unwanted in ('Mark Start', 'Mark End', 'Confirm', 'Confirmed', 'Swap Ends', 'Reference: Basis', 'Set Top Surface (optional)', 'Reverse Bend', 'Show', 'Hide', 'L / R', 'Index · L'):
+    for unwanted in ('Mark Start', 'Mark End', 'Confirm', 'Confirmed', 'Swap Ends', 'Reference: Basis', 'Set Top Surface (optional)', 'Reverse Bend', 'Show', 'Hide', 'L / R', 'Index Ã‚Â· L'):
         assert unwanted not in labels, unwanted
-    assert 'Detected rings: 7' in labels and not any('rings: L' in s for s in labels)
+    assert not any('Detected rings' in label or 'rings: L' in label for label in labels)
     assert labels.count('Capture Detection') == 1
     for _ in range(3):
         bpy.ops.character_designer.finger_setup(action='TOGGLE')
-        assert not ui._visible
+        assert not ui.overlays_enabled()
         bpy.ops.character_designer.finger_setup(action='TOGGLE')
-        assert ui._visible
+        assert ui.overlays_enabled()
     ui._invalidate()
     assert not ui._visible and ui._request is None and ui._pending_cache is None
     # Loading an older bank reference never presents its surface line as the
@@ -300,8 +283,6 @@ def test_selected_strip_controls_lateral_position_not_depth():
     for a, z in zip(left['surface']['centering']['path'], right['surface']['centering']['path']):
         assert (Vector((-a[0], a[1], a[2]))-Vector(z)).length < 1e-6
     hint = left['surface']['centering']
-    layout.capture_definition(C)
-    layout.apply_layout(C)
     assert json.loads(definition.state(C).record)['surface']['centering'] == hint
     check_axis(obj, json.loads(definition.state(C).record))
 

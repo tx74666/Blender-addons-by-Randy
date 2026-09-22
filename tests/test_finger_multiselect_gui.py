@@ -8,7 +8,7 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_workflow_blender import bound_fixture, bank, definition, layout, character_designer, C
+from finger_tools_fixtures import bound_fixture, bank, definition, fingerprint, character_designer, C
 from character_designer import finger_definition_ui as preview, finger_bank_ui as ui
 
 ARGS = sys.argv[sys.argv.index('--')+1:]
@@ -103,7 +103,7 @@ def setup():
         item=C.window_manager.keyconfigs.active.keymaps['3D View'].keymap_items.new('character_designer.finger_setup','F'+str(number),'PRESS',any=True)
         item.properties.action='SELECT'; item.properties.digit=digit
     C.window_manager.keyconfigs.update()
-    STATE['mesh']=layout.fingerprint(C.edit_object)
+    STATE['mesh']=fingerprint(C.edit_object)
     STATE['objects']=set(bpy.data.objects.keys())
     if ARGS[0]=='--real-run':
         # Dismiss Blender's blocked-script notice, never permit embedded scripts.
@@ -174,7 +174,7 @@ def ranged():
 
 def shown():
     assert len(preview._display_cache['frames'])==10
-    assert layout.fingerprint(C.edit_object)==STATE['mesh']
+    assert fingerprint(C.edit_object)==STATE['mesh']
     assert set(bpy.data.objects.keys())==STATE['objects']
     # Native Undo/Redo may restore an older selected set; all display caches
     # must be hidden, then rebuild from whichever persisted selection won.
@@ -193,7 +193,7 @@ def undone():
 
 def restored():
     assert len(preview._display_cache['frames'])==10
-    assert layout.fingerprint(C.edit_object)==STATE['mesh']
+    assert fingerprint(C.edit_object)==STATE['mesh']
     # fingerprint() flushes Edit Mode and legitimately emits a geometry update.
     # Let that event finish and revalidate before guarding selection-only events.
     later(warm_buttons)
@@ -271,7 +271,7 @@ def mouse_restored():
     assert len(preview._display_cache['frames'])==2
     definition.frame,definition._snapshot,bank.dirty=STATE['originals']
     STATE['warm_guard']=False
-    assert layout.fingerprint(C.edit_object)==STATE['mesh']
+    assert fingerprint(C.edit_object)==STATE['mesh']
     assert set(bpy.data.objects.keys())==STATE['objects']
     finish()
 

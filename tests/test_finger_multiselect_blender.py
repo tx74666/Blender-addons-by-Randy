@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_workflow_blender import bound_fixture, work, ui as workflow_ui, targets, bank, definition, layout, character_designer, C
+from finger_tools_fixtures import bound_fixture, targets, bank, definition, fingerprint, character_designer, C
+from character_designer import finger_bone_tools as bone_ui
 from character_designer import finger_bank_ui as ui, finger_definition_ui as preview
 
 
@@ -20,14 +21,14 @@ def click(digit, shift=False, ctrl=False):
 
 
 def fixture():
-    preview.hide(); workflow_ui.hide()
+    preview.hide(); bone_ui.hide()
     return bound_fixture()
 
 
 def test_shift_toggle_range_and_active():
     obj, rig, _ = fixture()
     b = obj.character_designer_finger_bank
-    before, records = layout.fingerprint(obj), {s.name: s.guide.record for s in b.slots}
+    before, records = fingerprint(obj), {s.name: s.guide.record for s in b.slots}
     assert click('THUMB') == {'FINISHED'}
     for d in ('INDEX','MIDDLE','RING','PINKY'): click(d, shift=True)
     assert bank.selected_digits(b) == bank.detect.DIGITS and b.active == 'PINKY.L'
@@ -53,45 +54,45 @@ def test_shift_toggle_range_and_active():
     b.selection_initialized = False; b.selection_anchor = ''
     click('THUMB', ctrl=True, shift=True); click('PINKY', ctrl=True, shift=True)
     assert bank.selected_digits(b) == bank.detect.DIGITS
-    assert layout.fingerprint(obj) == before
+    assert fingerprint(obj) == before
     assert records == {s.name: s.guide.record for s in b.slots}
 
 
 def test_plain_click_can_hide_last_pair_and_recapture_refocuses():
     obj, rig, chosen = fixture(); b = obj.character_designer_finger_bank
-    before = layout.fingerprint(obj)
+    before = fingerprint(obj)
     records = {s.name: s.guide.record for s in b.slots}
     assert bank.selected_digits(b) == ('INDEX',)
-    assert len(preview.display_frames(C)) == 2
+    assert len(preview.display_frames(C)) == 1
     click('INDEX')
     assert bank.selected_digits(b) == () and preview._drawable_frames() == ()
     # Hidden is not deleted: preserve the independent editing identity/data.
     assert b.active == 'INDEX.L'
     assert records == {s.name: s.guide.record for s in b.slots}
-    assert layout.fingerprint(obj) == before
+    assert fingerprint(obj) == before
     bpy.ops.character_designer.finger_setup(action='TOGGLE')
     bpy.ops.character_designer.finger_setup(action='TOGGLE')
     assert preview._drawable_frames() == ()
     click('INDEX')
-    assert len(preview.display_frames(C)) == 2
+    assert len(preview.display_frames(C)) == 1
     # Explicit programmatic focus and Capture must not toggle a visible pair off.
     bank.select(C, 'INDEX'); bank.select(C, 'INDEX')
     assert bank.selected_digits(b) == ('INDEX',)
-    from test_finger_bank_blender import select
+    from finger_tools_fixtures import select
     select(obj, chosen['INDEX.L'])
     assert bpy.ops.character_designer.finger_setup(action='CAPTURE') == {'FINISHED'}
     assert bank.selected_digits(b) == ('INDEX',)
-    assert len(preview.display_frames(C)) == 2
-    assert layout.fingerprint(obj) == before
+    assert len(preview.display_frames(C)) == 1
+    assert fingerprint(obj) == before
 
 
 def test_multiple_axes_bend_missing_slot_and_cache():
     obj, rig, _ = fixture(); b = obj.character_designer_finger_bank
     click('THUMB'); click('PINKY', shift=True, ctrl=True)
     frames = preview.display_frames(C)
-    assert {d['bank_key'] for d in frames} == {s.name for s in b.slots} and len(frames) == 10
-    workflow_ui.show_bend(C)
-    assert len(workflow_ui._preview['labels']) == 10
+    assert {d['bank_key'] for d in frames} == {s.name for s in b.slots if s.name.endswith('.L')} and len(frames) == 5
+    bone_ui.show_bend(C)
+    assert len(bone_ui._preview['labels']) == 5
     old = definition._snapshot
     def forbidden(*args, **kwargs): raise AssertionError('Display cache scanned the mesh')
     definition._snapshot = forbidden
@@ -99,28 +100,29 @@ def test_multiple_axes_bend_missing_slot_and_cache():
         for _ in range(1000): assert preview.display_frames(C) is frames
     finally: definition._snapshot = old
     b.slots['MIDDLE.R'].error = 'test stale topology'
-    assert len(preview.display_frames(C)) == 9
+    assert len(preview.display_frames(C)) == 5
+    assert 'MIDDLE.R' not in preview._display_cache['errors']
+    bpy.ops.character_designer.finger_setup(action='SIDE')
+    assert len(preview.display_frames(C)) == 4
     assert 'MIDDLE.R' in preview._display_cache['errors']
+    bpy.ops.character_designer.finger_setup(action='SIDE')
     b.slots['INDEX.L'].guide.record = ''
-    assert len(preview.display_frames(C)) == 8
+    assert len(preview.display_frames(C)) == 4
     preview.hide()
     assert preview._display_cache is None and preview._display_request is None and preview._drawable_frames() == ()
 
 
-def test_edit_scope_and_save_reopen():
+def test_selection_save_reopen():
     obj, rig, _ = fixture(); b = obj.character_designer_finger_bank
     click('THUMB'); click('PINKY', shift=True, ctrl=True)
-    pair = work.prepare(C)
-    assert pair.name == 'PINKY' and len(obj.character_designer_finger_workflow.pairs) == 1
-    work.apply(C)
-    assert set(json.loads(obj.character_designer_finger_workflow.results)) == {'PINKY.L','PINKY.R'}
     assert bank.selected_digits(b) == bank.detect.DIGITS
+    bpy.ops.character_designer.finger_setup(action='SIDE')
     with tempfile.TemporaryDirectory(prefix='cd-multiselect-') as folder:
         path = str(Path(folder)/'selection.blend')
         bpy.ops.wm.save_as_mainfile(filepath=path); bpy.ops.wm.open_mainfile(filepath=path)
         b = bank.active_object(C).character_designer_finger_bank
-        assert bank.selected_digits(b) == bank.detect.DIGITS and b.active == 'PINKY.L'
-        assert not preview._visible and preview._display_cache is None
+        assert bank.selected_digits(b) == bank.detect.DIGITS and b.active == 'PINKY.R'
+        assert preview._visible == preview.overlays_enabled(C) and preview._display_cache is None
 
 
 def test_button_highlights_are_separate_from_readiness():

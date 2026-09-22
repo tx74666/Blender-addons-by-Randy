@@ -1,5 +1,6 @@
 """Compact reference UI and non-mutating start/end/path overlays."""
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import bpy
@@ -15,12 +16,57 @@ _handles, _visible, _cache, _pending_cache = [], False, None, None
 _request = None
 _batches = None
 _display_cache = _display_request = None
+_reference_write_depth = 0
+
+
+@contextmanager
+def reference_write():
+    """Commit complete references without running interactive bend callbacks.
+
+    Callers own the final invalidation after the reference transaction, so no
+    redraw can expose a partially written source or overwrite a retained mate.
+    """
+    global _reference_write_depth
+    _reference_write_depth += 1
+    try:
+        yield
+    finally:
+        _reference_write_depth -= 1
+
+
+def overlays_enabled(context=None):
+    """Scene-wide display intent, independent of each overlay's own eye."""
+    context = context or bpy.context
+    return context.scene.character_designer_finger_definition.overlays_enabled
+
+
+def _overlays_changed(self, context):
+    from . import finger_bone_tools, finger_loop_marks_ui
+    context = context or bpy.context
+    finger_loop_marks_ui.refresh(context)
+    cancel_pending()
+    if self.overlays_enabled:
+        show(invalidate=False)
+        finger_bone_tools.resume_overlays(context)
+    else:
+        finger_bone_tools.suspend_overlays()
+        from . import finger_flex
+        finger_flex._visible = False
 
 
 def _tag_redraw():
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
             if area.type == 'VIEW_3D': area.tag_redraw()
+
+
+def cancel_pending():
+    """Visibility changes retain cached frames and GPU batches."""
+    global _request, _display_request
+    _request = _display_request = None
+    for callback in (_refresh, _refresh_display):
+        if bpy.app.timers.is_registered(callback): bpy.app.timers.unregister(callback)
+    _tag_redraw()
 
 
 def redraw(*_args, invalidate=True):
@@ -36,20 +82,17 @@ def redraw(*_args, invalidate=True):
 
 
 def _bend_changed(self, context):
+    if _reference_write_depth: return
     self.confirmed = False
-    from . import finger_bank
-    obj = finger_bank.active_object(context) if context else None
-    active = finger_bank.active_state(context) if obj else None
-    if active and active.as_pointer() == self.as_pointer():
-        bank = obj.character_designer_finger_bank
-        mate = bank.slots.get(bank.active[:-1]+('R' if bank.active[-1] == 'L' else 'L'))
-        if mate and mate.guide.record:
-            mate.guide.flip_bend = self.flip_bend
-            mate.guide.confirmed = False
     redraw()
+
+    from . import finger_bone_tools
+    finger_bone_tools.invalidate(context)
 
 
 class CharacterDesignerFingerDefinition(PropertyGroup):
+    overlays_enabled: BoolProperty(name='Show Finger Overlays', default=True, update=_overlays_changed,
+        description='Show or hide finger references, loop marks and bend overlays; retain the cached guides')
     source: PointerProperty(type=bpy.types.Object)
     record: StringProperty(options={'HIDDEN'})
     revision: StringProperty(options={'HIDDEN'})
@@ -65,6 +108,7 @@ class CharacterDesignerFingerDefinition(PropertyGroup):
 
 def cached_frame(context):
     global _cache, _request
+    if not overlays_enabled(context): return None, ''
     s = definition.state(context)
     from . import finger_bank
     owner = finger_bank.active_object(context)
@@ -75,28 +119,14 @@ def cached_frame(context):
         error = slot.error if slot else ''
         found = view_cache.lookup(s, error)
         if found is not None: return found
-        if bpy.app.background:
-            from . import finger_workflow_ui
-            finger_workflow_ui.flush_reference_refresh(owner)
-            return view_cache.evaluate(context, owner, s, error)
-        _request = (context.scene, None, s, owner)
-        if not bpy.app.timers.is_registered(_refresh): bpy.app.timers.register(_refresh, first_interval=0.)
-        return None, 'Checking reference...'
+        return view_cache.evaluate(context, owner, s, error)
     key = (context.scene.as_pointer(), s.as_pointer(), s.source.as_pointer() if s.source else 0, s.revision, s.use_basis,
-           s.confirmed, s.flip_bend, hash(s.bend_record))
+           s.record, s.confirmed, s.flip_bend, hash(s.bend_record),
+           tuple(tuple(row) for row in s.source.matrix_world) if s.source else ())
     now = time.monotonic()
     if _cache and _cache['key'] == key:
         return _cache['frame'], _cache['error']
-    if not bpy.app.background:
-        # Fingerprint validation creates unlinked data snapshots. Blender
-        # forbids those writes from panel/draw callbacks, so validate on the
-        # next event-loop tick and only draw the resulting cache.
-        from . import finger_bank
-        _request = (context.scene, key, s, finger_bank.active_object(context))
-        if not bpy.app.timers.is_registered(_refresh): bpy.app.timers.register(_refresh, first_interval=.01)
-        if _cache and _cache['key'] == key: return _cache['frame'], _cache['error']
-        return None, 'Checking reference...'
-    try: value, error = definition.frame(context), ''
+    try: value, error = definition.saved_frame(context), ''
     except (ValueError, RuntimeError, KeyError, ReferenceError, IndexError) as exc: value, error = None, str(exc)
     _cache = {'key': key, 'time': now, 'frame': value, 'error': error}
     return value, error
@@ -109,6 +139,7 @@ def _refresh():
     scene, key, guide, owner = request
     try:
         context = SimpleNamespace(scene=scene, finger_definition=guide, finger_bank_object=owner)
+        if not overlays_enabled(context): return None
         from . import finger_bank
         obj = finger_bank.active_object(context)
         if obj:
@@ -120,10 +151,8 @@ def _refresh():
                 return None
             slot = next((slot for slot in obj.character_designer_finger_bank.slots
                          if slot.guide.as_pointer() == guide.as_pointer()), None)
-            from . import finger_workflow_ui
-            finger_workflow_ui.flush_reference_refresh(obj)
             value, error = view_cache.evaluate(context, obj, guide, slot.error if slot else '')
-        else: value, error = definition.frame(context), ''
+        else: value, error = definition.saved_frame(context), ''
     except (ValueError, RuntimeError, KeyError, ReferenceError, IndexError, AttributeError) as exc:
         value, error = None, str(exc)
     _cache = {'key': key, 'time': time.monotonic(), 'frame': value, 'error': error}
@@ -150,7 +179,7 @@ def hide(*, invalidate=False):
 
 
 def _drawable():
-    if not _visible: return None
+    if not _visible or not overlays_enabled(): return None
     s = definition.state(bpy.context)
     if not s.source or not s.source.visible_get(): return None
     data = cached_frame(bpy.context)[0]
@@ -160,41 +189,39 @@ def _drawable():
 
 
 def display_frames(context):
-    """Selected pairs and the active panel share validated read-only frames.
+    """Selected fingers share frozen saved frames on the active side.
 
-    No BMesh work is allowed in drawing. Only missing entries queue validation;
-    modeling consumers remain uncached. Invalid/uncaptured slots are omitted.
+    Missing entries only decode saved metadata; editing never queues validation.
+    Modeling consumers remain separate and validate on explicit actions.
     """
     global _display_cache, _display_request
+    if not overlays_enabled(context): return ()
     from . import finger_bank as bank
     obj = bank.active_object(context)
     if not obj: return ()
     b = obj.character_designer_finger_bank
     digits = bank.selected_digits(b)
-    slots = [b.slots.get(d+'.'+side) for d in digits for side in ('L', 'R')]
+    slots = [b.slots.get(key) for key in bank.display_keys(b)]
     slots = [s for s in slots if s is not None]
     serial = view_cache.token(context, obj)
-    key = (context.scene.as_pointer(), obj.as_pointer(), obj.data.as_pointer(), serial, digits,
+    key = (context.scene.as_pointer(), obj.as_pointer(), obj.data.as_pointer(), serial, digits, bank.display_side(b),
            tuple((s.name, view_cache.key(s.guide, s.error)) for s in slots))
     if _display_cache and _display_cache['key'] == key and _display_cache['complete']:
         return _display_cache['frames']
-    frames, errors, missing = [], {}, False
+    frames, errors = [], {}
     for slot in slots:
         if not slot.guide.record: continue
         found = view_cache.lookup(slot.guide, slot.error)
         if found is None:
-            missing = True
-            continue
+            found = view_cache.evaluate(context, obj, slot.guide)
         data, error = found
         if error: errors[slot.name] = error
         elif data and data.get('internal'):
             data['bank_key'] = slot.name
             frames.append(data)
-    _display_cache = {'key': key, 'frames': tuple(frames), 'errors': errors, 'obj': obj, 'complete': not missing}
-    if missing:
-        _display_request = context.scene, obj
-        if bpy.app.background: _refresh_display()
-        elif not bpy.app.timers.is_registered(_refresh_display): bpy.app.timers.register(_refresh_display, first_interval=0.)
+    # Saved-data decoding can advance the shared serial; retain the final token.
+    key = (key[0], key[1], key[2], view_cache.token(context, obj), *key[4:])
+    _display_cache = {'key': key, 'frames': tuple(frames), 'errors': errors, 'obj': obj, 'complete': True}
     return _display_cache['frames'] if _display_cache else ()
 
 
@@ -207,15 +234,11 @@ def _refresh_display():
         from . import finger_bank
         if finger_bank.active_object(bpy.context) != obj: return
         context = SimpleNamespace(scene=scene, finger_bank_object=obj)
-        from . import finger_workflow_ui
-        finger_workflow_ui.flush_reference_refresh(obj)
+        if not overlays_enabled(context): return
         view_cache.token(context, obj)
         # Always use the latest selection, not a queued selection since hidden.
-        names = [d+'.'+side for d in finger_bank.selected_digits(obj.character_designer_finger_bank) for side in ('L', 'R')]
-        for name in names:
-            slot = obj.character_designer_finger_bank.slots.get(name)
-            if not slot or not slot.guide.record: continue
-            view_cache.evaluate(context, obj, slot.guide, slot.error)
+        names = finger_bank.display_keys(obj.character_designer_finger_bank)
+        view_cache.evaluate_many(context, obj, names)
         display_frames(context)
     except (ReferenceError, AttributeError): _display_cache = None
     for window in bpy.context.window_manager.windows:
@@ -224,7 +247,7 @@ def _refresh_display():
 
 
 def _drawable_frames():
-    if not _visible: return ()
+    if not _visible or not overlays_enabled(): return ()
     from . import finger_bank
     obj = finger_bank.active_object(bpy.context)
     if obj: return display_frames(bpy.context) if obj.visible_get() else ()
@@ -234,17 +257,19 @@ def _drawable_frames():
 
 def _pending():
     global _pending_cache
+    if not overlays_enabled(): return None
     s = definition.state(bpy.context)
     from . import finger_bank
     # Bank definitions are atomic, never a completed guide plus a second
     # pending cross. Legacy standalone marker tools remain separate.
     if finger_bank.active_object(bpy.context): return None
     if not _visible or not s.pending_source or not s.pending_source.visible_get(): return None
-    now = time.monotonic()
-    if _pending_cache and now-_pending_cache[0] < .4: return _pending_cache[1]
-    try: data = definition.pending_frame(bpy.context)
-    except (ValueError, RuntimeError, KeyError, ReferenceError): data = None
-    _pending_cache = (now, data)
+    key = (s.pending_source.as_pointer(), s.pending,
+           tuple(tuple(row) for row in s.pending_source.matrix_world))
+    if _pending_cache and _pending_cache[0] == key: return _pending_cache[1]
+    try: data = definition.saved_pending_frame(bpy.context)
+    except (ValueError, RuntimeError, KeyError, ReferenceError, TypeError, IndexError): data = None
+    _pending_cache = (key, data)
     return data
 
 
@@ -345,9 +370,14 @@ class CHARACTERDESIGNER_OT_finger_definition(Operator):
     action: EnumProperty(items=[(k, label, label) for k, label in (
         ('CAPTURE', 'Capture Definition'), ('START', 'Mark Start'), ('END', 'Mark End'),
         ('CONFIRM', 'Confirm Definition'), ('SWAP', 'Swap Start / End'), ('TOP', 'Set Top Surface'),
+        ('OVERLAYS', 'Toggle All Finger Overlays'),
         ('BASIS', 'Use Basis Reference'), ('SHOW', 'Show Definition'), ('HIDE', 'Hide Definition'), ('CLEAR', 'Clear Definition'))])
 
     def execute(self, context):
+        if self.action == 'OVERLAYS':
+            master = context.scene.character_designer_finger_definition
+            master.overlays_enabled = not master.overlays_enabled
+            return {'FINISHED'}
         s = definition.state(context)
         try:
             if self.action == 'CAPTURE':
@@ -371,17 +401,23 @@ class CHARACTERDESIGNER_OT_finger_definition(Operator):
                 definition.set_top(context)
             elif self.action == 'BASIS': definition.basis_reference(context)
             elif self.action == 'CLEAR':
+                from . import finger_bank
+                paired = finger_bank.active_object(context) is not None
                 definition.clear(context)
-                hide()
-                s.status = ''
+                if not paired: hide()
                 return {'FINISHED'}
             elif self.action == 'HIDE':
                 hide()
                 s.status = ''
                 return {'FINISHED'}
-            else: definition.frame(context)
+            elif self.action == 'SHOW':
+                show(invalidate=False)
+                return {'FINISHED'}
             from . import finger_bank
             if self.action in {'CONFIRM', 'SWAP', 'TOP', 'BASIS'}: finger_bank.sync(context)
+            if self.action not in {'SHOW', 'HIDE'}:
+                from . import finger_bone_tools
+                finger_bone_tools.invalidate(context)
             show()
             s.status = 'Reference confirmed.' if s.confirmed else 'Review the arrow, then Confirm.'
             return {'FINISHED'}
@@ -403,8 +439,10 @@ def draw_controls(layout, context):
     capture.operator('character_designer.finger_setup', text='Capture Detection', icon='EYEDROPPER').action = 'CAPTURE'
     owner = finger_bank.active_object(context)
     if owner and any(slot.guide.record for slot in owner.character_designer_finger_bank.slots):
-        row.operator('character_designer.finger_setup', text='', icon='HIDE_OFF' if _visible else 'HIDE_ON', depress=_visible).action = 'TOGGLE'
-    if s.record or s.pending:
+        enabled = overlays_enabled(context)
+        row.operator('character_designer.finger_definition', text='', icon='HIDE_OFF' if enabled else 'HIDE_ON', depress=enabled).action = 'OVERLAYS'
+    active_slot = owner.character_designer_finger_bank.slots.get(owner.character_designer_finger_bank.active) if owner else None
+    if s.record or s.pending or (active_slot and (finger_bank.configured(active_slot) or active_slot.error or active_slot.bones)):
         row.operator('character_designer.finger_setup' if finger_bank.active_object(context) else 'character_designer.finger_definition', text='', icon='X').action = 'CLEAR'
     if s.record and (not owner or owner.character_designer_finger_bank.active.split('.')[0]
                     in finger_bank.selected_digits(owner.character_designer_finger_bank)):
@@ -428,6 +466,14 @@ def _invalidate(*_args):
     hide(invalidate=True)
 
 
+@persistent
+def _resume(*_args):
+    # Restore saved display intent without consulting edited geometry.
+    from . import finger_bank
+    finger_bank.discard_legacy_view_errors()
+    if overlays_enabled(): show(invalidate=False)
+
+
 CLASSES = (CharacterDesignerFingerDefinition, CHARACTERDESIGNER_OT_finger_definition)
 
 
@@ -435,36 +481,14 @@ def register_runtime():
     bpy.types.Scene.character_designer_finger_definition = PointerProperty(type=CharacterDesignerFingerDefinition)
     for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
         if _invalidate not in handlers: handlers.append(_invalidate)
-    if _geometry_changed not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(_geometry_changed)
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _resume not in handlers: handlers.append(_resume)
 
 
 @persistent
 def _geometry_changed(scene, depsgraph):
-    global _cache, _pending_cache, _display_cache, _batches
-    if view_cache.affected(depsgraph):
-        # Keep the validated snapshot before invalidating. It is restored only
-        # after the joint consumer proves complete source equality and checks
-        # each guide's current domain/record; real edits still invalidate it.
-        from . import finger_workflow_ui
-        finger_workflow_ui.refresh(bpy.context)
-        redraw()
-        return
-    if _cache is None and _display_cache is None: return
-    source = definition.state(bpy.context).source
-    if not source and _display_cache: source = _display_cache['obj']
-    try:
-        data = source.data if source else None
-        changed = source and any((u.is_updated_geometry or u.is_updated_transform) and
-                                 u.id.original in (source, data) for u in depsgraph.updates)
-    except ReferenceError: changed = True
-    if changed:
-        _cache = _pending_cache = None
-        _display_cache = _batches = None
-        if _visible:
-            for window in bpy.context.window_manager.windows:
-                for area in window.screen.areas:
-                    if area.type == 'VIEW_3D': area.tag_redraw()
+    """Legacy hook kept inert; saved visuals never monitor mesh edits."""
+    return None
 
 
 def unregister_runtime():
@@ -478,4 +502,6 @@ def unregister_runtime():
     _handles.clear()
     for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
         if _invalidate in handlers: handlers.remove(_invalidate)
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _resume in handlers: handlers.remove(_resume)
     if hasattr(bpy.types.Scene, 'character_designer_finger_definition'): del bpy.types.Scene.character_designer_finger_definition

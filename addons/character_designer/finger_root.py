@@ -443,7 +443,7 @@ def _set_status(settings, level, message):
 
 
 def _tag_redraw():
-    for screen in bpy.data.screens:
+    for screen in getattr(bpy.data, 'screens', ()):
         for area in screen.areas:
             if area.type == "VIEW_3D":
                 area.tag_redraw()

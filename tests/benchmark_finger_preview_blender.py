@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_workflow_blender import bound_fixture, character_designer, C, bank, definition
+from finger_tools_fixtures import bound_fixture, character_designer, C, bank, definition
 from character_designer import finger_definition_ui as ui, finger_bank_ui as bank_ui
 
 
@@ -50,11 +50,11 @@ ui.redraw()
 result = {'model': args[0] if args else 'synthetic', 'vertices': len(obj.data.vertices),
           'version': character_designer.bl_info['version']}
 result['cold_pair_ms'], axes = measure('INDEX')
-assert axes == 2
+assert axes == 1
 result['warm_pair_ms'], _ = measure('INDEX')
 measure('THUMB')
 result['remaining_cold_pairs_ms'], axes = measure('PINKY', 'RANGE')
-assert axes == 10
+assert axes == 5
 old = definition.frame, definition._snapshot, bank.dirty
 def forbidden(*args, **kwargs): raise AssertionError('Warm preview scanned geometry')
 definition.frame = definition._snapshot = bank.dirty = forbidden
@@ -63,10 +63,10 @@ try:
     result['100_warm_pair_switches_ms'] = {'median': statistics.median(timings), 'max': max(timings), 'min': min(timings)}
     measure('THUMB')
     result['warm_five_pairs_ms'], axes = measure('PINKY', 'RANGE')
-    assert axes == 10
+    assert axes == 5
     bpy.ops.character_designer.finger_setup(action='TOGGLE')
     bpy.ops.character_designer.finger_setup(action='TOGGLE')
-    assert len(ui.display_frames(C)) == 10
+    assert len(ui.display_frames(C)) == 5
     result['no_warm_revalidation'] = True
 finally:
     definition.frame, definition._snapshot, bank.dirty = old

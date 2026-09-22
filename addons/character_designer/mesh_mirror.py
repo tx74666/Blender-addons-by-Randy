@@ -503,7 +503,15 @@ def _rebuild(plan):
             matrix = plan.reflection.to_3x3().inverted().transposed()
             normals = [tuple((matrix @ old.corner_normals[index].vector).normalized()) if mirror
                        else tuple(old.corner_normals[index].vector) for mirror, index in loop_origins]
-            new.normals_split_custom_set(normals)
+            if bpy.app.version >= (4, 5, 0):
+                # Free corner normals preserve decoded directions exactly. The
+                # legacy setter re-encodes/averages smooth fans and can introduce
+                # sharp edges, even on retained parts of this local operation.
+                attribute = new.attributes.new('custom_normal', 'FLOAT_VECTOR', 'CORNER')
+                attribute.data.foreach_set('vector', [c for normal in normals for c in normal])
+                new.update()
+            else:
+                new.normals_split_custom_set(normals)
         _copy_id_properties(old, new)
         return new, origins, tuple(old_to_new[i] for i in plan.source_vertices), mapping
     except Exception:
@@ -571,13 +579,17 @@ def _verify_staged(staging, old, plan, origins, mapping, expected):
             if _value(other.data[index]) != _value(attr.data[source]):
                 raise MirrorError(f'Attribute "{attr.name}" failed preservation verification.')
     if old.has_custom_normals:
+        if not new.has_custom_normals or len(new.corner_normals) != len(mapping['CORNER']):
+            raise MirrorError('Custom normals were lost; the original mesh was not changed.')
         normal_matrix = plan.reflection.to_3x3().inverted().transposed()
+        custom = new.attributes.get('custom_normal')
+        tolerance = 2e-6 if custom and custom.data_type == 'FLOAT_VECTOR' else .001
         for index, (reflected, source) in enumerate(mapping['CORNER']):
             normal = old.corner_normals[source].vector
             expected_normal = (normal_matrix @ normal).normalized() if reflected else normal
-            # Blender stores custom normals as quantized values in a loop's
-            # normal-space basis; compare decoded directions, not packed bytes.
-            if (new.corner_normals[index].vector - expected_normal).length > .001:
+            # Older Blender uses quantized loop-space values. Free normals on
+            # newer versions must retain directions to float precision.
+            if (new.corner_normals[index].vector - expected_normal).length > tolerance:
                 raise MirrorError('Custom normal preservation verification failed.')
     if old.shape_keys:
         for source in old.shape_keys.key_blocks:

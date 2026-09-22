@@ -8,7 +8,7 @@ import bmesh
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_layout_blender import fixture, character_designer, snap
+from finger_tools_fixtures import single_finger_fixture as fixture, character_designer, fingerprint as snap
 from character_designer import finger_definition as definition, finger_definition_ui as ui
 
 ARGS = sys.argv[sys.argv.index('--')+1:]

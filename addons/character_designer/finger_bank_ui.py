@@ -1,4 +1,4 @@
-"""One operation row and five pair indicators, not ten setup forms."""
+"""Five active-side indicators with compact, saved L/R diagnostics."""
 import json
 import textwrap
 from functools import lru_cache
@@ -30,6 +30,7 @@ class CharacterDesignerFingerBank(PropertyGroup):
     selection_anchor: StringProperty(options={'HIDDEN'})
     survey: StringProperty()
     status: StringProperty(options={'SKIP_SAVE'})
+    bone_status: StringProperty(options={'SKIP_SAVE'})
     needs_recheck: StringProperty(options={'SKIP_SAVE'})
 
 
@@ -45,15 +46,23 @@ class CHARACTERDESIGNER_OT_finger_setup(Operator):
     @classmethod
     def description(cls, context, properties):
         if properties.action == 'SELECT':
-            return detect.LABELS[properties.digit]+' pair: click an unselected button for one; click a selected button to hide it (none selected is allowed); Shift-click adds/removes; Ctrl-Shift-click adds the inclusive range from the last selection anchor. Viewing only; edits still use the active finger'
+            return detect.LABELS[properties.digit]+': click an unselected button for one; click a selected button to hide it (none selected is allowed); Shift-click adds/removes; Ctrl-Shift-click adds the inclusive range from the last selection anchor. Viewing only; edits use the active side'
         if properties.action == 'TOGGLE':
             from . import finger_definition_ui
             obj = bank.active_object(context)
             if obj:
-                return f'Show / hide the highlighted finger pairs ({len(bank.selected_digits(obj.character_designer_finger_bank))} selected); no mesh or bone edits'
+                return f'Show / hide all finger overlays on the preview side ({len(bank.selected_digits(obj.character_designer_finger_bank))} fingers selected); no mesh or bone edits'
             data, _ = finger_definition_ui.cached_frame(context)
             return ('Show / hide the internal straight axis'+(f"; length {data['length']:.4g} Blender units" if data else ''))
-        return 'Detect the selected finger and its opposite; reference settings only, no mesh repair'
+        if properties.action == 'SIDE':
+            obj = bank.active_object(context)
+            side = bank.display_side(obj.character_designer_finger_bank) if obj else 'L'
+            return f'Active side: {side}. Switch left / right saved guides and setup'
+        if properties.action == 'RECHECK':
+            return 'Recheck the active finger reference only; retain the opposite side and all other saved references'
+        if properties.action == 'CLEAR':
+            return 'Clear this finger side\'s reference, errors, bone binding and loop marks; keep the opposite side, other fingers and the mesh'
+        return 'Capture the selected finger side; retain the opposite reference and mesh'
 
     def invoke(self, context, event):
         if self.action == 'SELECT':
@@ -65,38 +74,36 @@ class CHARACTERDESIGNER_OT_finger_setup(Operator):
         try:
             if self.action not in {'CAPTURE', 'START', 'END'} and not bank.active_object(context):
                 raise ValueError('Capture a finger on this mesh first.')
-            if self.action in {'CAPTURE', 'START', 'END'}: bank.capture(context, self.action)
+            if self.action in {'CAPTURE', 'START', 'END'}:
+                bank.capture(context, self.action)
             elif self.action == 'SELECT': bank.select(context, self.digit, mode=self.selection_mode)
             elif self.action == 'SIDE':
-                b = bank.active_object(context).character_designer_finger_bank
-                bank.select(context, b.active.split('.')[0], 'R' if b.active[-1] == 'L' else 'L')
+                bank.switch_side(context)
             elif self.action == 'RECHECK': bank.recheck(context)
             elif self.action == 'TOGGLE':
-                if ui._visible: ui.hide()
-                else: ui.show(invalidate=False)
+                master = context.scene.character_designer_finger_definition
+                master.overlays_enabled = not master.overlays_enabled
                 return {'FINISHED'}
             elif self.action == 'CLEAR':
-                b = bank.active_object(context).character_designer_finger_bank
-                for slot in b.slots:
-                    if slot.name.split('.')[0] == b.active.split('.')[0]:
-                        definition.clear(bank.scoped(context, slot.guide))
-                        slot.error = ''
+                bank.clear(context)
+                return {'FINISHED'}
             obj = bank.active_object(context)
-            if obj: obj.character_designer_finger_bank.status = ''
-            from . import finger_layout, finger_layout_ui, finger_flex, finger_workflow_ui
-            finger_workflow_ui.refresh(context)
-            finger_layout_ui.hide_preview()
+            if obj:
+                obj.character_designer_finger_bank.status = ''
+                obj.character_designer_finger_bank.bone_status = ''
+            from . import finger_flex, finger_bone_tools, finger_loop_marks_ui
+            finger_loop_marks_ui.refresh(context)
+            finger_bone_tools.refresh_selection(context)
             finger_flex._visible = False
             if self.action in {'CAPTURE', 'SELECT', 'SIDE', 'CLEAR'}:
-                finger_layout.state(context).status = ''
                 finger_flex.state(context).status = ''
             if self.action in {'CAPTURE', 'SELECT'} or ui._visible:
                 ui.show(invalidate=self.action not in {'SELECT', 'SIDE'})
             else: ui.redraw()
             return {'FINISHED'}
         except (ValueError, RuntimeError, KeyError, IndexError, ReferenceError) as exc:
-            from . import finger_workflow_ui
-            finger_workflow_ui.refresh(context)
+            from . import finger_bone_tools
+            finger_bone_tools.invalidate(context)
             message = 'Update failed; previous result retained: '+str(exc)
             self.report({'WARNING'}, message)
             obj = bank.active_object(context)
@@ -106,35 +113,59 @@ class CHARACTERDESIGNER_OT_finger_setup(Operator):
             return {'CANCELLED'}
 
 
+def _pair_notice(message):
+    # Pair diagnostics are informational; drawing never reads current geometry.
+    return 'L/R differ'
+
+
+def _pair_only(message, warning=''):
+    """Recognize saved pair-only errors without changing their metadata."""
+    message = message.removeprefix('Update failed; previous result retained: ')
+    return bool(message and (message == warning or message in {
+        bank.PAIR_SYNC_WARNING, 'Opposite finger / closed tip not found.',
+        'Left/right finger surfaces differ. Match the mesh shape on both sides before paired bone actions.'}))
+
+
 def draw_header(box, context):
+    from . import finger_targets
     obj = bank.active_object(context)
     b = obj.character_designer_finger_bank if obj else None
     report = _parsed(b.survey) if b and b.survey else {'warnings': {}, 'candidates': {}}
     selected = bank.selected_digits(b) if b else ()
+    side = bank.display_side(b) if b else 'L'
     row = box.row(align=True)
     for digit, label in zip(detect.DIGITS, ('Th', 'I', 'M', 'R', 'P')):
-        slots = [b.slots.get(f'{digit}.{side}') if b else None for side in ('L', 'R')]
-        warning = report['warnings'].get(digit) or next((s.error for s in slots if s and s.error), '')
-        if b and b.needs_recheck: warning = b.needs_recheck
-        ready = all(s and s.guide.record and s.guide.confirmed and not s.guide.pending
-                    and _parsed(s.guide.record).get('internal') for s in slots)
-        partial = any(s and (s.guide.record or s.guide.pending) for s in slots)
+        slot = b.slots.get(f'{digit}.{side}') if b else None
+        partial = bank.configured(slot)
+        reference_error = finger_targets.reference_error(obj, slot.name) if partial else ''
+        ready = bool(slot and slot.guide.record and slot.guide.confirmed and not slot.guide.pending
+                     and _parsed(slot.guide.record).get('internal'))
         button = row.row(align=True)
-        button.enabled, button.alert = b is not None, bool(warning)
+        button.enabled, button.alert = b is not None, bool(reference_error)
         op = button.operator('character_designer.finger_setup', text=label,
-                             icon='ERROR' if warning else 'CHECKMARK' if ready else 'QUESTION' if partial else 'RADIOBUT_OFF',
+                             icon='ERROR' if reference_error else 'CHECKMARK' if ready else 'QUESTION' if partial else 'RADIOBUT_OFF',
                              depress=digit in selected)
         op.action, op.digit = 'SELECT', digit
     if b and b.active:
         digit = b.active.split('.')[0]
         row = box.row(align=True)
         row.label(text=detect.LABELS[digit] if len(selected) == 1 else f'Active: {detect.LABELS[digit]} · {len(selected)} selected')
+        row.operator('character_designer.finger_setup', text='', icon='ARROW_LEFTRIGHT',
+                     depress=bank.display_side(b) == 'R').action = 'SIDE'
         row.operator('character_designer.finger_setup', text='', icon='FILE_REFRESH').action = 'RECHECK'
-        counts = [len(report['candidates'][f'{digit}.{s}']['rings']) if f'{digit}.{s}' in report['candidates'] else '?' for s in ('L', 'R')]
-        box.label(text=f'Detected rings: {counts[0]}' if counts[0] == counts[1] else f'Ring mismatch: {counts[0]} / {counts[1]}')
-        errors = [b.needs_recheck, report['warnings'].get(digit, ''), b.status]
-        errors += [b.slots[f'{digit}.{s}'].error for s in ('L', 'R') if b.slots.get(f'{digit}.{s}')]
-        for error in dict.fromkeys(e for e in errors if e):
+        mirror = row.row(align=True)
+        mirror.enabled = context.mode == 'EDIT_MESH' and context.edit_object == obj
+        mirror.operator('character_designer.mirror_selected_region', text='', icon='MOD_MIRROR').sync_fingers = True
+        active = b.slots.get(b.active)
+        pair_warning = report['warnings'].get(digit, '')
+        if bank.configured(active) and pair_warning:
+            row.label(text=_pair_notice(pair_warning), icon='INFO')
+        # An old opposite-side error or global recheck banner cannot turn the
+        # working side red. Only this side's explicit error is shown here.
+        errors = [b.status] if b.status and not _pair_only(b.status, pair_warning) else []
+        reference_error = finger_targets.reference_error(obj, active.name) if bank.configured(active) else ''
+        if reference_error: errors.append(f'{side} reference: {reference_error}')
+        for error in dict.fromkeys(errors):
             warning = box.column()
             warning.alert = True
             for line in textwrap.wrap(error, 33): warning.label(text=line)

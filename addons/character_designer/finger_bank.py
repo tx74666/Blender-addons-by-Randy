@@ -1,4 +1,4 @@
-"""Five paired finger definitions, owned by the mesh, not capture order.
+"""Independent finger-side definitions, owned by the mesh, not capture order.
 
 All writes here are reference metadata. Detection never repairs the mesh.
 """
@@ -16,6 +16,34 @@ from . import finger_definition as definition, finger_detect as detect
 
 FIELDS = ('source', 'record', 'use_basis', 'revision', 'bend_source', 'bend_record',
           'flip_bend', 'pending_source', 'pending', 'confirmed', 'status')
+PAIR_WARNING_VERSION = 2
+PAIR_SYNC_WARNING = 'Sync both hands with Mirror Selected Region.'
+
+
+def discard_legacy_view_errors():
+    """Forget obsolete auto-monitor warnings, retaining every saved reference.
+
+    Called on reload/load, never on geometry updates. These warnings are not
+    proof of current geometry; explicit actions still validate before writing.
+    """
+    fragments = ('This finger surface changed beyond complete loop subdivision/dissolve',
+                 'Reference faces/edges changed; recapture this finger only.',
+                 'Reference points changed or became ambiguous; recapture this finger only.',
+                 'The reference geometry changed. Capture the finger definition again.',
+                 'Geometry changed: Recheck symmetry.')
+    cleared = 0
+    for obj in getattr(bpy.data, 'objects', ()):
+        state = getattr(obj, 'character_designer_finger_bank', None)
+        if state is None: continue
+        for owner, fields in [(state, ('status', 'bone_status', 'needs_recheck'))] + [
+                (owner, fields) for slot in state.slots if slot.guide.record
+                for owner, fields in ((slot, ('error',)), (slot.guide, ('status',)))]:
+            for field in fields:
+                value = getattr(owner, field)
+                if value and any(fragment in value for fragment in fragments):
+                    setattr(owner, field, '')
+                    cleared += 1
+    return cleared
 
 
 def active_object(context):
@@ -51,8 +79,9 @@ def plane(obj):
     return mirrors[0].mirror_object.matrix_world.inverted() @ obj.matrix_world if mirrors else Matrix.Identity(4)
 
 
-def stamp(bm, obj):
-    return hashlib.sha256((definition._topology(bm)+repr([tuple(v.co) for v in bm.verts])+
+def stamp(bm, obj, *, reader=None):
+    topology = reader.topology(bm) if reader else definition._topology(bm)
+    return hashlib.sha256((topology+repr([tuple(v.co) for v in bm.verts])+
                            repr(tuple(tuple(r) for r in plane(obj)))).encode()).hexdigest()
 
 
@@ -62,6 +91,39 @@ def _slot(bank, key):
         slot = bank.slots.add()
         slot.name = key
     return slot
+
+
+def configured(slot):
+    """A detected body alone is not a captured reference that can fail."""
+    return bool(slot and (slot.guide.record or slot.guide.pending or slot.guide.bend_record))
+
+
+def clear(context, digit=None, *, side=None):
+    """Forget one side's setup, retaining its mate and the detection census."""
+    obj = active_object(context)
+    if not obj: return
+    bank = obj.character_designer_finger_bank
+    digit = digit or bank.active.split('.')[0]
+    side = side or display_side(bank)
+    if digit not in detect.DIGITS or side not in ('L', 'R'): return
+    key = f'{digit}.{side}'
+    slot = bank.slots.get(key)
+    from . import finger_definition_ui, finger_bone_tools, finger_flex
+    if slot:
+        with finger_definition_ui.reference_write():
+            definition._clear_state(slot.guide)
+            slot.error = slot.bones = ''
+    if key == bank.active:
+        bank.status = bank.bone_status = ''
+        finger_flex.state(context).status = ''
+    from . import finger_loop_marks, finger_loop_marks_ui
+    finger_loop_marks.clear_key(obj, key)
+    finger_loop_marks_ui.refresh(context)
+    # Survey warnings describe the mesh and remain useful when recapturing.
+    # They are explicit census evidence, independent of either saved guide.
+    finger_definition_ui.redraw()
+    finger_bone_tools.invalidate(context)
+    finger_flex._visible = False
 
 
 def _cycle(ids):
@@ -87,7 +149,7 @@ def _tree(bm):
     return tree
 
 
-def remap_record(record, bm, *, reflection=None, target=None):
+def _remap_record_exact(record, bm, *, reflection=None, target=None):
     """Exact local correspondence across index changes; no nearest-finger guess."""
     record = copy.deepcopy(record)
     evidence = record.get('local_evidence')
@@ -144,15 +206,267 @@ def remap_record(record, bm, *, reflection=None, target=None):
     return enrich(record, bm)
 
 
-def validate_local(obj, record, basis, bm):
+def _row_sample(points, rows, tolerance=1e-6):
+    """Prove one complete cross-section lies on one original quad band."""
+    matches = []
+    for band, (first, last) in enumerate(zip(rows, rows[1:])):
+        directions = [b-a for a, b in zip(first, last)]
+        length_squared = sum(d.length_squared for d in directions)
+        if length_squared <= tolerance*tolerance: continue
+        fraction = sum((p-a).dot(d) for p, a, d in zip(points, first, directions))/length_squared
+        if fraction < -tolerance or fraction > 1+tolerance: continue
+        fraction = max(0., min(1., fraction))
+        if all((p-a.lerp(b, fraction)).length <= tolerance for p, a, b in zip(points, first, last)):
+            matches.append((band, fraction))
+    if not matches or any(abs((i+f)-(matches[0][0]+matches[0][1])) > tolerance for i, f in matches[1:]):
+        raise ValueError('This finger surface changed beyond complete loop subdivision/dissolve; rebind this finger only.')
+    return matches[0]
+
+
+def _remap_ring_edits(record, bm, candidate=None):
+    """Accept surface-equivalent whole-ring edits, never a nearest-surface fit.
+
+    Root, tip and cap must remain exact. Every new row lies on the original
+    rails, and every old row lies on the new rails. The reverse proof prevents
+    dissolving a shape-defining bend or accepting a moved/deformed section.
+    """
+    from . import finger_internal, finger_range
+    old = record.get('body')
+    evidence = record.get('local_evidence')
+    if not old or not record.get('internal') or not evidence:
+        raise ValueError('This reference has no verified finger sleeve; rebind this finger only.')
+    if candidate is None:
+        found = _match_previous({'finger': old}, detect.census(bm, finger_range.quad_band))
+        candidate = found.get('finger')
+    if not candidate:
+        raise ValueError('This finger body / closed tip is unavailable; rebind this finger only.')
+    old_rows, new_rows = old['rings'], candidate['rings']
+    if len(old_rows) < 3 or len(new_rows) < 3 or any(len(row) != len(old_rows[0]) for row in old_rows+new_rows):
+        raise ValueError('The finger circumference or protected boundary changed; rebind this finger only.')
+    coordinates = {i: Vector(co) for i, co in record['basis']['coordinates']}
+    if any(i not in coordinates for row in old_rows for i in row):
+        raise ValueError('The saved sleeve evidence is incomplete; rebind this finger only.')
+    columns = []
+    for vi in old_rows[0]:
+        hits = [j for j, ni in enumerate(new_rows[0]) if (bm.verts[ni].co-coordinates[vi]).length <= 1e-6]
+        if len(hits) != 1: raise ValueError('The protected finger root changed; rebind this finger only.')
+        columns.append(hits[0])
+    width = len(columns)
+    if len(set(columns)) != width or not any(all((columns[(i+1) % width]-columns[i]) % width == direction % width
+                                               for i in range(width)) for direction in (1, -1)):
+        raise ValueError('The finger root correspondence is ambiguous; rebind this finger only.')
+    new_rows = [[row[column] for column in columns] for row in new_rows]
+    old_points = [[coordinates[i] for i in row] for row in old_rows]
+    new_points = [[bm.verts[i].co.copy() for i in row] for row in new_rows]
+    if any((a-b).length > 1e-6 for a, b in zip(old_points[-1], new_points[-1])):
+        raise ValueError('The protected fingertip boundary changed; rebind this finger only.')
+    samples = [_row_sample(row, old_points) for row in new_points]
+    if any((j+g)-(i+f) <= 1e-6 for (i, f), (j, g) in zip(samples, samples[1:])):
+        raise ValueError('The finger loops cross or duplicate a section; rebind this finger only.')
+    for row in old_points: _row_sample(row, new_points)
+
+    # Check oriented strip connectivity and exact cap/support faces outside it.
+    old_faces = {int(i): ids for i, ids in evidence['FACES'].items()}
+    by_vertices = {frozenset(ids): (i, ids) for i, ids in old_faces.items()}
+    new_faces = {_cycle(v.index for v in face.verts): face.index for face in bm.faces}
+    old_strip = set()
+    winding = None
+    for first, last in zip(old_rows, old_rows[1:]):
+        for j in range(width):
+            polygon = [first[j], last[j], last[(j+1) % width], first[(j+1) % width]]
+            face = by_vertices.get(frozenset(polygon))
+            if face is None: raise ValueError('The saved finger bands are incomplete; rebind this finger only.')
+            direction = _cycle(face[1]) == _cycle(polygon)
+            if winding is not None and direction != winding:
+                raise ValueError('The saved finger band orientation is inconsistent.')
+            winding = direction
+            old_strip.add(face[0])
+    for first, last in zip(new_rows, new_rows[1:]):
+        for j in range(width):
+            polygon = [first[j], last[j], last[(j+1) % width], first[(j+1) % width]]
+            if not winding: polygon.reverse()
+            if _cycle(polygon) not in new_faces:
+                raise ValueError('The edited finger is not a complete oriented loop strip; rebind this finger only.')
+    tree, mapping = _tree(bm), {}
+    row_ids = {i for row in old_rows[1:-1] for i in row}
+    for vi, point in coordinates.items():
+        hits = tree.find_range(point, 1e-6)
+        if len(hits) == 1: mapping[vi] = hits[0][1]
+        elif vi not in row_ids:
+            raise ValueError('The finger cap/root/reference boundary changed; rebind this finger only.')
+    for face_id, ids in old_faces.items():
+        if face_id in old_strip: continue
+        if any(i not in mapping for i in ids) or _cycle([mapping[i] for i in ids]) not in new_faces:
+            raise ValueError('The finger cap/root/reference boundary changed; rebind this finger only.')
+
+    revised = copy.deepcopy(record)
+    provenance = {}
+    for row, (band, fraction) in zip(new_rows, samples):
+        for column, vi in enumerate(row):
+            provenance[vi] = old_rows[band][column], old_rows[band+1][column], fraction
+    for variant in ('basis', 'current'):
+        old_values = {i: Vector(co) for i, co in record[variant]['coordinates']}
+        values = {ni: old_values[i] for i, ni in mapping.items() if i in old_values}
+        for vi, (a, b, fraction) in provenance.items():
+            if a not in old_values or b not in old_values:
+                raise ValueError('The saved Shape Key reference is incomplete; rebind this finger only.')
+            values[vi] = old_values[a].lerp(old_values[b], fraction)
+        revised[variant]['coordinates'] = [[i, list(co)] for i, co in sorted(values.items())]
+    body = finger_internal.prepare_body(bm, candidate, record['basis']['path'])
+    revised['body'] = body
+    revised['input'] = {'kind': 'VERTS', 'ids': [i for i, _ in revised['basis']['coordinates']]}
+    revised['support_input'] = {'kind': 'FACES', 'ids': finger_internal.support_faces(body)}
+    revised.pop('start_input', None)
+    revised['topology'] = definition._topology(bm)
+    # Keep the artist's spatial endpoints, normal, centering and internal path.
+    # Verification is a proof of the existing path, not a new solve/refit.
+    finger_internal.verify(bm, body, revised['internal'])
+    return enrich(revised, bm)
+
+
+def _reflect_evidence(record, reflection):
+    """Reflect saved spatial evidence without pretending its indices are current."""
+    result = copy.deepcopy(record)
+    mirror = reflection.inverted() @ Matrix.Diagonal((-1, 1, 1, 1)) @ reflection
+    normal_matrix = mirror.to_3x3().inverted().transposed()
+    for variant in ('basis', 'current'):
+        sample = result[variant]
+        sample['coordinates'] = [[i, list(detect.reflect(co, reflection))] for i, co in sample['coordinates']]
+        sample['path'] = [list(detect.reflect(p, reflection)) for p in sample['path']]
+        if sample.get('normal'): sample['normal'] = list((normal_matrix @ Vector(sample['normal'])).normalized())
+    for part in ('internal', 'surface'):
+        if part in result:
+            result[part]['path'] = [list(detect.reflect(p, reflection)) for p in result[part]['path']]
+    centering = result.get('surface', {}).get('centering')
+    if centering:
+        centering['path'] = [list(detect.reflect(p, reflection)) for p in centering['path']]
+        centering['normal'] = list((normal_matrix @ Vector(centering['normal'])).normalized())
+    if result.get('body'):
+        for name in ('root', 'tip'): result['body'][name] = list(detect.reflect(result['body'][name], reflection))
+    for indices in result.get('local_evidence', {}).get('FACES', {}).values(): indices.reverse()
+    return result
+
+
+def remap_record(record, bm, *, reflection=None, target=None, allow_ring_edits=False, candidate=None):
+    try:
+        return _remap_record_exact(record, bm, reflection=reflection, target=target)
+    except ValueError:
+        if not allow_ring_edits: raise
+        if reflection is not None:
+            if target is None: raise
+            return _remap_ring_edits(_reflect_evidence(record, reflection), bm, target)
+        return _remap_ring_edits(record, bm, candidate)
+
+
+def _remap_bend_evidence(record, before, after, bm):
+    """Keep an accepted local Bend direction on a proven unchanged sleeve.
+
+    A captured face may have been subdivided or dissolved. Its spatial normal
+    remains valid only when all its old evidence belongs to the sleeve whose
+    entire surface has already passed the bidirectional geometry proof.
+    """
+    if not before.get('body') or not after.get('body') or any(
+            record[name] != before[name] for name in ('basis_key', 'key')):
+        raise ValueError('This Bend reference needs recapture on this finger only.')
+    for variant in ('basis', 'current'):
+        values = {i: Vector(co) for i, co in before[variant]['coordinates']}
+        if any(i not in values or (Vector(co)-values[i]).length > 1e-6
+               for i, co in record[variant]['coordinates']):
+            raise ValueError('The Bend reference is outside the verified finger sleeve.')
+    evidence = record.get('local_evidence')
+    if evidence is None or evidence.get('EDGES'):
+        raise ValueError('This Bend reference has no verified face evidence.')
+    faces = {_cycle(ids) for ids in before['local_evidence']['FACES'].values()}
+    if not evidence.get('FACES') or any(_cycle(ids) not in faces for ids in evidence['FACES'].values()):
+        raise ValueError('The Bend reference is outside the verified finger sleeve.')
+    result = copy.deepcopy(record)
+    for variant in ('basis', 'current'):
+        result[variant]['coordinates'] = copy.deepcopy(after[variant]['coordinates'])
+    result['input'] = copy.deepcopy(after['input'])
+    result['support_input'] = copy.deepcopy(after['support_input'])
+    result.pop('start_input', None)
+    result['topology'] = after['topology']
+    return enrich(result, bm)
+
+
+def validate_local(obj, record, basis, bm, *, reader=None):
     # The remap always compares Basis coordinates, then verifies the requested
     # key independently. Editing another finger never invalidates this by itself.
-    base = definition._snapshot(obj, record['basis_key'])
-    try: remapped = remap_record(record, base)
-    finally: base.free()
+    base = reader.snapshot(obj, record['basis_key']) if reader else definition._snapshot(obj, record['basis_key'])
+    try: remapped = remap_record(record, base, allow_ring_edits=True)
+    finally:
+        if reader is None: base.free()
     variant = 'basis' if basis else 'current'
     if any((bm.verts[i].co-Vector(co)).length > 1e-6 for i, co in remapped[variant]['coordinates']):
         raise ValueError('This finger reference changed; recapture this finger only.')
+    return remapped
+
+
+def _mirrored_ring_surface(bm, source, target, to_plane):
+    """Same oriented mirrored surface despite different complete ring counts."""
+    first, second = source['rings'], target['rings']
+    width = len(first[0])
+    if any(len(row) != width for row in first+second):
+        raise ValueError('Opposite finger circumference differs.')
+    tolerance = max(source['length']*1e-4, 1e-7)
+    columns = []
+    for vi in first[0]:
+        point = detect.reflect(bm.verts[vi].co, to_plane)
+        hits = [j for j, ni in enumerate(second[0]) if (point-bm.verts[ni].co).length <= tolerance]
+        if len(hits) != 1: raise ValueError('Opposite finger root geometry is not symmetric.')
+        columns.append(hits[0])
+    if len(set(columns)) != width: raise ValueError('Opposite root correspondence is ambiguous.')
+    second = [[row[column] for column in columns] for row in second]
+    a = [[detect.reflect(bm.verts[i].co, to_plane) for i in row] for row in first]
+    b = [[bm.verts[i].co.copy() for i in row] for row in second]
+    if any((p-q).length > tolerance for p, q in zip(a[-1], b[-1])):
+        raise ValueError('Opposite fingertip boundary geometry is not symmetric.')
+    for rows, reference in ((a, b), (b, a)):
+        try:
+            positions = [sum(_row_sample(row, reference, tolerance)) for row in rows]
+        except ValueError as exc:
+            # This compares two CURRENT surfaces, not a saved reference with
+            # an edited surface. Re-capturing the valid side cannot repair it.
+            raise ValueError(PAIR_SYNC_WARNING) from exc
+        if any(z-x <= 1e-6 for x, z in zip(positions, positions[1:])):
+            raise ValueError('Opposite loops cross or duplicate a section.')
+    def strip_faces(rows):
+        return {frozenset((r[j], s[j], s[(j+1) % width], r[(j+1) % width]))
+                for r, s in zip(rows, rows[1:]) for j in range(width)}
+    source_strip, target_strip = strip_faces(first), strip_faces(second)
+    source_caps = [bm.faces[i] for i in source['faces'] if frozenset(v.index for v in bm.faces[i].verts) not in source_strip]
+    target_caps = [bm.faces[i] for i in target['faces'] if frozenset(v.index for v in bm.faces[i].verts) not in target_strip]
+    tree = KDTree(len(target['vertices']))
+    for vi in target['vertices']: tree.insert(bm.verts[vi].co, vi)
+    tree.balance()
+    mapping = {}
+    for face in source_caps:
+        for vertex in face.verts:
+            hits = tree.find_range(detect.reflect(vertex.co, to_plane), tolerance)
+            if len(hits) != 1: raise ValueError('Opposite fingertip cap geometry is not symmetric.')
+            mapping[vertex.index] = hits[0][1]
+    if {_cycle(list(reversed([mapping[v.index] for v in face.verts]))) for face in source_caps} != {
+            _cycle(v.index for v in face.verts) for face in target_caps}:
+        raise ValueError('Opposite cap connections / orientation differ.')
+    # The strip itself must retain the same winding after reflection.
+    source_lookup = {frozenset(v.index for v in bm.faces[i].verts): bm.faces[i] for i in source['faces']}
+    target_lookup = {_cycle(v.index for v in bm.faces[i].verts) for i in target['faces']}
+    seed = [first[0][0], first[1][0], first[1][1], first[0][1]]
+    face = source_lookup.get(frozenset(seed))
+    if face is None: raise ValueError('The source finger strip is incomplete.')
+    forward = _cycle(v.index for v in face.verts) == _cycle(seed)
+    for r, s in zip(first, first[1:]):
+        for j in range(width):
+            polygon = [r[j], s[j], s[(j+1) % width], r[(j+1) % width]]
+            face = source_lookup.get(frozenset(polygon))
+            if face is None or (_cycle(v.index for v in face.verts) == _cycle(polygon)) != forward:
+                raise ValueError('The source finger strip orientation is inconsistent.')
+    for r, s in zip(second, second[1:]):
+        for j in range(width):
+            polygon = [r[j], s[j], s[(j+1) % width], r[(j+1) % width]]
+            if forward: polygon.reverse()
+            if _cycle(polygon) not in target_lookup:
+                raise ValueError('Opposite strip connections / orientation differ.')
 
 
 def _warnings(bm, candidates, to_plane):
@@ -163,7 +477,9 @@ def _warnings(bm, candidates, to_plane):
             warnings[digit] = 'Opposite finger / closed tip not found.'
             continue
         try: detect.vertex_map(bm, left, right, to_plane)
-        except ValueError as exc: warnings[digit] = str(exc)
+        except ValueError:
+            try: _mirrored_ring_surface(bm, left, right, to_plane)
+            except ValueError: warnings[digit] = PAIR_SYNC_WARNING
     return warnings
 
 
@@ -183,18 +499,24 @@ def _match_previous(old, candidates):
 
 
 def survey(context, obj, bm, selected=None, *, force=False):
-    from . import finger_layout
+    from . import finger_range
     bank = obj.character_designer_finger_bank
     signature = stamp(bm, obj)
     old = json.loads(bank.survey) if bank.survey else {}
-    if not force and old.get('stamp') == signature: return old
+    if not force and old.get('stamp') == signature:
+        if old.get('pair_warning_version') != PAIR_WARNING_VERSION:
+            # Refresh older mislabelled pair diagnostics without repeating
+            # detection or changing any saved finger reference.
+            old['warnings'] = _warnings(bm, old['candidates'], plane(obj))
+            old['pair_warning_version'] = PAIR_WARNING_VERSION
+        return old
     if old:
         # Retain missing descriptors so a later Recheck can recover them.
         anchors = dict(old.get('anchors', old['candidates']))
-        candidates = _match_previous(anchors, detect.census(bm, finger_layout._quad_band))
+        candidates = _match_previous(anchors, detect.census(bm, finger_range.quad_band))
     else:
         if not selected: raise ValueError('Select faces or an internal loop on one finger, then Capture Detection.')
-        candidates = detect.detect(bm, finger_layout._quad_band, selected, plane(obj))
+        candidates = detect.detect(bm, finger_range.quad_band, selected, plane(obj))
         anchors = dict(candidates)
         for key, c in list(candidates.items()):
             mate = key[:-1]+('R' if key[-1] == 'L' else 'L')
@@ -203,6 +525,7 @@ def survey(context, obj, bm, selected=None, *, force=False):
                                      tip=list(detect.reflect(c['tip'], plane(obj))))
     anchors.update(candidates)
     return {'stamp': signature, 'candidates': candidates, 'anchors': anchors,
+            'pair_warning_version': PAIR_WARNING_VERSION,
             'warnings': _warnings(bm, candidates, plane(obj))}
 
 
@@ -233,8 +556,10 @@ def _mirror(context, obj, key, bm, report):
         return
     source, target = report['candidates'][key], report['candidates'][mate_key]
     try:
-        detect.vertex_map(bm, source, target, plane(obj))
-        record = remap_record(json.loads(slot.guide.record), bm, reflection=plane(obj), target=target)
+        try: detect.vertex_map(bm, source, target, plane(obj))
+        except ValueError: _mirrored_ring_surface(bm, source, target, plane(obj))
+        original = json.loads(slot.guide.record)
+        record = remap_record(original, bm, reflection=plane(obj), target=target, allow_ring_edits=True)
         record['bank_key'] = mate_key
         definition._validate_mesh(obj, record, slot.guide.use_basis)
         if record.get('internal'):
@@ -249,14 +574,23 @@ def _mirror(context, obj, key, bm, report):
                 new_bend = Vector(new_normal)*(1 if slot.guide.flip_bend else -1)
                 if old_bend.normalized().dot(new_bend.normalized()) < .98:
                     raise ValueError('Independently captured bend directions conflict; the opposite definition was retained. Review the top strips.')
-        top = remap_record(json.loads(slot.guide.bend_record), bm, reflection=plane(obj), target=target) if slot.guide.bend_record else None
-        # Stage everything before touching the previous opposite guide.
-        for name in FIELDS: setattr(mate.guide, name, getattr(slot.guide, name))
-        mate.guide.record = json.dumps(record)
-        if top: mate.guide.bend_record = json.dumps(top)
-        mate.guide.pending_source, mate.guide.pending = None, ''
-        mate.guide.revision = slot.guide.revision+'-mate'
-        mate.guide.confirmed = slot.guide.confirmed
+        top = None
+        if slot.guide.bend_record:
+            captured_top = json.loads(slot.guide.bend_record)
+            try: top = remap_record(captured_top, bm, reflection=plane(obj), target=target)
+            except ValueError:
+                top = _remap_bend_evidence(_reflect_evidence(captured_top, plane(obj)),
+                                           _reflect_evidence(original, plane(obj)), record, bm)
+        # Stage everything before touching the previous opposite guide. A
+        # programmatic flip assignment is not a user Reverse Bend action.
+        from .finger_definition_ui import reference_write
+        with reference_write():
+            for name in FIELDS: setattr(mate.guide, name, getattr(slot.guide, name))
+            mate.guide.record = json.dumps(record)
+            if top: mate.guide.bend_record = json.dumps(top)
+            mate.guide.pending_source, mate.guide.pending = None, ''
+            mate.guide.revision = slot.guide.revision+'-mate'
+            mate.guide.confirmed = slot.guide.confirmed
         mate.bones = ''
         mate.error = ''
     except ValueError as exc:
@@ -355,14 +689,15 @@ def capture(context, action='CAPTURE'):
             _commit_survey(context, obj, report)
             slot = _slot(bank, key)
             guide = slot.guide
-            guide.source, guide.record = obj, json.dumps(record)
-            guide.revision, guide.use_basis = uuid.uuid4().hex, True
-            guide.bend_source, guide.bend_record, guide.flip_bend = None, '', False
-            guide.pending_source, guide.pending = None, ''
-            guide.confirmed, guide.status, slot.error = True, '', ''
+            from .finger_definition_ui import reference_write
+            with reference_write():
+                guide.source, guide.record = obj, json.dumps(record)
+                guide.revision, guide.use_basis = uuid.uuid4().hex, True
+                guide.bend_source, guide.bend_record, guide.flip_bend = None, '', False
+                guide.pending_source, guide.pending = None, ''
+                guide.confirmed, guide.status, slot.error = True, '', ''
             slot.bones = ''
             bank.active, bank.status = key, ''
-            _mirror(context, obj, key, base, report)
             select(context, key.split('.')[0], key[-1])
             return key
         if action == 'END' and (not slot or not slot.guide.pending):
@@ -389,10 +724,11 @@ def capture(context, action='CAPTURE'):
             context.scene.character_designer_finger_setup = old_obj
         _commit_survey(context, obj, report)
         slot = _slot(bank, key)
-        for name, value in staged.items(): setattr(slot.guide, name, value)
+        from .finger_definition_ui import reference_write
+        with reference_write():
+            for name, value in staged.items(): setattr(slot.guide, name, value)
         slot.error = ''
         bank.active = key
-        if action != 'START': _mirror(context, obj, key, base, report)
         return key
     finally:
         current.free()
@@ -403,6 +739,24 @@ def selected_digits(bank):
     """Display selection is separate from the one active editing identity."""
     chosen = set(bank.visible_digits) if bank.selection_initialized else {bank.active.split('.')[0]}
     return tuple(d for d in detect.DIGITS if d in chosen)
+
+
+def display_side(bank):
+    """The captured/active side owns the setup and viewport guides; default L."""
+    return 'R' if bank.active.endswith('.R') else 'L'
+
+
+def display_keys(bank):
+    return tuple(d+'.'+display_side(bank) for d in selected_digits(bank))
+
+
+def switch_side(context):
+    obj = active_object(context)
+    if not obj or not obj.character_designer_finger_bank.active:
+        raise ValueError('Capture a finger on this mesh first.')
+    state = obj.character_designer_finger_bank
+    # Do not reset a multi-selection (or resurrect an intentionally empty one).
+    state.active = state.active.split('.')[0]+('.L' if display_side(state) == 'R' else '.R')
 
 
 def select(context, digit, side=None, *, mode='SINGLE'):
@@ -437,6 +791,7 @@ def select(context, digit, side=None, *, mode='SINGLE'):
 
 
 def sync(context):
+    """Commit explicit active-side settings without generating a mate reference."""
     obj = active_object(context)
     if not obj: return
     bank = obj.character_designer_finger_bank
@@ -447,20 +802,26 @@ def sync(context):
         _commit_survey(context, obj, report)
         guide = definition.state(context)
         if guide.bend_record: guide.bend_record = json.dumps(enrich(json.loads(guide.bend_record), base))
-        _mirror(context, obj, bank.active, base, report)
     finally: base.free()
 
 
-def recheck(context, *, own_layout=False, updated_keys=None):
+def recheck(context, *, all_slots=False):
+    """Explicitly recheck the active saved side; other references stay untouched."""
     obj = active_object(context)
     if not obj: raise ValueError('Capture a finger first.')
     bank = obj.character_designer_finger_bank
     base = definition._snapshot(obj, definition._basis_name(obj))
     try:
         report = survey(context, obj, base, force=True)
-        changes = []
-        for slot in bank.slots:
-            guide, updates = slot.guide, {}
+        changes, outcome = [], {'adapted': [], 'unchanged': [], 'failed': {}, 'survey': report}
+        selected = tuple(bank.slots) if all_slots else (bank.slots.get(bank.active),)
+        for slot in selected:
+            if slot is None: continue
+            guide, updates, adapted = slot.guide, {}, False
+            if not configured(slot):
+                # Empty slots are detection candidates, not failed captures.
+                changes.append((slot, {}, ''))
+                continue
             try:
                 if slot.name not in report['candidates']:
                     raise ValueError('Finger body / closed tip not found; saved settings retained.')
@@ -468,55 +829,53 @@ def recheck(context, *, own_layout=False, updated_keys=None):
                     text = getattr(guide, field)
                     if not text: continue
                     record = json.loads(text)
-                    if own_layout and slot.name in (updated_keys or {bank.active}) and field != 'pending':
-                        # The verified layout preserved the original reference
-                        # span. Restamp against the newly generated local body.
-                        c = report['candidates'][slot.name]
-                        record['input'] = {'kind': 'VERTS', 'ids': c['vertices']}
-                        record['support_input'] = {'kind': 'FACES', 'ids': c['faces']}
-                        record.pop('start_input', None)
-                        for variant in ('basis', 'current'):
-                            probe = definition._snapshot(obj, record['basis_key'] if variant == 'basis' else record['key'])
-                            try: record[variant]['coordinates'] = [[i, list(probe.verts[i].co)] for i in c['vertices']]
-                            finally: probe.free()
-                        record['topology'] = definition._topology(base)
-                        if record.get('internal'):
-                            from . import finger_internal
-                            body = finger_internal.prepare_body(base, c, record['basis']['path'])
-                            record['body'] = body
-                            faces = finger_internal.support_faces(body)
-                            record['support_input'] = {'kind': 'FACES', 'ids': faces}
-                            vertices = sorted({v.index for i in faces for v in base.faces[i].verts})
-                            for variant in ('basis', 'current'):
-                                probe = definition._snapshot(obj, record['basis_key'] if variant == 'basis' else record['key'])
-                                try: record[variant]['coordinates'] = [[i, list(probe.verts[i].co)] for i in vertices]
-                                finally: probe.free()
-                            record['internal'] = finger_internal.solve(base, body, record['basis']['path'], record.get('surface', {}).get('centering'))
-                        record = enrich(record, base)
-                    else:
-                        record = remap_record(record, base)
+                    if field == 'bend_record' and guide.bend_source and guide.bend_source != obj:
+                        definition._validate_mesh(guide.bend_source, record, guide.use_basis)
+                        updates[field] = text
+                        continue
+                    previous_points = {tuple(co) for _, co in record['basis']['coordinates']}
+                    try:
+                        record = remap_record(record, base, allow_ring_edits=field != 'pending',
+                                              candidate=report['candidates'][slot.name])
+                    except ValueError:
+                        if field != 'bend_record' or 'record' not in updates: raise
+                        record = _remap_bend_evidence(record, json.loads(guide.record),
+                                                      json.loads(updates['record']), base)
+                    adapted = adapted or previous_points != {tuple(co) for _, co in record['basis']['coordinates']}
                     updates[field] = json.dumps(record)
                 changes.append((slot, updates, ''))
-            except ValueError as exc: changes.append((slot, {}, str(exc)))
+                outcome['adapted' if adapted else 'unchanged'].append(slot.name)
+            except ValueError as exc:
+                changes.append((slot, {}, str(exc)))
+                outcome['failed'][slot.name] = str(exc)
         _commit_survey(context, obj, report)
         for slot, updates, error in changes:
             for field, value in updates.items(): setattr(slot.guide, field, value)
             slot.error = error
-        # Retry missing opposite definitions only when the source is valid;
-        # do not replace existing independent adjustments on a plain Recheck.
-        for digit in detect.DIGITS:
-            a, b = (_slot(bank, f'{digit}.{s}') for s in ('L', 'R'))
-            if a.guide.record and not a.error and not b.guide.record: _mirror(context, obj, a.name, base, report)
-            elif b.guide.record and not b.error and not a.guide.record: _mirror(context, obj, b.name, base, report)
+        # A completed recheck has current per-slot results. A stale transaction
+        # failure must no longer label every valid reference as a previous result.
+        if bank.status.startswith('Update failed; previous result retained:'):
+            bank.status = ''
+        return outcome
     finally: base.free()
 
 
-def dirty(context):
+def adapt_topology(context):
+    """Explicit all-slot remap; never call from background/panel/draw callbacks.
+
+    No geometry, weights, Shape Keys, bones, confirmation or revision is written.
+    Failures retain that slot's saved reference and cannot invalidate other digits.
+    """
+    return recheck(context, all_slots=True)
+
+
+def dirty(context, *, reader=None):
     obj = active_object(context)
     if not obj or not obj.character_designer_finger_bank.survey: return False
-    bm = definition._snapshot(obj, definition._basis_name(obj))
-    try: return stamp(bm, obj) != json.loads(obj.character_designer_finger_bank.survey)['stamp']
-    finally: bm.free()
+    bm = reader.snapshot(obj, definition._basis_name(obj)) if reader else definition._snapshot(obj, definition._basis_name(obj))
+    try: return stamp(bm, obj, reader=reader) != json.loads(obj.character_designer_finger_bank.survey)['stamp']
+    finally:
+        if reader is None: bm.free()
 
 
 def validate_top(context):
@@ -531,12 +890,6 @@ def validate_top(context):
     finally: bm.free()
 
 
-def after_layout(context):
-    obj = active_object(context)
-    if obj is None: return
-    try: recheck(context, own_layout=True)
-    except ValueError as exc:
-        obj.character_designer_finger_bank.needs_recheck = 'Layout updated; recheck references: '+str(exc)
 
 
 def current_candidate(context):

@@ -45,12 +45,36 @@ def index(rig):
     return result
 
 
-def resolve(obj, rig, key, candidates, hint=()):
+def reference_error(obj, key):
+    """A paired-mesh notice is not a failure of this side's saved reference."""
+    state = obj.character_designer_finger_bank
+    slot = state.slots.get(key)
+    error = slot.error if slot else ''
+    if not error: return ''
+    if error in {bank.PAIR_SYNC_WARNING, 'Opposite finger / closed tip not found.',
+                 'Left/right finger surfaces differ. Match the mesh shape on both sides before paired bone actions.'}:
+        return ''
+    try:
+        warning = json.loads(state.survey).get('warnings', {}).get(key.split('.')[0])
+    except (ValueError, TypeError, AttributeError):
+        warning = None
+    return '' if error == warning else error
+
+
+def resolve(obj, rig, key, candidates, hint=(), *, live_mark_reference=None):
+    """Resolve identity using saved Setup, or an explicit current loop proof.
+
+    A current loop proof owns geometry bounds. Saved bone identities still
+    protect the intended chain, but historical mesh/endpoint positions do not
+    veto an explicit Align Joints action after ordinary artist edits.
+    """
     from .finger_bones import _head, _tail, _parent_depth
     slot = obj.character_designer_finger_bank.slots.get(key)
     if not slot or not slot.guide.record: raise ValueError('Finger Setup is missing.')
-    if slot.error: raise ValueError(slot.error)
-    record = json.loads(slot.guide.record)
+    if live_mark_reference is None:
+        error = reference_error(obj, key)
+        if error: raise ValueError(error)
+    record = json.loads(slot.guide.record) if live_mark_reference is None else live_mark_reference
     body = record.get('body')
     if not body: raise ValueError('Recapture this older finger definition.')
     pool = candidates.get(key, [])
@@ -73,8 +97,17 @@ def resolve(obj, rig, key, candidates, hint=()):
         groups = [c for c in groups if [b.name for b in c] == [b['name'] for b in saved['chain']]]
     if len(groups) != 1: raise ValueError('Multiple candidate chains: select one deform finger bone as a hint.')
     chain = sorted(groups[0], key=_parent_depth)
-    if saved and saved['rig'] == rig.name and signature(chain) != saved['chain']:
-        raise ValueError('The saved bone chain changed; recapture/review this finger before writing.')
+    if saved and saved['rig'] == rig.name:
+        current = signature(chain)
+        if live_mark_reference is not None:
+            identity = lambda rows: [(r.get('name'), r.get('parent'), r.get('deform')) for r in rows]
+            changed = identity(current) != identity(saved['chain'])
+        else:
+            changed = current != saved['chain']
+        if changed:
+            raise ValueError('The saved bone chain identity changed; review this finger before writing.'
+                             if live_mark_reference is not None else
+                             'The saved bone chain changed; recapture/review this finger before writing.')
     if any(getattr(b, 'hide', False) or getattr(b, 'lock', False) for b in chain):
         raise ValueError('A target finger bone is hidden or locked.')
     transform = obj.matrix_world.inverted() @ rig.matrix_world
@@ -159,9 +192,35 @@ def pair(obj, rig, digit, candidates, hints=(), bm=None):
     return chains
 
 
+def _single_edit_rig(context, rig):
+    """The live edit data is reusable only for this one active armature."""
+    return (context.object == rig and context.view_layer.objects.active == rig and
+            context.mode == 'EDIT_ARMATURE' and rig.mode == 'EDIT' and
+            tuple(context.objects_in_mode) == (rig,))
+
+
+def _restore_bone_selection(rig, saved, active_name):
+    from .finger_bones import _bone_collection
+    collection = _bone_collection(rig)
+    active = collection.get(active_name) if active_name else None
+    # Assigning an active Edit Bone can select it. Restore the exact flags
+    # afterwards, including an active bone the user had deselected. Avoid
+    # writing unchanged flags on the common already-editing path.
+    if collection.active != active: collection.active = active
+    for bone in collection:
+        if bone.name not in saved: continue
+        select, head, tail = saved[bone.name]
+        if rig.mode == 'EDIT':
+            if bone.select != select: bone.select = select
+            if bone.select_head != head: bone.select_head = head
+            if bone.select_tail != tail: bone.select_tail = tail
+        elif rig.pose.bones[bone.name].select != select:
+            rig.pose.bones[bone.name].select = select
+
+
 @contextmanager
 def edit_rig(context, rig):
-    """Restore caller mode/object/bone selection; no silent pose resets."""
+    """Reuse a single active Edit Armature; restore caller context otherwise."""
     active = context.view_layer.objects.active
     mode = active.mode if active else 'OBJECT'
     selected = list(context.selected_objects)
@@ -171,40 +230,49 @@ def edit_rig(context, rig):
                       getattr(b, 'select_head', False), getattr(b, 'select_tail', False)) for b in _bone_collection(rig)}
     active_bone = _bone_collection(rig).active
     active_name = active_bone.name if active_bone else None
+    mirror = rig.data.use_mirror_x
+    already_editing = _single_edit_rig(context, rig)
     try:
-        if context.object and context.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
-        for o in context.selected_objects: o.select_set(False)
-        rig.select_set(True)
-        context.view_layer.objects.active = rig
-        bpy.ops.object.mode_set(mode='EDIT')
+        if not already_editing:
+            if context.object and context.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
+            for o in context.selected_objects: o.select_set(False)
+            rig.select_set(True)
+            context.view_layer.objects.active = rig
+            bpy.ops.object.mode_set(mode='EDIT')
         yield
     finally:
-        if context.object and context.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
-        for o in context.selected_objects: o.select_set(False)
-        for o in selected: o.select_set(True)
-        context.view_layer.objects.active = active
-        if active and mode != 'OBJECT': bpy.ops.object.mode_set(mode=mode)
-        collection = _bone_collection(rig)
-        for bone in collection:
-            if bone.name in saved:
-                select, head, tail = saved[bone.name]
-                if rig.mode == 'EDIT': bone.select, bone.select_head, bone.select_tail = select, head, tail
-                else: rig.pose.bones[bone.name].select = select
-        collection.active = collection.get(active_name) if active_name else None
+        try:
+            if already_editing and _single_edit_rig(context, rig):
+                # Bone-only callers never alter object selection. If a callback
+                # did, restore it without leaving the still-valid Edit Mode.
+                current = set(context.selected_objects)
+                for obj in current-set(selected): obj.select_set(False)
+                for obj in set(selected)-current: obj.select_set(True)
+            else:
+                if context.object and context.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
+                for o in context.selected_objects: o.select_set(False)
+                for o in selected: o.select_set(True)
+                context.view_layer.objects.active = active
+                if active and mode != 'OBJECT': bpy.ops.object.mode_set(mode=mode)
+            _restore_bone_selection(rig, saved, active_name)
+        finally:
+            if rig.data.use_mirror_x != mirror: rig.data.use_mirror_x = mirror
 
 
 def calibrate(context, selected=False, after_pair=None):
+    """Calibrate complete requested chains on the currently displayed side."""
     obj, rig = owner(context)
+    side = bank.display_side(obj.character_designer_finger_bank)
     from .finger_bones import _bone_collection
     hints = [b.name for b in _bone_collection(rig) if (b.select if rig.mode == 'EDIT' else rig.pose.bones[b.name].select)] if context.object == rig and context.mode in {'EDIT_ARMATURE', 'POSE'} else []
     wanted = set()
     if selected:
         for key, chain in index(rig).items():
-            if any(b.name in hints for b in chain): wanted.add(key.split('.')[0])
-        if not wanted: raise ValueError('Select at least one deform finger bone; Selected never runs All.')
+            if key.endswith('.'+side) and any(b.name in hints for b in chain): wanted.add(key.split('.')[0])
+        if not wanted: raise ValueError(f'Select at least one deform finger bone on the active {side} side; Selected never runs All.')
     else: wanted = set(('THUMB', 'INDEX', 'MIDDLE', 'RING', 'PINKY'))
     results = {'success': {}, 'skipped': {}, 'failed': {}}
-    # One shared mesh snapshot/remap for all requested records, not ten copies.
+    # One shared mesh snapshot/remap for all requested active-side records.
     bm = definition._snapshot(obj, definition._basis_name(obj))
     try:
         with edit_rig(context, rig):
@@ -213,7 +281,8 @@ def calibrate(context, selected=False, after_pair=None):
             for digit in sorted(wanted):
                 old = {}
                 try:
-                    chains = pair(obj, rig, digit, candidates, hints, bm)
+                    key = digit+'.'+side
+                    chains = {key: resolve(obj, rig, key, candidates, hints)}
                     planned = []
                     for key, chain in chains.items():
                         slot = obj.character_designer_finger_bank.slots[key]

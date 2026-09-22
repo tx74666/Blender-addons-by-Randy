@@ -164,3 +164,69 @@ def discover(bm, selected, quad_band, world):
     return {'schema': 2, 'rings': [[v.index for v in row] for row in rows],
             'positions': [d/total for d in distances], 'root': list(root), 'tip': list(tip),
             'length': total, 'selection': sorted(f.index for f in selected)}
+
+
+def ordered_loop(edges):
+    adjacency = {}
+    for edge in edges:
+        for vertex in edge.verts:
+            adjacency.setdefault(vertex, []).append(edge)
+    if len(adjacency) < 4:
+        raise ValueError("The selected loop needs at least four vertices.")
+    if any(len(linked) != 2 for linked in adjacency.values()):
+        raise ValueError("The selected edge loop branches or is open.")
+
+    start = min(adjacency, key=lambda vertex: vertex.index)
+    first_edge = min(adjacency[start], key=lambda edge: edge.index)
+    ordered = [start]
+    used_edges = {first_edge}
+    current = first_edge.other_vert(start)
+    while current is not start:
+        if current in ordered:
+            raise ValueError("The selected loop intersects itself.")
+        ordered.append(current)
+        next_edges = [edge for edge in adjacency[current] if edge not in used_edges]
+        if len(next_edges) != 1:
+            raise ValueError("The selected loop could not be ordered as one cycle.")
+        next_edge = next_edges[0]
+        used_edges.add(next_edge)
+        current = next_edge.other_vert(current)
+    if len(ordered) != len(adjacency) or len(used_edges) != len(edges):
+        raise ValueError("Select exactly one connected closed edge loop.")
+    return ordered
+
+
+def quad_band(seed, entry):
+    """Walk around the finger across longitudinal edges, not along it."""
+    todo, seen, mapping, cross_edges = [(seed, entry)], {}, {}, set()
+    while todo:
+        face, cross = todo.pop()
+        if face in seen:
+            if seen[face] != cross:
+                raise ValueError('The strip twists or branches; choose a regular quad finger section.')
+            continue
+        if face.hide or len(face.verts) != 4:
+            raise ValueError('The ring meets hidden or non-quad faces. Keep the palm and fingertip cap outside the strip.')
+        seen[face] = cross
+        cross_edges.add(cross)
+        loops = list(face.loops)
+        k = next(i for i, loop in enumerate(loops) if loop.edge == cross)
+        u, v, w, x = (loops[(k+i) % 4].vert for i in range(4))
+        for root, tip in ((u, x), (v, w)):
+            if root in mapping and mapping[root] != tip:
+                raise ValueError('The quad band does not have a one-to-one ring correspondence.')
+            mapping[root] = tip
+            connector = next(e for e in face.edges if root in e.verts and tip in e.verts)
+            if len(connector.link_faces) != 2:
+                raise ValueError('The finger cross-section is open or non-manifold; a complete ring is required.')
+            neighbor = next(f for f in connector.link_faces if f != face)
+            next_cross = [e for e in neighbor.edges if root in e.verts and e != connector]
+            if len(next_cross) != 1:
+                raise ValueError('The finger band branches.')
+            todo.append((neighbor, next_cross[0]))
+    ordered = ordered_loop(cross_edges)
+    if len(seen) != len(ordered) or len(set(mapping.values())) != len(ordered):
+        raise ValueError('The finger band does not close cleanly.')
+    if set(mapping) & set(mapping.values()):
+        raise ValueError('The finger band folds back into itself.')
+    return ordered, mapping, set(seen)

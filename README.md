@@ -5,7 +5,17 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.29 | [character_designer](addons/character_designer) | [character_designer-0.61.29.zip](dist/character_designer-0.61.29.zip) |
+| Character Designer | 0.61.61 | [character_designer](addons/character_designer) | [character_designer-0.61.61.zip](dist/character_designer-0.61.61.zip) |
+
+Character Designer 0.61.61 修复 Align Joints 将已有骨根误判为穿出手指的问题：沿现有骨段调整关节时保留原路径，检查新关节点；改变路径时才验证新骨段。显示继续使用固定缓存，左右差异不阻挡单侧工作。详见 [关节对齐与指根检查](docs/releases/CharacterDesigner_0.61.61_mark_root_20260922.md)。
+
+Character Designer 0.61.53 修正 Capture 成功却被对侧配对错误误导的提示：显示已捕获的一侧，区分左右参考错误与两侧曲面差异；不再把两侧不一致描述成需要重绑当前侧。失败配对完整保留原对侧确认与弯曲设置。详见 [Capture 修复记录](docs/releases/CharacterDesigner_0.61.53_capture_pair_diagnostics_20260921.md)。
+
+Character Designer 0.61.52 优化手指参考首次刷新：同一批五指共用一次临时网格读取与拓扑校验，弯曲预览复用已验证参考；缓存命中不再读取网格。单骨架编辑模式中的骨链操作不再来回切换模式，保持选区与镜像设置。详见 [性能验证](docs/releases/CharacterDesigner_0.61.52_preview_performance_20260921.md)。
+
+Character Designer 0.61.51 修复清空手指后仍保留红错；Relax Bones 直接处理编辑模式选中的骨链，不依赖 Basic Setup。X Mirror 开启时同步已有对侧，以活动骨所在侧为源，双侧选区去重；保持端点、Roll、连接与选区。
+
+Character Designer 0.61.50 移除 Joint Topology & Weights、自动关节环生成及其后台监视。保留手指基础检测、骨链 Align／拇指 Relax、Roll 校准、缓存弯曲预览和局部镜像；升级不改动已有网格、Shape Keys、权重或骨骼。以下为历史更新记录，已移除功能以[当前手指工具说明](docs/finger_joint_tool.md)为准。
 
 Character Designer 0.61.29 修正内部直轴的横向偏移：长度方向面带／边路径作为横向中线依据，在整段体内安全与覆盖条件不变的前提下优先对齐选区拟合中线，深度仍自动求取；不再仅为了更大的表面间隙而向一侧偏移。排除指根大面和指尖封口对横向基准的干扰，左右参考及环线更新保留这项依据，无新增控件。旧参考不自动移动，重新 Capture 即可更新。详见 [手指工具说明](docs/finger_joint_tool.md)。
 

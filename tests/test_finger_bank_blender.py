@@ -10,87 +10,18 @@ from mathutils import Vector, Matrix
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'addons'))
 import character_designer
-from character_designer import finger_bank as bank, finger_detect as detect, finger_definition as definition, finger_layout as layout
+from character_designer import finger_detect as detect
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from finger_tools_fixtures import hands_fixture as fixture, select, refused, capture_all, bank, definition, fingerprint
 
 C = bpy.context
 
 
-def fixture():
-    if C.object and C.object.mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
-    for obj in list(bpy.data.objects): bpy.data.objects.remove(obj, do_unlink=True)
-    vertices, faces, chosen = [], [], {}
-    specs = [('THUMB', (-.6, -.4, 0), (-.55, .83, 0), .75),
-             ('INDEX', (-.3, 0, 0), (-.07, 1, 0), 1.05),
-             ('MIDDLE', (-.1, .025, 0), (0, 1, 0), 1.15),
-             ('RING', (.1, .005, 0), (.03, 1, 0), 1.07),
-             ('PINKY', (.3, -.045, 0), (.15, 1, 0), .82)]
-    for side, sign in (('L', 1), ('R', -1)):
-        for digit, root, tangent, length in specs:
-            root, t = Vector(root)+Vector((3, 0, 0)), Vector(tangent).normalized()
-            across = Vector((t.y, -t.x, 0))
-            first, face_first = len(vertices), len(faces)
-            for i in range(7):
-                for j in range(8):
-                    p = root+t*(length*i/6)+across*(.065*math.cos(j*math.tau/8))+Vector((0, 0, .065*math.sin(j*math.tau/8)))
-                    vertices.append((sign*p.x, p.y, p.z))
-            for i in range(6):
-                for j in range(8):
-                    a, b = first+i*8+j, first+i*8+(j+1)%8
-                    f = (a, a+8, b+8, b)
-                    faces.append(f if sign > 0 else tuple(reversed(f)))
-            f = tuple(reversed(range(first+48, first+56)))
-            faces.append(f if sign > 0 else tuple(reversed(f)))
-            for j in range(8):
-                p = root-t*.5+across*(.5*math.cos(j*math.tau/8))+Vector((0, 0, .5*math.sin(j*math.tau/8)))
-                vertices.append((sign*p.x, p.y, p.z))
-            for j in range(8):
-                a, b = first+j, first+(j+1)%8
-                f = (a, b, first+56+(j+1)%8, first+56+j)
-                faces.append(f if sign > 0 else tuple(reversed(f)))
-            chosen[f'{digit}.{side}'] = [face_first+i*8+2 for i in range(6)]
-    mesh = bpy.data.meshes.new('Hands')
-    mesh.from_pydata(vertices, [], faces)
-    obj = bpy.data.objects.new('UnboundHands', mesh)
-    C.collection.objects.link(obj)
-    C.view_layer.objects.active = obj
-    obj.select_set(True)
-    obj.shape_key_add(name='Basis')
-    key = obj.shape_key_add(name='Artist')
-    for p in key.data: p.co.z += .01
-    obj.vertex_groups.new(name='ArtistWeight').add(list(range(len(vertices))), .4, 'REPLACE')
-    bpy.ops.object.mode_set(mode='EDIT')
-    C.tool_settings.mesh_select_mode = (False, False, True)
-    return obj, chosen
-
-
-def select(obj, ids):
-    bm = bmesh.from_edit_mesh(obj.data)
-    for seq in (bm.verts, bm.edges, bm.faces):
-        seq.ensure_lookup_table()
-        for item in seq: item.select_set(False)
-    for i in ids: bm.faces[i].select_set(True)
-    bmesh.update_edit_mesh(obj.data)
-
-
-def refused(fn):
-    try: fn()
-    except ValueError: return
-    raise AssertionError('Ambiguous capture accepted')
-
-
-def capture_all(obj, chosen):
-    for digit in ('PINKY', 'INDEX', 'THUMB', 'RING', 'MIDDLE'):
-        select(obj, chosen[f'{digit}.L'])
-        assert bank.capture(C) == f'{digit}.L'
-        definition.confirm(C)
-        bank.sync(C)
-
-
 def test_five_pairs_without_binding():
     obj, chosen = fixture()
-    before = layout.fingerprint(obj)
+    before = fingerprint(obj)
     capture_all(obj, chosen)
-    assert layout.fingerprint(obj) == before
+    assert fingerprint(obj) == before
     b = obj.character_designer_finger_bank
     assert len(b.slots) == 10
     assert all(s.guide.record and s.guide.confirmed and not s.error for s in b.slots)
@@ -135,9 +66,9 @@ def test_loop_capture_and_nonbasis():
     bpy.ops.object.mode_set(mode='OBJECT')
     obj.active_shape_key_index = 1
     bpy.ops.object.mode_set(mode='EDIT')
-    before = layout.fingerprint(obj)
+    before = fingerprint(obj)
     assert bank.capture(C) == 'INDEX.L'
-    assert layout.fingerprint(obj) == before and obj.active_shape_key_index == 1
+    assert fingerprint(obj) == before and obj.active_shape_key_index == 1
     assert definition.frame(C)['label'] == 'Internal straight axis'
     assert definition.frame(C)['length'] > 1
     # A loop is only the marker: changing its supporting rest geometry must
@@ -173,35 +104,15 @@ def test_asymmetry_warning_and_recovery():
     original = vertex.co.copy()
     vertex.co.z += .008
     assert bank.dirty(C)
-    before = layout.fingerprint(obj)
+    before = fingerprint(obj)
     bank.recheck(C)
-    assert layout.fingerprint(obj) == before
+    assert fingerprint(obj) == before
     assert set(json.loads(b.survey)['warnings']) == {'RING'}
     assert b.slots['INDEX.L'].guide.confirmed
     vertex.co = original
     bank.recheck(C)
     assert not json.loads(b.survey)['warnings']
     assert not b.slots['RING.R'].error
-
-
-def test_layout_one_finger_preserves_other_four():
-    obj, chosen = fixture()
-    capture_all(obj, chosen)
-    b = obj.character_designer_finger_bank
-    bank.select(C, 'INDEX', 'L')
-    definition.confirm(C)
-    layout.capture_definition(C)
-    layout.apply_layout(C)
-    assert 'INDEX' in json.loads(b.survey)['warnings']
-    for digit in detect.DIGITS:
-        bank.select(C, digit, 'L')
-        assert definition.frame(C)['length'] > .7
-        assert not b.slots[f'{digit}.L'].error, b.slots[f'{digit}.L'].error
-    bank.select(C, 'MIDDLE', 'L')
-    layout.capture_definition(C)
-    layout.apply_layout(C)
-    bank.select(C, 'INDEX', 'L')
-    assert definition.frame(C)['length'] > 1
 
 
 def test_save_reopen_and_character_scope():

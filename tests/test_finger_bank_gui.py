@@ -1,4 +1,4 @@
-"""Five pair indicators, one-side layout warning and real keyboard Undo/Redo."""
+"""Five pair indicators, repeated capture and failure recovery in a real GUI."""
 import json
 import sys
 import traceback
@@ -7,8 +7,8 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_bank_blender import fixture, select, capture_all, bank, definition, layout, character_designer
-from character_designer import finger_definition_ui as ui, finger_layout_ui as rings_ui
+from finger_tools_fixtures import hands_fixture as fixture, select, capture_all, bank, definition, fingerprint, character_designer
+from character_designer import finger_definition_ui as ui
 
 ARGS = sys.argv[sys.argv.index('--')+1:]
 STATE = {}
@@ -57,15 +57,12 @@ def setup():
     area.spaces.active.region_3d.view_location = Vector((3, .3, 0))
     area.spaces.active.region_3d.view_rotation = Vector((0, -1, 4)).to_track_quat('Z', 'Y')
     area.spaces.active.overlay.show_floor = False
-    STATE['before'] = layout.fingerprint(bpy.context.edit_object)
+    STATE['before'] = fingerprint(bpy.context.edit_object)
     bpy.ops.ed.undo_push(message='Finger bank baseline')
-    item = bpy.context.window_manager.keyconfigs.active.keymaps['3D View'].keymap_items.new('character_designer.finger_layout', 'F8', 'PRESS')
-    item.properties.action = 'APPLY'
     item = bpy.context.window_manager.keyconfigs.active.keymaps['3D View'].keymap_items.new('character_designer.finger_setup', 'F7', 'PRESS')
     item.properties.action = 'CAPTURE'
     bpy.context.window_manager.keyconfigs.update()
     ui.show()
-    with bpy.context.temp_override(window=window, area=area, region=region): rings_ui.show_preview(bpy.context)
     bpy.app.timers.register(panel, first_interval=.7)
 
 
@@ -96,7 +93,7 @@ def recaptured():
     assert s.confirmed and not s.pending and json.loads(s.record)['internal']
     assert ui._pending() is None and len(ui._handles) == 2
     assert set(bpy.data.objects.keys()) == STATE['objects']
-    assert layout.fingerprint(bpy.context.edit_object) == STATE['before']
+    assert fingerprint(bpy.context.edit_object) == STATE['before']
     STATE['recaptures'] += 1
     if STATE['recaptures'] < 3:
         key('F7')
@@ -117,9 +114,9 @@ def failed_capture():
     assert len(ui._handles) == 2 and ui._pending() is None
     bpy.ops.screen.screenshot(filepath=str(Path(ARGS[1]).with_name('failed-update.png')))
     bpy.ops.character_designer.finger_setup(action='TOGGLE')
-    assert not ui._visible
+    assert not ui.overlays_enabled()
     bpy.ops.character_designer.finger_setup(action='TOGGLE')
-    assert ui._visible
+    assert ui.overlays_enabled()
     bpy.ops.character_designer.finger_setup(action='SELECT', digit='MIDDLE')
     assert definition.frame(bpy.context)['internal']
     bpy.ops.character_designer.finger_setup(action='SELECT', digit='INDEX')
@@ -131,40 +128,7 @@ def failed_capture():
 @guarded
 def prepare():
     assert not bank.active_object(bpy.context).character_designer_finger_bank.status
-    layout.capture_definition(bpy.context)
-    window, area, region = view()
-    with bpy.context.temp_override(window=window, area=area, region=region): rings_ui.show_preview(bpy.context)
-    key('F8')
-    bpy.app.timers.register(applied, first_interval=1.5)
-
-
-@guarded
-def applied():
-    obj = bank.active_object(bpy.context)
-    STATE['after'] = layout.fingerprint(obj)
-    assert STATE['after'] != STATE['before']
-    assert set(json.loads(obj.character_designer_finger_bank.survey)['warnings']) == {'INDEX'}
-    bpy.ops.screen.screenshot(filepath=str(Path(ARGS[1]).with_name('warning.png')))
-    key('Z', ctrl=True)
-    bpy.app.timers.register(undone, first_interval=.8)
-
-
-@guarded
-def undone():
-    assert layout.fingerprint(bpy.context.edit_object) == STATE['before']
-    bank.recheck(bpy.context)
-    assert not json.loads(bank.active_object(bpy.context).character_designer_finger_bank.survey)['warnings']
-    key('Z', ctrl=True, shift=True)
-    bpy.app.timers.register(redone, first_interval=.8)
-
-
-@guarded
-def redone():
-    assert layout.fingerprint(bpy.context.edit_object) == STATE['after']
-    bank.recheck(bpy.context)
-    assert set(json.loads(bank.active_object(bpy.context).character_designer_finger_bank.survey)['warnings']) == {'INDEX'}
-    bank.select(bpy.context, 'MIDDLE', 'L')
-    assert definition.frame(bpy.context)['length'] > 1
+    assert fingerprint(bpy.context.edit_object) == STATE['before']
     return finish()
 
 
@@ -173,6 +137,5 @@ if ARGS[0] == '--build':
     obj, selected = fixture()
     capture_all(obj, selected)
     bank.select(bpy.context, 'INDEX', 'L')
-    layout.capture_definition(bpy.context)
     bpy.ops.wm.save_as_mainfile(filepath=ARGS[1], check_existing=False)
 else: bpy.app.timers.register(setup, first_interval=1)

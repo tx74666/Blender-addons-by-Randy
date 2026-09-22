@@ -3,7 +3,7 @@
 import time
 import bpy
 from bpy.app.handlers import persistent
-from bpy.props import FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, PropertyGroup
 from mathutils import Vector
 
@@ -259,6 +259,15 @@ class CHARACTERDESIGNER_OT_mesh_mirror(Operator):
 
     target_candidate: IntProperty(name='Target Candidate', default=0, min=0,
                                   description='0: automatic. Otherwise enter a numbered viewport candidate; never append over ambiguous geometry')
+    sync_fingers: BoolProperty(name='Sync Finger References', default=False,
+                              description='After mirroring, sync proven references and loop marks for fully selected fingers; keep partial or unavailable saved setups and all bones unchanged')
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.sync_fingers:
+            return ('Mirror the selected mesh region and its weights, then update matching finger guides and yellow marks. '
+                    'For L/R differ: select the edited region first. Partial references stay saved; bones have a separate mirror action')
+        return cls.bl_description
 
     @classmethod
     def poll(cls, context):
@@ -295,6 +304,7 @@ class CHARACTERDESIGNER_OT_mesh_mirror(Operator):
 
     def execute(self, context):
         obj = context.edit_object
+        did_commit = False
         try:
             plan = _plan(context, self.target_candidate)
             if hasattr(self, '_choice_plan'):
@@ -306,19 +316,58 @@ class CHARACTERDESIGNER_OT_mesh_mirror(Operator):
             if plan.needs_choice:
                 show_preview(plan)
                 raise mirror.MirrorError('Choose a numbered target candidate first; no geometry was changed.')
+            sync_result = None
+            if self.sync_fingers:
+                from . import finger_mirror_sync
+                packet = finger_mirror_sync.prepare(plan)
+                metadata = finger_mirror_sync.snapshot(obj)
+            def committed(selection):
+                nonlocal sync_result
+                try:
+                    if self.sync_fingers:
+                        sync_result = finger_mirror_sync.apply(context, plan, packet)
+                    _select_result_region(obj, selection)
+                except Exception:
+                    if self.sync_fingers: finger_mirror_sync.restore(obj, metadata)
+                    raise
             bpy.ops.object.mode_set(mode='OBJECT')
-            mirror.apply_plan(plan, after_commit=lambda selection: _select_result_region(obj, selection))
-            clear_preview()
+            mirror.apply_plan(plan, after_commit=committed)
+            did_commit = True
+            if self.sync_fingers:
+                summary = f"Mirrored; synced {sync_result['synced']} finger(s), {sync_result['unchanged']} left unchanged"
+                state = obj.character_designer_finger_bank
+                state.status, state.bone_status = '', summary
+            # Geometry and metadata are already committed. A display-only
+            # refresh failure must not cancel Undo or claim the mesh rolled back.
+            try:
+                clear_preview()
+                if self.sync_fingers:
+                    from . import finger_definition_ui, finger_loop_marks_ui, finger_bone_tools
+                    finger_definition_ui.redraw()
+                    finger_loop_marks_ui.refresh(context)
+                    finger_bone_tools.invalidate(context)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+            if self.sync_fingers:
+                self.report({'INFO'}, summary)
+                return {'FINISHED'}
             action = (f'Replaced entire opposite strand ({len(plan.target_faces)} faces)' if plan.region_kind == 'ISLAND'
                       else f'Replaced {len(plan.target_faces)} faces inside boundary') if plan.target_vertices else 'Created missing opposite region'
             self.report({'INFO'}, f'{action}; source unchanged. Mirrored {len(plan.source_faces)} faces.')
             return {'FINISHED'}
         except mirror.MirrorError as error:
+            if did_commit:
+                self.report({'WARNING'}, f'Mirror completed; display refresh failed: {error}')
+                return {'FINISHED'}
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
         except Exception as error:
             import traceback
             traceback.print_exc()
+            if did_commit:
+                self.report({'WARNING'}, f'Mirror completed; display refresh failed: {error}')
+                return {'FINISHED'}
             self.report({'ERROR'}, f'Mirror failed; original mesh restored: {error}')
             return {'CANCELLED'}
         finally:

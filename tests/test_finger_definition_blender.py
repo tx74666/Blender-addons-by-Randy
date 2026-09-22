@@ -1,4 +1,4 @@
-"""Unified read-only references and their guarded topology/paired-roll consumers."""
+"""Unified read-only references and their guarded paired-roll consumers."""
 import json
 import sys
 import tempfile
@@ -9,17 +9,16 @@ import bmesh
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_finger_layout_blender import fixture, snap
+from finger_tools_fixtures import single_finger_fixture as fixture, fingerprint as snap
 from test_finger_flex_blender import fixture as flex_fixture, activate, select_chain, refused
 import character_designer
-from character_designer import finger_definition as definition, finger_layout as layout, finger_flex as flex
+from character_designer import finger_definition as definition, finger_flex as flex
 
 C = bpy.context
 
 
 def reset():
     definition.clear(C)
-    if layout.state(C).record: layout.clear(C)
     C.tool_settings.mesh_select_mode = (False, False, True)
 
 
@@ -45,45 +44,13 @@ def test_nonbasis_readonly_and_basis_reference():
     assert frame['length'] > 3.3, frame
     assert frame['direction'].z > .9 and frame['direction_label'] == 'Detected tip'
     assert snap(obj) == before and obj.active_shape_key_index == active
-    refused(lambda: layout.capture_definition(C), 'Confirm')
     definition.confirm(C)
-    refused(lambda: layout.capture_definition(C), 'current-key')
     old = frame['path']
     base = definition.basis_reference(C)
     assert base['basis'] and any((a-b).length > .01 for a, b in zip(old, base['path']))
     assert snap(obj) == before and obj.active_shape_key_index == active
     definition.confirm(C)
-    refused(lambda: layout.capture_definition(C), 'Basis')
     assert snap(obj) == before
-
-
-def test_full_range_and_idempotent_consumer():
-    reset()
-    obj = fixture(rooted=True)
-    before = snap(obj)
-    frame = definition.capture(C)
-    assert frame['length'] > 3.3
-    definition.confirm(C)
-    layout.capture_definition(C)
-    assert snap(obj) == before, 'Prepare modified topology or data'
-    s = layout.state(C)
-    record = json.loads(s.record)
-    assert (Vector(record['root'])-frame['root']).length < 1e-5
-    assert (Vector(record['tip'])-frame['tip']).length < 1e-5
-    s.joint_one, s.joint_two = .33, .67
-    s.three_rings, s.between_rings = True, 1
-    layout.apply_layout(C)
-    after = snap(obj)
-    assert after != before
-    assert abs(definition.frame(C)['length']-frame['length']) < 1e-6
-    layout.capture_definition(C)
-    layout.apply_layout(C)
-    assert snap(obj) == after
-    # Tool-owned results may reuse the original source; manual edits may not.
-    bm = bmesh.from_edit_mesh(obj.data)
-    bm.verts.ensure_lookup_table()
-    bm.verts[-1].co.x += .01
-    refused(lambda: definition.frame(C), 'generated mesh changed')
 
 
 def test_surface_without_loops_is_still_a_definition():
@@ -93,7 +60,6 @@ def test_surface_without_loops_is_still_a_definition():
     frame = definition.capture(C)
     assert abs(frame['length']-1) < 1e-6 and frame['bend'] is not None
     definition.confirm(C)
-    refused(lambda: layout.capture_definition(C), 'finger')
     assert snap(obj) == before
     assert definition.frame(C)['length'] == frame['length']
 
@@ -182,7 +148,7 @@ def test_mesh_definition_paired_roll_and_confirm_guard():
     assert definition.frame(C)['bend'].z > .99
 
 
-def test_world_transform_and_stale_layout():
+def test_world_transform_and_explicit_swap():
     reset()
     obj = fixture(rooted=True)
     obj.matrix_world = Matrix.Translation((2, 3, 4)) @ Matrix.Diagonal((1.2, .8, 1.4, 1))
@@ -190,9 +156,7 @@ def test_world_transform_and_stale_layout():
     f = definition.capture(C)
     assert f['length'] > 4.6
     definition.confirm(C)
-    layout.capture_definition(C)
     definition.swap(C)
-    refused(lambda: layout.build_layout(C), 'Prepare Rings')
 
 
 def test_persistence():
@@ -211,7 +175,7 @@ def test_persistence():
         assert definition.state(C).confirmed
 
 
-def test_transaction_and_explicit_top_after_layout():
+def test_transaction_and_explicit_top():
     reset()
     obj = fixture(rooted=True)
     definition.capture(C)
@@ -226,8 +190,6 @@ def test_transaction_and_explicit_top_after_layout():
     assert definition.state(C).record == previous and definition.state(C).confirmed
     obj.scale.z = 1
     C.view_layer.update()
-    layout.capture_definition(C)
-    layout.apply_layout(C)
     assert definition.frame(C)['bend'].dot(expected) > .999
     definition.swap(C)
     assert definition.frame(C)['bend'].dot(expected) > .999
