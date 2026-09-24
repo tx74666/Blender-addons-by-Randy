@@ -107,7 +107,6 @@ UNITY_UV_EXPORT_CONTRACT_VERSION = rr_unity_uv_export_contract.CONTRACT_VERSION
 def export_mode_uses_reference_layout(settings):
     return bool(
         settings is not None and
-        getattr(settings, "export_mode", EXPORT_MODE_BUILDING) == EXPORT_MODE_BUILDING and
         getattr(settings, "use_reference_layout", False)
     )
 
@@ -9937,7 +9936,7 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
     )
     use_reference_layout: bpy.props.BoolProperty(
         name="Use Reference Layout",
-        description="Use the saved reference only for this Modular export batch",
+        description="Use the saved reference layout for this export batch",
         default=False,
     )
     reference_layout_state_initialized: bpy.props.BoolProperty(
@@ -13339,18 +13338,15 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         row.operator("rr_builder.select_queue_item", text="Select", icon="RESTRICT_SELECT_OFF")
         next_item = row.operator("rr_builder.step_queue_item", text="", icon="TRIA_RIGHT")
         next_item.direction = 1
-        if settings.export_mode == EXPORT_MODE_BUILDING:
-            building_box = queue_box.box()
-            building_box.label(text="Modular Options")
-            building_box.prop(settings, "use_reference_layout", text="Use Reference Layout")
-            if settings.use_reference_layout:
-                reference_box = building_box.box()
-                reference_box.label(text="Reference Layout")
-                draw_reference_layout_controls(
-                    reference_box,
-                    context,
-                    getattr(context.scene, "rr_builder_reference_layout", None),
-                )
+        reference_box = queue_box.box()
+        reference_box.label(text="Reference Layout")
+        reference_box.prop(settings, "use_reference_layout", text="Use Reference Layout")
+        if settings.use_reference_layout:
+            draw_reference_layout_controls(
+                reference_box,
+                context,
+                getattr(context.scene, "rr_builder_reference_layout", None),
+            )
         resource_row = queue_box.row(align=True)
         resource_row.prop(settings, "include_model_with_export", text="Model")
         resource_row.prop(settings, "include_icon_with_export", text="Icon")
