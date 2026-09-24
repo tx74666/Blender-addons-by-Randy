@@ -5,6 +5,7 @@ blender --background --factory-startup --python tests/test_mesh_mirror_blender.p
 import sys
 from pathlib import Path
 import traceback
+from types import SimpleNamespace
 
 import bmesh
 import bpy
@@ -353,6 +354,19 @@ def test_live_mirror_modifier_and_locked_key_refuse():
         assert False
     except mirror.MirrorError as exc:
         assert 'locked' in str(exc)
+
+
+def test_group_verification_ignores_zero_memberships_and_float_noise():
+    expected = {'Mask': {0: .5, 1: 0.0}}
+    equivalent = (
+        SimpleNamespace(name='Mask', weights=((0, .5000004), (1, 0.0))),
+    )
+    assert not mirror._group_verification_diff(expected, equivalent)
+
+    changed = (SimpleNamespace(name='Mask', weights=((0, .502),)),)
+    diff = mirror._group_verification_diff(expected, changed)
+    assert diff and diff[0]['name'] == 'Mask'
+    assert diff[0]['changed'] == ((0, .5, .502),)
 
 
 def main():

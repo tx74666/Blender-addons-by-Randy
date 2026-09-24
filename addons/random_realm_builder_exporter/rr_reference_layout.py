@@ -82,7 +82,8 @@ def get_reference_object(scene=None):
     candidate = getattr(settings, "reference_object", None) if settings else None
     if candidate is not None:
         return candidate
-    for obj in getattr(bpy.context.scene, "objects", ()):
+    scene = scene or bpy.context.scene
+    for obj in getattr(scene, "objects", ()):
         if is_reference_object(obj):
             return obj
     return None
@@ -114,6 +115,12 @@ def mark_reference_object(obj, scene=None):
     if settings is not None:
         settings.reference_object = obj
         settings.status = f"Reference: {obj.name} ({stable_id})"
+    export_settings = getattr(scene or bpy.context.scene, "rr_builder_export_settings", None)
+    if export_settings is not None and not getattr(
+        export_settings, "reference_layout_state_initialized", False
+    ):
+        export_settings.use_reference_layout = False
+        export_settings.reference_layout_state_initialized = True
     return stable_id
 
 
@@ -128,12 +135,14 @@ def clear_reference_object(scene=None):
         settings.status = "No reference object"
 
 
-def build_reference_layout_for_export(root, scene=None):
+def build_reference_layout_for_export(root, scene=None, enabled=True):
     """Return the optional manifest block for one exported root.
 
     A missing reference is represented by ``None``.  The exporter may then
     write an ordinary manifest without inventing a virtual reference asset.
     """
+    if not enabled:
+        return None
     reference = get_reference_object(scene)
     if reference is None:
         return None
@@ -158,22 +167,26 @@ def build_reference_layout_for_export(root, scene=None):
     }
 
 
+def draw_reference_layout_controls(layout, context, settings):
+    reference = get_reference_object(context.scene)
+    if reference is None:
+        layout.label(text="Reference: not set", icon="INFO")
+    else:
+        layout.label(text=f"Reference: {reference.name}", icon="OBJECT_DATA")
+        stable_id = reference.get(REFERENCE_STABLE_ID_PROP, "")
+        if stable_id:
+            layout.label(text=f"Stable ID: {stable_id}")
+    row = layout.row(align=True)
+    row.operator("rr_builder.mark_reference", text="Mark Active as Reference", icon="PINNED")
+    row.operator("rr_builder.clear_reference", text="Clear", icon="X")
+    layout.prop(settings, "include_reference_mesh", text="Include Reference Mesh")
+    layout.label(text="No Empty, parenting, movement, or origin changes.")
+
+
 def draw_reference_layout_box(layout, context, settings):
     box = layout.box()
     box.label(text="Reference Layout")
-    reference = get_reference_object(context.scene)
-    if reference is None:
-        box.label(text="Reference: not set", icon="INFO")
-    else:
-        box.label(text=f"Reference: {reference.name}", icon="OBJECT_DATA")
-        stable_id = reference.get(REFERENCE_STABLE_ID_PROP, "")
-        if stable_id:
-            box.label(text=f"Stable ID: {stable_id}")
-    row = box.row(align=True)
-    row.operator("rr_builder.mark_reference", text="Mark Active as Reference", icon="PINNED")
-    row.operator("rr_builder.clear_reference", text="Clear", icon="X")
-    box.prop(settings, "include_reference_mesh", text="Include Reference Mesh")
-    box.label(text="Marked reference is used for layout data; no Empty or parenting is added.")
+    draw_reference_layout_controls(box, context, settings)
 
 
 class RRBuilderReferenceLayoutSettings(bpy.types.PropertyGroup):
@@ -185,6 +198,18 @@ class RRBuilderReferenceLayoutSettings(bpy.types.PropertyGroup):
     )
     reference_frame_version: IntProperty(name="Reference Frame Version", default=1, min=1)
     status: StringProperty(name="Status", default="No reference object")
+
+
+def migrate_reference_layout_usage_on_load(_dummy=None):
+    """Preserve the old auto-use behavior only for files that already had a Reference."""
+    for scene in getattr(bpy.data, "scenes", ()):
+        export_settings = getattr(scene, "rr_builder_export_settings", None)
+        if export_settings is None or getattr(
+            export_settings, "reference_layout_state_initialized", False
+        ):
+            continue
+        export_settings.use_reference_layout = get_reference_object(scene) is not None
+        export_settings.reference_layout_state_initialized = True
 
 
 class RR_OT_mark_reference(bpy.types.Operator):
@@ -213,5 +238,11 @@ class RR_OT_clear_reference(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def is_reference_only_export_root(obj, scene=None):
-    return bool(obj is not None and obj == get_reference_object(scene) and not include_reference_mesh(scene))
+def is_reference_only_export_root(obj, scene=None, enabled=None):
+    if enabled is None:
+        export_settings = getattr(scene or bpy.context.scene, "rr_builder_export_settings", None)
+        enabled = bool(getattr(export_settings, "use_reference_layout", False))
+    return bool(
+        enabled and obj is not None and obj == get_reference_object(scene) and
+        not include_reference_mesh(scene)
+    )

@@ -87,6 +87,8 @@ OBJECT_MANAGER_NAME_SYNC_STATE = {}
 OBJECT_MANAGER_NAME_SYNC_READY = False
 OBJECT_MANAGER_NAMES_SYNCING = False
 OBJECT_MANAGER_SYNCED_NAMES_PROP = "rr_object_manager_synced_names"
+EXPORT_MODE_GENERAL = "GENERAL"
+EXPORT_MODE_BUILDING = "BUILDING"
 PREVIEW_COLLECTIONS = {}
 RR_ANIMATION_BLEND_PATH = r"D:\Blender\Projects\Character\Animation\Animation.blend"
 RR_ANIMATION_SOURCE_FOLDER = os.path.dirname(RR_ANIMATION_BLEND_PATH)
@@ -100,6 +102,14 @@ RR_ADDON_REFRESH_LAST_STATE = False
 RR_ADDON_REFRESH_LAST_ERROR = ""
 UNITY_EXPORT_UV_LAYER_NAME = "RR_UnityExportUV"
 UNITY_UV_EXPORT_CONTRACT_VERSION = rr_unity_uv_export_contract.CONTRACT_VERSION
+
+
+def export_mode_uses_reference_layout(settings):
+    return bool(
+        settings is not None and
+        getattr(settings, "export_mode", EXPORT_MODE_BUILDING) == EXPORT_MODE_BUILDING and
+        getattr(settings, "use_reference_layout", False)
+    )
 
 
 def rr_addon_source_files():
@@ -9225,9 +9235,16 @@ def export_builder_asset(
         raise RuntimeError(f"{obj.name} has no exportable mesh geometry.")
 
     validate_export_identity(obj)
-    reference_layout = build_reference_layout_for_export(obj)
+    reference_layout = build_reference_layout_for_export(
+        obj,
+        enabled=export_mode_uses_reference_layout(settings),
+    )
     asset_id = export_asset_id(obj)
-    asset_type = infer_export_asset_type(obj, asset_id)
+    asset_type = (
+        "Prop"
+        if getattr(settings, "export_mode", EXPORT_MODE_BUILDING) == EXPORT_MODE_GENERAL
+        else infer_export_asset_type(obj, asset_id)
+    )
     asset_dir = os.path.join(settings.output_root, asset_id)
     os.makedirs(asset_dir, exist_ok=True)
 
@@ -9908,6 +9925,25 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         name="Queue Item",
         default=0,
         update=on_queue_active_index_update,
+    )
+    export_mode: bpy.props.EnumProperty(
+        name="Export Mode",
+        description="Choose the purpose of this queued export batch",
+        items=(
+            (EXPORT_MODE_GENERAL, "Standard", "Export ordinary assets"),
+            (EXPORT_MODE_BUILDING, "Modular", "Export building modules for a modular building system"),
+        ),
+        default=EXPORT_MODE_BUILDING,
+    )
+    use_reference_layout: bpy.props.BoolProperty(
+        name="Use Reference Layout",
+        description="Use the saved reference only for this Modular export batch",
+        default=False,
+    )
+    reference_layout_state_initialized: bpy.props.BoolProperty(
+        name="Reference Layout State Initialized",
+        options={"HIDDEN"},
+        default=False,
     )
     references: bpy.props.CollectionProperty(type=RRBuilderReferenceItem)
     reference_active_index: bpy.props.IntProperty(name="Reference", default=0)
@@ -11309,8 +11345,25 @@ class RR_OT_export_queue(bpy.types.Operator):
             self.report({"ERROR"}, "Enable Model, Icon, or both before exporting.")
             return {"CANCELLED"}
 
+        use_reference_layout = export_mode_uses_reference_layout(settings)
+        reference = None
+        if use_reference_layout:
+            reference = get_reference_object(context.scene)
+            if reference is None:
+                self.report(
+                    {"ERROR"},
+                    "Use Reference Layout is enabled, but no valid Reference is set.",
+                )
+                return {"CANCELLED"}
+            try:
+                validate_export_identity(reference)
+            except Exception as exc:
+                self.report({"ERROR"}, f"Reference validation failed: {exc}")
+                return {"CANCELLED"}
+
         roots = []
         seen_export_roots = set()
+        seen_export_root_objects = {}
         source_names_by_index = {}
         queued_item_by_name = {}
         failed = []
@@ -11337,10 +11390,42 @@ class RR_OT_export_queue(bpy.types.Operator):
                 )
             source_names_by_index[index] = {candidate.name for candidate in expanded}
             for candidate in expanded:
-                if candidate.name in seen_export_roots:
+                stable_id = ensure_export_identity(candidate)[0]
+                root_key = stable_id or f"name:{candidate.name}"
+                if root_key in seen_export_roots:
+                    existing = seen_export_root_objects.get(root_key)
+                    if existing is not None and existing != candidate:
+                        failed.append(
+                            f"Export identity '{stable_id}' is shared by "
+                            f"{existing.name} and {candidate.name}."
+                        )
                     continue
                 roots.append(candidate)
-                seen_export_roots.add(candidate.name)
+                seen_export_roots.add(root_key)
+                seen_export_root_objects[root_key] = candidate
+
+        if use_reference_layout and include_reference_mesh(context.scene):
+            reference_roots = expand_related_export_roots([reference])
+            if not reference_roots:
+                self.report(
+                    {"ERROR"},
+                    "Include Reference Mesh is enabled, but the Reference has no exportable mesh.",
+                )
+                return {"CANCELLED"}
+            for candidate in reference_roots:
+                stable_id = ensure_export_identity(candidate)[0]
+                root_key = stable_id or f"name:{candidate.name}"
+                if root_key in seen_export_roots:
+                    existing = seen_export_root_objects.get(root_key)
+                    if existing is not None and existing != candidate:
+                        failed.append(
+                            f"Export identity '{stable_id}' is shared by "
+                            f"{existing.name} and {candidate.name}."
+                        )
+                    continue
+                roots.append(candidate)
+                seen_export_roots.add(root_key)
+                seen_export_root_objects[root_key] = candidate
 
         exported = []
         skipped = []
@@ -13180,10 +13265,9 @@ class RR_PT_builder_exporter(bpy.types.Panel):
 
     def draw_exporter_page(self, layout, context, settings):
         self.draw_export_section_filter(layout, settings)
-        draw_reference_layout_box(layout, context, getattr(context.scene, "rr_builder_reference_layout", None))
 
         if settings.show_export_queue_section:
-            self.draw_export_queue_box(layout, settings)
+            self.draw_export_queue_box(layout, context, settings)
 
         if settings.show_export_group_section:
             assembly_root = selected_object_manager_assembly_root(context)
@@ -13231,9 +13315,11 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         row = layout.row(align=True)
         row.prop(settings, "output_root", text="")
 
-    def draw_export_queue_box(self, layout, settings):
+    def draw_export_queue_box(self, layout, context, settings):
         queue_box = layout.box()
         queue_box.label(text="Export Queue")
+        mode_row = queue_box.row(align=True)
+        mode_row.prop(settings, "export_mode", expand=True)
         row = queue_box.row(align=True)
         row.operator("rr_builder.queue_selected", text="Add Selection to Queue", icon="ADD")
         row.operator("rr_builder.remove_queue_item", text="", icon="REMOVE")
@@ -13253,6 +13339,18 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         row.operator("rr_builder.select_queue_item", text="Select", icon="RESTRICT_SELECT_OFF")
         next_item = row.operator("rr_builder.step_queue_item", text="", icon="TRIA_RIGHT")
         next_item.direction = 1
+        if settings.export_mode == EXPORT_MODE_BUILDING:
+            building_box = queue_box.box()
+            building_box.label(text="Modular Options")
+            building_box.prop(settings, "use_reference_layout", text="Use Reference Layout")
+            if settings.use_reference_layout:
+                reference_box = building_box.box()
+                reference_box.label(text="Reference Layout")
+                draw_reference_layout_controls(
+                    reference_box,
+                    context,
+                    getattr(context.scene, "rr_builder_reference_layout", None),
+                )
         resource_row = queue_box.row(align=True)
         resource_row.prop(settings, "include_model_with_export", text="Model")
         resource_row.prop(settings, "include_icon_with_export", text="Icon")
@@ -13775,9 +13873,6 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
     try:
         for obj in mesh_objects:
             try:
-                if is_reference_only_export_root(obj, context.scene):
-                    skipped.append(f"{obj.name} (Reference Only)")
-                    continue
                 transaction = variant_transactions_by_member.get(obj.name)
                 if transaction is not None and transaction.get("settings") is None:
                     continue
@@ -13993,12 +14088,17 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
                     )
                 if group_root is not None:
                     rendered_variant_sources.add(group_name)
+                asset_type = (
+                    "Prop"
+                    if getattr(settings, "export_mode", EXPORT_MODE_BUILDING) == EXPORT_MODE_GENERAL
+                    else infer_export_asset_type(obj, asset_id)
+                )
                 write_manifest(
                     obj,
                     manifest_path,
                     asset_id,
-                    infer_export_asset_type(obj, asset_id),
-                    existing_manifest.get("category") or infer_asset_category(obj, infer_export_asset_type(obj, asset_id)),
+                    asset_type,
+                    existing_manifest.get("category") or infer_asset_category(obj, asset_type),
                     settings.profile_name,
                     model_file,
                     "icon.png",
@@ -14008,7 +14108,10 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
                     build_group_manifest(obj, icon_source_root=shared_icon_root),
                     uv_export_contract,
                     existing_manifest.get("bounds") if model_file else None,
-                    build_reference_layout_for_export(obj),
+                    build_reference_layout_for_export(
+                        obj,
+                        enabled=export_mode_uses_reference_layout(settings),
+                    ),
                 )
                 if group_root is None:
                     ordinary_manifest_paths.append(manifest_path)
@@ -14270,6 +14373,8 @@ def register():
         bpy.app.handlers.load_post.append(reset_pbr_bake_runtime_state_on_load)
     if repair_rr_normal_map_nodes_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(repair_rr_normal_map_nodes_on_load)
+    if migrate_reference_layout_usage_on_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(migrate_reference_layout_usage_on_load)
     if reset_object_manager_duplicate_guard_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(reset_object_manager_duplicate_guard_on_load)
     if clear_inherited_rr_identity_before_save not in bpy.app.handlers.save_pre:
@@ -14297,6 +14402,10 @@ def unregister():
         pass
     try:
         bpy.app.handlers.load_post.remove(repair_rr_normal_map_nodes_on_load)
+    except Exception:
+        pass
+    try:
+        bpy.app.handlers.load_post.remove(migrate_reference_layout_usage_on_load)
     except Exception:
         pass
     try:
