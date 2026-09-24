@@ -5,7 +5,9 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.61 | [character_designer](addons/character_designer) | [character_designer-0.61.61.zip](dist/character_designer-0.61.61.zip) |
+| Character Designer | 0.61.62 | [character_designer](addons/character_designer) | [character_designer-0.61.62.zip](dist/character_designer-0.61.62.zip) |
+
+Character Designer 0.61.62 修复真实 X.blend 左食指在指根掌面分叉处无法 Align Joints：规则局部面带失败时，仅在明确的 Align 操作中使用当前闭合表面验证整段新路径；指根、指尖、Roll、网格、权重和其他骨骼仍保持不变。详见 [INDEX.L 指根修复记录](docs/releases/CharacterDesigner_0.61.62_index_root_20260923.md)。
 
 Character Designer 0.61.61 修复 Align Joints 将已有骨根误判为穿出手指的问题：沿现有骨段调整关节时保留原路径，检查新关节点；改变路径时才验证新骨段。显示继续使用固定缓存，左右差异不阻挡单侧工作。详见 [关节对齐与指根检查](docs/releases/CharacterDesigner_0.61.61_mark_root_20260922.md)。
 

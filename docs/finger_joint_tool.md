@@ -1,4 +1,4 @@
-# Finger tools (0.61.61)
+# Finger tools (0.61.62)
 
 The Joint Topology & Weights feature has been retired at the user's request.
 Prepare Joints, joint sliders, Move Centers + Bones, Add Support Rings + Apply,

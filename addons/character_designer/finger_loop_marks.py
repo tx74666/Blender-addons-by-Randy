@@ -543,18 +543,39 @@ def _rootward(bm, body, point, margin):
 
 
 def _root_volume(bm, body, point, margin, volume):
-    """Prove a changed proximal path with at most three real local bands."""
+    """Prove a changed proximal path with local bands or the live closed shell.
+
+    A normal finger root exposes one-to-one quad bands.  At a real palm
+    transition the first band can split into two branches, even though the
+    current connected mesh is a closed shell and can prove the planned path
+    safely.  In that explicit Align operation only, use that live shell as a
+    bounded fallback; this is never built by a draw callback or a monitor.
+    """
+    failure = None
     if not _rootward(bm, body, point, margin): return volume
     for _ in range(3):
         try:
             body = _regular_root_band(bm, body)
             volume = internal.Volume(bm, body)
         except ValueError as exc:
-            raise ValueError('Cannot verify the fixed root locally; check its position and proximal surface.') from exc
+            failure = exc
+            break
         if ((volume.inside(point) and volume.distance(point) >= margin) or
                 not _rootward(bm, body, point, margin)):
             return volume
-    raise ValueError('Cannot verify the fixed root within three local bands; check its position.')
+    # The fallback consumes only the current connected shell and is reached
+    # after the local proof fails.  Internal.Volume still verifies the whole
+    # changed segment, including the fixed endpoint, before any bone write.
+    try:
+        actual = internal.Volume(bm, dict(body, root_extension=True))
+        distance = actual.distance(point)
+        if not actual.inside(point) or distance is None or distance < margin:
+            raise ValueError('The fixed root is outside the current closed shell.')
+        return actual
+    except ValueError as exc:
+        if failure is not None:
+            exc.add_note(f'Local proximal proof failed: {failure}')
+        raise ValueError('Cannot verify the fixed root locally; check its position and proximal surface.') from exc
 
 
 def _certify(obj, rig, reference, nodes, bm, *, original_nodes=None,

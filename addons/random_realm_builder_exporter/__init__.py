@@ -29,8 +29,10 @@ try:
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
     from .rr_layout_snapshot import *
+    from .rr_reference_layout import *
     from .rr_modeling_origin import *
     from .rr_point_bookmarks import *
+    from .rr_surface_text import RR_OT_add_surface_text
     from .rr_naming import *
     from .rr_pbr_runtime import (
         pbr_bake_runtime_state_is_stale,
@@ -46,8 +48,10 @@ except ImportError:
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
     from rr_layout_snapshot import *
+    from rr_reference_layout import *
     from rr_modeling_origin import *
     from rr_point_bookmarks import *
+    from rr_surface_text import RR_OT_add_surface_text
     from rr_naming import *
     from rr_pbr_runtime import (
         pbr_bake_runtime_state_is_stale,
@@ -8852,6 +8856,7 @@ def write_manifest(
     group_manifest=None,
     uv_export_contract=None,
     bounds_override=None,
+    reference_layout=None,
 ):
     validate_export_identity(root)
     if isinstance(bounds_override, dict):
@@ -8884,6 +8889,8 @@ def write_manifest(
     }
     if isinstance(uv_export_contract, dict):
         manifest["uvExport"] = dict(uv_export_contract)
+    if isinstance(reference_layout, dict):
+        manifest["referenceLayout"] = dict(reference_layout)
     if group_manifest:
         manifest["group"] = group_manifest
         if group_manifest.get("type") == "variants":
@@ -9218,6 +9225,7 @@ def export_builder_asset(
         raise RuntimeError(f"{obj.name} has no exportable mesh geometry.")
 
     validate_export_identity(obj)
+    reference_layout = build_reference_layout_for_export(obj)
     asset_id = export_asset_id(obj)
     asset_type = infer_export_asset_type(obj, asset_id)
     asset_dir = os.path.join(settings.output_root, asset_id)
@@ -9274,6 +9282,7 @@ def export_builder_asset(
             group_manifest,
             existing_uv_export_contract(existing_manifest, model_path),
             existing_manifest.get("bounds"),
+            reference_layout,
         )
         if queue_import:
             queue_unity_builder_import([manifest_path])
@@ -9357,6 +9366,7 @@ def export_builder_asset(
         group_manifest,
         uv_export_contract,
         existing_manifest.get("bounds") if not export_model else None,
+        reference_layout,
     )
     if queue_import:
         queue_unity_builder_import([manifest_path])
@@ -13170,6 +13180,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
 
     def draw_exporter_page(self, layout, context, settings):
         self.draw_export_section_filter(layout, settings)
+        draw_reference_layout_box(layout, context, getattr(context.scene, "rr_builder_reference_layout", None))
 
         if settings.show_export_queue_section:
             self.draw_export_queue_box(layout, settings)
@@ -13622,6 +13633,14 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             clear_op.group = group
             clear_op.point = point
 
+        surface_text_box = layout.box()
+        surface_text_box.label(text="Surface Text", icon="FONT_DATA")
+        surface_text_box.operator(
+            "rr_builder.add_surface_text",
+            text="Add Surface Text",
+            icon="FONT_DATA",
+        )
+
     def draw_icon_page(self, layout, context, settings):
         row = layout.row(align=True)
         down = row.operator("rr_builder.step_icon_size", text="", icon="TRIA_LEFT")
@@ -13756,6 +13775,9 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
     try:
         for obj in mesh_objects:
             try:
+                if is_reference_only_export_root(obj, context.scene):
+                    skipped.append(f"{obj.name} (Reference Only)")
+                    continue
                 transaction = variant_transactions_by_member.get(obj.name)
                 if transaction is not None and transaction.get("settings") is None:
                     continue
@@ -13986,6 +14008,7 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
                     build_group_manifest(obj, icon_source_root=shared_icon_root),
                     uv_export_contract,
                     existing_manifest.get("bounds") if model_file else None,
+                    build_reference_layout_for_export(obj),
                 )
                 if group_root is None:
                     ordinary_manifest_paths.append(manifest_path)
@@ -14087,6 +14110,7 @@ CLASSES = (
     RRBuilderReferenceItem,
     RRBuilderPointBookmarkSlot,
     RRBuilderExportSettings,
+    RRBuilderReferenceLayoutSettings,
     RR_UL_export_queue_items,
     RR_UL_reference_items,
     RR_OT_queue_selected,
@@ -14124,6 +14148,8 @@ CLASSES = (
     RR_OT_save_layout_snapshot,
     RR_OT_restore_layout_snapshot,
     RR_OT_clear_layout_snapshot,
+    RR_OT_mark_reference,
+    RR_OT_clear_reference,
     RR_OT_step_icon_size,
     RR_OT_step_pbr_bake_size,
     RR_OT_toggle_pbr_bake_material,
@@ -14142,6 +14168,7 @@ CLASSES = (
     RR_OT_select_pbr_bake_target,
     RR_OT_bake_selected_pbr,
     RR_OT_apply_modeling_origin_point,
+    RR_OT_add_surface_text,
     RR_OT_store_point_bookmark,
     RR_OT_point_bookmark_to_cursor,
     RR_OT_clear_point_bookmark,
@@ -14234,6 +14261,7 @@ def register():
     configure_object_manager_duplicate_macro()
     register_object_manager_duplicate_keymap()
     bpy.types.Scene.rr_builder_export_settings = bpy.props.PointerProperty(type=RRBuilderExportSettings)
+    bpy.types.Scene.rr_builder_reference_layout = bpy.props.PointerProperty(type=RRBuilderReferenceLayoutSettings)
     reset_pbr_bake_runtime_state()
     bpy.types.TOPBAR_MT_file_export.append(draw_file_export_menu)
     register_scene_selection_queue_sync()
@@ -14259,6 +14287,10 @@ def unregister():
     unregister_rr_addon_change_watch()
     unregister_scene_selection_queue_sync()
     unregister_rr_startup_deferred_timers()
+    if hasattr(bpy.types.Scene, "rr_builder_reference_layout"):
+        del bpy.types.Scene.rr_builder_reference_layout
+    if hasattr(bpy.types.Scene, "rr_builder_export_settings"):
+        del bpy.types.Scene.rr_builder_export_settings
     try:
         bpy.app.handlers.load_post.remove(reset_pbr_bake_runtime_state_on_load)
     except Exception:

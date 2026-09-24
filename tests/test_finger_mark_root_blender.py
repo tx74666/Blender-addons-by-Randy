@@ -125,6 +125,20 @@ def test_changed_proximal_ray_requires_current_local_surface_proof():
     assert fingerprint(obj) == mesh and obj[marks.PROPERTY] == stored
 
 
+def test_branching_proximal_boundary_uses_live_closed_shell_fallback():
+    obj, rig, saved = root_fixture()
+    before, old_rolls, mesh, stored = rig_state(rig), rolls(rig), fingerprint(obj), obj[marks.PROPERTY]
+    wanted = [Vector(saved[str(number)]['center']) for number in (1, 2)]
+    # The real X.blend root has this palm transition: the first local quad
+    # band branches, while the current connected shell still proves the path.
+    with patch.object(marks, '_regular_root_band', side_effect=ValueError('The proximal boundary branches at the palm.')):
+        result = marks.align(C)
+    assert result['keys'] == ['INDEX.L']
+    assert_chain(rig, before, old_rolls, chain_names('INDEX', 'L'), wanted)
+    assert_rig_equal(before, rig_state(rig), names=[name for name in before['bones'] if name not in chain_names('INDEX', 'L')])
+    assert fingerprint(obj) == mesh and obj[marks.PROPERTY] == stored
+
+
 def test_coverage_merges_real_collinear_spans_but_rejects_gaps_and_lateral_changes():
     def point(x, y=0.): return Vector((x, y, 0.))
     tolerance = 1e-7
