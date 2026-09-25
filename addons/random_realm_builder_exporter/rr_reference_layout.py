@@ -169,18 +169,12 @@ def build_reference_layout_for_export(root, scene=None, enabled=True):
 
 def draw_reference_layout_controls(layout, context, settings):
     reference = get_reference_object(context.scene)
-    if reference is None:
-        layout.label(text="Reference: not set", icon="INFO")
-    else:
-        layout.label(text=f"Reference: {reference.name}", icon="OBJECT_DATA")
-        stable_id = reference.get(REFERENCE_STABLE_ID_PROP, "")
-        if stable_id:
-            layout.label(text=f"Stable ID: {stable_id}")
     row = layout.row(align=True)
-    row.operator("rr_builder.mark_reference", text="Mark Active as Reference", icon="PINNED")
-    row.operator("rr_builder.clear_reference", text="Clear", icon="X")
-    layout.prop(settings, "include_reference_mesh", text="Include Reference Mesh")
-    layout.label(text="No Empty, parenting, movement, or origin changes.")
+    if reference is None:
+        row.operator("rr_builder.mark_reference", text="", icon="PINNED")
+    else:
+        row.operator("rr_builder.clear_reference", text="", icon="X")
+    layout.prop(settings, "include_reference_mesh", text="Include Mesh")
 
 
 def draw_reference_layout_box(layout, context, settings):

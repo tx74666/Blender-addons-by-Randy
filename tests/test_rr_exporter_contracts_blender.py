@@ -1979,6 +1979,157 @@ class ExporterUvContractTests(unittest.TestCase):
             "InnerWall",
         )
 
+    def test_standard_route_rejects_managed_builder_bridge(self):
+        settings = SimpleNamespace(
+            export_mode=exporter.EXPORT_MODE_GENERAL,
+            output_root=exporter.UNITY_TEMP_OUTPUT_ROOT,
+        )
+        with self.assertRaisesRegex(RuntimeError, "managed BlenderBridge"):
+            exporter.validate_standard_output_route(settings)
+
+        with tempfile.TemporaryDirectory(prefix="rr_standard_route_") as temp_dir:
+            settings.output_root = temp_dir
+            self.assertTrue(exporter.validate_standard_output_route(settings))
+
+    def test_builtin_mode_switch_keeps_standard_and_modular_routes_separate(self):
+        original_standard_root = exporter.UNITY_STANDARD_OUTPUT_ROOT
+        original_bridge_root = exporter.UNITY_TEMP_OUTPUT_ROOT
+        with tempfile.TemporaryDirectory(prefix="rr_mode_routes_") as temp_dir:
+            standard_root = os.path.join(temp_dir, "Standard")
+            bridge_root = os.path.join(temp_dir, "BlenderBridge")
+            exporter.UNITY_STANDARD_OUTPUT_ROOT = standard_root
+            exporter.UNITY_TEMP_OUTPUT_ROOT = bridge_root
+            try:
+                settings = SimpleNamespace(
+                    export_mode=exporter.EXPORT_MODE_GENERAL,
+                    output_root=os.path.join(bridge_root, "ExistingAsset"),
+                )
+                exporter.on_export_mode_update(settings, None)
+                self.assertEqual(
+                    os.path.normcase(os.path.normpath(settings.output_root)),
+                    os.path.normcase(os.path.normpath(standard_root)),
+                )
+                self.assertTrue(os.path.isdir(standard_root))
+
+                settings.export_mode = exporter.EXPORT_MODE_BUILDING
+                exporter.on_export_mode_update(settings, None)
+                self.assertEqual(
+                    os.path.normcase(os.path.normpath(settings.output_root)),
+                    os.path.normcase(os.path.normpath(bridge_root)),
+                )
+                self.assertTrue(os.path.isdir(bridge_root))
+
+                settings.export_mode = exporter.EXPORT_MODE_GENERAL
+                settings.output_root = os.path.join(temp_dir, "MyCustomExport")
+                exporter.on_export_mode_update(settings, None)
+                self.assertEqual(
+                    os.path.normcase(os.path.normpath(settings.output_root)),
+                    os.path.normcase(os.path.normpath(os.path.join(temp_dir, "MyCustomExport"))),
+                )
+            finally:
+                exporter.UNITY_STANDARD_OUTPUT_ROOT = original_standard_root
+                exporter.UNITY_TEMP_OUTPUT_ROOT = original_bridge_root
+
+    def test_standard_single_asset_export_does_not_queue_builder_import(self):
+        obj, _, _, _ = make_quad("StandardRoute_200x10x200")
+        queued = []
+        original_queue = exporter.queue_unity_builder_import
+        exporter.queue_unity_builder_import = lambda paths, **_kwargs: queued.extend(paths) or paths
+        try:
+            with tempfile.TemporaryDirectory(prefix="rr_standard_export_") as temp_dir:
+                settings = SimpleNamespace(
+                    export_mode=exporter.EXPORT_MODE_GENERAL,
+                    output_root=temp_dir,
+                    profile_name="Default",
+                    use_reference_layout=False,
+                    skip_existing_exports=False,
+                )
+                exporter.export_builder_asset(
+                    obj,
+                    settings,
+                    export_model=True,
+                    include_icon=False,
+                    queue_import=True,
+                )
+                manifest_path = os.path.join(
+                    temp_dir,
+                    exporter.export_asset_id(obj),
+                    "manifest.json",
+                )
+                self.assertTrue(os.path.isfile(manifest_path))
+                self.assertEqual(queued, [])
+        finally:
+            exporter.queue_unity_builder_import = original_queue
+
+    def test_standard_reference_layout_manifest_preserves_member_relative_matrix(self):
+        reference, _, _, _ = make_quad("ReferenceFloor_800x10x800")
+        member, _, _, _ = make_quad("ReferenceDoor_120x220x20")
+        reference.matrix_world = Matrix.Translation((13.0, 2.5, -9.0)) @ Matrix.Rotation(
+            math.radians(37.0), 4, "Z"
+        )
+        member.matrix_world = Matrix.Translation((16.0, 4.0, -4.0)) @ Matrix.Rotation(
+            math.radians(-18.0), 4, "Z"
+        )
+        reference_stable_id = exporter.mark_reference_object(reference, bpy.context.scene)
+        member_stable_id, _ = exporter.ensure_export_identity(member)
+        queued = []
+        original_queue = exporter.queue_unity_builder_import
+        exporter.queue_unity_builder_import = lambda paths, **_kwargs: queued.extend(paths) or paths
+        try:
+            with tempfile.TemporaryDirectory(prefix="rr_standard_reference_layout_") as temp_dir:
+                settings = SimpleNamespace(
+                    export_mode=exporter.EXPORT_MODE_GENERAL,
+                    output_root=temp_dir,
+                    profile_name="Default",
+                    use_reference_layout=True,
+                    skip_existing_exports=False,
+                )
+                exporter.export_builder_asset(
+                    reference,
+                    settings,
+                    export_model=True,
+                    include_icon=False,
+                    queue_import=True,
+                )
+                exporter.export_builder_asset(
+                    member,
+                    settings,
+                    export_model=True,
+                    include_icon=False,
+                    queue_import=True,
+                )
+
+                manifest_path = os.path.join(
+                    temp_dir,
+                    exporter.export_asset_id(member),
+                    "manifest.json",
+                )
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                layout = manifest["referenceLayout"]
+                self.assertEqual(layout["role"], "member")
+                self.assertEqual(layout["referenceStableId"], reference_stable_id)
+                self.assertEqual(layout["sourceStableId"], member_stable_id)
+                expected_relative = reference.matrix_world.inverted() @ member.matrix_world
+                actual_relative = Matrix(
+                    [
+                        layout["relativeAuthoringMatrix"][0:4],
+                        layout["relativeAuthoringMatrix"][4:8],
+                        layout["relativeAuthoringMatrix"][8:12],
+                        layout["relativeAuthoringMatrix"][12:16],
+                    ]
+                )
+                for row in range(4):
+                    for column in range(4):
+                        self.assertAlmostEqual(
+                            actual_relative[row][column],
+                            expected_relative[row][column],
+                            places=5,
+                        )
+                self.assertEqual(queued, [])
+        finally:
+            exporter.queue_unity_builder_import = original_queue
+
     def test_completed_package_atomically_queues_unity_import(self):
         with tempfile.TemporaryDirectory(prefix="rr_builder_queue_") as temp_dir:
             bridge_root = os.path.join(temp_dir, "Assets", "~Temp", "BlenderBridge")

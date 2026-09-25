@@ -15,6 +15,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -32,7 +33,14 @@ try:
     from .rr_reference_layout import *
     from .rr_modeling_origin import *
     from .rr_point_bookmarks import *
-    from .rr_surface_text import RR_OT_add_surface_text
+    from .rr_surface_text import (
+        RR_OT_add_surface_text,
+        SURFACE_TEXT_EXPORT_PREFIX,
+        build_surface_text_manifest,
+        create_surface_text_export_meshes,
+        create_surface_text_sampling_export_aliases,
+        find_surface_text_objects_for_export,
+    )
     from .rr_naming import *
     from .rr_pbr_runtime import (
         pbr_bake_runtime_state_is_stale,
@@ -51,7 +59,14 @@ except ImportError:
     from rr_reference_layout import *
     from rr_modeling_origin import *
     from rr_point_bookmarks import *
-    from rr_surface_text import RR_OT_add_surface_text
+    from rr_surface_text import (
+        RR_OT_add_surface_text,
+        SURFACE_TEXT_EXPORT_PREFIX,
+        build_surface_text_manifest,
+        create_surface_text_export_meshes,
+        create_surface_text_sampling_export_aliases,
+        find_surface_text_objects_for_export,
+    )
     from rr_naming import *
     from rr_pbr_runtime import (
         pbr_bake_runtime_state_is_stale,
@@ -109,6 +124,79 @@ def export_mode_uses_reference_layout(settings):
         settings is not None and
         getattr(settings, "use_reference_layout", False)
     )
+
+
+def export_mode_is_standard(settings):
+    return bool(
+        settings is not None and
+        getattr(settings, "export_mode", EXPORT_MODE_BUILDING) == EXPORT_MODE_GENERAL
+    )
+
+
+def is_managed_builder_bridge_output_root(path):
+    if not path:
+        return False
+    try:
+        output_root = os.path.normcase(os.path.abspath(bpy.path.abspath(path))).rstrip("\\/")
+        bridge_root = os.path.normcase(os.path.abspath(bpy.path.abspath(UNITY_TEMP_OUTPUT_ROOT))).rstrip("\\/")
+        return os.path.commonpath((output_root, bridge_root)) == bridge_root
+    except (OSError, ValueError):
+        return False
+
+
+def validate_standard_output_route(settings):
+    if not export_mode_is_standard(settings) or not is_managed_builder_bridge_output_root(
+        getattr(settings, "output_root", "")
+    ):
+        return True
+    raise RuntimeError(
+        "Standard export cannot use the managed BlenderBridge folder. "
+        "Choose a separate ordinary-asset output folder before exporting."
+    )
+
+
+def validate_reference_layout_settings(settings):
+    if not export_mode_uses_reference_layout(settings):
+        return None
+
+    reference = get_reference_object()
+    if reference is None:
+        raise RuntimeError(
+            "Use Reference Layout is enabled, but no valid Reference is set."
+        )
+    validate_export_identity(reference)
+    return reference
+
+
+def use_unity_standard_output(settings):
+    if settings is None:
+        return
+
+    ensure_directory(UNITY_STANDARD_OUTPUT_ROOT)
+    settings.output_root = UNITY_STANDARD_OUTPUT_ROOT
+
+
+def on_export_mode_update(settings, _context):
+    """Keep the two built-in modes on their own safe default routes.
+
+    A user-selected custom output folder is preserved. Only the built-in
+    BlenderBridge/legacy route is redirected when entering Standard, and the
+    built-in Standard route is redirected when returning to Modular.
+    """
+    if settings is None:
+        return
+
+    current = normalized_path(getattr(settings, "output_root", ""))
+    if export_mode_is_standard(settings):
+        if current in {
+            normalized_path(UNITY_TEMP_OUTPUT_ROOT),
+            normalized_path(LEGACY_OUTPUT_ROOT),
+            normalized_path(UNITY_LEGACY_STANDARD_OUTPUT_ROOT),
+            normalized_path(UNITY_STANDARD_ASSET_ROOT),
+        } or is_managed_builder_bridge_output_root(getattr(settings, "output_root", "")):
+            use_unity_standard_output(settings)
+    elif current == normalized_path(UNITY_STANDARD_OUTPUT_ROOT):
+        use_unity_temp_output(settings)
 
 
 def rr_addon_source_files():
@@ -3696,6 +3784,7 @@ def apply_icon_render_resolution_deferred():
         settings = scene.rr_builder_export_settings
         apply_icon_render_resolution(scene, settings)
         migrate_legacy_output_root(settings)
+        on_export_mode_update(settings, None)
     return None
 
 
@@ -8539,6 +8628,8 @@ def export_fbx(root, model_path):
     previous_active = view_layer.objects.active
     selection_states = [(obj, obj.select_get()) for obj in view_layer.objects]
     export_objects = []
+    transient_surface_text_objects = []
+    transient_surface_sampling_aliases = []
     linked_to_scene_root = []
     hide_states = []
     restore_actions = []
@@ -8549,6 +8640,10 @@ def export_fbx(root, model_path):
         export_objects = [root]
         export_objects.extend(get_export_asset_meshes(root))
         export_objects.extend(get_collision_meshes(root))
+        transient_surface_text_objects = create_surface_text_export_meshes(root)
+        export_objects.extend(transient_surface_text_objects)
+        transient_surface_sampling_aliases = create_surface_text_sampling_export_aliases(root)
+        export_objects.extend(transient_surface_sampling_aliases)
         export_objects = [obj for obj in dict.fromkeys(export_objects) if obj is not None]
 
         root_collection_members = set(scene.collection.objects)
@@ -8569,6 +8664,16 @@ def export_fbx(root, model_path):
 
         view_layer.update()
         set_active_export_root(root)
+        cleanup_surface_text_objects = list(transient_surface_text_objects)
+        cleanup_surface_text_objects.extend(transient_surface_sampling_aliases)
+        cleanup_surface_text_objects.extend(
+            obj
+            for obj in scene.objects
+            if obj.name.startswith(SURFACE_TEXT_EXPORT_PREFIX)
+            and obj.get("rr_surface_text_export_role") == "solid_geometry"
+        )
+        for obj in dict.fromkeys(cleanup_surface_text_objects):
+            obj.select_set(True)
         restore_actions, warnings = prepare_unity_export_maps(root)
         bpy.ops.export_scene.fbx(
             filepath=model_path,
@@ -8648,6 +8753,19 @@ def export_fbx(root, model_path):
                     pass
         if previous_active is not None and previous_active.name in view_layer.objects:
             view_layer.objects.active = previous_active
+
+        for obj in transient_surface_text_objects:
+            mesh = getattr(obj, "data", None)
+            try:
+                if bpy.data.objects.get(obj.name) is obj:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+            except Exception as exception:
+                print(f"[RR Helper] Failed to remove transient Surface Text export object '{getattr(obj, 'name', '<unknown>')}': {exception}")
+            if mesh is not None and getattr(mesh, "users", 0) == 0:
+                try:
+                    bpy.data.meshes.remove(mesh)
+                except Exception as exception:
+                    print(f"[RR Helper] Failed to remove transient Surface Text mesh: {exception}")
 
         if uv_cleanup_errors:
             cleanup_message = (
@@ -8866,6 +8984,7 @@ def write_manifest(
     uv_export_contract=None,
     bounds_override=None,
     reference_layout=None,
+    source_blend_override=None,
 ):
     validate_export_identity(root)
     if isinstance(bounds_override, dict):
@@ -8886,7 +9005,7 @@ def write_manifest(
         "displayName": asset_id.replace("_", " "),
         "type": asset_type,
         "category": asset_category or "",
-        "sourceBlend": bpy.data.filepath,
+        "sourceBlend": source_blend_override or bpy.data.filepath,
         "sourceObject": root.name,
         "exportedAtUtc": datetime.now(timezone.utc).isoformat(),
         "modelFile": model_file or "",
@@ -8896,6 +9015,9 @@ def write_manifest(
         "warnings": warnings or [],
         "materialMaps": material_maps or [],
     }
+    surface_text = build_surface_text_manifest(root)
+    if surface_text:
+        manifest["surfaceText"] = surface_text
     if isinstance(uv_export_contract, dict):
         manifest["uvExport"] = dict(uv_export_contract)
     if isinstance(reference_layout, dict):
@@ -9148,6 +9270,123 @@ def asset_icon_path(settings, root):
     return os.path.join(settings.output_root, export_asset_id(root), "icon.png")
 
 
+def retire_standard_flat_model_alias(settings, asset_id, model_path):
+    """Keep Standard's user-facing folder Prefab-only.
+
+    The source FBX remains in Build/~Data and Unity's editor-side publisher turns
+    it into Build/Standard/<asset_id>.prefab with the saved layout identity and
+    collider. Remove only the old generated flat alias when it still exists.
+    """
+    if not export_mode_is_standard(settings) or not asset_id:
+        return ""
+
+    legacy_path = os.path.join(UNITY_STANDARD_ASSET_ROOT, f"{asset_id}.fbx")
+    if os.path.isfile(legacy_path):
+        try:
+            os.remove(legacy_path)
+        except OSError as exception:
+            print("[RandomRealm Builder Exporter] Could not retire Standard FBX alias:", exception)
+    return ""
+
+
+def _surface_text_snapshot_objects(root):
+    """Collect only the objects needed to reopen an editable Surface Text source."""
+
+    objects = {
+        obj
+        for obj in get_export_asset_meshes(root)
+        if obj is not None
+        and obj.get("rr_surface_role") != "sampling_surface_export_alias"
+        and obj.get("rr_surface_text_export_role") != "solid_geometry"
+    }
+    sources = find_surface_text_objects_for_export(root)
+    objects.update(sources)
+    for source in sources:
+        surface_name = str(source.get("rr_surface_text_surface_object", "") or "")
+        surface = bpy.data.objects.get(surface_name)
+        if surface is not None:
+            objects.add(surface)
+
+    for obj in list(objects):
+        parent = getattr(obj, "parent", None)
+        while parent is not None:
+            objects.add(parent)
+            parent = parent.parent
+    return {obj for obj in objects if obj is not None}
+
+
+def write_surface_text_source_snapshot(root, snapshot_path):
+    """Write a compact standalone .blend for unsaved Surface Text sources."""
+
+    if root is None:
+        raise RuntimeError("Surface Text source snapshot needs an export root.")
+    if not snapshot_path:
+        raise RuntimeError("Surface Text source snapshot path is empty.")
+
+    addon_directory = os.path.dirname(os.path.abspath(__file__))
+    helper_path = os.path.join(addon_directory, "write_surface_text_snapshot.py")
+    blender_binary = os.path.abspath(getattr(bpy.app, "binary_path", "") or "")
+    if not os.path.isfile(helper_path):
+        raise RuntimeError(f"Surface Text snapshot helper is missing: {helper_path}")
+    if not blender_binary or not os.path.isfile(blender_binary):
+        raise RuntimeError(f"Blender executable is unavailable for Surface Text snapshot: {blender_binary}")
+
+    snapshot_path = os.path.abspath(snapshot_path)
+    os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
+    descriptor, library_path = tempfile.mkstemp(
+        prefix=".surface_text_source_",
+        suffix=".library.blend",
+        dir=os.path.dirname(snapshot_path),
+    )
+    os.close(descriptor)
+    try:
+        os.remove(library_path)
+        objects = _surface_text_snapshot_objects(root)
+        if not objects:
+            raise RuntimeError("Surface Text source snapshot found no source objects.")
+        bpy.data.libraries.write(
+            library_path,
+            objects,
+            path_remap="ABSOLUTE",
+            fake_user=True,
+            compress=True,
+        )
+
+        command = [
+            blender_binary,
+            "--background",
+            "--factory-startup",
+            "--python-exit-code",
+            "1",
+            "--python",
+            helper_path,
+            "--",
+            "--library",
+            library_path,
+            "--output",
+            snapshot_path,
+        ]
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode != 0:
+            output = (completed.stderr or completed.stdout or "").strip().splitlines()
+            detail = output[-1] if output else f"exit code {completed.returncode}"
+            raise RuntimeError(f"Surface Text source snapshot Blender child failed: {detail}")
+        if not os.path.isfile(snapshot_path) or os.path.getsize(snapshot_path) <= 0:
+            raise RuntimeError("Surface Text source snapshot Blender child wrote no file.")
+    finally:
+        if os.path.exists(library_path):
+            os.remove(library_path)
+
+    return snapshot_path
+
+
 def shared_icon_requires_refresh(root, settings, shared_icon_root):
     if root is None or shared_icon_root is None or shared_icon_root == root:
         return False
@@ -9230,6 +9469,9 @@ def export_builder_asset(
     if obj is None:
         raise RuntimeError("Select a mesh object or an asset root object to export.")
 
+    validate_standard_output_route(settings)
+    validate_reference_layout_settings(settings)
+
     if not mesh_objects_have_export_geometry(get_export_asset_meshes(obj)):
         raise RuntimeError(f"{obj.name} has no exportable mesh geometry.")
 
@@ -9300,7 +9542,12 @@ def export_builder_asset(
             existing_manifest.get("bounds"),
             reference_layout,
         )
-        if queue_import:
+        retire_standard_flat_model_alias(
+            settings,
+            asset_id,
+            os.path.join(asset_dir, existing_manifest.get("modelFile") or "model.fbx"),
+        )
+        if queue_import and not export_mode_is_standard(settings):
             queue_unity_builder_import([manifest_path])
         return asset_id, asset_type, "skipped"
 
@@ -9315,6 +9562,7 @@ def export_builder_asset(
     material_maps = []
     exported_resources = []
     uv_export_contract = None
+    source_blend_override = None
 
     if not export_model:
         existing_warnings = existing_manifest.get("warnings", [])
@@ -9324,6 +9572,11 @@ def export_builder_asset(
 
     if export_model:
         warnings = export_fbx(obj, model_path)
+        if build_surface_text_manifest(obj):
+            source_blend_override = write_surface_text_source_snapshot(
+                obj,
+                os.path.join(asset_dir, "surface_text_source.rrblend"),
+            )
         material_maps, texture_warnings = build_material_map_manifest(
             obj,
             asset_dir,
@@ -9367,6 +9620,11 @@ def export_builder_asset(
             existing_manifest,
             os.path.join(asset_dir, model_file),
         )
+    retire_standard_flat_model_alias(
+        settings,
+        asset_id,
+        os.path.join(asset_dir, model_file) if model_file else "",
+    )
     write_manifest(
         obj,
         manifest_path,
@@ -9383,8 +9641,9 @@ def export_builder_asset(
         uv_export_contract,
         existing_manifest.get("bounds") if not export_model else None,
         reference_layout,
+        source_blend_override,
     )
-    if queue_import:
+    if queue_import and not export_mode_is_standard(settings):
         queue_unity_builder_import([manifest_path])
 
     return asset_id, asset_type, "exported"
@@ -9933,6 +10192,7 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
             (EXPORT_MODE_BUILDING, "Modular", "Export building modules for a modular building system"),
         ),
         default=EXPORT_MODE_BUILDING,
+        update=on_export_mode_update,
     )
     use_reference_layout: bpy.props.BoolProperty(
         name="Use Reference Layout",
@@ -11041,6 +11301,8 @@ class RR_UL_export_queue_items(bpy.types.UIList):
         else:
             label = object_manager_display_name(root) if root else item.object_name or "<missing>"
             icon_name = "OBJECT_DATA" if root else "ERROR"
+        if root is not None and is_reference_object(root):
+            icon_name = "SOLO_ON"
         row.label(text=label, icon=icon_name)
         row.label(text=f"{item.icon_zoom:.2f}x")
 
@@ -11343,19 +11605,17 @@ class RR_OT_export_queue(bpy.types.Operator):
         if not self.include_model and not self.include_icon:
             self.report({"ERROR"}, "Enable Model, Icon, or both before exporting.")
             return {"CANCELLED"}
+        try:
+            validate_standard_output_route(settings)
+        except RuntimeError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
 
         use_reference_layout = export_mode_uses_reference_layout(settings)
         reference = None
         if use_reference_layout:
-            reference = get_reference_object(context.scene)
-            if reference is None:
-                self.report(
-                    {"ERROR"},
-                    "Use Reference Layout is enabled, but no valid Reference is set.",
-                )
-                return {"CANCELLED"}
             try:
-                validate_export_identity(reference)
+                reference = validate_reference_layout_settings(settings)
             except Exception as exc:
                 self.report({"ERROR"}, f"Reference validation failed: {exc}")
                 return {"CANCELLED"}
@@ -11493,7 +11753,7 @@ class RR_OT_export_queue(bpy.types.Operator):
             successful_root_names,
             settings.output_root,
         )
-        if ordinary_paths:
+        if ordinary_paths and not export_mode_is_standard(settings):
             try:
                 queue_unity_builder_import(ordinary_paths)
                 published_root_names.update(ordinary_published_names)
@@ -12150,6 +12410,18 @@ class RR_OT_use_unity_temp_output(bpy.types.Operator):
     def execute(self, context):
         settings = context.scene.rr_builder_export_settings
         use_unity_temp_output(settings)
+        self.report({"INFO"}, f"Output Root: {settings.output_root}")
+        return {"FINISHED"}
+
+
+class RR_OT_use_unity_standard_output(bpy.types.Operator):
+    bl_idname = "rr_builder.use_unity_standard_output"
+    bl_label = "Use Standard Folder"
+    bl_description = "Set Output Root to the ordinary Standard asset folder"
+
+    def execute(self, context):
+        settings = context.scene.rr_builder_export_settings
+        use_unity_standard_output(settings)
         self.report({"INFO"}, f"Output Root: {settings.output_root}")
         return {"FINISHED"}
 
@@ -13313,12 +13585,31 @@ class RR_PT_builder_exporter(bpy.types.Panel):
     def draw_export_output_row(self, layout, settings):
         row = layout.row(align=True)
         row.prop(settings, "output_root", text="")
+        if export_mode_is_standard(settings):
+            if is_managed_builder_bridge_output_root(getattr(settings, "output_root", "")):
+                row.operator(
+                    "rr_builder.use_unity_standard_output",
+                    text="Use Standard Folder",
+                    icon="FILE_FOLDER",
+                )
+        else:
+            row.operator(
+                "rr_builder.use_unity_temp_output",
+                text="Use BlenderBridge",
+                icon="FILE_FOLDER",
+            )
 
     def draw_export_queue_box(self, layout, context, settings):
         queue_box = layout.box()
         queue_box.label(text="Export Queue")
         mode_row = queue_box.row(align=True)
         mode_row.prop(settings, "export_mode", expand=True)
+        if export_mode_is_standard(settings) and is_managed_builder_bridge_output_root(
+            getattr(settings, "output_root", "")
+        ):
+            warning_row = queue_box.row()
+            warning_row.alert = True
+            warning_row.label(text="Standard needs a separate output folder", icon="ERROR")
         row = queue_box.row(align=True)
         row.operator("rr_builder.queue_selected", text="Add Selection to Queue", icon="ADD")
         row.operator("rr_builder.remove_queue_item", text="", icon="REMOVE")
@@ -13332,29 +13623,29 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             "queue_active_index",
             rows=4,
         )
-        row = queue_box.row(align=True)
-        prev_item = row.operator("rr_builder.step_queue_item", text="", icon="TRIA_LEFT")
-        prev_item.direction = -1
-        row.operator("rr_builder.select_queue_item", text="Select", icon="RESTRICT_SELECT_OFF")
-        next_item = row.operator("rr_builder.step_queue_item", text="", icon="TRIA_RIGHT")
-        next_item.direction = 1
+        export_queue = queue_box.operator("rr_builder.export_queue", text="Export", icon="EXPORT")
+        export_queue.include_model = settings.include_model_with_export
+        export_queue.include_icon = settings.include_icon_with_export
         reference_box = queue_box.box()
-        reference_box.label(text="Reference Layout")
-        reference_box.prop(settings, "use_reference_layout", text="Use Reference Layout")
+        reference_box.label(text="Reference")
+        reference_row = reference_box.row(align=True)
+        reference_row.prop(settings, "use_reference_layout", text="Use Layout")
         if settings.use_reference_layout:
-            draw_reference_layout_controls(
-                reference_box,
-                context,
+            reference = get_reference_object(context.scene)
+            if reference is None:
+                reference_row.operator("rr_builder.mark_reference", text="", icon="PINNED")
+            else:
+                reference_row.operator("rr_builder.clear_reference", text="", icon="X")
+            reference_box.prop(
                 getattr(context.scene, "rr_builder_reference_layout", None),
+                "include_reference_mesh",
+                text="Include Mesh",
             )
         resource_row = queue_box.row(align=True)
         resource_row.prop(settings, "include_model_with_export", text="Model")
         resource_row.prop(settings, "include_icon_with_export", text="Icon")
-        queue_box.prop(settings, "skip_existing_exports", text="Skip Existing Models")
+        resource_row.prop(settings, "skip_existing_exports", text="Skip")
         queue_box.operator("rr_builder.create_bounding_box_collider", text="Create Collider", icon="MESH_CUBE")
-        export_queue = queue_box.operator("rr_builder.export_queue", text="Export Queued Items", icon="EXPORT")
-        export_queue.include_model = settings.include_model_with_export
-        export_queue.include_icon = settings.include_icon_with_export
         self.draw_export_output_row(queue_box, settings)
 
     def draw_object_manager_tree_row(self, layout, obj, selected_objects, depth, active_group_root, label_suffix=""):
@@ -13847,6 +14138,12 @@ class RR_PT_builder_exporter(bpy.types.Panel):
 def export_objects(mesh_objects, settings, context, source_label, export_model, include_icon):
     sync_object_manager_names()
     export_started = time.perf_counter()
+    try:
+        validate_standard_output_route(settings)
+        validate_reference_layout_settings(settings)
+    except Exception as exc:
+        show_builder_popup(context, str(exc), title="RR Helper", icon="ERROR")
+        return {"CANCELLED"}
     mesh_objects = expand_related_export_roots(mesh_objects)
     exported = []
     skipped = []
@@ -13909,7 +14206,7 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
         successful_root_names,
         settings.output_root,
     )
-    if ordinary_paths:
+    if ordinary_paths and not export_mode_is_standard(settings):
         try:
             queue_unity_builder_import(ordinary_paths)
         except Exception as exc:
@@ -13976,6 +14273,12 @@ def restore_file_contents(snapshot):
 
 def render_icon_objects(mesh_objects, settings, context, source_label):
     sync_object_manager_names()
+    try:
+        validate_standard_output_route(settings)
+        validate_reference_layout_settings(settings)
+    except Exception as exc:
+        show_builder_popup(context, str(exc), title="RR Helper", icon="ERROR")
+        return {"CANCELLED"}
     requested_roots = list(mesh_objects)
     variant_sources = {}
     active_variant_group_name = ""
@@ -14143,7 +14446,7 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
             if expected_names.issubset(published_variant_names):
                 completed_variant_groups.append(group_name)
 
-        if ordinary_manifest_paths:
+        if ordinary_manifest_paths and not export_mode_is_standard(settings):
             try:
                 queue_unity_builder_import(ordinary_manifest_paths)
             except Exception as exc:
@@ -14244,6 +14547,7 @@ CLASSES = (
     RR_OT_render_selected_icons,
     RR_OT_apply_icon_outline,
     RR_OT_use_unity_temp_output,
+    RR_OT_use_unity_standard_output,
     RR_OT_save_layout_snapshot,
     RR_OT_restore_layout_snapshot,
     RR_OT_clear_layout_snapshot,

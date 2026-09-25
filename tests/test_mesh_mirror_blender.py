@@ -62,17 +62,28 @@ def tetra(x=2):
 
 def test_closed_unbound_twice():
     obj = make(*tetra())
+    original_name = obj.data.name
     original = tuple(tuple(v.co) for v in obj.data.vertices)
     select(obj, range(4))
     plan, selection = apply(obj)
     assert not plan.candidates and not obj.vertex_groups and not obj.modifiers
     assert len(obj.data.polygons) == 8 and len(obj.data.vertices) == 8
+    assert obj.data.name == original_name
     assert tuple(tuple(v.co) for v in obj.data.vertices[:4]) == original
     select(obj, range(4))
     plan, selection = apply(obj)
     assert len(plan.target_faces) == 4
     assert len(obj.data.polygons) == 8 and len(obj.data.vertices) == 8
+    assert obj.data.name == original_name
     assert selection == (0, 1, 2, 3)
+
+
+def test_mirror_name_cleans_legacy_suffixes():
+    obj = make(*tetra())
+    obj.data.name = 'HandMesh.Mirror.Mirror'
+    select(obj, range(4))
+    apply(obj)
+    assert obj.data.name == 'HandMesh'
 
 
 def test_different_topology_attributes_shapes_groups_loose_data():
@@ -312,7 +323,7 @@ def test_commit_failure_rolls_back_and_stale_plan_refuses():
     select(obj, range(4))
     plan = mirror.build_plan(bpy.context)
     bpy.ops.object.mode_set(mode='OBJECT')
-    old, before = obj.data, mirror._fingerprint(obj)
+    old, old_name, before = obj.data, obj.data.name, mirror._fingerprint(obj)
     count = len(bpy.data.meshes)
     def fail(selection):
         bpy.ops.object.mode_set(mode='EDIT')
@@ -322,7 +333,7 @@ def test_commit_failure_rolls_back_and_stale_plan_refuses():
         assert False
     except RuntimeError as exc:
         assert 'after commit' in str(exc)
-    assert obj.data == old and len(obj.vertex_groups) == 1
+    assert obj.data == old and obj.data.name == old_name and len(obj.vertex_groups) == 1
     assert mirror._fingerprint(obj) == before and len(bpy.data.meshes) == count
     obj.data.vertices[0].co.z += .05
     edited = mirror._fingerprint(obj)

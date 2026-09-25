@@ -459,7 +459,10 @@ def _rebuild(plan):
         # Do not overwrite source centerline edge attributes.
         if not all(i in seams and seams[i] == i for i in edge.vertices):
             edge_sources[pair] = (True, index)
-    new = bpy.data.meshes.new(old.name + ".Mirror")
+    # Keep the replacement temporary and hidden.  The committed mesh receives
+    # the original data-block name below, so repeated mirrors do not expose a
+    # growing ``.Mirror.Mirror`` suffix in Blender's UI.
+    new = bpy.data.meshes.new('.CharacterDesigner.MirrorResult')
     try:
         new.from_pydata(coords, [tuple(old_to_new[i] for i in e.vertices) for e in loose_edges], polys)
         new.update()
@@ -631,6 +634,23 @@ def _format_group_verification_diff(diff):
     return ': '.join(parts[:1]) + (' (' + ', '.join(parts[1:]) + ')' if len(parts) > 1 else '')
 
 
+def _unique_hidden_mesh_name():
+    base = '.CharacterDesigner.PreviousMesh'
+    name = base
+    index = 1
+    while bpy.data.meshes.get(name) is not None:
+        name = f'{base}.{index:03d}'
+        index += 1
+    return name
+
+
+def _mesh_display_name(name):
+    """Remove suffixes produced by older Mirror replacements."""
+    while name.endswith('.Mirror'):
+        name = name[:-len('.Mirror')]
+    return name or 'Mesh'
+
+
 def _verify_staged(staging, old, plan, origins, mapping, expected):
     new = staging.data
     if len(new.vertices) != len(origins):
@@ -692,6 +712,9 @@ def apply_plan(plan, after_commit=None):
     if plan.reference and _matrix_tuple(plan.reference.matrix_world) != plan.reference_matrix:
         raise MirrorError("The mirror reference moved since preview; preview again.")
     old, staging, new = obj.data, None, None
+    old_name = old.name
+    display_name = _mesh_display_name(old_name)
+    new_name = None
     old_group_count = len(obj.vertex_groups)
     active_index, active_shape = obj.vertex_groups.active_index, obj.active_shape_key_index
     try:
@@ -710,6 +733,13 @@ def apply_plan(plan, after_commit=None):
         # the memberships indexed by the unchanged original group order.
         for name in list(expected)[old_group_count:]:
             obj.vertex_groups.new(name=name)
+        # Preserve the visible data-block name across the replacement.  Keep
+        # the old, now-unused ID under a hidden unique name so Blender's UNDO
+        # stack can still restore it without exposing another ``.Mirror``
+        # suffix in the active object's name.
+        new_name = new.name
+        old.name = _unique_hidden_mesh_name()
+        new.name = display_name
         obj.data = new
         if obj.vertex_groups:
             obj.vertex_groups.active_index = min(active_index, len(obj.vertex_groups) - 1)
@@ -723,6 +753,10 @@ def apply_plan(plan, after_commit=None):
             bpy.ops.object.mode_set(mode='OBJECT')
         if obj.data != old:
             obj.data = old
+        if new and new.name == display_name:
+            new.name = new_name or '.CharacterDesigner.MirrorResult'
+        if old.name != old_name:
+            old.name = old_name
         # Appended groups have no membership in the original mesh. Removing
         # them cannot alter the original group indices or weights.
         while len(obj.vertex_groups) > old_group_count:
