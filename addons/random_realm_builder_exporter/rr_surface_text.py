@@ -8,6 +8,8 @@ adjust the result in Blender's normal modifier panels.
 import hashlib
 import math
 import re
+import uuid
+from contextlib import contextmanager
 
 import bmesh
 import bpy
@@ -461,27 +463,105 @@ def _surface_identity(target, surface):
     return f"{_safe_name(target.name)}_{_safe_name(side)}_{digest}"
 
 
+def _legacy_sampling_export_identity(surface_obj):
+    identity = str(surface_obj.get("rr_surface_identity", "") or "")
+    if not identity:
+        identity = hashlib.sha1(surface_obj.name_full.encode("utf-8")).hexdigest()[:12]
+    identity = _safe_name(identity)
+    if len(identity) > 24:
+        identity = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
+    return identity
+
+
 def surface_sampling_export_name(surface_obj):
     """Return a short FBX-safe alias for an authored sampling mesh.
 
     Blender's FBX importer rewrites object names longer than 63 characters,
     which breaks manifest pairing even though the source name is stable.  A
-    compact alias keeps the source object untouched and gives Unity a name
-    that survives the round trip.  The stored surface identity is preferred;
-    the object full name is a deterministic fallback for older files.
+    New sampling objects have their own persistent export ID. Older files keep
+    their existing alias where possible; colliding region IDs are migrated
+    together so manifest creation and FBX creation always agree.
     """
 
     if surface_obj is None:
         return ""
-    identity = str(surface_obj.get("rr_surface_identity", "") or "")
-    if not identity:
-        identity = hashlib.sha1(
-            str(getattr(surface_obj, "name_full", surface_obj.name)).encode("utf-8")
-        ).hexdigest()[:12]
-    identity = _safe_name(identity)
-    if len(identity) > 24:
-        identity = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
+    def stored_or_legacy_id(obj):
+        return str(obj.get("rr_surface_export_id", "") or _legacy_sampling_export_identity(obj))
+
+    original_identity = stored_or_legacy_id(surface_obj)
+    sampling_objects = [
+        obj for obj in bpy.data.objects
+        if obj.get("rr_surface_role") == "sampling_surface"
+    ]
+    peers = sorted(
+        (obj for obj in sampling_objects if stored_or_legacy_id(obj) == original_identity),
+        # Native duplicate/Append copies custom IDs. Prefer the older local
+        # datablock when deciding which object retains a conflicting alias.
+        key=lambda obj: (getattr(obj, "session_uid", 0), obj.name_full),
+    )
+    if surface_obj not in peers:
+        peers.append(surface_obj)
+    claimed = {stored_or_legacy_id(obj) for obj in sampling_objects if obj not in peers}
+    identity = original_identity
+    for peer in peers:
+        candidate = original_identity
+        salt = 0
+        while candidate in claimed:
+            candidate = hashlib.sha1(
+                repr((original_identity, peer.name_full, salt)).encode("utf-8")
+            ).hexdigest()[:16]
+            salt += 1
+        claimed.add(candidate)
+        if getattr(peer, "is_editable", True):
+            peer["rr_surface_export_id"] = candidate
+        if peer is surface_obj:
+            identity = candidate
     return f"{SURFACE_SAMPLE_EXPORT_PREFIX}_{identity}"
+
+
+@contextmanager
+def _transient_mesh_resources():
+    """Own partial construction until a complete list can be handed to export."""
+
+    objects, meshes = [], []
+    try:
+        yield objects, meshes
+    except BaseException:
+        for obj in reversed(objects):
+            try:
+                if bpy.data.objects.get(obj.name) is obj:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+            except ReferenceError:
+                pass
+        for mesh in reversed(meshes):
+            try:
+                if mesh.users == 0 and bpy.data.meshes.get(mesh.name) is mesh:
+                    bpy.data.meshes.remove(mesh)
+            except ReferenceError:
+                pass
+        raise
+
+
+def _is_stale_sampling_alias(alias, surface_obj):
+    return (
+        alias is not None
+        and alias.type == "MESH"
+        and alias.get("rr_surface_role") == "sampling_surface_export_alias"
+        and alias.get("rr_surface_source_object") == surface_obj.name
+        and alias.get("rr_surface_identity") == surface_obj.get("rr_surface_identity")
+    )
+
+
+def cleanup_stale_surface_text_sampling_aliases(root):
+    """Reclaim old leaked aliases before the caller captures scene state."""
+
+    for source in find_surface_text_objects_for_export(root):
+        surface_obj = _surface_text_sampling_surface(source)
+        if surface_obj is None or surface_obj.get("rr_surface_role") != "sampling_surface":
+            continue
+        alias = bpy.data.objects.get(surface_sampling_export_name(surface_obj))
+        if _is_stale_sampling_alias(alias, surface_obj):
+            _remove_surface_mesh(alias, alias.data)
 
 
 def create_surface_text_sampling_export_aliases(root):
@@ -496,44 +576,49 @@ def create_surface_text_sampling_export_aliases(root):
     if root is None:
         return []
 
-    aliases = []
-    seen_sources = set()
-    collection = next(iter(root.users_collection), None) or bpy.context.scene.collection
-    for source in find_surface_text_objects_for_export(root):
-        surface_name = str(source.get("rr_surface_text_surface_object", "") or "")
-        surface_obj = bpy.data.objects.get(surface_name)
-        if surface_obj is None or surface_obj.type != "MESH":
-            continue
-        if surface_obj.get("rr_surface_role") != "sampling_surface":
-            continue
-        if surface_obj in seen_sources:
-            continue
-        seen_sources.add(surface_obj)
+    with _transient_mesh_resources() as (aliases, meshes):
+        seen_sources = set()
+        collection = next(iter(root.users_collection), None) or bpy.context.scene.collection
+        for source in find_surface_text_objects_for_export(root):
+            surface_obj = _surface_text_sampling_surface(source)
+            if surface_obj is None or surface_obj.type != "MESH":
+                continue
+            if surface_obj.get("rr_surface_role") != "sampling_surface":
+                continue
+            if surface_obj in seen_sources:
+                continue
+            seen_sources.add(surface_obj)
 
-        alias_name = surface_sampling_export_name(surface_obj)
-        existing_alias = bpy.data.objects.get(alias_name) if alias_name else None
-        if existing_alias is surface_obj:
-            continue
-        if existing_alias is not None:
-            raise RuntimeError(
-                f"Surface Text sampling export alias '{alias_name}' is already used by "
-                f"'{existing_alias.name_full}'."
-            )
+            alias_name = surface_sampling_export_name(surface_obj)
+            existing_alias = bpy.data.objects.get(alias_name) if alias_name else None
+            if existing_alias is surface_obj:
+                continue
+            if _is_stale_sampling_alias(existing_alias, surface_obj):
+                # Releases before transactional cleanup left these disposable
+                # aliases in the scene. Reclaim only an exact source match.
+                _remove_surface_mesh(existing_alias, existing_alias.data)
+                existing_alias = None
+            if existing_alias is not None:
+                raise RuntimeError(
+                    f"Surface Text sampling export alias '{alias_name}' is already used by "
+                    f"'{existing_alias.name_full}'."
+                )
 
-        mesh = surface_obj.data.copy()
-        alias = bpy.data.objects.new(alias_name, mesh)
-        collection.objects.link(alias)
-        alias.parent = surface_obj.parent
-        alias.matrix_world = surface_obj.matrix_world.copy()
-        alias.hide_render = False
-        alias.hide_viewport = False
-        alias.hide_select = False
-        alias.display_type = "TEXTURED"
-        alias["rr_surface_role"] = "sampling_surface_export_alias"
-        alias["rr_surface_source_object"] = surface_obj.name
-        alias["rr_surface_identity"] = str(surface_obj.get("rr_surface_identity", ""))
-        aliases.append(alias)
-    return aliases
+            mesh = surface_obj.data.copy()
+            meshes.append(mesh)
+            alias = bpy.data.objects.new(alias_name, mesh)
+            aliases.append(alias)
+            collection.objects.link(alias)
+            alias.parent = surface_obj.parent
+            alias.matrix_world = surface_obj.matrix_world.copy()
+            alias.hide_render = False
+            alias.hide_viewport = False
+            alias.hide_select = False
+            alias.display_type = "TEXTURED"
+            alias["rr_surface_role"] = "sampling_surface_export_alias"
+            alias["rr_surface_source_object"] = surface_obj.name
+            alias["rr_surface_identity"] = str(surface_obj.get("rr_surface_identity", ""))
+        return aliases
 
 
 def _create_surface_mesh(context, target, surface):
@@ -593,6 +678,7 @@ def _create_surface_mesh(context, target, surface):
     source_face_indices = [int(index) for index in surface["source_face_indices"]]
     surface_obj["rr_surface_role"] = "sampling_surface"
     surface_obj["rr_surface_identity"] = identity
+    surface_obj["rr_surface_export_id"] = uuid.uuid4().hex[:16]
     surface_obj["rr_surface_source_object"] = target.name
     surface_obj["rr_surface_source_object_full_name"] = target.name_full
     surface_obj["rr_surface_source_face_count"] = int(surface["source_face_count"])
@@ -626,6 +712,8 @@ def _create_surface_mesh(context, target, surface):
 def _annotate_text_object(context, text_obj, target, surface, surface_obj):
     right, up, normal = _text_axes(surface["normal"])
     text_obj["rr_surface_text_role"] = "surface_text"
+    text_obj["rr_surface_text_target_ref"] = target
+    text_obj["rr_surface_text_surface_ref"] = surface_obj
     text_obj["rr_surface_text_source_target"] = target.name
     text_obj["rr_surface_text_source_target_full_name"] = target.name_full
     text_obj["rr_surface_text_surface_object"] = surface_obj.name
@@ -661,6 +749,42 @@ def _surface_text_modifier_pair(source):
         None,
     )
     return shrinkwrap, solidify
+
+
+def _surface_text_target(source):
+    shrinkwrap, _solidify = _surface_text_modifier_pair(source)
+    target = getattr(shrinkwrap, "target", None)
+    if target is not None:
+        return target
+    target = source.get("rr_surface_text_target_ref")
+    if isinstance(target, bpy.types.Object):
+        return target
+    return bpy.data.objects.get(str(source.get("rr_surface_text_source_target", "")))
+
+
+def _surface_text_sampling_surface(source):
+    surface = source.get("rr_surface_text_surface_ref")
+    if isinstance(surface, bpy.types.Object):
+        return surface
+    surface = bpy.data.objects.get(str(source.get("rr_surface_text_surface_object", "")))
+    if surface is None and source.get("rr_surface_text_legacy_migrated"):
+        return _surface_text_target(source)
+    return surface
+
+
+def _sync_surface_text_references(source, target):
+    """Keep legacy name consumers in sync with Blender's durable ID links."""
+
+    if not getattr(source, "is_editable", True):
+        return
+    source["rr_surface_text_target_ref"] = target
+    source["rr_surface_text_source_target"] = target.name
+    source["rr_surface_text_source_target_full_name"] = target.name_full
+    surface = _surface_text_sampling_surface(source)
+    if surface is not None:
+        source["rr_surface_text_surface_ref"] = surface
+        source["rr_surface_text_surface_object"] = surface.name
+        source["rr_surface_text_surface_mesh"] = getattr(surface.data, "name", "")
 
 
 def _migrate_legacy_surface_text_source(source, allowed_target_names=None):
@@ -726,9 +850,9 @@ def find_surface_text_objects_for_export(root):
             allowed_target_names,
         ):
             continue
-        source_name = str(candidate.get("rr_surface_text_source_target", ""))
-        source_full_name = str(candidate.get("rr_surface_text_source_target_full_name", ""))
-        if source_name in target_names or source_full_name in target_full_names:
+        target = _surface_text_target(candidate)
+        if target in export_targets:
+            _sync_surface_text_references(candidate, target)
             matches.append(candidate)
     return matches
 
@@ -758,10 +882,9 @@ def build_surface_text_manifest(root):
         if thickness_meters <= SURFACE_TEXT_EPSILON and solidify is not None:
             thickness_meters = abs(float(solidify.thickness)) * scene_scale
 
-        sampling_surface_name = str(
-            source.get("rr_surface_text_surface_object", "")
-        )
-        sampling_surface = bpy.data.objects.get(sampling_surface_name)
+        target = _surface_text_target(source)
+        sampling_surface = _surface_text_sampling_surface(source)
+        sampling_surface_name = sampling_surface.name if sampling_surface is not None else ""
         sampling_export_name = ""
         if (
             sampling_surface is not None
@@ -774,15 +897,11 @@ def build_surface_text_manifest(root):
             {
                 "fontObjectName": source.name,
                 "fontObjectFullName": source.name_full,
-                "targetObjectName": str(source.get("rr_surface_text_source_target", "")),
-                "targetObjectFullName": str(
-                    source.get("rr_surface_text_source_target_full_name", "")
-                ),
+                "targetObjectName": target.name if target is not None else "",
+                "targetObjectFullName": target.name_full if target is not None else "",
                 "samplingSurfaceObjectName": sampling_surface_name,
                 "samplingSurfaceExportObjectName": sampling_export_name,
-                "samplingSurfaceMeshName": str(
-                    source.get("rr_surface_text_surface_mesh", "")
-                ),
+                "samplingSurfaceMeshName": getattr(getattr(sampling_surface, "data", None), "name", ""),
                 "exportObjectName": f"{SURFACE_TEXT_EXPORT_PREFIX}_{_safe_name(source.name)}",
                 "thicknessMeters": round(thickness_meters, 6),
             }
@@ -804,95 +923,89 @@ def create_surface_text_export_meshes(root, depsgraph=None):
     if depsgraph is None:
         depsgraph = bpy.context.evaluated_depsgraph_get()
 
-    export_objects = []
-    export_targets = [root]
-    export_targets.extend(list(root.children_recursive))
-    target_by_name = {getattr(target, "name", ""): target for target in export_targets}
-    target_by_full_name = {
-        getattr(target, "name_full", ""): target for target in export_targets
-    }
     collection = next(iter(root.users_collection), None) or bpy.context.scene.collection
 
-    for source in find_surface_text_objects_for_export(root):
-        evaluated = source.evaluated_get(depsgraph)
-        mesh = None
-        try:
-            mesh = bpy.data.meshes.new_from_object(
-                evaluated,
-                depsgraph=depsgraph,
-                preserve_all_data_layers=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Could not evaluate Surface Text '{source.name}' for FBX export."
-            ) from exc
-
-        if mesh is None or len(mesh.vertices) == 0 or len(mesh.polygons) == 0:
-            if mesh is not None and mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-            raise RuntimeError(
-                f"Surface Text '{source.name}' produced no exportable solid geometry."
-            )
-        if any(
-            not math.isfinite(float(component))
-            for vertex in mesh.vertices
-            for component in vertex.co
-        ):
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-            raise RuntimeError(
-                f"Surface Text '{source.name}' produced non-finite export coordinates."
-            )
-
-        solidify = next(
-            (modifier for modifier in source.modifiers if modifier.type == "SOLIDIFY"),
-            None,
-        )
-        if solidify is None or abs(float(solidify.thickness)) <= SURFACE_TEXT_EPSILON:
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-            raise RuntimeError(
-                f"Surface Text '{source.name}' has no positive Solidify thickness."
-            )
-
-        local_z_span = max(vertex.co.z for vertex in mesh.vertices) - min(
-            vertex.co.z for vertex in mesh.vertices
-        )
-        if local_z_span < abs(float(solidify.thickness)) * 0.5:
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-            raise RuntimeError(
-                f"Surface Text '{source.name}' evaluated without its requested thickness."
-            )
-
-        export_name = f"{SURFACE_TEXT_EXPORT_PREFIX}_{_safe_name(source.name)}"
-        export_obj = bpy.data.objects.new(export_name, mesh)
-        collection.objects.link(export_obj)
-        source_target = target_by_full_name.get(
-            str(source.get("rr_surface_text_source_target_full_name", ""))
-        ) or target_by_name.get(str(source.get("rr_surface_text_source_target", "")))
-        parent = source_target or root
-        export_obj.parent = parent
-        export_obj.matrix_world = source.matrix_world.copy()
-        export_obj.hide_render = False
-        export_obj.hide_viewport = False
-        export_obj.display_type = "TEXTURED"
-
-        for slot in source.material_slots:
-            if slot.material is not None and slot.material.name not in mesh.materials:
-                mesh.materials.append(slot.material)
-        for key, value in source.items():
-            if not str(key).startswith("rr_surface_text_"):
-                continue
+    with _transient_mesh_resources() as (export_objects, meshes):
+        for source in find_surface_text_objects_for_export(root):
+            evaluated = source.evaluated_get(depsgraph)
+            mesh = None
             try:
-                export_obj[key] = value
-            except (TypeError, ValueError):
-                export_obj[key] = str(value)
-        export_obj["rr_surface_text_export_role"] = SURFACE_TEXT_EXPORT_ROLE
-        export_obj["rr_surface_text_source_object"] = source.name
-        export_objects.append(export_obj)
+                mesh = bpy.data.meshes.new_from_object(
+                    evaluated,
+                    depsgraph=depsgraph,
+                    preserve_all_data_layers=True,
+                )
+                if mesh is not None:
+                    meshes.append(mesh)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not evaluate Surface Text '{source.name}' for FBX export."
+                ) from exc
 
-    return export_objects
+            if mesh is None or len(mesh.vertices) == 0 or len(mesh.polygons) == 0:
+                if mesh is not None and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+                raise RuntimeError(
+                    f"Surface Text '{source.name}' produced no exportable solid geometry."
+                )
+            if any(
+                not math.isfinite(float(component))
+                for vertex in mesh.vertices
+                for component in vertex.co
+            ):
+                if mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+                raise RuntimeError(
+                    f"Surface Text '{source.name}' produced non-finite export coordinates."
+                )
+
+            solidify = next(
+                (modifier for modifier in source.modifiers if modifier.type == "SOLIDIFY"),
+                None,
+            )
+            if solidify is None or abs(float(solidify.thickness)) <= SURFACE_TEXT_EPSILON:
+                if mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+                raise RuntimeError(
+                    f"Surface Text '{source.name}' has no positive Solidify thickness."
+                )
+
+            local_z_span = max(vertex.co.z for vertex in mesh.vertices) - min(
+                vertex.co.z for vertex in mesh.vertices
+            )
+            if local_z_span < abs(float(solidify.thickness)) * 0.5:
+                if mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+                raise RuntimeError(
+                    f"Surface Text '{source.name}' evaluated without its requested thickness."
+                )
+
+            export_name = f"{SURFACE_TEXT_EXPORT_PREFIX}_{_safe_name(source.name)}"
+            export_obj = bpy.data.objects.new(export_name, mesh)
+            export_objects.append(export_obj)
+            collection.objects.link(export_obj)
+            source_target = _surface_text_target(source)
+            parent = source_target or root
+            export_obj.parent = parent
+            export_obj.matrix_world = source.matrix_world.copy()
+            export_obj.hide_render = False
+            export_obj.hide_viewport = False
+            export_obj.display_type = "TEXTURED"
+
+            for slot in source.material_slots:
+                if slot.material is not None and slot.material.name not in mesh.materials:
+                    mesh.materials.append(slot.material)
+            for key, value in source.items():
+                if not str(key).startswith("rr_surface_text_"):
+                    continue
+                try:
+                    export_obj[key] = value
+                except (TypeError, ValueError):
+                    export_obj[key] = str(value)
+            export_obj["rr_surface_text_export_role"] = SURFACE_TEXT_EXPORT_ROLE
+            export_obj["rr_surface_text_source_object"] = source.name
+
+        return export_objects
 
 
 def _evaluated_world_points(context, text_obj):

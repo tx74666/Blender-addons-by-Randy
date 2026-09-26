@@ -199,6 +199,23 @@ def _check_backup_topology(target, record):
         raise QuickBindError("Mesh topology or vertex indexing changed since binding. Restore requires the original connectivity; the backup was kept.")
 
 
+def _check_backup_group_ownership(target, record):
+    # Blender renames bound vertex groups when their deform bone is renamed.
+    # Old backups contain names, not stable bone/group identities: recreating a
+    # missing name would leave the renamed group driving the mesh with new weights.
+    # Allow unrelated rig additions, but never guess which group a saved name became.
+    armature = target.get(RIG_KEY)
+    saved_names = set(record['names'])
+    current_names = ({bone.name for bone in armature.data.bones if bone.use_deform}
+                     if isinstance(armature, bpy.types.Object) and armature.type == 'ARMATURE'
+                     else set())
+    if not saved_names <= current_names or not saved_names <= set(target.vertex_groups.keys()):
+        raise QuickBindError(
+            "Saved deform bones or vertex groups were renamed or removed. Undo that change "
+            "before restoring Previous Binding; current weights and the backup were kept."
+        )
+
+
 def _restore_tracked_groups(target, record):
     previous = {group['name']: group for group in record['groups']}
     vertices = tuple(range(len(target.data.vertices)))
@@ -231,6 +248,7 @@ def restore_binding(context, target):
         raise QuickBindError("Restore Binding before restoring the earlier weights.")
     record = _read_backup(target)
     _check_backup_topology(target, record)
+    _check_backup_group_ownership(target, record)
     modifier = _backup_modifier(target, record, allow_missing=True)
     before = _capture_vertex_groups(target)
     active_group = target.vertex_groups.active_index

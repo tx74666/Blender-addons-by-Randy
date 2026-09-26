@@ -1,5 +1,6 @@
 """Package each add-on without overwriting a different release of the same version."""
 
+import argparse
 import ast
 import hashlib
 from pathlib import Path
@@ -51,10 +52,14 @@ def build(module, label):
     print(f"Verified {archive.name}: {len(payload)} files")
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--module", action="append", choices=tuple(PACKAGES),
+                        help="Build only this module; repeat to select several")
+    args = parser.parse_args(argv)
     (ROOT / "dist").mkdir(exist_ok=True)
-    for module, label in PACKAGES.items():
-        build(module, label)
+    for module in dict.fromkeys(args.module or PACKAGES):
+        build(module, PACKAGES[module])
     lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
              for path in sorted((ROOT / "dist").glob("*.zip"))]
     (ROOT / "dist" / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8")

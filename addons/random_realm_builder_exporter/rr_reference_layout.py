@@ -7,6 +7,7 @@ It does not create helper objects, change parenting, or alter object origins.
 from math import isfinite
 
 import bpy
+from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, IntProperty, PointerProperty, StringProperty
 from mathutils import Matrix
 
@@ -194,6 +195,7 @@ class RRBuilderReferenceLayoutSettings(bpy.types.PropertyGroup):
     status: StringProperty(name="Status", default="No reference object")
 
 
+@persistent
 def migrate_reference_layout_usage_on_load(_dummy=None):
     """Preserve the old auto-use behavior only for files that already had a Reference."""
     for scene in getattr(bpy.data, "scenes", ()):

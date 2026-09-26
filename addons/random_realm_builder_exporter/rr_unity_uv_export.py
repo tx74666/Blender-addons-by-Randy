@@ -99,6 +99,17 @@ def _mapping_node_values(mapping_node):
     )
 
 
+def _mapping_has_linked_parameters(mapping_node):
+    return any(
+        socket is not None and socket.is_linked
+        for socket in (
+            mapping_node.inputs.get("Location"),
+            mapping_node.inputs.get("Rotation"),
+            mapping_node.inputs.get("Scale"),
+        )
+    )
+
+
 def _mapping_node_is_identity(mapping_node):
     if mapping_node is None or mapping_node.bl_idname != "ShaderNodeMapping":
         return True
@@ -112,22 +123,24 @@ def _mapping_node_is_identity(mapping_node):
     )
 
 
-def _apply_mapping_node(mapping_node, vector):
+def _mapping_node_transform(mapping_node):
     if mapping_node is None or mapping_node.bl_idname != "ShaderNodeMapping":
-        return vector
+        return Matrix.Identity(4)
 
     location, rotation, scale = _mapping_node_values(mapping_node)
-    mapped = Vector((
-        vector.x * scale.x,
-        vector.y * scale.y,
-        vector.z * scale.z,
-    ))
-    mapped = Matrix.Rotation(rotation.x, 4, "X") @ mapped
-    mapped = Matrix.Rotation(rotation.y, 4, "Y") @ mapped
-    mapped = Matrix.Rotation(rotation.z, 4, "Z") @ mapped
+    transform = (
+        Matrix.Rotation(rotation.z, 4, "Z")
+        @ Matrix.Rotation(rotation.y, 4, "Y")
+        @ Matrix.Rotation(rotation.x, 4, "X")
+        @ Matrix.Diagonal((scale.x, scale.y, scale.z, 1.0))
+    )
     if getattr(mapping_node, "vector_type", "POINT") != "VECTOR":
-        mapped += location
-    return mapped
+        transform.translation = location
+    return transform
+
+
+def _apply_mapping_node(mapping_node, vector):
+    return _mapping_node_transform(mapping_node) @ vector
 
 
 def _mesh_local_bounds(mesh):
@@ -174,14 +187,23 @@ def _material_recipe(material, mesh, image_node_resolver, render_layer):
 
     unsupported = unsupported or any(
         getattr(mapping, "vector_type", "POINT") not in {"POINT", "VECTOR"}
+        or _mapping_has_linked_parameters(mapping)
         for mapping in mappings
     )
+    mapping_transform = None
+    if mappings and not unsupported:
+        # Compose in source-to-image order once, rather than reading sockets
+        # and rebuilding three rotation matrices for every mesh loop.
+        mapping_transform = Matrix.Identity(4)
+        for mapping in mappings:
+            mapping_transform = _mapping_node_transform(mapping) @ mapping_transform
     first_layer = mesh.uv_layers[0] if len(mesh.uv_layers) else None
     return {
         "source_type": source_type,
         "source_layer": source_layer,
         "source_layer_name": source_layer.name if source_layer is not None else "",
         "mappings": mappings,
+        "mapping_transform": mapping_transform,
         "unsupported": unsupported,
         "needs_bake": (
             unsupported
@@ -209,8 +231,9 @@ def _evaluate_loop_uv(mesh, loop_index, vertex_index, recipe, fallback_layer, mi
             uv = layer.data[loop_index].uv
             vector = Vector((uv.x, uv.y, 0.0))
 
-    for mapping in recipe.get("mappings", ()) if recipe else ():
-        vector = _apply_mapping_node(mapping, vector)
+    transform = recipe.get("mapping_transform") if recipe else None
+    if transform is not None:
+        vector = transform @ vector
     return vector.to_2d()
 
 
@@ -269,6 +292,7 @@ def prepare_unity_uvs_for_export(root, mesh_objects, image_node_resolver):
     warnings = []
     mapping_states = {}
     mesh_groups = {}
+    prepared_meshes = []
 
     for obj in mesh_objects:
         mesh = getattr(obj, "data", None)
@@ -316,7 +340,8 @@ def prepare_unity_uvs_for_export(root, mesh_objects, image_node_resolver):
                 raise UVExportContractError(
                     f"{root_name}: mesh '{obj.name}' has unsupported texture-coordinate graphs "
                     f"in material(s) {names}. Use an Image Texture with its default UV input, "
-                    "or connect Texture Coordinate UV / UV Map through supported Mapping nodes."
+                    "or connect Texture Coordinate UV / UV Map through Point or Vector Mapping nodes "
+                    "with unlinked Location, Rotation and Scale inputs."
                 )
 
             needs_bake = (
@@ -326,6 +351,11 @@ def prepare_unity_uvs_for_export(root, mesh_objects, image_node_resolver):
             if not needs_bake:
                 continue
 
+            prepared_meshes.append((obj, mesh, first_layer, render_layer, recipes))
+
+        # Validate every coordinate graph before changing the first UV value.
+        for obj, mesh, first_layer, render_layer, recipes in prepared_meshes:
+            uv_layers = mesh.uv_layers
             minimum, size = _mesh_local_bounds(mesh)
             baked_values = [Vector((0.0, 0.0)) for _ in mesh.loops]
             for polygon in mesh.polygons:

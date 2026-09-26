@@ -346,10 +346,53 @@ def test_restore_refuses_changed_topology_and_replaced_modifier():
     assert not service.has_binding_backup(target) and not target.modifiers
 
 
+def test_restore_refuses_renamed_bones_and_groups_without_losing_backup():
+    for rename_bone in (True, False):
+        target, body, armature = fixture()
+        target.modifiers.new('Existing Armature', 'ARMATURE').object = armature
+        armature.pose.bones['A'].location.x = 1
+        original = group_values(target)
+
+        def evaluated_positions():
+            armature.update_tag(refresh={'OBJECT'})
+            target.update_tag(refresh={'OBJECT', 'DATA'})
+            bpy.context.view_layer.update()
+            evaluated = target.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            return tuple(tuple(vertex.co) for vertex in evaluated.data.vertices)
+
+        original_positions = evaluated_positions()
+        service.bind_weights(bpy.context, target, armature, body=body)
+        raw = target[service.BACKUP_KEY]
+        if rename_bone:
+            # A normal bone rename makes Blender rename bound groups itself.
+            armature.data.bones['A'].name = 'Renamed_A'
+        else:
+            target.vertex_groups['A'].name = 'Renamed_A'
+        assert 'Renamed_A' in target.vertex_groups and 'A' not in target.vertex_groups
+        before = group_values(target)
+        positions = evaluated_positions()
+        modifier = target.modifiers[0]
+        expect_failure(lambda: service.restore_binding(bpy.context, target), 'renamed or removed')
+        assert group_values(target) == before
+        assert evaluated_positions() == positions
+        assert target[service.BACKUP_KEY] == raw and target[service.RIG_KEY] == armature
+        assert target.modifiers[0] == modifier and modifier.object == armature
+        # The retained backup becomes usable again after undoing the rename.
+        if rename_bone:
+            armature.data.bones['Renamed_A'].name = 'A'
+        else:
+            target.vertex_groups['Renamed_A'].name = 'A'
+        service.restore_binding(bpy.context, target)
+        assert group_values(target) == original
+        assert evaluated_positions() == original_positions
+        assert not service.has_binding_backup(target)
+
+
 for test in (test_native_interpolation_preserves_and_repeats, test_source_mirror_and_world_space,
              test_locked_and_conflicting_binding_refused, test_solver_and_commit_failure_rollback,
              test_native_auto_weights_and_deform, test_native_auto_mirror_retains_base_mesh,
-             test_persistent_first_binding_restore, test_restore_refuses_changed_topology_and_replaced_modifier):
+             test_persistent_first_binding_restore, test_restore_refuses_changed_topology_and_replaced_modifier,
+             test_restore_refuses_renamed_bones_and_groups_without_losing_backup):
     test()
     print('PASS', test.__name__)
 print('QUICK_BIND_OK')

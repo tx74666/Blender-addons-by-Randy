@@ -116,7 +116,7 @@ def test_chosen_key_clears_only_selected_vertices():
         assert_close(bm.verts[index].co, basis.data[index].co)
 
 
-def test_multiple_chosen_keys_use_pre_write_relative_key_snapshot():
+def test_multiple_chosen_keys_clear_to_final_relative_key_and_are_idempotent():
     obj, basis, smile, dependent = make_fixture()
     before_smile = coordinates(smile)
     before_dependent = coordinates(dependent)
@@ -127,7 +127,7 @@ def test_multiple_chosen_keys_use_pre_write_relative_key_snapshot():
         raise AssertionError(f"All Shape Keys cleanup failed: {result}")
     for index in (0, 2):
         assert_close(smile.data[index].co, basis.data[index].co)
-        assert_close(dependent.data[index].co, before_smile[index])
+        assert_close(dependent.data[index].co, smile.data[index].co)
     for index in (1, 3):
         assert_close(smile.data[index].co, before_smile[index])
         assert_close(dependent.data[index].co, before_dependent[index])
@@ -136,7 +136,138 @@ def test_multiple_chosen_keys_use_pre_write_relative_key_snapshot():
     if dependent_layer is None:
         raise AssertionError("Edit BMesh did not expose the non-active Shape Key layer")
     for index in (0, 2):
-        assert_close(bm.verts[index][dependent_layer], before_smile[index])
+        assert_close(bm.verts[index][dependent_layer], basis.data[index].co)
+    assert shape_key_tools.build_shape_key_clear_plan(bpy.context).changed_count == 0
+    assert bpy.ops.character_designer.clear_shape_key_selected() == {'FINISHED'}
+    bpy.ops.object.mode_set(mode='OBJECT')
+    smile.value, dependent.value = 0, 1
+    bpy.context.view_layer.update()
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    for index in (0, 2):
+        assert_close(evaluated.data.vertices[index].co, basis.data[index].co)
+    for index in (1, 3):
+        assert_close(dependent.data[index].co, before_dependent[index])
+
+
+def test_selected_dependency_chain_stops_at_unselected_key():
+    obj, basis, smile, dependent = make_fixture()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    grandchild = obj.shape_key_add(name='Grandchild')
+    grandchild.relative_key = dependent
+    grandchild.data[0].co.y = 2.0
+    untouched = obj.shape_key_add(name='Untouched')
+    untouched.data[0].co.y = 3.0
+    before_untouched = coordinates(untouched)
+    smile.select, dependent.select, grandchild.select, untouched.select = False, False, True, False
+    # Child precedes its selected parent in list order; resolution must use dependencies.
+    obj.active_shape_key_index = 3
+    bpy.ops.object.shape_key_move(type='UP')
+    basis, smile, dependent, grandchild, untouched = (
+        obj.data.shape_keys.key_blocks[name]
+        for name in ('Basis', 'Smile', 'Dependent', 'Grandchild', 'Untouched')
+    )
+    dependent.select = True
+    assert list(obj.data.shape_keys.key_blocks.keys()).index('Grandchild') < list(obj.data.shape_keys.key_blocks.keys()).index('Dependent')
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_vertices(obj, (0,))
+    assert bpy.ops.character_designer.clear_shape_key_selected() == {'FINISHED'}
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert_close(dependent.data[0].co, smile.data[0].co)
+    assert_close(grandchild.data[0].co, smile.data[0].co)
+    assert smile.data[0].co.y == 0.5
+    assert coordinates(untouched) == before_untouched
+    smile.value, dependent.value, grandchild.value, untouched.value = 0, 1, 1, 0
+    bpy.context.view_layer.update()
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    assert_close(evaluated.data.vertices[0].co, basis.data[0].co)
+
+
+def test_live_edit_baselines_preserve_pending_edits_without_double_propagation():
+    for clear_parent, clear_child in ((False, True), (True, False), (True, True)):
+        obj, basis, smile, dependent = make_fixture()
+        smile.select, dependent.select = clear_parent, clear_child
+        select_vertices(obj, (0,))
+        bm = shape_key_tools.bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.verts[0].co.y = 1.5
+        assert bpy.ops.character_designer.clear_shape_key_selected() == {'FINISHED'}
+        bpy.ops.object.mode_set(mode='OBJECT')
+        assert smile.data[0].co.y == (0.0 if clear_parent else 1.5)
+        expected_child = (smile.data[0].co.y if clear_child else 1.75)
+        assert dependent.data[0].co.y == expected_child
+
+    obj, basis, smile, dependent = make_fixture()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    obj.active_shape_key_index = 0
+    dependent.select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    select_vertices(obj, (0,))
+    bm = shape_key_tools.bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    bm.verts[0].co.y = 1.0
+    assert bpy.ops.character_designer.clear_shape_key_selected() == {'FINISHED'}
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert basis.data[0].co.y == 1.0
+    assert_close(smile.data[0].co, basis.data[0].co)
+    assert_close(dependent.data[0].co, basis.data[0].co)
+
+
+def test_cycles_and_stale_live_edits_refuse_without_cleanup_writes():
+    obj, _basis, smile, dependent = make_fixture()
+    smile.relative_key = dependent
+    dependent.select = True
+    select_vertices(obj, (0,))
+    before = coordinates(smile), coordinates(dependent)
+    assert bpy.ops.character_designer.clear_shape_key_selected() == {'CANCELLED'}
+    assert (coordinates(smile), coordinates(dependent)) == before
+
+    obj, _basis, smile, dependent = make_fixture()
+    select_vertices(obj, (0,))
+    plan = shape_key_tools.build_shape_key_clear_plan(bpy.context)
+    bm = shape_key_tools.bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    bm.verts[0].co.y = 1.5
+    try:
+        shape_key_tools.apply_shape_key_clear_plan(plan)
+    except shape_key_tools.ShapeKeyCleanupError as exc:
+        assert 'changed after planning' in str(exc)
+    else:
+        raise AssertionError('A stale plan overwrote an artist edit')
+    assert bm.verts[0].co.y == 1.5
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert smile.data[0].co.y == 1.5 and dependent.data[0].co.y == 1.75
+
+
+def test_failed_cleanup_restores_latest_live_edit():
+    obj, _basis, smile, dependent = make_fixture()
+    select_vertices(obj, (0,))
+    bm = shape_key_tools.bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    bm.verts[0].co.y = 1.5
+    plan = shape_key_tools.build_shape_key_clear_plan(bpy.context)
+    verify = shape_key_tools._verify_records
+    failed = False
+
+    def fail_once(*args):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise shape_key_tools.ShapeKeyCleanupError('Injected verification failure')
+        return verify(*args)
+
+    shape_key_tools._verify_records = fail_once
+    try:
+        try:
+            shape_key_tools.apply_shape_key_clear_plan(plan)
+        except shape_key_tools.ShapeKeyCleanupError as exc:
+            assert 'rolled back' in str(exc)
+        else:
+            raise AssertionError('Expected the injected verification failure')
+    finally:
+        shape_key_tools._verify_records = verify
+    assert bm.verts[0].co.y == 1.5
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert smile.data[0].co.y == 1.5 and dependent.data[0].co.y == 1.75
 
 
 def test_enabled_x_mirror_clears_and_selects_real_counterparts():
@@ -153,9 +284,12 @@ def test_enabled_x_mirror_clears_and_selects_real_counterparts():
         raise AssertionError(f"Mirrored Shape Key cleanup failed: {result}")
     for index in range(4):
         assert_close(smile.data[index].co, basis.data[index].co)
-    selected = {vertex.index for vertex in obj.data.vertices if vertex.select}
+    bm = shape_key_tools.bmesh.from_edit_mesh(obj.data)
+    selected = {vertex.index for vertex in bm.verts if vertex.select}
     if selected != {0, 1, 2, 3}:
         raise AssertionError(f"Mirror counterpart selection was not expanded: {selected}")
+    bpy.ops.object.mode_set(mode='OBJECT')
+    assert {vertex.index for vertex in obj.data.vertices if vertex.select} == {0, 1, 2, 3}
 
 
 def test_full_mesh_symmetry_clears_real_counterparts_without_modifier():
@@ -199,7 +333,11 @@ def main():
     character_designer.register()
     tests = (
         test_chosen_key_clears_only_selected_vertices,
-        test_multiple_chosen_keys_use_pre_write_relative_key_snapshot,
+        test_multiple_chosen_keys_clear_to_final_relative_key_and_are_idempotent,
+        test_selected_dependency_chain_stops_at_unselected_key,
+        test_live_edit_baselines_preserve_pending_edits_without_double_propagation,
+        test_cycles_and_stale_live_edits_refuse_without_cleanup_writes,
+        test_failed_cleanup_restores_latest_live_edit,
         test_enabled_x_mirror_clears_and_selects_real_counterparts,
         test_full_mesh_symmetry_clears_real_counterparts_without_modifier,
         test_empty_selection_refuses_without_writes,

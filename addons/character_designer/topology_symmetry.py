@@ -29,12 +29,12 @@ TOPOLOGY_TOLERANCE_FRACTION = 0.10
 SIDE_EPSILON = 1.0e-8
 SKIP_ATTRIBUTES = frozenset({
     "position",
+    ".edge_verts",
+    ".corner_vert",
+    ".corner_edge",
     "material_index",
     "sharp_face",
-    "sharp_edge",
-    "crease_edge",
-    "bevel_weight_edge",
-    "bevel_weight_vertex",
+    "custom_normal",  # Decoded directions need reflection, not a raw copy.
 })
 
 
@@ -176,6 +176,17 @@ def _active_pair(context):
     if active_side not in {-1, 1}:
         raise TopologySymmetryError("Could not resolve the active bone side in Mesh-local X.")
     return mesh_obj, armature_obj, active_name, opposite_name, active_side, tolerance
+
+
+def _preflight_replacement_animation(obj):
+    """The rebuilt Mesh/Key IDs cannot safely inherit animation references yet."""
+    for owner, label in ((obj.data, "Mesh data"), (obj.data.shape_keys, "Shape Keys")):
+        animation = owner.animation_data if owner is not None else None
+        if animation and (animation.action or animation.nla_tracks or animation.drivers):
+            raise TopologySymmetryError(
+                f"Animated/driven {label} are not supported by topology replacement; "
+                "no data was changed. Use a separate unanimated mesh."
+            )
 
 
 def _selected_patch(bm, expected_side, tolerance):
@@ -590,6 +601,7 @@ def build_topology_mirror_plan(context, *, boundary_tolerance=0.0):
         active_side,
         tolerance,
     ) = _active_pair(context)
+    _preflight_replacement_animation(mesh_obj)
     bm = bmesh.from_edit_mesh(mesh_obj.data)
     # Synchronize completed artist edits from the Edit BMesh before taking a
     # fingerprint.  Re-fetch the BMesh because update_edit_mesh may rebuild
@@ -725,6 +737,7 @@ def build_topology_repair_plan(context, *, merge_distance=0.0):
         active_side,
         tolerance,
     ) = _active_pair(context)
+    _preflight_replacement_animation(mesh_obj)
     bm = bmesh.from_edit_mesh(mesh_obj.data)
     bmesh.update_edit_mesh(mesh_obj.data, loop_triangles=False, destructive=False)
     bm = bmesh.from_edit_mesh(mesh_obj.data)
@@ -859,6 +872,7 @@ def _copy_rna_value(source, target):
             return
         except (AttributeError, TypeError, ValueError):
             continue
+    raise TopologySymmetryError("A Mesh attribute value cannot be preserved; no replacement was committed.")
 
 
 def _copy_attributes(old_mesh, new_mesh, vertex_origins, face_origins,
@@ -875,14 +889,16 @@ def _copy_attributes(old_mesh, new_mesh, vertex_origins, face_origins,
         origins = domain_origins.get(attribute.domain)
         if origins is None:
             continue
-        if new_mesh.attributes.get(attribute.name) is not None:
-            continue
         try:
-            created = new_mesh.attributes.new(
-                name=attribute.name,
-                type=attribute.data_type,
-                domain=attribute.domain,
-            )
+            created = new_mesh.attributes.get(attribute.name)
+            if created is None:
+                created = new_mesh.attributes.new(
+                    name=attribute.name,
+                    type=attribute.data_type,
+                    domain=attribute.domain,
+                )
+            if created.domain != attribute.domain or created.data_type != attribute.data_type:
+                raise ValueError("Attribute type or domain differs")
         except (AttributeError, RuntimeError, TypeError, ValueError) as error:
             raise TopologySymmetryError(
                 f'Cannot preserve Mesh attribute "{attribute.name}" during topology replacement.'
@@ -890,6 +906,62 @@ def _copy_attributes(old_mesh, new_mesh, vertex_origins, face_origins,
         for destination_index, origin in enumerate(origins):
             source_index = origin[1]
             _copy_rna_value(attribute.data[source_index], created.data[destination_index])
+
+
+def _new_mesh_from_origins(old_mesh, coordinates, edges, faces, vertex_origins,
+                           face_origins, loop_origins, edge_origins, suffix):
+    """Create a disposable replacement, retaining artist data on every region."""
+    new_mesh = bpy.data.meshes.new(old_mesh.name + suffix)
+    try:
+        new_mesh.from_pydata(coordinates, edges, faces)
+        new_mesh.update()
+        by_edge = {tuple(sorted(edge)): origin for edge, origin in zip(edges, edge_origins)}
+        edge_origins = [by_edge[tuple(sorted(edge.vertices))] for edge in new_mesh.edges]
+        for material in old_mesh.materials:
+            new_mesh.materials.append(material)
+        for polygon, (_, index) in zip(new_mesh.polygons, face_origins):
+            source = old_mesh.polygons[index]
+            polygon.material_index = source.material_index
+            polygon.use_smooth = source.use_smooth
+            if hasattr(source, "use_freestyle_mark"):
+                polygon.use_freestyle_mark = source.use_freestyle_mark
+        for edge, (_, index) in zip(new_mesh.edges, edge_origins):
+            source = old_mesh.edges[index]
+            edge.use_seam = source.use_seam
+            edge.use_edge_sharp = source.use_edge_sharp
+            if hasattr(source, "use_freestyle_mark"):
+                edge.use_freestyle_mark = source.use_freestyle_mark
+        for layer in old_mesh.uv_layers:
+            created = new_mesh.uv_layers.new(name=layer.name, do_init=False)
+            created.active_render = layer.active_render
+            created.active_clone = layer.active_clone
+        if old_mesh.uv_layers:
+            new_mesh.uv_layers.active_index = old_mesh.uv_layers.active_index
+        _copy_attributes(old_mesh, new_mesh, vertex_origins, face_origins,
+                         loop_origins, edge_origins)
+        if old_mesh.color_attributes.active_color:
+            new_mesh.color_attributes.active_color = new_mesh.color_attributes[
+                old_mesh.color_attributes.active_color.name]
+        if old_mesh.color_attributes.render_color_index >= 0:
+            new_mesh.color_attributes.render_color_index = old_mesh.color_attributes.render_color_index
+        if old_mesh.has_custom_normals:
+            normals = [(_mirror_point(old_mesh.corner_normals[index].vector)
+                        if kind == "source" else old_mesh.corner_normals[index].vector.copy())
+                       for kind, index in loop_origins]
+            if bpy.app.version >= (4, 5, 0):
+                # Avoid re-encoding smooth fans, which can introduce sharp edges.
+                attribute = new_mesh.attributes.new("custom_normal", "FLOAT_VECTOR", "CORNER")
+                attribute.data.foreach_set("vector", [value for normal in normals for value in normal])
+                new_mesh.update()
+            else:
+                new_mesh.normals_split_custom_set(normals)
+        for key, value in old_mesh.items():
+            if key != "_RNA_UI":
+                new_mesh[key] = value
+        return new_mesh
+    except Exception:
+        bpy.data.meshes.remove(new_mesh)
+        raise
 
 
 def _shape_key_snapshot(mesh):
@@ -1081,35 +1153,9 @@ def _build_replacement_mesh(obj, plan):
             )))
             edge_origins.append((origin_kind, old_edge_lookup.get(original_pair, 0)))
 
-    new_mesh = bpy.data.meshes.new(old_mesh.name + ".TopologyMirror")
-    new_mesh.from_pydata(coordinates, edges, faces)
-    new_mesh.update()
-    for material in old_mesh.materials:
-        new_mesh.materials.append(material)
-    for new_polygon, origin in zip(new_mesh.polygons, face_origins):
-        source_polygon = old_polygons[origin[1]]
-        new_polygon.material_index = source_polygon.material_index
-        new_polygon.use_smooth = source_polygon.use_smooth
-    for old_layer in old_mesh.uv_layers:
-        new_layer = new_mesh.uv_layers.new(name=old_layer.name)
-        for loop_index, origin in enumerate(loop_origins):
-            new_layer.data[loop_index].uv = old_layer.data[origin[1]].uv
-        if old_layer.active_render:
-            new_layer.active_render = True
-    new_mesh.uv_layers.active_index = min(
-        old_mesh.uv_layers.active_index,
-        max(0, len(new_mesh.uv_layers) - 1),
-    ) if new_mesh.uv_layers else 0
-    for key, value in old_mesh.items():
-        if key != "_RNA_UI":
-            new_mesh[key] = value
-    _copy_attributes(
-        old_mesh,
-        new_mesh,
-        vertex_origins,
-        face_origins,
-        loop_origins,
-        edge_origins,
+    new_mesh = _new_mesh_from_origins(
+        old_mesh, coordinates, edges, faces, vertex_origins, face_origins,
+        loop_origins, edge_origins, ".TopologyMirror",
     )
     selected_source_vertices = {
         old_to_new[index] for index in source_vertices
@@ -1248,35 +1294,9 @@ def _build_repair_mesh(obj, plan):
             )))
             edge_origins.append((origin_kind, old_edge_lookup.get(original_pair, 0)))
 
-    new_mesh = bpy.data.meshes.new(old_mesh.name + ".TopologyRepair")
-    new_mesh.from_pydata(coordinates, edges, faces)
-    new_mesh.update()
-    for material in old_mesh.materials:
-        new_mesh.materials.append(material)
-    for new_polygon, origin in zip(new_mesh.polygons, face_origins):
-        source_polygon = old_polygons[origin[1]]
-        new_polygon.material_index = source_polygon.material_index
-        new_polygon.use_smooth = source_polygon.use_smooth
-    for old_layer in old_mesh.uv_layers:
-        new_layer = new_mesh.uv_layers.new(name=old_layer.name)
-        for loop_index, origin in enumerate(loop_origins):
-            new_layer.data[loop_index].uv = old_layer.data[origin[1]].uv
-        if old_layer.active_render:
-            new_layer.active_render = True
-    new_mesh.uv_layers.active_index = min(
-        old_mesh.uv_layers.active_index,
-        max(0, len(new_mesh.uv_layers) - 1),
-    ) if new_mesh.uv_layers else 0
-    for key, value in old_mesh.items():
-        if key != "_RNA_UI":
-            new_mesh[key] = value
-    _copy_attributes(
-        old_mesh,
-        new_mesh,
-        vertex_origins,
-        face_origins,
-        loop_origins,
-        edge_origins,
+    new_mesh = _new_mesh_from_origins(
+        old_mesh, coordinates, edges, faces, vertex_origins, face_origins,
+        loop_origins, edge_origins, ".TopologyRepair",
     )
     selected_source_vertices = set(
         old_to_new[index] for index in plan.selected_vertices
@@ -1317,6 +1337,7 @@ def _verify_shape_keys(obj, old_snapshot, vertex_origins):
 
 def apply_topology_mirror_plan(plan):
     obj = plan.mesh_obj
+    _preflight_replacement_animation(obj)
     if obj.data.users != 1:
         raise TopologySymmetryError("The Mesh became shared after planning; run the operation again.")
     if _geometry_fingerprint(obj) != plan.geometry_fingerprint:
@@ -1375,6 +1396,8 @@ def apply_topology_mirror_plan(plan):
             raise ws.WeightSymmetryRollbackError(
                 f"Topology Mirror failed ({error}); exact rollback also failed ({rollback_error})."
             ) from rollback_error
+        if new_mesh is not None and new_mesh.users == 0:
+            bpy.data.meshes.remove(new_mesh)
         if isinstance(error, (TopologySymmetryError, ws.WeightSymmetryError)):
             raise
         raise TopologySymmetryError(f"Topology Mirror was rolled back: {error}") from error
@@ -1404,6 +1427,7 @@ def apply_topology_repair_plan(plan):
     """Apply a selected-patch repair transactionally and preserve all data."""
 
     obj = plan.mesh_obj
+    _preflight_replacement_animation(obj)
     if obj.data.users != 1:
         raise TopologySymmetryError("The Mesh became shared after planning; run Repair again.")
     if _geometry_fingerprint(obj) != plan.geometry_fingerprint:
@@ -1468,6 +1492,8 @@ def apply_topology_repair_plan(plan):
             raise ws.WeightSymmetryRollbackError(
                 f"Topology repair failed ({error}); exact rollback also failed ({rollback_error})."
             ) from rollback_error
+        if new_mesh is not None and new_mesh.users == 0:
+            bpy.data.meshes.remove(new_mesh)
         if isinstance(error, (TopologySymmetryError, ws.WeightSymmetryError)):
             raise
         raise TopologySymmetryError(f"Topology repair was rolled back: {error}") from error

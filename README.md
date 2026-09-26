@@ -4,8 +4,10 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
-| RR Helper | 0.2.12 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.12.zip](dist/rr_helper-0.2.12.zip) |
-| Character Designer | 0.61.62 | [character_designer](addons/character_designer) | [character_designer-0.61.62.zip](dist/character_designer-0.61.62.zip) |
+| RR Helper | 0.2.14 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.14.zip](dist/rr_helper-0.2.14.zip) |
+| Character Designer | 0.61.64 | [character_designer](addons/character_designer) | [character_designer-0.61.64.zip](dist/character_designer-0.61.64.zip) |
+
+Character Designer 0.61.64 在全身 **Generate/Update Body Setup** 成功后自动关闭 **Capture Detection** 旁的眼睛，隐藏手指设计辅助显示。保留捕捉与 Mark 数据、生成后的 Rig 控制器；可手动重新打开。生成失败保留原显示状态，开关随 blend 文件保存。
 
 Character Designer 0.61.62 修复真实 X.blend 左食指在指根掌面分叉处无法 Align Joints：规则局部面带失败时，仅在明确的 Align 操作中使用当前闭合表面验证整段新路径；指根、指尖、Roll、网格、权重和其他骨骼仍保持不变。详见 [INDEX.L 指根修复记录](docs/releases/CharacterDesigner_0.61.62_index_root_20260923.md)。
 
@@ -67,7 +69,7 @@ Character Designer 0.61.4 增加 **Topology Mirror · Replace Selected Region**�
 
 Character Designer 0.59.0 统一角色动画入口。Unity **Tools → Character Designer → Animation** 选择角色和已有动作，发送实际评估后的骨骼运动；Blender **Animation → Import Latest from Unity** 生成独立测试 Action，可播放、暂停、拖时间轴、完整恢复，并支持 Undo/Redo 与保存重开恢复。详见[动画流程](addons/character_designer/unity_runtime/ANIMATION.md)。这期只做 Unity → Blender，原 Kimodo 与旧回传服务保留兼容。
 
-RR Helper 0.2.12 合入本机 0.2.11 的建筑导出、HDRI 和预览修复，再移除重复 Animation 页面。已有 Animation.blend、Unity Avatar／Controller、动画资源和武器调试功能保留。
+RR Helper 0.2.14 修复 Append 身份丢失、Surface Text 重复导出与改名、贴图／UV、Standard Queue，并改善 PNG 储存和背景同步性能；合回 Unity 镜像已有的碰撞体关联与图标资源声明修复。详见 [修复与性能验证](docs/releases/RRHelper_0.2.14_reliability_performance_20260926.md)。
 
 Character Designer 0.58.1 在 Unity 导出警告中加入缺权重顶点定位，以及可撤回的“仅导出时使用简化 BSDF”选项。定位重新检查当前原始网格；简化材质只作用于导出副本，原着色器和权重保留。
 

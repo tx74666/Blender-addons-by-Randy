@@ -1,4 +1,32 @@
-# Character Designer 0.61.29
+# Character Designer 0.61.64
+
+## Hide finger setup guides after Body Setup (0.61.64)
+
+Successful Generate/Update Body Setup turns off the eye beside Capture Detection.
+This uses the existing finger overlay switch: references, loop marks and bend
+previews are hidden, while saved guide/Mark data and generated rig controls remain.
+The eye can be turned back on for further finger setup. Failed generation leaves
+its previous visibility intact; the setting persists when the blend file is saved.
+
+## Data preservation and runtime review (0.61.63)
+
+Topology Mirror and Repair now refuse animated/driven Mesh or Shape Key data
+before replacing it, preserving the original animation instead of silently
+disconnecting it. Static mesh replacement retains edge sharpness, seams,
+crease/bevel weights and reflected custom normals, including untouched regions.
+Failed replacement removes its temporary mesh after successful rollback.
+
+Quick Bind restoration detects unresolved bone/group renames and retains its
+backup rather than restoring weights to obsolete names. Shape Key cleanup
+resolves selected relative-key chains against their final baselines. Unity
+export follows active material-output dependencies, including nested groups,
+so unused missing textures no longer block export; required missing textures
+still fail explicitly.
+
+Forearm runtime validation caches unchanged structural evidence while retaining
+change detection for geometry, rig, weights, shape inputs and managed outputs.
+Focused regression tests cover the review cases in addition to existing suites.
+This release does not add support for topology replacement of animated keys.
 
 ## Surface-centered internal reference (0.61.29)
 

@@ -65,12 +65,17 @@ class BodySetupTests(unittest.TestCase):
 
     def test_generate_all_then_reuse_and_reopen(self):
         rig, body = planning.fixture()
+        guides = bpy.context.scene.character_designer_finger_definition
+        guides.overlays_enabled = True
         before = native_state(rig, body)
         result = body_setup.generate(bpy.context, rig)
+        self.assertFalse(guides.overlays_enabled)
         self.assertEqual(tuple(result['created']), planning.planner.COMPONENT_KEYS)
         check_native(self, rig, body, before)
         stable = planning.states(rig, body)
+        guides.overlays_enabled = True
         result = body_setup.generate(bpy.context, rig)
+        self.assertFalse(guides.overlays_enabled)
         self.assertEqual(result['created'], [])
         self.assertEqual(tuple(result['reused']), planning.planner.COMPONENT_KEYS)
         self.assertEqual(planning.states(rig, body), stable)
@@ -80,6 +85,7 @@ class BodySetupTests(unittest.TestCase):
             bpy.ops.wm.save_as_mainfile(filepath=path)
             bpy.ops.wm.open_mainfile(filepath=path)
             rig, body = (bpy.data.objects[name] for name in names)
+            self.assertFalse(bpy.context.scene.character_designer_finger_definition.overlays_enabled)
             self.assertFalse(body_setup.plan(bpy.context, rig)['blocked'])
             self.assertEqual(body_setup.generate(bpy.context, rig)['created'], [])
             body_setup._verify_skin(rig, before['skin'])
@@ -127,8 +133,10 @@ class BodySetupTests(unittest.TestCase):
                 raise ValueError('injected after axes')
             return original_check(checkpoint)
         with patch.object(body_setup.body_setup_transaction, 'assert_original_ids', side_effect=fail_once):
+            bpy.context.scene.character_designer_finger_definition.overlays_enabled = True
             with self.assertRaisesRegex(ValueError, 'injected after axes'):
                 body_setup.generate(bpy.context, rig)
+        self.assertTrue(bpy.context.scene.character_designer_finger_definition.overlays_enabled)
         self.assertTrue(all(not rig.pose.bones[target.name].use_transform_at_custom_shape for target in targets))
         check_native(self, rig, body, before)
 
@@ -212,12 +220,14 @@ class BodySetupTests(unittest.TestCase):
 
     def test_invalid_mapping_is_refused_before_a_transaction_or_any_changes(self):
         rig, body = planning.fixture()
+        bpy.context.scene.character_designer_finger_definition.overlays_enabled = True
         planning.character_setup.settings(bpy.context).head_bone = 'Missing saved Head'
         before = planning.states(rig, body)
         with patch.object(body_setup.body_setup_transaction, 'capture', side_effect=AssertionError('Mutation started')):
             with self.assertRaisesRegex(ValueError, 'HEAD_NECK'):
                 body_setup.generate(bpy.context, rig)
         self.assertEqual(planning.states(rig, body), before)
+        self.assertTrue(bpy.context.scene.character_designer_finger_definition.overlays_enabled)
 
     def test_existing_shoulder_animation_keeps_driving_its_native_arm(self):
         rig, body = planning.fixture()
@@ -253,6 +263,7 @@ class BodySetupTests(unittest.TestCase):
         for existing in (False, True):
             with self.subTest(existing=existing):
                 rig, body = direct_fixture() if existing else planning.fixture()
+                bpy.context.scene.character_designer_finger_definition.overlays_enabled = True
                 before = native_state(rig, body)
                 stable = planning.states(rig, body)
                 raw = {key: value for key, value in rig.data.items() if isinstance(value, str)}
@@ -265,6 +276,7 @@ class BodySetupTests(unittest.TestCase):
                 with patch.object(body_setup, '_add', fail):
                     with self.assertRaisesRegex(RuntimeError, 'Injected final component failure'):
                         body_setup.generate(bpy.context, rig)
+                self.assertTrue(bpy.context.scene.character_designer_finger_definition.overlays_enabled)
                 check_native(self, rig, body, before)
                 after = planning.states(rig, body)
                 for field in ('resources', 'data_keys', 'object_keys', 'constraints', 'mode', 'selected'):

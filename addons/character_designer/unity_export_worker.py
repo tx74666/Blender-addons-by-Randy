@@ -324,17 +324,87 @@ def _clean_skeleton(context, obj, objects):
 
 
 def _material_images(material):
-    result, seen = set(), set()
-    def visit(tree):
-        if tree is None or tree.as_pointer() in seen:
+    """Collect images feeding material outputs, including group interfaces.
+
+    Disconnected authoring nodes are not export dependencies. Keep traversal
+    conservative for ordinary shader operations (all their linked inputs) and
+    unfamiliar group interfaces, rather than guessing which branches evaluate.
+    """
+    tree = material.node_tree if material.use_nodes else None
+    if tree is None:
+        return set()
+    result, seen, fallback_seen, incoming = set(), set(), set(), {}
+
+    def links_to(socket):
+        tree = socket.node.id_data
+        pointer = tree.as_pointer()
+        if pointer not in incoming:
+            links = {}
+            for link in tree.links:
+                if link.is_valid and not link.is_muted:
+                    links.setdefault(link.to_socket.as_pointer(), []).append(link.from_socket)
+            incoming[pointer] = links
+        return incoming[pointer].get(socket.as_pointer(), ())
+
+    def matching_socket(sockets, source):
+        # Interface identifiers survive renamed and duplicate socket labels.
+        return next((socket for socket in sockets if socket.identifier == source.identifier), None)
+
+    def fallback(tree):
+        # Unknown/custom node interfaces must not hide required missing images.
+        if tree is None or tree.as_pointer() in fallback_seen:
             return
-        seen.add(tree.as_pointer())
+        fallback_seen.add(tree.as_pointer())
         for node in tree.nodes:
             image = getattr(node, 'image', None)
             if image is not None:
                 result.add(image)
-            visit(getattr(node, 'node_tree', None))
-    visit(material.node_tree if material.use_nodes else None)
+            fallback(getattr(node, 'node_tree', None))
+
+    def follow_input(socket, instances):
+        for source in links_to(socket):
+            follow_output(source, instances)
+
+    def follow_output(socket, instances):
+        key = (socket.as_pointer(), tuple(node.as_pointer() for node in instances))
+        if key in seen:
+            return
+        seen.add(key)
+        node = socket.node
+        if node.mute:
+            bypass = [link.from_socket for link in node.internal_links if link.to_socket == socket]
+            if bypass:
+                for input_socket in bypass:
+                    follow_input(input_socket, instances)
+                return
+        if node.type == 'GROUP_INPUT' and instances:
+            instance = instances[-1]
+            input_socket = matching_socket(instance.inputs, socket)
+            for candidate in (input_socket,) if input_socket is not None else instance.inputs:
+                follow_input(candidate, instances[:-1])
+            return
+        group = getattr(node, 'node_tree', None)
+        if group is not None:
+            outputs = [item for item in group.nodes if item.type == 'GROUP_OUTPUT' and item.is_active_output]
+            sockets = [matching_socket(output.inputs, socket) for output in outputs]
+            if sockets and all(item is not None for item in sockets):
+                for input_socket in sockets:
+                    follow_input(input_socket, (*instances, node))
+                return
+            fallback(group)
+        image = getattr(node, 'image', None)
+        if image is not None:
+            result.add(image)
+        for input_socket in node.inputs:
+            follow_input(input_socket, instances)
+
+    outputs = [node for node in tree.nodes if node.type == 'OUTPUT_MATERIAL']
+    active = [node for node in outputs if node.is_active_output]
+    if not outputs:
+        fallback(tree)
+    for output in active or outputs:
+        for socket in output.inputs:
+            follow_input(socket, ())
     return result
 
 

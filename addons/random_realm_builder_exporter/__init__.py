@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 12),
+    "version": (0, 2, 14),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -27,6 +27,7 @@ from mathutils import Matrix, Vector
 
 try:
     from . import rr_icon_lighting
+    from . import rr_image_io
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
     from .rr_layout_snapshot import *
@@ -38,6 +39,7 @@ try:
         SURFACE_TEXT_EXPORT_PREFIX,
         build_surface_text_manifest,
         create_surface_text_export_meshes,
+        cleanup_stale_surface_text_sampling_aliases,
         create_surface_text_sampling_export_aliases,
         find_surface_text_objects_for_export,
     )
@@ -53,6 +55,7 @@ try:
     )
 except ImportError:
     import rr_icon_lighting
+    import rr_image_io
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
     from rr_layout_snapshot import *
@@ -64,6 +67,7 @@ except ImportError:
         SURFACE_TEXT_EXPORT_PREFIX,
         build_surface_text_manifest,
         create_surface_text_export_meshes,
+        cleanup_stale_surface_text_sampling_aliases,
         create_surface_text_sampling_export_aliases,
         find_surface_text_objects_for_export,
     )
@@ -2289,7 +2293,7 @@ def clear_inherited_rr_identity_from_objects(objects):
     new_set = set(new_objects)
     cleaned = []
     for obj in new_objects:
-        if not object_has_inherited_rr_identity(obj):
+        if not getattr(obj, "is_editable", True) or not object_has_inherited_rr_identity(obj):
             continue
 
         # Preserve parent relationships wholly contained in the copied selection,
@@ -2343,12 +2347,50 @@ def clear_inherited_rr_identity_from_native_duplicates():
         obj for uid, obj in current_uids.items()
         if uid not in OBJECT_MANAGER_RUNTIME_OBJECT_UIDS
     ]
+    # A new Object ID alone is not evidence of duplication: Append and scripts
+    # also create IDs. Only copied identity that still has a known original is
+    # eligible for the save-time fallback. Managed imports are remembered by
+    # blend_import_post before reaching this check.
+    identity_properties = (
+        EXPORT_STABLE_ID_PROP,
+        OBJECT_MANAGER_ASSEMBLY_ID_PROP,
+        OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP,
+        OBJECT_MANAGER_PARENT_ASSEMBLY_ROOT_PROP,
+    )
+
+    def identity_tokens(obj):
+        return {
+            (prop, str(value))
+            for prop in identity_properties
+            if (value := obj.get(prop))
+        }
+
+    known_identity = set()
+    for uid, obj in current_uids.items():
+        if uid in OBJECT_MANAGER_RUNTIME_OBJECT_UIDS:
+            known_identity.update(identity_tokens(obj))
+    duplicates = [obj for obj in new_objects if identity_tokens(obj) & known_identity]
     OBJECT_MANAGER_RUNTIME_OBJECT_UIDS = set(current_uids)
-    return clear_inherited_rr_identity_from_objects(new_objects)
+    return clear_inherited_rr_identity_from_objects(duplicates)
+
+
+@persistent
+def remember_object_manager_imported_objects(import_context):
+    """Append/Link creates intentional assets, even when their IDs conflict."""
+    imported_objects = set()
+    for item in getattr(import_context, "import_items", ()):
+        datablock = getattr(item, "id", None)
+        if isinstance(datablock, bpy.types.Object):
+            imported_objects.add(datablock)
+        elif isinstance(datablock, bpy.types.Collection):
+            imported_objects.update(datablock.all_objects)
+    remember_object_manager_runtime_objects(imported_objects)
+    reset_scene_selection_queue_lookup()
 
 
 @persistent
 def reset_object_manager_duplicate_guard_on_load(_dummy):
+    reset_scene_selection_queue_lookup()
     reset_object_manager_duplicate_guard()
     reset_object_manager_name_sync_state()
     sync_object_manager_names()
@@ -2895,6 +2937,45 @@ def shared_builder_icon_root(root):
     return shared_innerwall_icon_root(root)
 
 
+SCENE_SELECTION_QUEUE_LOOKUP_CACHE = None
+
+
+def reset_scene_selection_queue_lookup():
+    global SCENE_SELECTION_QUEUE_LOOKUP_CACHE
+    SCENE_SELECTION_QUEUE_LOOKUP_CACHE = None
+
+
+def scene_selection_queue_lookup_key(settings, context):
+    """Detect relation edits without rebuilding each queued root's membership.
+
+    Custom-property edits do not reliably emit dependency-graph notifications.
+    A linear snapshot also catches scripts, rename, undo and object replacement;
+    unchanged ticks avoid the much larger per-queue object/descendant scans.
+    """
+    relation_properties = (
+        OBJECT_MANAGER_ASSEMBLY_ROOT_PROP,
+        OBJECT_MANAGER_ASSEMBLY_ID_PROP,
+        OBJECT_MANAGER_ASSEMBLY_NAME_PROP,
+        OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP,
+        OBJECT_MANAGER_PARENT_ASSEMBLY_ROOT_PROP,
+        "rr_builder_collision_helper",
+        "rr_collider_target",
+    )
+    relations = tuple(
+        (
+            object_manager_runtime_object_uid(obj), obj.name, obj.type,
+            object_manager_runtime_object_uid(obj.parent),
+            *(obj.get(prop) for prop in relation_properties),
+        )
+        for obj in bpy.data.objects
+    )
+    return (
+        context.scene.as_pointer(), context.view_layer.as_pointer(),
+        scene_selection_key(context),
+        tuple(item.object_name for item in settings.export_queue), relations,
+    )
+
+
 def queue_index_for_root(settings, root):
     if settings is None or root is None:
         return -1
@@ -2928,12 +3009,12 @@ def queue_root_contains_object(root, obj):
         return True
     if obj in get_asset_meshes(root):
         return True
-    if obj in get_collision_meshes(root):
+    if obj.type == "MESH" and is_collision_helper(obj) and obj in get_collision_meshes(root):
         return True
     return False
 
 
-def queue_root_for_scene_object(settings, obj):
+def direct_queue_root_for_scene_object(settings, obj):
     if settings is None or obj is None:
         return None
 
@@ -2953,6 +3034,16 @@ def queue_root_for_scene_object(settings, obj):
             return current
 
         current = current.parent
+
+    return None
+
+
+def queue_root_for_scene_object(settings, obj):
+    if settings is None or obj is None:
+        return None
+    direct_root = direct_queue_root_for_scene_object(settings, obj)
+    if direct_root is not None:
+        return direct_root
 
     for root in queue_roots(settings):
         if queue_root_contains_object(root, obj):
@@ -2986,6 +3077,8 @@ def queue_root_from_scene_selection(settings, context):
         return root
 
     for obj in context.selected_objects:
+        if obj == active:
+            continue
         root = queue_root_for_scene_object(settings, obj)
         if root is not None:
             return root
@@ -2994,7 +3087,7 @@ def queue_root_from_scene_selection(settings, context):
 
 
 def sync_queue_active_index_to_scene_selection(context):
-    global LAST_SCENE_SELECTION_KEY
+    global LAST_SCENE_SELECTION_KEY, SCENE_SELECTION_QUEUE_LOOKUP_CACHE
 
     if context is None or context.scene is None:
         return False
@@ -3002,10 +3095,24 @@ def sync_queue_active_index_to_scene_selection(context):
     settings = getattr(context.scene, "rr_builder_export_settings", None)
     if settings is None or len(settings.export_queue) == 0:
         LAST_SCENE_SELECTION_KEY = scene_selection_key(context)
+        reset_scene_selection_queue_lookup()
         return False
 
-    root = queue_root_from_scene_selection(settings, context)
-    new_index = queue_index_for_root(settings, root)
+    # A directly queued root/member is already cheap to resolve and can reflect
+    # relation edits immediately without taking a whole-scene snapshot.
+    active = context.view_layer.objects.active if context.view_layer else None
+    direct_root = direct_queue_root_for_scene_object(settings, active)
+    if direct_root is not None:
+        new_index = queue_index_for_root(settings, direct_root)
+    else:
+        lookup_key = scene_selection_queue_lookup_key(settings, context)
+        cached = SCENE_SELECTION_QUEUE_LOOKUP_CACHE
+        if cached is not None and cached[0] == lookup_key:
+            new_index = cached[1]
+        else:
+            root = queue_root_from_scene_selection(settings, context)
+            new_index = queue_index_for_root(settings, root)
+            SCENE_SELECTION_QUEUE_LOOKUP_CACHE = (lookup_key, new_index)
     key = scene_selection_key(context)
     if key == LAST_SCENE_SELECTION_KEY and (new_index < 0 or new_index == settings.queue_active_index):
         return False
@@ -3146,6 +3253,7 @@ def register_scene_selection_queue_sync():
     global ICON_LIGHT_AUTOSAVE_SIGNATURES, OBJECT_MANAGER_NAME_SYNC_READY
 
     SCENE_SELECTION_QUEUE_SYNC_ENABLED = True
+    reset_scene_selection_queue_lookup()
     LAST_SCENE_SELECTION_KEY = None
     LAST_OBJECT_MANAGER_SELECTION_KEY = None
     OBJECT_MANAGER_WHOLE_SELECTION_ROOT_NAME = None
@@ -3169,6 +3277,7 @@ def unregister_scene_selection_queue_sync():
     global OBJECT_MANAGER_NAME_SYNC_READY
 
     SCENE_SELECTION_QUEUE_SYNC_ENABLED = False
+    reset_scene_selection_queue_lookup()
     LAST_SCENE_SELECTION_KEY = None
     ICON_LIGHT_AUTOSAVE_SIGNATURES = {}
     OBJECT_MANAGER_NAME_SYNC_READY = False
@@ -3981,6 +4090,19 @@ def box_vertices_from_bounds(min_v, max_v):
 def create_or_update_bounding_box_collider(root):
     if root is None:
         raise RuntimeError("Select an exportable object first.")
+    if root.library is not None or not root.is_editable:
+        raise RuntimeError("The asset owner must be a local editable object.")
+    try:
+        root.matrix_world.inverted()
+    except ValueError as exc:
+        raise RuntimeError("The asset owner must have nonzero scale.") from exc
+    existing = get_collision_meshes(root)
+    if existing:
+        names = ", ".join(obj.name for obj in existing)
+        raise RuntimeError(
+            f"{root.name} already has collider(s): {names}. Existing geometry was preserved. "
+            "Edit that collider, or use 'Use Selected as Collider' to link an existing mesh."
+        )
 
     center, size = mesh_world_bounds(root)
     if min(size.x, size.y, size.z) <= 0.0:
@@ -4009,16 +4131,7 @@ def create_or_update_bounding_box_collider(root):
     mesh.validate(clean_customdata=False)
     mesh.update(calc_edges=True)
 
-    collider = find_generated_collider(root)
-    created = collider is None
-    if collider is None:
-        collider = bpy.data.objects.new(generated_collider_name(root), mesh)
-    else:
-        old_mesh = collider.data
-        collider.data = mesh
-        if old_mesh is not None and old_mesh.users == 0:
-            bpy.data.meshes.remove(old_mesh)
-
+    collider = bpy.data.objects.new(generated_collider_name(root), mesh)
     collider.matrix_world = Matrix.Translation(origin)
     collider.display_type = "WIRE"
     if hasattr(collider, "show_wire"):
@@ -4051,8 +4164,64 @@ def create_or_update_bounding_box_collider(root):
     root["rr_generated_collider_bounds_size"] = [float(size.x), float(size.y), float(size.z)]
     root["rr_generated_collider_updated_at"] = collider["rr_collider_generated_at"]
 
+    parent_object_keep_world(collider, root)
     bpy.context.view_layer.update()
-    return collider, created
+    return collider, True
+
+
+def associate_selected_collider(context):
+    selected = list(context.selected_objects or ())
+    owner = context.view_layer.objects.active
+    if len(selected) != 2 or owner not in selected:
+        raise RuntimeError("Select exactly two objects: collider first, then the asset owner last (active).")
+    collider = next(obj for obj in selected if obj != owner)
+    if owner.type not in {"MESH", "EMPTY"} or is_collision_helper(owner):
+        raise RuntimeError("The active object must be the asset owner, not the collider.")
+    assembly = object_manager_assembly_root_for_object(owner)
+    if assembly is not None and assembly != owner:
+        raise RuntimeError("Select the export group root as the active owner.")
+    collider_descendants = set(collider.children_recursive)
+    if any(child.type == "MESH" for child in collider_descendants):
+        raise RuntimeError("Use a single mesh collider without mesh children; separate that hierarchy first.")
+    if not any(mesh != collider and mesh not in collider_descendants for mesh in get_export_asset_meshes(owner)):
+        raise RuntimeError("The active owner has no visible export mesh.")
+    if owner.library is not None or not owner.is_editable:
+        raise RuntimeError("The asset owner must be a local editable object.")
+    if owner in collider.children_recursive:
+        raise RuntimeError("A collider cannot own the asset above it in the hierarchy.")
+    collider_assembly = object_manager_assembly_root_for_object(collider)
+    if collider_assembly is not None and collider_assembly != owner:
+        raise RuntimeError("The collider belongs to another export group; resolve that owner first.")
+    target_name = collider.get("rr_collider_target")
+    if target_name and target_name != owner.name:
+        raise RuntimeError(f"{collider.name} is already linked to '{target_name}'; resolve that owner first.")
+    existing = [obj for obj in get_collision_meshes(owner) if obj != collider]
+    if existing:
+        raise RuntimeError(f"{owner.name} already has another collider: {existing[0].name}. Nothing was replaced.")
+    validate_collider_origin_alignment(collider, owner)
+
+    align_collider_origin_preserve_geometry(collider, owner)
+    parent_object_keep_world(collider, owner)
+    collider.name = generated_collider_name(owner)
+    collider["rr_builder_collision_helper"] = True
+    collider["rr_collider_target"] = owner.name
+    collider["rr_collider_kind"] = "mesh"
+    collider.display_type = "WIRE"
+    collider.show_in_front = True
+    collider.hide_render = True
+    collection = ensure_scene_collection(COLLIDER_HELPER_COLLECTION_NAME)
+    if collider.name not in collection.objects:
+        collection.objects.link(collider)
+    for user_collection in list(collider.users_collection):
+        if user_collection != collection:
+            user_collection.objects.unlink(collider)
+    owner["rr_generated_collider"] = collider.name
+    owner["rr_generated_collider_kind"] = "mesh"
+    # Association is an intentional use of a newly duplicated mesh. Preserve
+    # its owner parenting when the save-time duplicate fallback runs later.
+    remember_object_manager_runtime_objects((collider,))
+    bpy.context.view_layer.update()
+    return owner, collider
 
 
 def clamp_float(value, min_value, max_value):
@@ -7101,62 +7270,23 @@ def save_pbr_framework_image(material, role, image, output_root):
 
     target_path = pbr_framework_image_target_path(material, role, output_root)
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    original_filepath = getattr(image, "filepath_raw", "") or getattr(image, "filepath", "")
+    original_filepath = image.filepath_raw
     try:
         write_image_pixels_to_png(image, target_path)
         verify_saved_bake_image(target_path)
         image.filepath_raw = target_path
     except Exception:
-        if original_filepath:
-            try:
-                image.filepath_raw = original_filepath
-            except Exception:
-                pass
+        image.filepath_raw = original_filepath
         raise
     return target_path
 
 
 def write_image_pixels_to_png(image, path):
-    import array
-    import struct
-    import zlib
-
+    """Save through Blender's native encoder without Python pixel loops."""
     width, height = int(image.size[0]), int(image.size[1])
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Image '{image.name}' has no size.")
-
-    pixel_total = width * height * 4
-    pixels = array.array("f", [0.0]) * pixel_total
-    try:
-        image.pixels.foreach_get(pixels)
-    except Exception as exc:
-        raise RuntimeError(f"Could not read image pixels for '{image.name}': {exc}") from exc
-
-    def channel_to_byte(value):
-        return max(0, min(255, int(round(float(value) * 255.0))))
-
-    raw = bytearray()
-    for y in range(height - 1, -1, -1):
-        raw.append(0)
-        row_start = y * width * 4
-        for offset in range(row_start, row_start + width * 4, 4):
-            raw.append(channel_to_byte(pixels[offset]))
-            raw.append(channel_to_byte(pixels[offset + 1]))
-            raw.append(channel_to_byte(pixels[offset + 2]))
-            raw.append(channel_to_byte(pixels[offset + 3]))
-
-    def png_chunk(chunk_type, data):
-        crc = zlib.crc32(chunk_type)
-        crc = zlib.crc32(data, crc)
-        return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", crc & 0xFFFFFFFF)
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    png = bytearray(b"\x89PNG\r\n\x1a\n")
-    png.extend(png_chunk(b"IHDR", header))
-    png.extend(png_chunk(b"IDAT", zlib.compress(bytes(raw), 6)))
-    png.extend(png_chunk(b"IEND", b""))
-    with open(path, "wb") as handle:
-        handle.write(png)
+    return rr_image_io.save_png_copy(image, path)
 
 
 def find_or_create_pbr_framework_principled_node(material):
@@ -8494,10 +8624,12 @@ def image_source_path(image):
     return bpy.path.abspath(filepath)
 
 
-def unique_texture_filename(used_names, material, map_name, image, max_length=64):
+def unique_texture_filename(used_names, material, map_name, image, max_length=64, extension=None):
     source_path = image_source_path(image)
     source_name = os.path.basename(source_path) if source_path else image.name
     stem, ext = os.path.splitext(source_name)
+    if extension is not None:
+        ext = extension
     if not ext:
         ext = ".png"
 
@@ -8537,21 +8669,24 @@ def copy_image_for_manifest(root_name, material, map_name, image, texture_dir, u
         raise RuntimeError(
             f"{root_name}: export texture folder is too long: '{texture_dir}'. Choose a shorter output folder."
         )
-    filename = unique_texture_filename(used_names, material, map_name, image, filename_budget)
+    use_image_buffer = (
+        getattr(image, "packed_file", None) is not None
+        or bool(getattr(image, "is_dirty", False))
+        or getattr(image, "source", "") == "GENERATED"
+    )
+    filename = unique_texture_filename(
+        used_names, material, map_name, image, filename_budget,
+        extension=".png" if use_image_buffer else None,
+    )
     os.makedirs(texture_dir, exist_ok=True)
     destination = os.path.join(texture_dir, filename)
     source_path = image_source_path(image)
 
     try:
-        if source_path and os.path.exists(source_path):
+        if use_image_buffer:
+            rr_image_io.save_png_copy(image, destination)
+        elif source_path and os.path.exists(source_path):
             shutil.copy2(source_path, destination)
-        elif getattr(image, "packed_file", None) is not None:
-            original_filepath = image.filepath_raw
-            try:
-                image.filepath_raw = destination
-                image.save()
-            finally:
-                image.filepath_raw = original_filepath
         else:
             warnings.append(
                 f"{root_name}: material '{material.name}' {map_name} map '{image.name}' has no readable file path."
@@ -8623,27 +8758,31 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
 
 
 def export_fbx(root, model_path):
+    # Older releases leaked disposable sampling aliases. Reclaim only proven
+    # aliases before taking snapshots that would retain their removed RNA IDs.
+    cleanup_stale_surface_text_sampling_aliases(root)
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
     previous_active = view_layer.objects.active
     selection_states = [(obj, obj.select_get()) for obj in view_layer.objects]
     export_objects = []
-    transient_surface_text_objects = []
-    transient_surface_sampling_aliases = []
+    transient_surface_objects = []
     linked_to_scene_root = []
     hide_states = []
     restore_actions = []
     warnings = []
     export_exception = None
     uv_cleanup_errors = []
+    state_cleanup_errors = []
     try:
         export_objects = [root]
         export_objects.extend(get_export_asset_meshes(root))
         export_objects.extend(get_collision_meshes(root))
-        transient_surface_text_objects = create_surface_text_export_meshes(root)
-        export_objects.extend(transient_surface_text_objects)
-        transient_surface_sampling_aliases = create_surface_text_sampling_export_aliases(root)
-        export_objects.extend(transient_surface_sampling_aliases)
+        # Each helper rolls back its own partial construction on failure. Once
+        # it returns, this export owns exactly those objects and their meshes.
+        transient_surface_objects.extend(create_surface_text_export_meshes(root))
+        transient_surface_objects.extend(create_surface_text_sampling_export_aliases(root))
+        export_objects.extend(transient_surface_objects)
         export_objects = [obj for obj in dict.fromkeys(export_objects) if obj is not None]
 
         root_collection_members = set(scene.collection.objects)
@@ -8664,18 +8803,10 @@ def export_fbx(root, model_path):
 
         view_layer.update()
         set_active_export_root(root)
-        cleanup_surface_text_objects = list(transient_surface_text_objects)
-        cleanup_surface_text_objects.extend(transient_surface_sampling_aliases)
-        cleanup_surface_text_objects.extend(
-            obj
-            for obj in scene.objects
-            if obj.name.startswith(SURFACE_TEXT_EXPORT_PREFIX)
-            and obj.get("rr_surface_text_export_role") == "solid_geometry"
-        )
-        for obj in dict.fromkeys(cleanup_surface_text_objects):
+        for obj in transient_surface_objects:
             obj.select_set(True)
         restore_actions, warnings = prepare_unity_export_maps(root)
-        bpy.ops.export_scene.fbx(
+        result = bpy.ops.export_scene.fbx(
             filepath=model_path,
             use_selection=True,
             use_visible=False,
@@ -8716,6 +8847,8 @@ def export_fbx(root, model_path):
             batch_mode="OFF",
             use_batch_own_dir=True,
         )
+        if "FINISHED" not in result:
+            raise RuntimeError("FBX exporting was cancelled.")
     except BaseException as exception:
         export_exception = exception
         raise
@@ -8732,45 +8865,54 @@ def export_fbx(root, model_path):
                     obj.hide_render = hide_render
                     obj.hide_select = hide_select
                 except Exception as exception:
+                    state_cleanup_errors.append(exception)
                     print(f"[RR Helper] Failed to restore visibility for '{obj.name}': {exception}")
         for obj in linked_to_scene_root:
             try:
                 if obj.name in bpy.data.objects and obj.name in scene.collection.objects:
                     scene.collection.objects.unlink(obj)
             except Exception as exception:
+                state_cleanup_errors.append(exception)
                 print(f"[RR Helper] Failed to restore collection link for '{obj.name}': {exception}")
 
         for obj in list(view_layer.objects):
             try:
                 obj.select_set(False)
-            except Exception:
-                pass
+            except Exception as exception:
+                state_cleanup_errors.append(exception)
         for obj, selected in selection_states:
             if selected and obj.name in bpy.data.objects:
                 try:
                     obj.select_set(True)
-                except Exception:
-                    pass
-        if previous_active is not None and previous_active.name in view_layer.objects:
-            view_layer.objects.active = previous_active
+                except Exception as exception:
+                    state_cleanup_errors.append(exception)
+        try:
+            if previous_active is None or previous_active.name in view_layer.objects:
+                view_layer.objects.active = previous_active
+        except Exception as exception:
+            state_cleanup_errors.append(exception)
 
-        for obj in transient_surface_text_objects:
+        for obj in transient_surface_objects:
+            object_name = obj.name
             mesh = getattr(obj, "data", None)
             try:
-                if bpy.data.objects.get(obj.name) is obj:
+                if bpy.data.objects.get(object_name) is obj:
                     bpy.data.objects.remove(obj, do_unlink=True)
             except Exception as exception:
-                print(f"[RR Helper] Failed to remove transient Surface Text export object '{getattr(obj, 'name', '<unknown>')}': {exception}")
+                state_cleanup_errors.append(exception)
+                print(f"[RR Helper] Failed to remove transient Surface Text export object '{object_name}': {exception}")
             if mesh is not None and getattr(mesh, "users", 0) == 0:
                 try:
                     bpy.data.meshes.remove(mesh)
                 except Exception as exception:
+                    state_cleanup_errors.append(exception)
                     print(f"[RR Helper] Failed to remove transient Surface Text mesh: {exception}")
 
-        if uv_cleanup_errors:
+        cleanup_errors = uv_cleanup_errors + state_cleanup_errors
+        if cleanup_errors:
             cleanup_message = (
-                f"{getattr(root, 'name', '<asset>')}: FBX was written, but Blender UV/Mapping "
-                f"state could not be fully restored ({len(uv_cleanup_errors)} cleanup error(s)). "
+                f"{getattr(root, 'name', '<asset>')}: Blender export "
+                f"state could not be fully restored ({len(cleanup_errors)} cleanup error(s)). "
                 "The export is rejected; inspect the source before saving."
             )
             if export_exception is not None and hasattr(export_exception, "add_note"):
@@ -8778,7 +8920,7 @@ def export_fbx(root, model_path):
             elif export_exception is None:
                 raise rr_unity_uv_export_contract.UVExportContractError(
                     cleanup_message
-                ) from uv_cleanup_errors[0]
+                ) from cleanup_errors[0]
 
     return warnings
 
@@ -9551,16 +9693,16 @@ def export_builder_asset(
             queue_unity_builder_import([manifest_path])
         return asset_id, asset_type, "skipped"
 
-    # Skip Existing is intentionally model-only. Icon framing, lighting, outline,
-    # and the render itself are not represented by the old manifest, so an
-    # icon request must always produce fresh pixels. Reuse the verified model
-    # and emit an icon-only manifest so Unity does not rebuild model prefabs.
+    # Skip Existing skips the FBX bake, not the requested Unity import resource.
+    # A verified local model does not prove that Unity installed it successfully:
+    # keep Model + Icon as a complete request so a failed first import can retry.
+    # Icon framing/lighting are not cached by the manifest, so render fresh pixels.
     if can_reuse_existing_model and include_icon:
         export_model = False
 
     warnings = []
     material_maps = []
-    exported_resources = []
+    exported_resources = ["model"] if can_reuse_existing_model else []
     uv_export_contract = None
     source_blend_override = None
 
@@ -11753,9 +11895,10 @@ class RR_OT_export_queue(bpy.types.Operator):
             successful_root_names,
             settings.output_root,
         )
-        if ordinary_paths and not export_mode_is_standard(settings):
+        if ordinary_paths:
             try:
-                queue_unity_builder_import(ordinary_paths)
+                if not export_mode_is_standard(settings):
+                    queue_unity_builder_import(ordinary_paths)
                 published_root_names.update(ordinary_published_names)
             except Exception as exc:
                 failed.append(f"Unity import queue: {exc}")
@@ -12194,8 +12337,9 @@ class RR_OT_dismiss_export_name_hint(bpy.types.Operator):
 
 class RR_OT_create_bounding_box_collider(bpy.types.Operator):
     bl_idname = "rr_builder.create_bounding_box_collider"
-    bl_label = "Create Collider"
-    bl_description = "Create or update a Bounding Box collider object for the selected or queued asset"
+    bl_label = "Create Box Collider"
+    bl_description = "Create a new bounding box only when the asset has no collider; preserve existing meshes"
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         settings = context.scene.rr_builder_export_settings
@@ -12215,6 +12359,9 @@ class RR_OT_create_bounding_box_collider(bpy.types.Operator):
                 root = assembly_root
             elif target is not None:
                 root = target
+            elif is_collision_helper(active):
+                self.report({"ERROR"}, "Selected collider has no linked owner. Select the asset owner, or use Use Selected as Collider.")
+                return {"CANCELLED"}
             elif active.type in {"EMPTY", "MESH"} and not is_collision_helper(active) and get_asset_meshes(active):
                 root = active
 
@@ -12241,8 +12388,23 @@ class RR_OT_create_bounding_box_collider(bpy.types.Operator):
         collider.select_set(True)
         context.view_layer.objects.active = collider
 
-        action = "Created" if created else "Updated"
-        self.report({"INFO"}, f"{action} collider '{collider.name}' for {root.name}.")
+        self.report({"INFO"}, f"Created '{collider.name}' for {root.name}. Re-export Model with Skip Existing Models off.")
+        return {"FINISHED"}
+
+
+class RR_OT_use_selected_as_collider(bpy.types.Operator):
+    bl_idname = "rr_builder.use_selected_as_collider"
+    bl_label = "Use Selected as Collider"
+    bl_description = "Select a collider mesh and then its owner last; link them while keeping the authored shape"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            owner, collider = associate_selected_collider(context)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Linked '{collider.name}' to {owner.name}. Re-export Model with Skip Existing Models off.")
         return {"FINISHED"}
 
 
@@ -13645,7 +13807,11 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         resource_row.prop(settings, "include_model_with_export", text="Model")
         resource_row.prop(settings, "include_icon_with_export", text="Icon")
         resource_row.prop(settings, "skip_existing_exports", text="Skip")
-        queue_box.operator("rr_builder.create_bounding_box_collider", text="Create Collider", icon="MESH_CUBE")
+        queue_box.operator("rr_builder.create_bounding_box_collider", text="Create Box Collider", icon="MESH_CUBE")
+        queue_box.operator("rr_builder.use_selected_as_collider", text="Use Selected as Collider", icon="LINKED")
+        if settings.skip_existing_exports:
+            queue_box.label(text="Changed mesh or collider?", icon="INFO")
+            queue_box.label(text="Turn off Skip Existing Models.")
         self.draw_export_output_row(queue_box, settings)
 
     def draw_object_manager_tree_row(self, layout, obj, selected_objects, depth, active_group_root, label_suffix=""):
@@ -14541,6 +14707,7 @@ CLASSES = (
     RR_OT_apply_recommended_export_name,
     RR_OT_dismiss_export_name_hint,
     RR_OT_create_bounding_box_collider,
+    RR_OT_use_selected_as_collider,
     RR_OT_validate_selected,
     RR_OT_export_selected,
     RR_OT_export_collection,
@@ -14679,12 +14846,18 @@ def register():
         bpy.app.handlers.load_post.append(reset_object_manager_duplicate_guard_on_load)
     if clear_inherited_rr_identity_before_save not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(clear_inherited_rr_identity_before_save)
+    import_handlers = getattr(bpy.app.handlers, "blend_import_post", None)
+    if import_handlers is not None and remember_object_manager_imported_objects not in import_handlers:
+        import_handlers.append(remember_object_manager_imported_objects)
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if sync_object_manager_names_after_history not in handlers:
             handlers.append(sync_object_manager_names_after_history)
     register_rr_startup_deferred_timers()
 
 def unregister():
+    import_handlers = getattr(bpy.app.handlers, "blend_import_post", None)
+    if import_handlers is not None and remember_object_manager_imported_objects in import_handlers:
+        import_handlers.remove(remember_object_manager_imported_objects)
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if sync_object_manager_names_after_history in handlers:
             handlers.remove(sync_object_manager_names_after_history)

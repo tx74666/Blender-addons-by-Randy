@@ -1713,6 +1713,30 @@ class ExporterUvContractTests(unittest.TestCase):
             )
 
     def test_skip_existing_reuses_model_but_always_renders_requested_icon(self):
+        self.assert_icon_refresh_preserves_requested_resources(
+            request_model=True,
+            previous_resources=["model", "icon"],
+            expected_resources=["model", "icon"],
+        )
+
+    def test_model_and_icon_retry_restores_model_declaration_after_icon_only_export(self):
+        # A valid local FBX does not prove Unity installed the original request.
+        self.assert_icon_refresh_preserves_requested_resources(
+            request_model=True,
+            previous_resources=["icon"],
+            expected_resources=["model", "icon"],
+        )
+
+    def test_explicit_icon_only_export_remains_replacement_only_with_cached_model(self):
+        self.assert_icon_refresh_preserves_requested_resources(
+            request_model=False,
+            previous_resources=["model", "icon"],
+            expected_resources=["icon"],
+        )
+
+    def assert_icon_refresh_preserves_requested_resources(
+        self, request_model, previous_resources, expected_resources,
+    ):
         obj, _, _, _ = make_quad("Cube_200x200x200_Wood")
         with tempfile.TemporaryDirectory(prefix="rr_exporter_icon_refresh_") as output_root:
             asset_id = exporter.export_asset_id(obj)
@@ -1736,7 +1760,7 @@ class ExporterUvContractTests(unittest.TestCase):
                 "Default",
                 "model.fbx",
                 "icon.png",
-                ["model", "icon"],
+                previous_resources,
                 material_maps=[
                     {"material": name, "surface": surface}
                     for name, surface in current_surfaces.items()
@@ -1780,7 +1804,7 @@ class ExporterUvContractTests(unittest.TestCase):
                         icon_resolution=64,
                         skip_existing_exports=True,
                     ),
-                    export_model=True,
+                    export_model=request_model,
                     include_icon=True,
                 )
             finally:
@@ -1798,7 +1822,7 @@ class ExporterUvContractTests(unittest.TestCase):
             refreshed_manifest = exporter.read_existing_manifest(manifest_path)
             self.assertEqual(refreshed_manifest["modelFile"], "model.fbx")
             self.assertEqual(refreshed_manifest["iconFile"], "icon.png")
-            self.assertEqual(refreshed_manifest["exportedResources"], ["icon"])
+            self.assertEqual(refreshed_manifest["exportedResources"], expected_resources)
             self.assertEqual(refreshed_manifest["bounds"], original_bounds)
             self.assertTrue(
                 exporter.uv_export_contract_matches_model(

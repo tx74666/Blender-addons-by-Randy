@@ -141,7 +141,9 @@ def generate(context, rig):
         def update_axes():
             result['updated'] = limb_ik.sync_wrist_local_axes(rig)
             return result
-        return _atomic(context, rig, update_axes)
+        result = _atomic(context, rig, update_axes)
+        context.scene.character_designer_finger_definition.overlays_enabled = False
+        return result
     context.view_layer.update()
     before = _native_skin(rig)
 
@@ -161,7 +163,11 @@ def generate(context, rig):
                 entry['reason'] for entry in validated['components'] if entry['status'] in {'BLOCKED', 'NEEDS_MAPPING'}))
         return result
 
-    return _atomic(context, rig, commit)
+    result = _atomic(context, rig, commit)
+    # Match the Basic Setup eye only after the rig transaction succeeds.
+    # Saved finger guides/marks and the rig's custom shapes stay intact.
+    context.scene.character_designer_finger_definition.overlays_enabled = False
+    return result
 
 
 def remove(context, rig, *, keep_native_rest=True):

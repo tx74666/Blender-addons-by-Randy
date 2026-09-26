@@ -5,8 +5,10 @@ from mathutils import Matrix
 
 try:
     from .rr_builder_constants import LAYOUT_SNAPSHOT_MATRIX_PROP, LAYOUT_SNAPSHOT_ROTATION_MODE_PROP
+    from .rr_modeling_origin import apply_origin_to_mesh_object
 except ImportError:
     from rr_builder_constants import LAYOUT_SNAPSHOT_MATRIX_PROP, LAYOUT_SNAPSHOT_ROTATION_MODE_PROP
+    from rr_modeling_origin import apply_origin_to_mesh_object
 
 
 def matrix_to_snapshot(matrix):
@@ -44,22 +46,60 @@ def collider_target_object(obj):
     return bpy.data.objects.get(target_name)
 
 
+def validate_collider_origin_alignment(obj, target):
+    if obj is None or obj.type != "MESH" or obj.data is None or target is None:
+        raise RuntimeError("Collider must be a mesh with an existing owner.")
+    if obj.mode != "OBJECT":
+        raise RuntimeError("Switch to Object Mode before changing collider ownership or origin.")
+    if obj.library is not None or obj.data.library is not None or not obj.is_editable:
+        raise RuntimeError(f"{obj.name}: linked collider data is read-only; make a local mesh first.")
+    if obj.data.shape_keys is not None:
+        raise RuntimeError(f"{obj.name}: collider origin alignment does not support shape keys.")
+    if obj.modifiers or obj.constraints or obj.animation_data is not None:
+        raise RuntimeError(f"{obj.name}: use a static collider mesh without modifiers, constraints, or animation.")
+    try:
+        obj.matrix_world.inverted()
+        target.matrix_world.inverted()
+    except ValueError as exc:
+        raise RuntimeError(f"{obj.name}: collider and owner transforms must have nonzero scale.") from exc
+
+
+def align_collider_origin_preserve_geometry(obj, target):
+    validate_collider_origin_alignment(obj, target)
+    if (obj.matrix_world.translation - target.matrix_world.translation).length <= 0.000001:
+        return False
+    old_world = obj.matrix_world.copy()
+    saved_matrix = matrix_from_snapshot(obj.get(LAYOUT_SNAPSHOT_MATRIX_PROP))
+    # Changing Location alone would move the authored collision shape. Bake the
+    # inverse offset into a private mesh, retaining parent/rotation/scale and children.
+    if not apply_origin_to_mesh_object(obj, target.matrix_world.translation):
+        raise RuntimeError(f"{obj.name}: could not align collider origin without moving its geometry.")
+    if saved_matrix is not None:
+        # Rebase the old saved pose as well: its matrix now acts on offset mesh
+        # coordinates. Without this, Link after Save Layout makes Restore drift.
+        obj[LAYOUT_SNAPSHOT_MATRIX_PROP] = matrix_to_snapshot(
+            saved_matrix @ old_world.inverted() @ obj.matrix_world
+        )
+    return True
+
+
 def sync_collider_origin_to_target(obj):
     target = collider_target_object(obj)
     if target is None:
         return False
 
-    # Keep the collider's own mesh orientation/scale while its origin follows the visual asset.
-    matrix = obj.matrix_world.copy()
-    matrix.translation = target.matrix_world.translation
-    obj.matrix_world = matrix
-    return True
+    return align_collider_origin_preserve_geometry(obj, target)
 
 
 def sync_collider_origins_to_targets():
+    candidates = [(obj, collider_target_object(obj)) for obj in bpy.data.objects]
+    candidates = [(obj, target) for obj, target in candidates if target is not None]
+    # Validate every participant before changing any mesh in a layout operation.
+    for obj, target in candidates:
+        validate_collider_origin_alignment(obj, target)
     synced = 0
-    for obj in bpy.data.objects:
-        if sync_collider_origin_to_target(obj):
+    for obj, target in candidates:
+        if align_collider_origin_preserve_geometry(obj, target):
             synced += 1
 
     if synced:
@@ -83,6 +123,10 @@ def snapshot_layout(settings):
 
 
 def restore_layout_snapshot():
+    for obj in bpy.data.objects:
+        target = collider_target_object(obj)
+        if target is not None:
+            validate_collider_origin_alignment(obj, target)
     restored = 0
     skipped = []
     objects = [
@@ -92,9 +136,6 @@ def restore_layout_snapshot():
     objects.sort(key=object_hierarchy_depth)
 
     for obj in objects:
-        if collider_target_object(obj) is not None:
-            continue
-
         matrix = matrix_from_snapshot(obj.get(LAYOUT_SNAPSHOT_MATRIX_PROP))
         if matrix is None:
             skipped.append(obj.name)

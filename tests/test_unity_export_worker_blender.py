@@ -271,6 +271,106 @@ def test_unsaved_image_buffer():
     print('PASS unsaved painted pixel buffer survives export instead of reverting to generated/file backing')
 
 
+def missing_texture(folder):
+    path = folder / 'Offline Authoring Texture.png'
+    image = bpy.data.images.new('Temporary Texture', width=2, height=2)
+    image.filepath_raw, image.file_format = str(path), 'PNG'
+    image.save()
+    bpy.data.images.remove(image)
+    image = bpy.data.images.load(str(path), check_existing=False)
+    path.unlink()
+    assert image.source == 'FILE' and not image.is_dirty
+    return image
+
+
+def test_unused_texture_export_and_required_missing_texture():
+    rig, mesh = fixture()
+    folder = Path(tempfile.mkdtemp(prefix='cdesigner_worker_unused_texture_'))
+    material = mesh.data.materials[0]
+    unused = material.node_tree.nodes.new('ShaderNodeTexImage')
+    unused.image = missing_texture(folder)
+    spare = material.node_tree.nodes.new('ShaderNodeTexImage')
+    spare.image = bpy.data.images.new('Unused Painted Texture', width=16, height=16)
+    spare.image.pixels[0:4] = (0.7, 0.3, 0.1, 1.0)
+    assert worker._material_images(material) == {bpy.data.images['Test Texture']}
+    result = worker.export_job({'objects': [rig.name, mesh.name], 'rig': rig.name,
+                               'filename': 'Character.fbx', 'stage': str(folder / 'unused'),
+                               'owned_keys': {mesh.name: ['CD Forearm Twist.L']}})
+    assert result['ok'] and len(result['files']) == 2, result['files']
+    assert len(list((folder / 'unused' / 'Textures').iterdir())) == 1
+    # The same missing image must still stop publication when the artist uses it.
+    shader = material.node_tree.nodes.get('Principled BSDF')
+    material.node_tree.links.new(unused.outputs['Color'], shader.inputs['Base Color'])
+    try:
+        worker.export_job({'objects': [rig.name, mesh.name], 'rig': rig.name,
+                           'filename': 'Character.fbx', 'stage': str(folder / 'required')})
+    except worker.ExportError as error:
+        assert 'missing' in str(error) and unused.image.name in str(error), error
+    else:
+        raise AssertionError('A connected missing texture was silently omitted.')
+    assert not (folder / 'required' / 'Character.fbx').exists()
+    print('PASS unused missing/painted textures are skipped; connected missing texture still blocks export')
+
+
+def test_texture_group_output_reachability():
+    _rig, mesh = fixture()
+    folder = Path(tempfile.mkdtemp(prefix='cdesigner_worker_texture_groups_'))
+    material = mesh.data.materials[0]
+    tree = material.node_tree
+    offline = missing_texture(folder)
+    inner = bpy.data.node_groups.new('Texture Routing', 'ShaderNodeTree')
+    inner.interface.new_socket(name='Color', in_out='INPUT', socket_type='NodeSocketColor')
+    inner.interface.new_socket(name='Used', in_out='OUTPUT', socket_type='NodeSocketColor')
+    inner.interface.new_socket(name='Unused', in_out='OUTPUT', socket_type='NodeSocketColor')
+    entry, output = inner.nodes.new('NodeGroupInput'), inner.nodes.new('NodeGroupOutput')
+    unused = inner.nodes.new('ShaderNodeTexImage')
+    unused.image = offline
+    inner.links.new(entry.outputs['Color'], output.inputs['Used'])
+    inner.links.new(unused.outputs['Color'], output.inputs['Unused'])
+    outer = bpy.data.node_groups.new('Nested Routing', 'ShaderNodeTree')
+    for item in inner.interface.items_tree:
+        outer.interface.new_socket(name=item.name, in_out=item.in_out, socket_type='NodeSocketColor')
+    entry, output = outer.nodes.new('NodeGroupInput'), outer.nodes.new('NodeGroupOutput')
+    nested = outer.nodes.new('ShaderNodeGroup')
+    nested.node_tree = inner
+    outer.links.new(entry.outputs['Color'], nested.inputs['Color'])
+    for name in ('Used', 'Unused'):
+        outer.links.new(nested.outputs[name], output.inputs[name])
+    original = next(node for node in tree.nodes if node.type == 'TEX_IMAGE')
+    second = tree.nodes.new('ShaderNodeTexImage')
+    second.image = bpy.data.images.new('Second Active Texture', width=2, height=2)
+    mix = tree.nodes.new('ShaderNodeMixRGB')
+    instances = []
+    for index, texture in enumerate((original, second)):
+        instance = tree.nodes.new('ShaderNodeGroup')
+        instance.node_tree = outer
+        tree.links.new(texture.outputs['Color'], instance.inputs['Color'])
+        tree.links.new(instance.outputs['Used'], mix.inputs[index + 1])
+        instances.append(instance)
+    tree.links.new(mix.outputs['Color'], tree.nodes['Principled BSDF'].inputs['Base Color'])
+    # A disconnected duplicate group and an inactive material output must not
+    # reintroduce the offline image through their independent shader branches.
+    disconnected = tree.nodes.new('ShaderNodeGroup')
+    disconnected.node_tree = inner
+    inactive = tree.nodes.new('ShaderNodeOutputMaterial')
+    inactive.is_active_output = False
+    emission = tree.nodes.new('ShaderNodeEmission')
+    tree.links.new(disconnected.outputs['Unused'], emission.inputs['Color'])
+    tree.links.new(emission.outputs[0], inactive.inputs['Surface'])
+    assert worker._material_images(material) == {original.image, second.image}
+    _materials, files = worker._export_textures([mesh], folder / 'reachable', [])
+    assert len(files) == 2, files
+    tree.links.new(instances[0].outputs['Unused'], tree.nodes['Principled BSDF'].inputs['Roughness'])
+    assert offline in worker._material_images(material)
+    try:
+        worker._export_textures([mesh], folder / 'required', [])
+    except worker.ExportError as error:
+        assert 'missing' in str(error) and offline.name in str(error), error
+    else:
+        raise AssertionError('A connected missing texture inside nested groups was omitted.')
+    print('PASS nested group outputs, repeated group inputs, inactive outputs and required grouped images')
+
+
 def test_unweighted_vertices_diagnostic():
     rig, mesh = fixture()
     mesh.vertex_groups['Hand'].remove([0])
@@ -314,6 +414,8 @@ test_topology_mismatch_refused()
 test_skirt_attachment_and_solidify()
 test_normal_nodes_and_disabled_skinning()
 test_unsaved_image_buffer()
+test_unused_texture_export_and_required_missing_texture()
+test_texture_group_output_reachability()
 test_unweighted_vertices_diagnostic()
 test_removed_forearm_emits_removal_marker()
 print('UNITY_WORKER_TESTS_OK')

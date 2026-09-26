@@ -20,6 +20,9 @@ class ShapeKeyCleanupError(ValueError):
 class ShapeKeyClearPlan:
     obj: object
     key_names: tuple
+    vertex_count: int
+    relative_keys: tuple
+    sources: tuple
     requested_vertex_indices: tuple
     vertex_indices: tuple
     mirror_pairs: tuple
@@ -199,6 +202,32 @@ def _verify_records(obj, vertex_indices, records):
                     )
 
 
+def _clear_baselines(keys, reference):
+    """Resolve selected parents to their final baseline; reject cyclic key graphs."""
+    selected = {key.name for key in keys}
+    dependencies = {}
+    baselines = {}
+    for key in keys:
+        current = key
+        visited = set()
+        while current != reference:
+            if current.name in visited:
+                raise ShapeKeyCleanupError(
+                    f'Shape Key "{key.name}" has a cyclic relative-key dependency; no keys were cleared.'
+                )
+            visited.add(current.name)
+            relative = current.relative_key
+            if relative is None:
+                raise ShapeKeyCleanupError(f'Shape Key "{current.name}" has no relative key.')
+            dependencies[current.name] = relative.name
+            current = relative
+        current = key.relative_key
+        while current.name in selected:
+            current = current.relative_key
+        baselines[key.name] = current
+    return baselines, tuple(dependencies.items())
+
+
 def build_shape_key_clear_plan(context):
     obj = _active_edit_mesh(context)
     shape_keys = obj.data.shape_keys
@@ -219,6 +248,14 @@ def build_shape_key_clear_plan(context):
             "Select one or more editable Shape Keys in the Shape Keys list; Basis cannot be cleared."
         )
 
+    for key in keys:
+        if getattr(key, "lock_shape", False):
+            raise ShapeKeyCleanupError(f'Shape Key "{key.name}" is locked; unlock it before clearing.')
+    baselines, relative_keys = _clear_baselines(keys, reference)
+    # Flush the artist's pending Edit Mode changes through Blender once. Native
+    # editing also moves keys relative to the active key; reading vertex.co alone
+    # would miss that propagation and apply the active-key delta a second time.
+    obj.update_from_editmode()
     requested_indices = _selected_vertex_indices(obj)
     indices, mirror_pairs, unmatched_mirror_count = _mirror_counterpart_indices(
         obj, requested_indices
@@ -226,16 +263,11 @@ def build_shape_key_clear_plan(context):
     before = []
     targets = []
     changed_count = 0
+    source_keys = {key.name: key for key in (*keys, *baselines.values())}
+    sources = {name: _key_data_coordinates(key, indices) for name, key in source_keys.items()}
     for key in keys:
-        if getattr(key, "lock_shape", False):
-            raise ShapeKeyCleanupError(f'Shape Key "{key.name}" is locked; unlock it before clearing.')
-        relative = key.relative_key
-        if relative is None:
-            raise ShapeKeyCleanupError(f'Shape Key "{key.name}" has no relative key.')
-        # Capture all baselines before writing. This matters when one selected
-        # Shape Key references another selected key.
-        original = _key_data_coordinates(key, indices)
-        baseline = _key_data_coordinates(relative, indices)
+        original = sources[key.name]
+        baseline = sources[baselines[key.name].name]
         before.append((key.name, original))
         targets.append((key.name, baseline))
         changed_count += sum(
@@ -246,6 +278,9 @@ def build_shape_key_clear_plan(context):
     return ShapeKeyClearPlan(
         obj=obj,
         key_names=tuple(key.name for key in keys),
+        vertex_count=len(obj.data.vertices),
+        relative_keys=relative_keys,
+        sources=tuple(sources.items()),
         requested_vertex_indices=requested_indices,
         vertex_indices=indices,
         mirror_pairs=mirror_pairs,
@@ -287,6 +322,26 @@ def apply_shape_key_clear_plan(plan):
     current_indices = _selected_vertex_indices(obj)
     if current_indices != plan.requested_vertex_indices:
         raise ShapeKeyCleanupError("The vertex selection changed; run Shape Key cleanup again.")
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    shape_keys = obj.data.shape_keys
+    if (shape_keys is None or not shape_keys.use_relative
+            or len(bm.verts) != plan.vertex_count or len(obj.data.vertices) != plan.vertex_count):
+        raise ShapeKeyCleanupError("The Mesh or Shape Keys changed; run Shape Key cleanup again.")
+    keys = shape_keys.key_blocks
+    selected_names = tuple(key.name for key in keys if key != shape_keys.reference_key and key.select)
+    if selected_names != plan.key_names or any(getattr(keys[name], 'lock_shape', False) for name in plan.key_names):
+        raise ShapeKeyCleanupError("The Shape Key selection or locks changed; run cleanup again.")
+    for name, relative_name in plan.relative_keys:
+        key = keys.get(name)
+        if key is None or key.relative_key is None or key.relative_key.name != relative_name:
+            raise ShapeKeyCleanupError("A relative Shape Key changed; run cleanup again.")
+    for name, expected in plan.sources:
+        key = keys.get(name)
+        live = (tuple(bm.verts[index].co.copy() for index in plan.vertex_indices)
+                if key == obj.active_shape_key else _bmesh_shape_coordinates(obj, name, plan.vertex_indices))
+        if live != expected or _key_data_coordinates(key, plan.vertex_indices) != expected:
+            raise ShapeKeyCleanupError("Shape Key coordinates changed after planning; run cleanup again.")
 
     try:
         _write_records(obj, plan.vertex_indices, plan.targets)

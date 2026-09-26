@@ -35,11 +35,13 @@ def callbacks(module):
 
 def handler_counts():
     return {
-        name: sum(
-            getattr(callback, "__module__", "").startswith(ADDON_NAME)
+        name: tuple(sorted(
+            callback.__name__
             for callback in getattr(bpy.app.handlers, name)
-        )
-        for name in ("load_post", "save_pre", "undo_post", "redo_post")
+            if getattr(callback, "__module__", "").startswith(ADDON_NAME)
+        ))
+        for name in ("load_post", "save_pre", "undo_post", "redo_post", "blend_import_post")
+        if hasattr(bpy.app.handlers, name)
     }
 
 
@@ -58,7 +60,7 @@ def assert_registered(module, counts, keys):
     check(module is not None and module.__addon_enabled__, "Standard enable failed")
     check(os.path.normcase(os.path.realpath(module.__file__)) == os.path.normcase(CANONICAL_INIT), "Loaded installed source instead of canonical source")
     check(hasattr(bpy.types.Scene, "rr_builder_export_settings"), "Scene properties missing")
-    check(handler_counts() == counts, "Handlers leaked or were not registered")
+    check(handler_counts() == counts, f"Handlers leaked or were not registered: {handler_counts()}")
     check(keymap_count() == keys, "Duplicate keymaps accumulated")
     check(all(bpy.app.timers.is_registered(callback) for callback in callbacks(module)), "A lifecycle timer was not registered")
 
@@ -96,7 +98,17 @@ def main():
         check(module is not None, "addon_utils.enable returned None")
         check(not module.OBJECT_MANAGER_NAME_SYNC_READY, "Name baseline was not deferred")
         check(dict(root.items()) == original_root_properties, "Register wrote scene data")
-        expected_handlers = {"load_post": 3, "save_pre": 1, "undo_post": 1, "redo_post": 1}
+        expected_handlers = {
+            "load_post": tuple(sorted((
+                "reset_pbr_bake_runtime_state_on_load", "repair_rr_normal_map_nodes_on_load",
+                "migrate_reference_layout_usage_on_load", "reset_object_manager_duplicate_guard_on_load",
+            ))),
+            "save_pre": ("clear_inherited_rr_identity_before_save",),
+            "undo_post": ("sync_object_manager_names_after_history",),
+            "redo_post": ("sync_object_manager_names_after_history",),
+        }
+        if hasattr(bpy.app.handlers, "blend_import_post"):
+            expected_handlers["blend_import_post"] = ("remember_object_manager_imported_objects",)
         expected_keys = baseline_keys + len(module.OBJECT_MANAGER_DUPLICATE_KEYMAPS)
         assert_registered(module, expected_handlers, expected_keys)
 

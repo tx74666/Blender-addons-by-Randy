@@ -23,6 +23,7 @@ from .forearm_twist_math import corrected_vertex, profile_ratio, twist_angle
 from .forearm_twist_topology import detect_rings, selected_loop, expand_rings, capture_loop
 from . import forearm_twist_profile as profile
 from . import forearm_twist_edit as editor
+from . import forearm_twist_cache as validation_cache
 from .forearm_twist_symmetry import mirror_ring_pairs
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 
@@ -125,6 +126,10 @@ def _remember_named_keys():
 
 
 def _topology(mesh):
+    return validation_cache.topology_digest(mesh, _topology_digest)
+
+
+def _topology_digest(mesh):
     return hashlib.sha256(repr((len(mesh.vertices), tuple(tuple(e.vertices) for e in mesh.edges),
                                tuple(tuple(p.vertices) for p in mesh.polygons))).encode()).hexdigest()
 
@@ -155,9 +160,9 @@ def _check_mesh(obj):
     return mod.object
 
 
-def _resolve_rig(obj, side):
+def _resolve_rig(obj, side, *, _inventory=None):
     armature = _check_mesh(obj)
-    inventory = limb_ik._validate_inventory(armature)
+    inventory = limb_ik._validate_inventory(armature) if _inventory is None else _inventory
     rig = inventory["rigs"].get(("ARM", side))
     if rig is None:
         detected = limb_ik.analyze_armature(armature)["limbs"]["ARM"][side]
@@ -258,11 +263,13 @@ def _set_render_lock(scene):
 
 
 def _calculate_object(obj, depsgraph):
-    records = _prepare_runtime_records(obj)
-    if records != _records(obj):
-        _apply_runtime_records(obj, records, depsgraph)
-    else:
-        _calculate_records(obj, depsgraph)
+    # Preparation and correction write only our keys/records, never topology.
+    with validation_cache.read_scope():
+        records = _prepare_runtime_records(obj)
+        if records != _records(obj):
+            _apply_runtime_records(obj, records, depsgraph)
+        else:
+            _calculate_records(obj, depsgraph)
 
 
 def _apply_runtime_records(obj, records, depsgraph):
@@ -469,6 +476,7 @@ def _load_post(_dummy):
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
     _CACHE.clear()
+    validation_cache.clear()
     _OUTPUT_CACHE.clear()
     _KEY_REFERENCES.clear()
     _ERRORS.clear()
@@ -484,6 +492,7 @@ def _undo_post(_dummy):
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
     _CACHE.clear()
+    validation_cache.clear()
     _OUTPUT_CACHE.clear()
     _KEY_REFERENCES.clear()
     _ERRORS.clear()
@@ -814,8 +823,14 @@ def _prepare_runtime_records(obj):
         raise ForearmTwistError("Forearm Twist resumes after leaving Mesh Edit Mode.")
     if arm.mode == "EDIT":
         raise ForearmTwistError("Forearm Twist resumes after leaving bone Edit Mode.")
+    # All calls below are read-only until the resulting records are committed.
+    # Validate the same rig once, retaining the complete safety check on every
+    # update (including direct constraint edits without a depsgraph notification).
+    inventory = limb_ik._validate_inventory(arm)
+    resolved = {}
     for side in tuple(records):
-        _arm, rig = _resolve_rig(obj, side)
+        _arm, rig = _resolve_rig(obj, side, _inventory=inventory)
+        resolved[side] = (_arm, rig)
         records[side] = _current_record(obj, arm, rig, side, records[side], records)
     # Old files did not have a paired flag. They migrate to the symmetric UI.
     # Explicit single-side Python calls remain useful for non-paired fixtures.
@@ -824,19 +839,22 @@ def _prepare_runtime_records(obj):
                           if r.get("profile_source") in records), None)
         source_side = preferred or ("L" if "L" in records else "R")
         source = records[source_side]
-        records, _other = _prepare_mirror(obj, source_side, source, records=records)
+        for side in ('L', 'R'):
+            if side not in resolved:
+                resolved[side] = _resolve_rig(obj, side, _inventory=inventory)
+        records, _other = _prepare_mirror(obj, source_side, source, records=records, _resolved=resolved)
     return records
 
 
-def _prepare_mirror(obj, source_side, source_record=None, *, records=None, complete_missing=False):
+def _prepare_mirror(obj, source_side, source_record=None, *, records=None, complete_missing=False, _resolved=None):
     records = _records(obj) if records is None else records
     source = source_record if source_record is not None else records.get(source_side)
     if source is None:
         raise ForearmTwistError("Calibrate this arm before syncing the other arm.")
-    arm, source_rig = _resolve_rig(obj, source_side)
+    arm, source_rig = _resolved[source_side] if _resolved is not None else _resolve_rig(obj, source_side)
     source = _current_record(obj, arm, source_rig, source_side, source, records)
     target_side = "R" if source_side == "L" else "L"
-    _arm, target_rig = _resolve_rig(obj, target_side)
+    _arm, target_rig = _resolved[target_side] if _resolved is not None else _resolve_rig(obj, target_side)
     target = records.get(target_side)
     if target is not None:
         target = _current_record(obj, arm, target_rig, target_side, target, records)
@@ -871,7 +889,7 @@ def _prepare_mirror(obj, source_side, source_record=None, *, records=None, compl
             target = _capture_record(obj, arm, target_rig, target_side, {source_side: source},
                                      owned_record=old_target, rings_override=rings)
             target["created_basis"] = old_target.get("created_basis", False)
-    pairs = mirror_ring_pairs(obj, arm, source, target)
+    pairs = validation_cache.mirror_pairs(obj, arm, source, target, mirror_ring_pairs)
     for source_index, target_index in pairs:
         target["rings"][target_index]["ratio"] = source["rings"][source_index]["ratio"]
     if "range_start" in source:
@@ -1636,6 +1654,7 @@ def _cleanup_runtime_scene():
         _OUTPUT_CACHE.clear()
         _KEY_REFERENCES.clear()
         _ERRORS.clear()
+        validation_cache.clear()
 
 
 def _complete_runtime_lifecycle():
@@ -1680,6 +1699,7 @@ def register_forearm_twist_runtime():
         _DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(_draw_loop, (), "WINDOW", "POST_VIEW")
     _CACHE.clear()
     _OUTPUT_CACHE.clear()
+    validation_cache.clear()
     _request_runtime_lifecycle()
 
 
@@ -1698,6 +1718,7 @@ def unregister_forearm_twist_runtime():
     _request_runtime_lifecycle()
     _CACHE.clear()
     _OUTPUT_CACHE.clear()
+    validation_cache.clear()
     if not _SCENE_CLEANUP_PENDING:
         _KEY_REFERENCES.clear()
     _ERRORS.clear()
