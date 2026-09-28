@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "addons"))
 
 import character_designer
 from character_designer import shape_key_tools
-from character_designer.ui_constants import UI_PAGE_MISC
+from character_designer.ui_constants import UI_PAGE_MODELING
 
 
 EPSILON = 1.0e-7
@@ -62,7 +62,7 @@ def make_fixture(symmetric=False):
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
-    bpy.context.window_manager.character_designer.ui_page = UI_PAGE_MISC
+    bpy.context.window_manager.character_designer.ui_page = UI_PAGE_MODELING
     bpy.ops.object.mode_set(mode="EDIT")
     return obj, basis, smile, dependent
 

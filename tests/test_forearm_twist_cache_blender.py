@@ -1,4 +1,5 @@
 """Forearm cached preflight stays exact across direct RNA and runtime edits."""
+import math
 import os
 import sys
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from test_forearm_twist_ranges_blender import bilateral_fixture
 def ready():
     fixture = bilateral_fixture()
     obj = fixture['mesh']
-    runtime.start_test(bpy.context, obj, symmetry=False)
+    runtime.start_test(bpy.context, obj, symmetry=False, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, confirm=True)
     runtime.mirror_calibration(bpy.context, obj, 'L')
     fixture['target'].rotation_mode = 'XYZ'

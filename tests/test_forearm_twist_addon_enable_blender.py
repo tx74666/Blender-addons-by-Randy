@@ -3,6 +3,7 @@
 Run with --background --factory-startup --python-exit-code 1 --python this file.
 Only synthetic scene data is used. No installed add-on or blend file is written.
 """
+import math
 import os
 import sys
 import traceback
@@ -56,7 +57,7 @@ def main():
     fixture = fixtures.make_fixture("DIRECT_PREROLL")
     mesh = fixture["mesh"]
     bpy.context.scene.render.use_lock_interface = False
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, True)
     key = mesh.data.shape_keys.key_blocks[runtime.KEY_PREFIX + "L"]
     assert not key.mute and bpy.context.scene.render.use_lock_interface

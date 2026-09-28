@@ -379,6 +379,8 @@ class CHARACTERDESIGNER_OT_quick_bind(Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
         state.last_message = f'{target.name}: weights bound to {state.rig.name}'
+        if not result['previous_weights_topology_matches']:
+            state.last_message += '; Previous Weights kept, restore requires the original mesh topology'
         self.report({'INFO'}, state.last_message)
         return {'FINISHED'}
 

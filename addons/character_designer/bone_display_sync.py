@@ -20,6 +20,8 @@ def _candidates():
         return {}
     result = {}
     for rig in scene.objects:
+        if scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
+            continue
         if (rig.type != 'ARMATURE' or rig.library or rig.data.library
                 or not rig.is_editable or rig.data.users != 1):
             continue

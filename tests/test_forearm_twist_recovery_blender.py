@@ -1,4 +1,5 @@
 """Stale forearm calibration can be disabled, inspected and restored safely."""
+import math
 import copy
 import os
 import sys
@@ -43,7 +44,7 @@ def panel_state():
 
 def calibrated_fixture(side="L"):
     fixture = fixtures.make_fixture(fixtures.BUILD_METHODS[0], side=side, build_ik=False)
-    runtime.start_test(bpy.context, fixture["mesh"], side)
+    runtime.start_test(bpy.context, fixture["mesh"], side, initial_angle=math.pi / 2)
     runtime.set_ratio(bpy.context, 3, .34)
     runtime.finish_test(bpy.context, confirm=True)
     fixtures.pose_target(fixture, 45.)

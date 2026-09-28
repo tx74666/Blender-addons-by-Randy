@@ -9,7 +9,7 @@ from bpy.types import Operator, Panel
 from mathutils import Vector
 from mathutils.kdtree import KDTree
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MODELING, active_ui_page
 
 
 class ShapeKeyCleanupError(ValueError):
@@ -369,7 +369,7 @@ class _ShapeKeyClearOperator(Operator):
     @classmethod
     def poll(cls, context):
         return (
-            active_ui_page(context) == UI_PAGE_MISC
+            active_ui_page(context) == UI_PAGE_MODELING
             and context.mode == "EDIT_MESH"
             and context.view_layer is not None
             and context.view_layer.objects.active is not None
@@ -411,6 +411,8 @@ class CHARACTERDESIGNER_OT_clear_shape_key_selected(_ShapeKeyClearOperator):
 
 class CHARACTERDESIGNER_PT_shape_key_tools(Panel):
     bl_label = "Shape Key"
+    bl_parent_id = "CHARACTERDESIGNER_PT_main"
+    bl_order = 2
     bl_idname = "CHARACTERDESIGNER_PT_shape_key_tools"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -419,7 +421,7 @@ class CHARACTERDESIGNER_PT_shape_key_tools(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_MISC
+        return active_ui_page(context) == UI_PAGE_MODELING
 
     def draw(self, context):
         layout = self.layout

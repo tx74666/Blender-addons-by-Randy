@@ -108,6 +108,8 @@ def assert_triangle_loop_metadata(sections, layers, first_ring=0):
 
 
 def reset_scene():
+    # This suite asserts the original Hair profile; General has its own suite.
+    bpy.context.window_manager.character_designer.curve_tools_mode = 'HAIR'
     if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     bpy.ops.object.select_all(action="SELECT")

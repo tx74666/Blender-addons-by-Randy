@@ -3,6 +3,7 @@
 import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 
@@ -15,6 +16,7 @@ if str(ADDONS_ROOT) not in sys.path:
 import character_designer
 from character_designer import (
     animation,
+    body_calibration_ui,
     character_setup,
     delta_symmetry,
     finger_bones,
@@ -23,8 +25,10 @@ from character_designer import (
     limb_ik,
     reference_views,
     selected_bone_weights,
+    shape_key_tools,
     skirt,
     spline_ik_setup,
+    unity_export_ui,
     weight_symmetry,
 )
 from character_designer.ui_constants import (
@@ -32,6 +36,7 @@ from character_designer.ui_constants import (
     UI_PAGE_CLOTHING,
     UI_PAGE_HAIR,
     UI_PAGE_MISC,
+    UI_PAGE_MODELING,
     UI_PAGE_RIG,
     UI_PAGE_WEIGHT,
     active_rig_section,
@@ -46,13 +51,21 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
     limb_settings = bpy.context.window_manager.character_designer_limb_ik
     settings.rig_section = section
     result = bpy.ops.character_designer.set_ui_page(page=page)
-    expected_page = UI_PAGE_RIG if page == UI_PAGE_CLOTHING else page
+    expected_page = {
+        UI_PAGE_CLOTHING: UI_PAGE_RIG,
+        UI_PAGE_HAIR: UI_PAGE_MODELING,
+    }.get(page, page)
     if "FINISHED" not in result or settings.ui_page != expected_page:
         raise AssertionError(f"Could not switch to CDesigner page {page}")
     if page == UI_PAGE_CLOTHING and settings.rig_section != "SKIRT":
         raise AssertionError("The legacy Clothing route did not select Rig > Skirt")
+    if page == UI_PAGE_HAIR and settings.curve_tools_mode != "HAIR":
+        raise AssertionError("The legacy Hair route did not select Curve Tools > Hair")
 
     actual = {
+        "curve_tools": character_designer.CHARACTERDESIGNER_PT_curve_tools.poll(bpy.context),
+        "shape_keys": shape_key_tools.CHARACTERDESIGNER_PT_shape_key_tools.poll(bpy.context),
+        "unity_export": unity_export_ui.CHARACTERDESIGNER_PT_unity_export.poll(bpy.context),
         "quick_bind": character_setup.CHARACTERDESIGNER_PT_quick_bind.poll(bpy.context),
         "character_setup": character_setup.CHARACTERDESIGNER_PT_character_setup.poll(bpy.context),
         "animation": animation.CHARACTERDESIGNER_PT_animation.poll(bpy.context),
@@ -79,6 +92,9 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "hair_rig": hair_bones.CHARACTERDESIGNER_PT_hair_bones.poll(bpy.context),
     }
     expected = {
+        "curve_tools": modeling,
+        "shape_keys": modeling,
+        "unity_export": expected_page == UI_PAGE_MISC,
         "quick_bind": weight,
         "character_setup": expected_page in {UI_PAGE_WEIGHT, UI_PAGE_RIG},
         "animation": motion,
@@ -113,11 +129,12 @@ def assert_rig_subroutes():
         result = bpy.ops.character_designer.set_rig_section(section=section)
         if result != {"FINISHED"} or settings.ui_page != UI_PAGE_RIG or settings.rig_section != section:
             raise AssertionError(f"Could not enter Rig > {section}")
-    for page in (UI_PAGE_HAIR, UI_PAGE_WEIGHT, UI_PAGE_RIG, UI_PAGE_MISC):
+    for page in (UI_PAGE_MODELING, UI_PAGE_HAIR, UI_PAGE_WEIGHT, UI_PAGE_RIG, UI_PAGE_MISC):
         for section in identifiers:
             settings.rig_section = section
             bpy.ops.character_designer.set_ui_page(page=page)
-            if active_ui_page(bpy.context) != page or active_rig_section(bpy.context) != section:
+            expected_page = UI_PAGE_MODELING if page == UI_PAGE_HAIR else page
+            if active_ui_page(bpy.context) != expected_page or active_rig_section(bpy.context) != section:
                 raise AssertionError("Switching pages lost the selected Rig section")
             for candidate in identifiers:
                 if rig_page_active(bpy.context, candidate) != (page == UI_PAGE_RIG and section == candidate):
@@ -130,6 +147,107 @@ def assert_rig_subroutes():
     assert_only_page(UI_PAGE_RIG, section="SKIRT", clothing=True)
     assert_only_page(UI_PAGE_CLOTHING, clothing=True)
     settings.rig_section = "BODY"
+
+
+def assert_curve_tool_routes():
+    settings = bpy.context.window_manager.character_designer
+    mode_property = character_designer.CharacterDesignerState.bl_rna.properties[
+        "curve_tools_mode"
+    ]
+    if mode_property.default != "GENERAL" or not mode_property.is_skip_save:
+        raise AssertionError("Curve Tools must default to General and remain session-only")
+    if tuple(item.identifier for item in mode_property.enum_items) != ("GENERAL", "HAIR"):
+        raise AssertionError("Curve Tools must offer General and Hair")
+
+    class LayoutProxy:
+        def __init__(self):
+            self.buttons = []
+
+        def box(self):
+            return self
+
+        def row(self, **_kwargs):
+            return self
+
+        def operator(self, operator, **kwargs):
+            button = SimpleNamespace(operator=operator, **kwargs)
+            self.buttons.append(button)
+            return button
+
+    expected_tabs = (UI_PAGE_MODELING, UI_PAGE_WEIGHT, UI_PAGE_RIG, UI_PAGE_ANIMATION, UI_PAGE_MISC)
+    for page in expected_tabs:
+        layout = LayoutProxy()
+        character_designer._draw_page_tabs(layout, page)
+        if tuple(button.page for button in layout.buttons) != expected_tabs:
+            raise AssertionError("Top-level navigation must start with Modeling and contain five pages without Hair")
+        if tuple(button.page for button in layout.buttons if button.depress) != (page,):
+            raise AssertionError("Top-level navigation did not highlight the active page")
+
+    dirty_before_toggle = bpy.data.is_dirty
+    settings.ui_page = UI_PAGE_HAIR
+    settings.curve_tools_mode = "GENERAL"
+    if active_ui_page(bpy.context) != UI_PAGE_MODELING:
+        raise AssertionError("A legacy Hair value did not resolve to Modeling")
+    if settings.ui_page != UI_PAGE_HAIR or settings.curve_tools_mode != "GENERAL":
+        raise AssertionError("Resolving the legacy page rewrote session settings")
+    if bpy.ops.character_designer.set_ui_page(page=UI_PAGE_HAIR) != {"FINISHED"}:
+        raise AssertionError("The legacy Hair shortcut failed")
+    if settings.ui_page != UI_PAGE_MODELING or settings.curve_tools_mode != "HAIR":
+        raise AssertionError("The legacy Hair shortcut lost its Hair behavior")
+    for mode in ("GENERAL", "HAIR"):
+        settings.curve_tools_mode = mode
+        bpy.ops.character_designer.set_ui_page(page=UI_PAGE_WEIGHT)
+        bpy.ops.character_designer.set_ui_page(page=UI_PAGE_MODELING)
+        if settings.curve_tools_mode != mode:
+            raise AssertionError("Switching pages lost the selected Curve Tools mode")
+    settings.curve_tools_mode = "GENERAL"
+    if bpy.data.is_dirty != dirty_before_toggle:
+        raise AssertionError("Changing Curve Tools modes or legacy routes dirtied the .blend")
+
+
+def assert_modeling_panel_hierarchy():
+    settings = bpy.context.window_manager.character_designer
+    panels = (
+        character_designer.CHARACTERDESIGNER_PT_curve_tools,
+        shape_key_tools.CHARACTERDESIGNER_PT_shape_key_tools,
+        delta_symmetry.CHARACTERDESIGNER_PT_delta_symmetry,
+        reference_views.CHARACTERDESIGNER_PT_reference_views,
+    )
+    export_panel = unity_export_ui.CHARACTERDESIGNER_PT_unity_export
+    parent = character_designer.CHARACTERDESIGNER_PT_main.bl_idname
+    if any(panel.bl_parent_id != parent for panel in (*panels, export_panel)):
+        raise AssertionError("Modeling tools and Unity Export must be children of Character Designer")
+    if tuple(panel.bl_order for panel in panels) != (1, 2, 3, 4):
+        raise AssertionError("Modeling tools must appear as Curve Tools, Shape Key, Build Symmetry, Reference Views")
+    if export_panel.bl_order != 1:
+        raise AssertionError("Unity Export must retain its existing order")
+
+    before = (
+        bpy.data.is_dirty, bpy.context.mode,
+        bpy.context.view_layer.objects.active,
+        tuple(bpy.context.selected_objects),
+        tuple((obj.as_pointer(), obj.name, tuple(tuple(row) for row in obj.matrix_world))
+              for obj in bpy.data.objects),
+        tuple((scene.name, repr(dict(scene.items()))) for scene in bpy.data.scenes),
+    )
+    for page in (UI_PAGE_MODELING, UI_PAGE_MISC, UI_PAGE_WEIGHT, UI_PAGE_RIG, UI_PAGE_ANIMATION, UI_PAGE_HAIR):
+        settings.ui_page = page
+        expected_modeling = page in {UI_PAGE_MODELING, UI_PAGE_HAIR}
+        if tuple(panel.poll(bpy.context) for panel in panels) != (expected_modeling,) * 4:
+            raise AssertionError(f"Modeling panels leaked into or disappeared from {page}")
+        if export_panel.poll(bpy.context) != (page == UI_PAGE_MISC):
+            raise AssertionError(f"Unity Export leaked into or disappeared from {page}")
+    after = (
+        bpy.data.is_dirty, bpy.context.mode,
+        bpy.context.view_layer.objects.active,
+        tuple(bpy.context.selected_objects),
+        tuple((obj.as_pointer(), obj.name, tuple(tuple(row) for row in obj.matrix_world))
+              for obj in bpy.data.objects),
+        tuple((scene.name, repr(dict(scene.items()))) for scene in bpy.data.scenes),
+    )
+    if before != after:
+        raise AssertionError("Checking Modeling/Miscellaneous routes changed scene data or editing context")
+    settings.ui_page = UI_PAGE_MODELING
 
 
 def assert_weight_panel_forwards_full_auto(expected):
@@ -279,9 +397,14 @@ def assert_compact_limb_ik_panel():
     )
     old_armature = settings.armature
     old_advanced = settings.show_body_setup_advanced
+    original_calibration_draw = body_calibration_ui.draw
+    # This regression covers the legacy fields inside Controls > Advanced.
+    # Keep its neutral Cube context, and bypass only the new Setup router;
+    # calibration routing with actual armatures is covered by its own tests.
     settings.show_body_setup_advanced = True
     settings.armature = None
     try:
+        body_calibration_ui.draw = lambda _layout, _context: False
         for selection, fields in expected_fields.items():
             settings.selected_limb = selection
             layout = LayoutProxy()
@@ -409,6 +532,7 @@ def assert_compact_limb_ik_panel():
         finally:
             limb_ik._active_has_owned_side_rig = original_owned_check
     finally:
+        body_calibration_ui.draw = original_calibration_draw
         settings.armature = old_armature
         settings.show_body_setup_advanced = old_advanced
         settings.build_method = "ROLL_DECOUPLED"
@@ -424,8 +548,10 @@ def main():
         ):
             raise AssertionError("The removed Weight Flow feature is still registered")
         settings = bpy.context.window_manager.character_designer
-        if settings.ui_page != UI_PAGE_HAIR:
-            raise AssertionError("Hair must be the default CDesigner page")
+        if settings.ui_page != UI_PAGE_MODELING:
+            raise AssertionError("Modeling must be the default CDesigner page")
+        if settings.curve_tools_mode != "GENERAL":
+            raise AssertionError("General must be the default Curve Tools mode")
         if settings.rig_section != "BODY":
             raise AssertionError("Body must be the default Rig section")
 
@@ -434,6 +560,7 @@ def main():
         ]
         identifiers = tuple(item.identifier for item in ui_page_property.enum_items)
         expected_identifiers = (
+            UI_PAGE_MODELING,
             UI_PAGE_HAIR,
             UI_PAGE_WEIGHT,
             UI_PAGE_RIG,
@@ -443,6 +570,15 @@ def main():
         )
         if identifiers != expected_identifiers:
             raise AssertionError(f"Unexpected CDesigner pages: {identifiers}")
+        values = {item.identifier: item.value for item in ui_page_property.enum_items}
+        if values != {
+            UI_PAGE_HAIR: 0, UI_PAGE_WEIGHT: 1, UI_PAGE_RIG: 2,
+            UI_PAGE_CLOTHING: 5, UI_PAGE_ANIMATION: 6, UI_PAGE_MISC: 3,
+            UI_PAGE_MODELING: 7,
+        }:
+            raise AssertionError(f"Existing CDesigner RNA page values changed: {values}")
+        if ui_page_property.default != UI_PAGE_MODELING:
+            raise AssertionError("The CDesigner RNA page default must be Modeling")
         if not ui_page_property.is_skip_save:
             raise AssertionError("CDesigner page state must not dirty or persist in .blend")
 
@@ -477,7 +613,7 @@ def main():
         assert_compact_limb_ik_panel()
         settings.normalize_affected_deform_weights = True
         assert_only_page(UI_PAGE_WEIGHT, weight=True)
-        assert_only_page(UI_PAGE_HAIR)
+        assert_only_page(UI_PAGE_HAIR, modeling=True, reference=True)
         assert_only_page(UI_PAGE_WEIGHT, weight=True)
         if not settings.normalize_affected_deform_weights:
             raise AssertionError("The checkbox did not survive page redraws in-session")
@@ -490,14 +626,17 @@ def main():
         if "depress=active_page == page" not in tab_source:
             raise AssertionError("The active CDesigner page is not visibly depressed")
 
-        assert_only_page(UI_PAGE_HAIR)
+        assert_only_page(UI_PAGE_HAIR, modeling=True, reference=True)
         assert_only_page(UI_PAGE_WEIGHT, weight=True)
         assert_only_page(UI_PAGE_RIG, rig=True)
         assert_only_page(UI_PAGE_CLOTHING, clothing=True)
         assert_only_page(UI_PAGE_ANIMATION, motion=True)
-        assert_only_page(UI_PAGE_MISC, modeling=True, reference=True)
+        assert_only_page(UI_PAGE_MODELING, modeling=True, reference=True)
+        assert_only_page(UI_PAGE_MISC)
         assert_rig_subroutes()
-        print("PASS CDesigner UI Pages 4 tests")
+        assert_curve_tool_routes()
+        assert_modeling_panel_hierarchy()
+        print("PASS CDesigner UI Pages 6 tests")
     finally:
         character_designer.unregister()
 

@@ -133,6 +133,55 @@ def range_influence(position, rings, start, end, transition=0.1):
     return amount * amount * (3.0 - 2.0 * amount)
 
 
+def compile_sampler(rings, *, start=None, end=None, transition=0.1):
+    """Validate a saved profile once, then sample its smooth ratio and mask.
+
+    The ratio matches ``forearm_twist_math.profile_ratio`` rather than the
+    linear ``interpolate_ratio`` helper. The closure owns immutable numeric
+    snapshots, so editing saved rings requires compiling a fresh sampler.
+    Omitted bounds retain legacy unrestricted correction.
+    """
+    knots = profile_knots(rings)
+    positions = tuple(position for position, _ratio in knots)
+    ratios = tuple(ratio for _position, ratio in knots)
+    if any(right - left <= 1.0e-8 for left, right in zip(positions, positions[1:])):
+        raise ForearmProfileError("Profile knot positions must be distinct.")
+    bounded = start is not None or end is not None
+    if bounded:
+        start, end = _index(start, "Range start"), _index(end, "Range end")
+        if not 0 <= start < end < len(knots):
+            raise ForearmProfileError("Choose distinct start and end loops in captured order.")
+        first, last = positions[start], positions[end]
+        span = last - first
+        if not math.isfinite(span):
+            raise ForearmProfileError("The selected loop span is not finite.")
+        transition = _number(transition, "Boundary transition", minimum=0.0, maximum=0.5)
+
+    def sample(position):
+        position = _number(position, "Sample position")
+        if position <= positions[0]:
+            ratio = ratios[0]
+        elif position >= positions[-1]:
+            ratio = ratios[-1]
+        else:
+            right = bisect.bisect_left(positions, position)
+            left = right - 1
+            amount = (position - positions[left]) / (positions[right] - positions[left])
+            amount = amount * amount * (3.0 - 2.0 * amount)
+            ratio = ratios[left] + (ratios[right] - ratios[left]) * amount
+        influence = 1.0
+        if bounded:
+            if position <= first or position >= last:
+                influence = 0.0
+            elif transition != 0.0:
+                amount = min(1.0, ((position - first) / span) / transition,
+                             ((last - position) / span) / transition)
+                influence = amount * amount * (3.0 - 2.0 * amount)
+        return ratio, influence
+
+    return sample
+
+
 def apply_default(rings, start, end, k=0.4):
     """Explicitly replace only selected interior shares, preserving authored anchors.
 

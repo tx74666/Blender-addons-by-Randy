@@ -120,7 +120,8 @@ def test_native_interpolation_preserves_and_repeats():
         assert target.vertex_groups.get('CTRL') is None
         assert target.vertex_groups.get('Modeling') is None
         assert next(g for g in _capture_vertex_groups(target) if g['name'] == 'SculptMask') == artist_group
-        assert mesh_state(target) == original_state
+        assert mesh_state(target)[:-1] == original_state[:-1]
+        assert target.parent == armature and target.parent_type == 'OBJECT'
         assert (mesh_state(body), _capture_vertex_groups(body)) == source_state
         assert tuple(m.type for m in target.modifiers) == ('MIRROR', 'ARMATURE', 'SUBSURF')
         assert target.modifiers[1].object == armature
@@ -226,7 +227,8 @@ def test_native_auto_weights_and_deform():
     assert result['group_count'] == 1
     assert all(abs(weight(target, 'Foot', i)-1) < 1e-6 for i in range(len(target.data.vertices)))
     assert weight(target, 'ArtistMask', 0) == .75
-    assert mesh_state(target) == before
+    assert mesh_state(target)[:-1] == before[:-1]
+    assert target.parent == armature and target.parent_type == 'OBJECT'
     armature.pose.bones['Foot'].location.x = .25
     bpy.context.view_layer.update()
     evaluated = target.evaluated_get(bpy.context.evaluated_depsgraph_get())
@@ -243,7 +245,8 @@ def test_native_auto_mirror_retains_base_mesh():
     mirror = target.modifiers.new('Live Mirror', 'MIRROR')
     before = mesh_state(target)
     service.bind_weights(bpy.context, target, armature, mode='AUTO')
-    assert mesh_state(target) == before
+    assert mesh_state(target)[:-1] == before[:-1]
+    assert target.parent == armature and target.parent_type == 'OBJECT'
     assert len(target.data.vertices) == 8
     assert all(weight(target, 'Foot.L', i) > .99 for i in range(8))
     assert target.vertex_groups.get('Foot.R') is not None
@@ -306,7 +309,8 @@ def test_persistent_first_binding_restore():
             assert 'B' not in values
             for name in ('SculptMask', 'Later Artist Group', 'Later Hair Bone'):
                 assert values[name] == later[name]
-            assert mesh_state(target) == geometric
+            assert mesh_state(target)[:-1] == geometric[:-1]
+            assert target.parent is None
             assert not service.has_binding_backup(target)
             assert target.modifiers[-1].name == 'Later Subdivision'
             if had_modifier:

@@ -515,7 +515,8 @@ class CHARACTERDESIGNER_PT_fingers(Panel):
 
     @classmethod
     def poll(cls, context):
-        return rig_page_active(context, "BODY")
+        from .body_calibration_hands import fingers_visible
+        return rig_page_active(context, "BODY") and fingers_visible(context)
 
     def draw(self, context):
         layout = self.layout

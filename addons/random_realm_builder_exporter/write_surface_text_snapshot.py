@@ -1,6 +1,7 @@
 """Convert a compact Blender library into a standalone Surface Text source file."""
 
 import os
+import math
 import sys
 
 import bpy
@@ -29,6 +30,14 @@ def main():
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
+    arguments = sys.argv[sys.argv.index("--") + 1:]
+    if "--unit-scale" in arguments:
+        scale = float(arguments[arguments.index("--unit-scale") + 1])
+        if not math.isfinite(scale) or scale <= 0:
+            raise RuntimeError("Surface Text snapshot unit scale must be positive and finite.")
+        scene.unit_settings.scale_length = scale
+    if "--unit-system" in arguments:
+        scene.unit_settings.system = arguments[arguments.index("--unit-system") + 1]
     with bpy.data.libraries.load(library_path, link=False) as (data_from, data_to):
         data_to.objects = list(data_from.objects)
 

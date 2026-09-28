@@ -1,4 +1,33 @@
-# Character Designer 0.61.64
+# Character Designer 0.67.0
+
+## Quick Bind hierarchy (0.67.0)
+
+Successful Surface Transfer and Automatic Weights now parent the clothing mesh
+to Main Rig while preserving its world transform and local channels. Parenting
+is committed with the weights and modifier; failures roll back the whole change.
+Previous Weights also restores tool-owned parent changes, and existing Remove /
+Restore Binding disconnects / reconnects that hierarchy. The first weight backup
+is preserved byte-for-byte on rebind.
+
+## Compact Hair Bones workflow (0.66.1)
+
+Hair Bones uses Main Rig and Head from Character Setup. The panel has one strand
+selection button, a count, Bones per Chain and Bind Hair to Character. Retired
+local rig overrides no longer affect new bindings. Mesh changes keep Bind visible
+but disabled until Refresh Hair Strands validates and replaces the old capture.
+Refresh failures retain the saved capture, and existing bindings stay attached
+until explicitly removed.
+
+## Pose asset activation (0.66.0)
+
+Double-left-click applies a Pose asset. Shift-double-left-click applies it mirrored;
+the Asset Browser context menu also exposes both Character Designer commands.
+Unconstrained native fingers use Blender's normal application even on generated
+rigs without an old compatibility baseline. Constrained native poses retain the
+rest-compatibility guard and controller matching. When only an asset's source
+side is selected, mirrored finger application temporarily uses the corresponding
+destination subset and restores the original selection. Existing destination
+selection is respected. No scene polling or persistent gesture timer is added.
 
 ## Hide finger setup guides after Body Setup (0.61.64)
 
@@ -584,6 +613,13 @@ It restores the first pre-Quick-Bind weights/state, rather than merely removing
 the current connection; it still requires unchanged topology. Its baseline is
 preserved through Remove/Restore Binding. Conflicting or missing modifier slots
 are refused without discarding recovery data. These actions support Blender Undo.
+
+Version 0.64.2 allows **Rebind Weights** after editing the target topology.
+It calculates weights for the current vertices and retains the first backup
+unchanged. A successful rebind reports when **Previous Weights** belongs to
+different topology; restoring that backup still requires the original topology.
+Use Blender Undo to undo the latest rebind. Solver or write failures restore
+the state immediately before that attempt, including after topology edits.
 
 ## Unity Export
 
@@ -1221,9 +1257,10 @@ their original scripts, objects, weights, and caches are not executed or edited.
 **Hair > Hair Bones** creates an independent chain for each captured strand.
 The default is four bones per chain, adjustable before binding.
 
-1. Enter Mesh Edit Mode on the original hair and press **Select Hair Strands**.
-   Deselect everything first to discover all visible strands, or select tips
-   to limit discovery, then capture every strand before binding the whole mesh.
+1. Enter Mesh Edit Mode on the original hair and press **Select All Hair Strands**.
+   This scans all visible geometry even when one strand is already selected.
+   Use **From Selected Tips** to capture only strands touching selected vertices.
+   Capture every strand before binding the whole mesh.
 2. Set **Bones per Chain**, check the displayed character/Head, and press
    **Bind Hair to Character**. The original mesh remains the same object and
    uses the character's own Armature. Rotate the selected hair bones in Pose Mode.
@@ -1234,6 +1271,20 @@ The default is four bones per chain, adjustable before binding.
 4. Remove before changing chain counts or topology, then use **Recapture
    Strands** and bind again. Recapture retains old capture/guide infrastructure
    required to read earlier files; it does not delete guide objects.
+
+Version 0.65.0 reuses the edge index and complete strand partitions during
+discovery instead of repeating whole-mesh scans for every edge. It preserves
+strict surface validation. Seams are not required for detection; seam-guided
+segmentation is not implemented by this update.
+
+The existing character **Head** controls the hair cap and strand roots. Weights
+blend into each independent strand chain near its root. Small, closed distal
+surface caps are validated separately from the regular strand core and follow
+the final strand bone. A terminal patch must be a short, finite disk bounded
+only by that strand's last closed ring; unrelated, branching or long residual
+geometry remains a binding error. Selection includes validated terminal patches.
+Core capture records remain compatible with earlier files. The whole binding,
+including terminal weights, is reversible with **Remove Hair Binding**.
 
 Old version-copy scenes remain readable, but no new copies are made by the UI.
 **Cleanup Generated Copies** deletes only verified plugin-owned version meshes,

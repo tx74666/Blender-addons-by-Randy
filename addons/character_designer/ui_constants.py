@@ -6,16 +6,18 @@ UI_PAGE_RIG = "RIG"
 UI_PAGE_MISC = "MISCELLANEOUS"
 UI_PAGE_CLOTHING = "CLOTHING"
 UI_PAGE_ANIMATION = "ANIMATION"
-UI_PAGE_DEFAULT = UI_PAGE_HAIR
+UI_PAGE_MODELING = "MODELING"
+UI_PAGE_DEFAULT = UI_PAGE_MODELING
 
 UI_PAGE_ITEMS = (
-    # Keep the existing RNA values when combining the Modeling/Reference pages.
-    (UI_PAGE_HAIR, "Hair", "Hair modeling, centerlines, and curve recovery", 0),
+    # Preserve RNA values for old callers and session state.
+    (UI_PAGE_MODELING, "Modeling", "Curve tools, shape keys, symmetry, and reference views", 7),
+    (UI_PAGE_HAIR, "Hair", "Legacy shortcut to Modeling / Curve Tools / Hair", 0),
     (UI_PAGE_WEIGHT, "Weight", "Automatic weighting and weight symmetry", 1),
     (UI_PAGE_RIG, "Rig", "Body, hair, and skirt rigs and attachment", 2),
     (UI_PAGE_CLOTHING, "Clothing", "Legacy shortcut to Rig / Skirt", 5),
     (UI_PAGE_ANIMATION, "Animation", "Free local motion generation and body Actions", 6),
-    (UI_PAGE_MISC, "Miscellaneous", "Unity export, modeling symmetry, and reference view sets", 3),
+    (UI_PAGE_MISC, "Miscellaneous", "Unity export and other utilities", 3),
 )
 UI_PAGES = frozenset(item[0] for item in UI_PAGE_ITEMS)
 
@@ -34,6 +36,8 @@ def active_ui_page(context):
     page = getattr(settings, "ui_page", UI_PAGE_DEFAULT) if settings else UI_PAGE_DEFAULT
     if page == UI_PAGE_CLOTHING:
         return UI_PAGE_RIG
+    if page == UI_PAGE_HAIR:
+        return UI_PAGE_MODELING
     return page if page in UI_PAGES else UI_PAGE_DEFAULT
 
 

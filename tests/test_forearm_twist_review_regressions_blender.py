@@ -1,4 +1,5 @@
 """Focused review fixes: picker guards, legacy support, manual sampling, UI RNA."""
+import math
 import copy
 import os
 import sys
@@ -22,7 +23,7 @@ def test_picker_does_not_bypass_destructive_or_frame_guards():
     mesh, arm = f["mesh"], f["armature"]
     pose, keys = fixtures.pose_snapshot(arm), fixtures.key_snapshot(mesh)
     for kind in ("G", "R", "S", "X", "DEL", "TAB", "F3", "FRAME"):
-        runtime.start_test(bpy.context, mesh)
+        runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
         runtime._SESSION["picking"] = True
         timer = bpy.context.window_manager.event_timer_add(.2, window=bpy.context.window)
         owner = SimpleNamespace(_timer=timer, report=lambda *_args: None)
@@ -39,7 +40,7 @@ def test_picker_does_not_bypass_destructive_or_frame_guards():
 def test_escape_cancels_only_picker_and_ctrl_z_uses_session_history():
     f = fixtures.make_fixture("ROLL_DECOUPLED", build_ik=False)
     mesh = f["mesh"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     before = fixtures.record_for(mesh)
     runtime.set_ratio(bpy.context, 3, .83)
     runtime._SESSION["picking"] = True
@@ -62,7 +63,7 @@ def test_escape_cancels_only_picker_and_ctrl_z_uses_session_history():
 def test_rna_noop_commits_preserve_one_step_operator_undo_and_redo():
     f = fixtures.make_fixture("ROLL_DECOUPLED", build_ik=False)
     mesh = f["mesh"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     settings = bpy.context.window_manager.character_designer_forearm_twist
     try:
         settings.ring_index = 2
@@ -108,7 +109,7 @@ def test_rna_noop_commits_preserve_one_step_operator_undo_and_redo():
 def test_legacy_rest_roll_migration_keeps_old_palm_support():
     f = fixtures.make_fixture("ROLL_DECOUPLED", build_ik=False)
     mesh, arm = f["mesh"], f["armature"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, confirm=True)
     record = fixtures.record_for(mesh)
     for name in ("range_start", "range_end", "current_ring", "curve_strength", "transition"):
@@ -146,7 +147,7 @@ def test_manual_added_loop_samples_existing_smooth_profile():
     fixtures.pose_target(f, 22.)
     captured = [topology.capture_loop(mesh, arm, f["lower_name"], ids)
                 for index, ids in enumerate(f["rings"]) if index not in (3, 4)]
-    runtime.start_test(bpy.context, mesh, rings_override=captured)
+    runtime.start_test(bpy.context, mesh, rings_override=captured, initial_angle=math.pi / 2)
     runtime.set_ratio(bpy.context, 2, .1)
     runtime.set_ratio(bpy.context, 3, .9)
     runtime.finish_test(bpy.context, confirm=True)
@@ -207,7 +208,7 @@ class RNALayout:
 
 def test_saved_current_validation_and_twenty_draw_rna_variants():
     f = fixtures.make_fixture("ROLL_DECOUPLED", build_ik=False)
-    runtime.start_test(bpy.context, f["mesh"])
+    runtime.start_test(bpy.context, f["mesh"], initial_angle=math.pi / 2)
     runtime.set_range(bpy.context, 2, 5)
     settings = bpy.context.window_manager.character_designer_forearm_twist
     try:

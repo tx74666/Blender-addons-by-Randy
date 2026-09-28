@@ -1,6 +1,6 @@
 """Transactional whole-mesh binding using Blender's native weight solvers.
 
-Only deform-bone weights and one Armature modifier are written to the original.
+Deform-bone weights, one Armature modifier and the rig parent are updated.
 Calculation uses Basis geometry in world/rest space, with enabled Mirror
 modifiers; shape keys and other modifiers remain untouched and are not sampled.
 Call from an UNDO operator in Object Mode.
@@ -15,6 +15,7 @@ import bpy
 from mathutils import Matrix
 
 from .selected_bone_weights import _capture_vertex_groups, _restore_vertex_groups
+from . import quick_bind_parenting as parenting
 
 BACKUP_KEY = "character_designer_quick_binding_v1"
 RIG_KEY = "character_designer_quick_binding_rig"
@@ -235,7 +236,7 @@ def _restore_tracked_groups(target, record):
 
 
 def restore_binding(context, target):
-    """Restore only weights/modifier state owned by the first successful bind.
+    """Restore owned weights/modifier state and any Quick Bind parent change.
 
     The backup survives saving/reopening and repeated binds. Subsequent unrelated
     vertex groups, modifiers, geometry, UVs, shape keys, and rig additions remain.
@@ -250,6 +251,11 @@ def restore_binding(context, target):
     _check_backup_topology(target, record)
     _check_backup_group_ownership(target, record)
     modifier = _backup_modifier(target, record, allow_missing=True)
+    try:
+        parenting.check_restore(context, target, target.get(RIG_KEY))
+    except parenting.ParentingError as exc:
+        raise QuickBindError(str(exc)) from exc
+    parent_before = parenting.capture_state(target)
     before = _capture_vertex_groups(target)
     active_group = target.vertex_groups.active_index
     flags = (modifier.use_vertex_groups, modifier.use_bone_envelopes) if modifier else None
@@ -260,6 +266,7 @@ def restore_binding(context, target):
         _restore_tracked_groups(target, record)
         if modifier and not record['modifier']['created']:
             modifier.use_vertex_groups, modifier.use_bone_envelopes = record['modifier']['flags']
+        parenting.restore(context, target, armature)
         target.vertex_groups.active_index = min(active_group, max(0, len(target.vertex_groups) - 1))
         del target[BACKUP_KEY]
         if RIG_KEY in target:
@@ -268,6 +275,7 @@ def restore_binding(context, target):
             target.modifiers.remove(modifier)
         return result
     except Exception as exc:
+        parenting.rollback(context, target, parent_before)
         _restore_vertex_groups(target, before)
         target.vertex_groups.active_index = active_group
         target[BACKUP_KEY] = raw
@@ -336,6 +344,10 @@ def _validate(context, target, armature, body, mode):
             raise QuickBindError(f"{obj.name}: invalid object transform.")
         if abs(obj.matrix_world.determinant()) < 1e-12:
             raise QuickBindError(f"{obj.name}: object scale must not be zero.")
+    try:
+        parenting.preflight(context, target, armature)
+    except parenting.ParentingError as exc:
+        raise QuickBindError(str(exc)) from exc
     return names, modifier
 
 
@@ -463,14 +475,18 @@ def bind_weights(context, target, armature, *, body=None, mode='TRANSFER'):
 
     Source weights are sampled on Basis geometry plus enabled Mirror modifiers.
     Automatic Weights solves the full mirrored temporary mesh and samples its
-    result back onto the original base vertices. No original rig pose, parenting,
-    mesh datablock, modifier stack geometry, or shape keys are changed.
+    result back onto the original base vertices. The mesh becomes an object child
+    of the rig while retaining its world transform and local channels. Rig pose,
+    mesh datablock, modifier stack geometry and shape keys are preserved.
+    Rebinding uses current topology; only restoring the first weight backup
+    requires its original topology. Rebinding never replaces that backup.
     """
     names, existing = _validate(context, target, armature, body, mode)
     had_backup = has_binding_backup(target)
     record = _read_backup(target) if had_backup else None
+    previous_weights_topology_matches = (record is None
+                                         or _topology_signature(target) == record['topology'])
     if record:
-        _check_backup_topology(target, record)
         if target.get(RIG_KEY) != armature or set(record['names']) != set(names):
             raise QuickBindError("The rig or its deform bones changed. Restore Previous Binding before binding the changed rig.")
         _backup_modifier(target, record)
@@ -483,6 +499,7 @@ def bind_weights(context, target, armature, *, body=None, mode='TRANSFER'):
     created = None
     modifier_flags = (existing.use_vertex_groups, existing.use_bone_envelopes) if existing else None
     active_group = target.vertex_groups.active_index
+    parent_before = parenting.capture_state(target)
     try:
         destination = _temporary_copy(context, target, temporary)
         _only_deform_groups(destination, names, clear=True)
@@ -528,9 +545,12 @@ def bind_weights(context, target, armature, *, body=None, mode='TRANSFER'):
             target[BACKUP_KEY] = json.dumps(record, separators=(',', ':'))
             target[RIG_KEY] = armature
         target.vertex_groups.active_index = active_group
+        parenting.attach(context, target, armature)
         return {"mode": mode, "vertex_count": len(target.data.vertices),
-                "group_count": sum(bool(values) for values in weights.values()), "modifier": modifier.name}
+                "group_count": sum(bool(values) for values in weights.values()), "modifier": modifier.name,
+                "previous_weights_topology_matches": previous_weights_topology_matches}
     except Exception as exc:
+        parenting.rollback(context, target, parent_before)
         if record is not None and not had_backup:
             for key in (BACKUP_KEY, RIG_KEY):
                 if key in target:

@@ -9,9 +9,10 @@ from mathutils import Vector
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'addons'), str(ROOT / 'tests')]
 import character_designer
-from character_designer import body_setup, body_setup_ui, limb_ik, eye_ui, torso_ui
+from character_designer import body_setup, body_setup_ui, body_calibration, limb_ik, eye_ui, torso_ui
 from character_designer import root_control, limb_fk_visuals
 import test_limb_ik_blender as base
+from test_body_calibration_blender import prepare
 
 
 class Layout:
@@ -22,13 +23,16 @@ class Layout:
     def row(self, **_kwargs):
         return Layout(self.records, alert=self.alert, enabled=self.enabled)
 
-    box = column = row
+    box = column = split = row
 
     def label(self, **kwargs):
         self.records.append(('label', kwargs.get('text', '')))
 
     def prop(self, _data, name, **_kwargs):
         self.records.append(('property', name))
+
+    def prop_enum(self, _data, name, value, **_kwargs):
+        self.records.append(('enum', name, value))
 
     def prop_search(self, data, name, *_args, **kwargs):
         self.prop(data, name, **kwargs)
@@ -49,6 +53,10 @@ def buttons(records):
     return [r for r in records if r[0] == 'operator']
 
 
+def setup_buttons(records):
+    return [r for r in buttons(records) if r[1] == 'character_designer.body_setup']
+
+
 def main():
     character_designer.register()
     base.reset_scene()
@@ -63,15 +71,37 @@ def main():
     assert not settings.show_body_setup_advanced
     rna = limb_ik.CharacterDesignerLimbIKState.bl_rna.properties['show_body_setup_advanced']
     assert rna.is_skip_save and not rna.default
-    before = {b.name: b.matrix_local.copy() for b in rig.data.bones}
-    initial = buttons(draw(limb_ik.CHARACTERDESIGNER_PT_limb_ik))
-    assert initial[0][2] == 'Generate Body Setup' and not initial[0][3]
-    assert initial[1][2] == 'Remove Generated Controls' and initial[1][3] and not initial[1][4]
-    assert initial[0][5].action == 'GENERATE' and initial[1][5].action == 'REMOVE'
+    calibration = body_calibration.settings(rig)
+    calibration.tab = 'CONTROLS'  # A previously saved tab must not bypass Setup.
+    initial_records = draw(limb_ik.CHARACTERDESIGNER_PT_limb_ik)
+    initial = buttons(initial_records)
+    assert not setup_buttons(initial_records), 'Unconfirmed first setup must hide Generate and Remove'
+    assert ('property', 'tab') not in initial_records
+    assert ('property', 'preset') not in initial_records
+    assert [r[2] for r in initial_records if r[0] == 'enum' and r[1] == 'part'] == ['ARMS', 'LEGS', 'FINGERS']
+    assert any(r[1] == 'character_designer.body_calibration' for r in initial)
     assert not any(r[1] == 'character_designer.limb_ik_analyze' for r in initial)
     assert not hasattr(bpy.types, 'CHARACTERDESIGNER_PT_eye_controls')
     assert not any(r[1] == 'character_designer.eye_controls' for r in initial)
     assert ('label', 'Included in Body Setup') in draw(torso_ui.CHARACTERDESIGNER_PT_torso_controls)
+
+    settings.show_body_setup_advanced = True
+    first_mapping = draw(limb_ik.CHARACTERDESIGNER_PT_limb_ik)
+    assert any(r[1] == 'character_designer.limb_ik_analyze' for r in buttons(first_mapping))
+    assert first_mapping.count(('property', 'show_body_setup_advanced')) == 1
+    assert first_mapping.count(('property', 'preset')) == 1
+    assert not setup_buttons(first_mapping)
+    settings.show_body_setup_advanced = False
+    prepare(rig)
+    assert body_calibration.generation_ready(bpy.context, rig)
+    prepared_records = draw(limb_ik.CHARACTERDESIGNER_PT_limb_ik)
+    prepared = setup_buttons(prepared_records)
+    assert len(prepared) == 1 and prepared[0][2] == 'Generate' and not prepared[0][3]
+    assert prepared[0][5].action == 'GENERATE'
+    finger_row = prepared_records.index(('enum', 'part', 'FINGERS'))
+    assert prepared_records.index(prepared[0]) == finger_row + 2, 'Generate belongs immediately below the three-part checklist'
+    assert ('property', 'tab') not in prepared_records
+    before = {b.name: b.matrix_local.copy() for b in rig.data.bones}
 
     calls = []
     proxy = SimpleNamespace(action='REMOVE', execute=lambda _context: calls.append('execute'))
@@ -84,6 +114,7 @@ def main():
     body_setup_ui.CHARACTERDESIGNER_OT_body_setup.invoke(proxy, context, 'event')
     assert calls == ['execute']
 
+    calibration.tab = 'SETUP'  # Generating must reveal Controls without changing this stored value.
     assert bpy.ops.character_designer.body_setup('EXEC_DEFAULT', action='GENERATE') == {'FINISHED'}
     assert body_setup.has_generated(rig)
     generated_names = set(rig.data.bones.keys())
@@ -91,8 +122,14 @@ def main():
     assert set(rig.data.bones.keys()) == generated_names
     records = draw(limb_ik.CHARACTERDESIGNER_PT_limb_ik)
     daily = buttons(records)
-    assert daily[0][2] == 'Update Body Setup' and not daily[0][3]
-    assert daily[1][2] == 'Remove Generated Controls' and daily[1][3] and daily[1][4]
+    daily_setup = setup_buttons(records)
+    assert len(daily_setup) == 2
+    assert daily_setup[0][2] == 'Update' and not daily_setup[0][3]
+    assert daily_setup[1][2] == 'Remove Generated Controls' and daily_setup[1][3] and daily_setup[1][4]
+    assert daily_setup[0][5].action == 'GENERATE' and daily_setup[1][5].action == 'REMOVE'
+    assert ('property', 'tab') not in records
+    assert not any(r[1] == 'character_designer.body_calibration' for r in daily)
+    assert calibration.tab == 'SETUP', 'Drawing must not migrate the saved tab'
     assert not any(r[1] in {'character_designer.root_control',
                            'character_designer.head_neck_visuals',
                            'character_designer.body_detail_visuals'} for r in daily)
@@ -100,13 +137,14 @@ def main():
     assert any(r[1] == 'character_designer.limb_ik_fk_switch' for r in daily)
     assert not any(r[1] in {'character_designer.limb_ik_build_all', 'character_designer.limb_ik_remove',
                           'character_designer.limb_fk_visuals'} for r in daily)
-    assert not any(getattr(r[5], 'action', '') in {'BUILD', 'REMOVE'} for r in daily[2:])
+    assert not any(getattr(r[5], 'action', '') in {'BUILD', 'REMOVE'}
+                   for r in daily if r[1] != 'character_designer.body_setup')
     saved_record = rig.data[limb_fk_visuals.RECORD_KEY]
     try:
         rig.data[limb_fk_visuals.RECORD_KEY] = 'invalid recovery record'
         damaged = Layout()
         body_setup_ui.draw_actions(damaged, bpy.context)
-        assert buttons(damaged.records)[1][4], 'A damaged inventory must not hide removal'
+        assert setup_buttons(damaged.records)[1][4], 'A damaged inventory must not hide removal'
     finally:
         rig.data[limb_fk_visuals.RECORD_KEY] = saved_record
     settings.selected_limb = 'LEFT_LEG'
@@ -128,6 +166,9 @@ def main():
     settings.show_body_setup_advanced = False
     assert bpy.ops.character_designer.body_setup('EXEC_DEFAULT', action='REMOVE') == {'FINISHED'}
     assert not body_setup.has_generated(rig)
+    removed = draw(limb_ik.CHARACTERDESIGNER_PT_limb_ik)
+    assert [r[2] for r in setup_buttons(removed)] == ['Generate']
+    assert any(r[1] == 'character_designer.body_calibration' for r in buttons(removed))
     assert set(rig.data.bones.keys()) == set(before)
     for name, matrix in before.items():
         assert max(abs(rig.data.bones[name].matrix_local[i][j] - matrix[i][j])

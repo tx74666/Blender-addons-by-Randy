@@ -219,7 +219,16 @@ def preflight(context, rig, *, keep_native_rest=False):
             'data_digest': limb_ik._armature_digest(rig)}
 
 
-def _preserve_skin(context, rig, desired):
+def _preserve_skin(context, rig, desired, *, prefer_existing_basis=False):
+    if prefer_existing_basis:
+        # Calibrated sources often already retain the exact pre-Generate input.
+        # Do not bake a tiny IK residual into that input if removing constraints
+        # alone already meets the same skin limit used by Generate. The caller
+        # must still verify every evaluated bound surface before committing.
+        context.view_layer.update()
+        error = max((abs((rig.pose.bones[name].matrix @ rig.data.bones[name].matrix_local.inverted())[i][j] - matrix[i][j])
+                     for name,matrix in desired.items() for i in range(4) for j in range(4)),default=0.)
+        if error<=1e-4:return error
     ordered = sorted(desired, key=lambda name: len(rig.pose.bones[name].parent_recursive))
     matrices = {name: skin @ rig.data.bones[name].matrix_local for name, skin in desired.items()}
     for _attempt in range(4):
@@ -294,7 +303,9 @@ def execute(context, rig, plan):
                 limb_ik._restore_edit_rest_states(context, rig, changed)
         finally:
             rig.data.use_mirror_x = mirror
-        error = _preserve_skin(context, rig, plan['skin'])
+        from . import body_calibration
+        error = _preserve_skin(context, rig, plan['skin'],
+                               prefer_existing_basis=plan['keep_native_rest'] and body_calibration.calibrated(rig))
     for obj, records in (() if plan['keep_native_rest'] else plan['correctives']):
         changed = False
         for record in records.values():

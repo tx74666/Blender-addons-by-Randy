@@ -9,7 +9,7 @@ ratio. This module creates no bones, curves, groups, or modifiers.
 
 import hashlib
 import math
-from collections import defaultdict, deque
+from collections import defaultdict
 
 import bmesh
 from mathutils import Vector
@@ -94,21 +94,18 @@ def _regular_pair(first, second, adjacency):
 
 
 def _point_layers(seed, allowed, adjacency):
-    distances = {seed: 0}
-    queue = deque((seed,))
-    while queue:
-        current = queue.popleft()
-        for neighbor in adjacency[current]:
-            if neighbor not in distances:
-                distances[neighbor] = distances[current] + 1
-                queue.append(neighbor)
-    grouped = defaultdict(list)
-    for index, distance in distances.items():
-        grouped[distance].append(index)
+    # Grow the same BFS layers incrementally. A tip welded to a scalp must not
+    # traverse that whole scalp and every other strand before rejecting its
+    # first irregular layer.
     layers = [(seed,)]
+    seen = {seed}
     regular_kind = None
-    for distance in range(1, max(grouped, default=0) + 1):
-        layer = tuple(sorted(grouped[distance]))
+    while True:
+        following = {neighbor for index in layers[-1] for neighbor in adjacency[index]
+                     if neighbor in allowed and neighbor not in seen}
+        if not following:
+            break
+        layer = tuple(sorted(following))
         kind = _kind(layer, adjacency)
         if kind not in {"OPEN", "CLOSED", "POINT"}:
             break
@@ -119,6 +116,7 @@ def _point_layers(seed, allowed, adjacency):
         if not _regular_pair(layers[-1], layer, adjacency):
             break
         layers.append(layer)
+        seen.update(following)
         if kind == "POINT":
             break
     return tuple(layers)
@@ -229,28 +227,198 @@ def _shared_root_only(first, second):
                 and overlap.issubset(second["layers"][0]))
 
 
+def terminal_patches(obj, bm, plans, *, allowed=None, adjacency=None):
+    """Return small closed end caps without weakening regular strand layers.
+
+    A patch owns no centerline section. It is accepted only as a complete
+    manifold disk closing one strand's distal ring, and stays separate from
+    persistent core signatures. Binding recomputes this geometric evidence.
+    Ambiguous, hidden, open, shared, or oversized residual regions are omitted.
+    """
+    if allowed is None or adjacency is None:
+        visible, _edges, graph = _visible_graph(bm)
+        allowed = visible if allowed is None else set(allowed) & visible
+        adjacency = {index: graph[index] & allowed for index in allowed}
+    else:
+        allowed = set(allowed)
+    plans = tuple(plans)
+    owners = defaultdict(set)
+    by_signature = {}
+    for plan in plans:
+        by_signature[plan["signature"]] = plan
+        for index in plan["vertices"]:
+            owners[index].add(plan["signature"])
+    covered = set(owners)
+    pending = allowed - covered
+    result = {}
+    while pending:
+        component = {pending.pop()}
+        stack = list(component)
+        boundary = set()
+        while stack:
+            for neighbor in adjacency[stack.pop()]:
+                if neighbor in pending:
+                    pending.remove(neighbor)
+                    component.add(neighbor)
+                    stack.append(neighbor)
+                elif neighbor in covered:
+                    boundary.add(neighbor)
+        identities = {signature for index in boundary for signature in owners[index]}
+        if len(identities) != 1:
+            continue
+        signature = next(iter(identities))
+        plan = by_signature[signature]
+        ring = set(plan["layers"][-1])
+        if (not boundary or not boundary.issubset(ring) or not ring.issubset(allowed)
+                or _kind(ring, adjacency) != "CLOSED" or len(plan["layers"]) < 2):
+            continue
+        domain = component | ring
+        faces = {face for index in component for face in bm.verts[index].link_faces}
+        # Do not let visibility/selection clipping turn part of the scalp or a
+        # second strand into an apparently isolated terminal disk.
+        if (not faces or any(face.hide or len(face.verts) < 3
+                             or any(vertex.index not in domain or vertex.hide for vertex in face.verts)
+                             for face in faces)
+                or any(edge.hide or any(vertex.index not in domain or vertex.hide for vertex in edge.verts)
+                       for index in component for edge in bm.verts[index].link_edges)):
+            continue
+        face_edges = defaultdict(set)
+        links = {index: defaultdict(set) for index in domain}
+        link_degrees = {index: defaultdict(int) for index in domain}
+        face_vertices = set()
+        for face in faces:
+            indices = tuple(vertex.index for vertex in face.verts)
+            face_vertices.update(indices)
+            for position, index in enumerate(indices):
+                previous, following = indices[position - 1], indices[(position + 1) % len(indices)]
+                links[index][previous].add(following)
+                links[index][following].add(previous)
+                link_degrees[index][previous] += 1
+                link_degrees[index][following] += 1
+            for edge in face.edges:
+                face_edges[edge].add(face)
+        ring_keys = {tuple(sorted((index, neighbor))) for index in ring
+                     for neighbor in adjacency[index] & ring if index < neighbor}
+        boundary_keys = {_cd()._bm_edge_key(edge) for edge, linked in face_edges.items() if len(linked) == 1}
+        if (face_vertices != domain or boundary_keys != ring_keys
+                or any(len(linked) not in {1, 2} for linked in face_edges.values())
+                or len(domain) - len(face_edges) + len(faces) != 1
+                or any(edge not in face_edges for index in component for edge in bm.verts[index].link_edges)):
+            continue
+        # The end ring must have the regular strand on its other side, not a
+        # third surface, a wire, or another cap sharing the same rim.
+        core = set(plan["vertices"])
+        if any(len(edge.link_faces) != 2
+               or any(any(vertex.index not in core for vertex in face.verts)
+                      for face in edge.link_faces if face not in faces)
+               for edge, linked in face_edges.items() if len(linked) == 1):
+            continue
+        # Edge counts and Euler characteristic alone allow pinched vertices.
+        # Interior vertex links must be cycles; boundary links must be paths.
+        valid_links = True
+        for index, link in links.items():
+            degrees = tuple(link_degrees[index].values())
+            # An inserted valence-two vertex has two parallel arcs in its
+            # interior link. Keep multiplicity instead of rejecting that valid
+            # two-edge cycle as a one-edge path.
+            if (not degrees or any(degree not in {1, 2} for degree in degrees)
+                    or sum(degree == 1 for degree in degrees) != (2 if index in ring else 0)):
+                valid_links = False
+                break
+            reached = {next(iter(link))}
+            link_stack = list(reached)
+            while link_stack:
+                for neighbor in link[link_stack.pop()] - reached:
+                    reached.add(neighbor)
+                    link_stack.append(neighbor)
+            if reached != set(link):
+                valid_links = False
+                break
+        if not valid_links:
+            continue
+        seen_faces = {next(iter(faces))}
+        stack = list(seen_faces)
+        while stack:
+            for edge in stack.pop().edges:
+                for face in face_edges[edge] - seen_faces:
+                    seen_faces.add(face)
+                    stack.append(face)
+        if seen_faces != faces:
+            continue
+        points = {index: obj.matrix_world @ bm.verts[index].co for index in domain}
+        previous_points = [obj.matrix_world @ bm.verts[index].co for index in plan["layers"][-2]]
+        if any(not all(math.isfinite(value) for value in point)
+               for point in (*points.values(), *previous_points)):
+            continue
+        center = sum((points[index] for index in ring), Vector()) / len(ring)
+        previous = sum(previous_points, Vector()) / len(previous_points)
+        tangent = center - previous
+        span = tangent.length
+        diameter = max((points[first] - points[second]).length for first in ring for second in ring)
+        if span <= 1.0e-12 or diameter <= 1.0e-12:
+            continue
+        tangent /= span
+        epsilon = max(span, diameter) * 1.0e-6
+        offsets = tuple(points[index] - center for index in component)
+        if any(offset.dot(tangent) < -epsilon or offset.dot(tangent) > 1.5 * span + epsilon
+               or (offset - tangent * offset.dot(tangent)).length > diameter + epsilon
+               for offset in offsets):
+            continue
+        result[signature] = tuple(sorted(component))
+    return result
+
+
 def _discover(obj, bm, allowed, edge_keys, adjacency, seeds):
+    cd = _cd()
+    # The band helper also serves one-off manual guides. Automatic discovery
+    # shares its lookup instead of rebuilding all E entries for each of E rails.
+    edge_by_key = {cd._bm_edge_key(edge): edge for edge in bm.edges}
     candidates = {}
-    point_covered = []
+    point_covered_edges = set()
+    validated = {}
+
+    def strict_plan(layers):
+        key = min(layers, tuple(reversed(layers)))
+        if key not in validated:
+            vertices = {index for layer in layers for index in layer}
+            # Supply exactly the same induced edges as the full graph scan,
+            # but visit only this candidate's incident edges.
+            local_edges = tuple(sorted((index, neighbor) for index in vertices
+                                       for neighbor in adjacency[index] & vertices
+                                       if index < neighbor))
+            validated[key] = _strict_plan(obj, bm, layers, local_edges)
+        return validated[key]
+
     for seed in sorted(allowed):
         if _kind(adjacency[seed], adjacency) not in {"OPEN", "CLOSED"}:
             continue
         layers = _point_layers(seed, allowed, adjacency)
         # Only the maximal regular prefix is proposed. Its complete face bands
         # must still pass the existing strict validator.
-        plan = _strict_plan(obj, bm, layers, edge_keys)
+        plan = strict_plan(layers)
         if plan and plan["aspect_ratio"] >= _MIN_ASPECT and plan["root_tip_rule"] == "COLLAPSED_TIP":
             candidates[plan["signature"]] = plan
-            point_covered.append(set(plan["vertices"]))
+            covered = set(plan["vertices"])
+            point_covered_edges.update((index, neighbor) for index in covered
+                                       for neighbor in adjacency[index] & covered
+                                       if index < neighbor)
 
     examined_bands = set()
+    examined_rails = set()
     for edge in edge_keys:
-        if any(edge[0] in covered and edge[1] in covered for covered in point_covered):
+        if edge in point_covered_edges or edge in examined_rails:
             continue
         try:
-            first, second, _band_edges = _cd()._quad_band_from_rail_edge(bm, edge)
-        except _cd().CenterlineError:
+            first, second, band_edges = cd._quad_band_from_rail_edge(
+                bm, edge, edge_by_key=edge_by_key)
+        except cd.CenterlineError:
             continue
+        first_set, second_set = set(first), set(second)
+        # Every longitudinal edge in this band gives the same two slices.
+        # Transverse edges must remain eligible for competing partitions.
+        examined_rails.update(key for key in band_edges
+                              if (key[0] in first_set and key[1] in second_set)
+                              or (key[1] in first_set and key[0] in second_set))
         if not set(first + second).issubset(allowed):
             continue
         pair = min((first, second), (second, first))
@@ -263,30 +431,45 @@ def _discover(obj, bm, allowed, edge_keys, adjacency, seeds):
         forward = _extend_layers((first, second), adjacency, kind)
         backward = _extend_layers((second, first), adjacency, kind)
         layers = tuple(reversed(backward[1:])) + forward[1:]
-        plan = _strict_plan(obj, bm, layers, edge_keys)
+        plan = strict_plan(layers)
+        if plan is not None:
+            # A strictly valid maximal partition is identical from any of its
+            # interior bands. Skip those rails before repeating band expansion.
+            for previous, current in zip(layers, layers[1:]):
+                current_set = set(current)
+                examined_rails.update(tuple(sorted((index, neighbor)))
+                                      for index in previous
+                                      for neighbor in adjacency[index] & current_set)
         if plan and plan["aspect_ratio"] >= _MIN_ASPECT:
             candidates[plan["signature"]] = plan
 
     ordered = sorted(candidates.values(), key=lambda plan: (
         plan["root_tip_rule"] == "COLLAPSED_TIP", plan["aspect_ratio"], len(plan["vertices"])), reverse=True)
     accepted = []
+    occupied, occupied_inner = set(), set()
     for plan in ordered:
         # Resolve partitions before applying seeds: a clicked transverse edge
         # must not make a previously rejected crosswise candidate win.
-        if any(set(plan["vertices"]) & set(other["vertices"]) and not _shared_root_only(plan, other)
-               for other in accepted):
+        vertices, roots = set(plan["vertices"]), set(plan["layers"][0])
+        if (vertices - roots) & occupied or roots & occupied_inner:
             continue
         accepted.append(plan)
+        occupied.update(vertices)
+        occupied_inner.update(vertices - roots)
     if seeds:
-        accepted = [plan for plan in accepted if seeds & set(plan["vertices"])]
+        patches = terminal_patches(obj, bm, accepted, allowed=allowed, adjacency=adjacency)
+        accepted = [plan for plan in accepted
+                    if seeds & (set(plan["vertices"]) | set(patches.get(plan["signature"], ())))]
     return tuple(sorted(accepted, key=lambda plan: (min(plan["vertices"]), plan["signature"])))
 
 
-def discover_strands(context, *, selected_only=False):
+def discover_strands(context, *, selected_only=False, respect_selection=True):
     """Discover regular strands in the active Edit Mesh without editing it.
 
     The default scans visible geometry, then retains strands touching any
     selected visible vertex. With no selected vertices it scans the whole mesh.
+    respect_selection=False searches all visible strands regardless of the
+    existing selection, useful for the whole-hair capture button.
     selected_only=True instead forbids expansion beyond the visible selection.
     Empty/ambiguous input returns no plans; no partial chain is silently built.
     """
@@ -294,17 +477,19 @@ def discover_strands(context, *, selected_only=False):
     allowed, edges, adjacency = _visible_graph(bm, selected_only)
     if not allowed:
         return obj, ()
-    seeds = {v.index for v in bm.verts if v.select and not v.hide}
+    seeds = {v.index for v in bm.verts if v.select and not v.hide} if respect_selection else set()
     return obj, _discover(obj, bm, allowed, edges, adjacency, seeds)
 
 
-def select_strands(context):
+def select_strands(context, *, respect_selection=True):
     """Replace selection with discovered strands and remember their partition."""
-    obj, plans = discover_strands(context)
+    obj, plans = discover_strands(context, respect_selection=respect_selection)
     if not plans:
         raise HairTopologyError("No unambiguous regular hair strand was found. Select a tip or a longitudinal guide path.")
     _, bm = _edit(context)
     vertices = {index for plan in plans for index in plan["vertices"]}
+    patches = terminal_patches(obj, bm, plans)
+    vertices.update(index for patch in patches.values() for index in patch)
     for face in bm.faces:
         face.select = False
     for edge in bm.edges:

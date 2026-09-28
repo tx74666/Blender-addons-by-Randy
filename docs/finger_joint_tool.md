@@ -1,4 +1,10 @@
-# Finger tools (0.61.62)
+# Finger tools (0.62.5)
+
+For a bound character, the existing Fingers panel appears under Rig > Body only
+while Body Controls > Setup > Fingers is selected. It follows the active rig or
+the active mesh's unique Armature binding, including mesh Edit Mode. An unbound
+mesh keeps access for initial setup. These display rules do not change saved
+finger references or any of the individual operators below.
 
 The Joint Topology & Weights feature has been retired at the user's request.
 Prepare Joints, joint sliders, Move Centers + Bones, Add Support Rings + Apply,

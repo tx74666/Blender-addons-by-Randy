@@ -100,6 +100,10 @@ def set_range(context, start, end):
     def change(record):
         profile.validate_range(record["rings"], start, end)
         record.update(range_start=start, range_end=end)
+        if record.get("distribution") == "WRIST_CONTINUOUS":
+            # Moving an anchor is explicit; keep all other authored shares.
+            record["rings"][start]["ratio"] = 0.0
+            record["rings"][end]["ratio"] = 1.0
     edit(context, change)
 
 
@@ -110,6 +114,9 @@ def set_ratio(context, index, value):
         first, last = profile.record_range(record)
         if not first <= index <= last:
             raise ValueError("The current loop is outside the correction range; move the boundary first.")
+        if record.get("distribution") == "WRIST_CONTINUOUS" and (
+                (index == first and value != 0.0) or (index == last and value != 1.0)):
+            raise ValueError("Start loop stays at 0%; wrist loop stays at 100%.")
         record["rings"][index]["ratio"] = float(value)
     edit(context, change)
 
@@ -129,7 +136,11 @@ def apply_batch(context, current, count, stride, value):
         first, last = profile.record_range(record)
         if current < first:
             raise ValueError("Move the current loop inside the correction range first.")
-        for index in profile.batch_indices(current, count, stride, last):
+        indices = profile.batch_indices(current, count, stride, last)
+        if record.get("distribution") == "WRIST_CONTINUOUS" and (
+                (first in indices and value != 0.0) or (last in indices and value != 1.0)):
+            raise ValueError("Start loop stays at 0%; wrist loop stays at 100%. Select interior loops for a batch.")
+        for index in indices:
             record["rings"][index]["ratio"] = float(value)
     edit(context, change)
 
@@ -170,11 +181,14 @@ def overlay_geometry(context, all_rings=False):
     to_arm = eval_arm.matrix_world.inverted() @ obj.evaluated_get(depsgraph).matrix_world
     mixed = rt._input_mix(obj, indices, set(), depsgraph)
     weights = rt._weights(obj, arm, indices)
+    bone_names = {name for values in weights.values() for name in values}
+    transforms = {name: eval_arm.pose.bones[name].matrix @ arm.data.bones[name].matrix_local.inverted()
+                  for name in bone_names}
     points = {}
     for index in indices:
         point = to_arm @ mixed[index]
         values = weights[index]
-        posed = (sum((w * (eval_arm.pose.bones[name].matrix @ arm.data.bones[name].matrix_local.inverted() @ point)
+        posed = (sum((w * (transforms[name] @ point)
                       for name, w in values.items()), Vector()) if values else point)
         points[index] = eval_arm.matrix_world @ posed
     return [dict(index=index, kind=kind, color=color, width=width,
@@ -197,7 +211,8 @@ def manual_add_loop(context, obj, side, ring):
     for item in rings:
         item.setdefault("ratio", rt.profile_ratio(item["position"], profile.profile_knots(record["rings"])))
     fresh = rt._capture_record(obj, arm, rig, side, {s: r for s, r in records.items() if s != side},
-                               owned_record=record, rings_override=rings)
+                               owned_record=record, rings_override=rings,
+                               continuous=record.get("distribution") == "WRIST_CONTINUOUS")
     fresh.update({key: value for key, value in record.items()
                   if key not in {"rings", "vertices", "positions", "range_start", "range_end", "current_ring"}})
     for name, anchor in zip(("range_start", "range_end", "current_ring"), anchors):
@@ -242,6 +257,7 @@ def draw_session(layout, context, record):
             layout.label(text=line, icon="INFO")
     first, last = profile.record_range(record)
     current = record["current_ring"]
+    continuous = record.get("distribution") == "WRIST_CONTINUOUS"
     ring = record["rings"][current]
     row = layout.row()
     row.enabled = not rt._SESSION.get("pose_locked")
@@ -252,16 +268,14 @@ def draw_session(layout, context, record):
     row.prop(settings, "range_start")
     row.prop(settings, "range_end")
     row = layout.row(align=True)
-    row.operator("character_designer.forearm_loop_edit", text="", icon="TRIA_LEFT").action = "PREVIOUS"
     row.prop(settings, "ring_index", text="Current")
-    row.operator("character_designer.forearm_loop_edit", text="", icon="TRIA_RIGHT").action = "NEXT"
     row.operator("character_designer.forearm_loop_pick", text="Pick", icon="EYEDROPPER")
     layout.label(text=f"Loop {current + 1} / {len(record['rings'])} · {len(ring['vertices'])} vertices")
     row = layout.row(align=True)
     row.operator("character_designer.forearm_loop_edit", text="Set Start").action = "START"
     row.operator("character_designer.forearm_loop_edit", text="Set End").action = "END"
     row = layout.row()
-    row.enabled = first <= current <= last
+    row.enabled = first <= current <= last and not (continuous and current in (first, last))
     row.prop(settings, "ratio", slider=True)
     try:
         angle = rt.current_twist_angle(context)
@@ -269,7 +283,7 @@ def draw_session(layout, context, record):
     except (ValueError, KeyError):
         layout.label(text="Current angle unavailable", icon="ERROR")
     blend = profile.range_influence(ring["position"], record["rings"], first, last, record.get("transition", .1))
-    if blend < .999:
+    if not continuous and blend < .999:
         layout.label(text=f"Extra correction blend: {blend:.0%}", icon="INFO")
     layout.prop(settings, "show_batch", icon="TRIA_DOWN" if settings.show_batch else "TRIA_RIGHT", emboss=False)
     if settings.show_batch:
@@ -288,11 +302,16 @@ def draw_session(layout, context, record):
         if batch.enabled:
             indices = profile.batch_indices(current, settings.batch_count, settings.batch_stride, last)
             batch.label(text=f"{len(indices)} loops: {indices[0] + 1} → {indices[-1] + 1}")
-        batch.operator("character_designer.forearm_loop_edit", text="Apply Share to Batch").action = "BATCH"
+        apply = batch.row()
+        if batch.enabled and continuous:
+            apply.enabled = not ((first in indices and settings.batch_ratio != 0.0)
+                                 or (last in indices and settings.batch_ratio != 1.0))
+        apply.operator("character_designer.forearm_loop_edit", text="Apply Share to Batch").action = "BATCH"
         box.prop(settings, "curve_strength", slider=True)
         box.operator("character_designer.forearm_loop_edit", text="Apply Default Distribution").action = "DEFAULT"
         box.operator("character_designer.forearm_loop_edit", text="Smooth Selected Range Once").action = "SMOOTH"
-        box.prop(settings, "transition", slider=True)
+        if not continuous:
+            box.prop(settings, "transition", slider=True)
     row = layout.row(align=True)
     row.operator("character_designer.forearm_loop_edit", text="Undo Edit", icon="LOOP_BACK").action = "UNDO"
     row.operator("character_designer.forearm_loop_edit", text="Redo", icon="LOOP_FORWARDS").action = "REDO"

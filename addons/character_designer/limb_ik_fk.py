@@ -301,7 +301,7 @@ def _set_solver_position(context, armature, rig, desired_position):
     _set_matrix(context, armature, target, matrix)
 
 
-def _match_pole_plane(context, armature, rig, desired):
+def _match_pole_plane(context, armature, rig, desired, *, precise=False):
     """Compensate the solver's FK/rest roll without changing its pole angle.
 
     Blender measures pole_angle from the current source frame in Direct rigs.
@@ -321,8 +321,8 @@ def _match_pole_plane(context, armature, rig, desired):
         # Near a straight limb, a tiny solver position residual makes the
         # geometric bend plane unstable. Keep an already matched rotation
         # instead of introducing visible roll to chase that residual.
-        if all(error <= limit for error, limit in zip(_pose_errors(armature, solved),
-               (POSITION_TOLERANCE, ROTATION_TOLERANCE, SCALE_TOLERANCE))):
+        limits = (1e-6,1e-6,1e-6) if precise else (POSITION_TOLERANCE, ROTATION_TOLERANCE, SCALE_TOLERANCE)
+        if all(error <= limit for error, limit in zip(_pose_errors(armature, solved),limits)):
             break
         if near_straight:
             # Use the upper bone's stable roll frame when elbow/knee position
@@ -355,16 +355,18 @@ def _match_fk(context, armature, rig, desired):
     return set(rig["chain"])
 
 
-def _match_ik(context, armature, inventory, rig, desired):
+def _match_ik(context, armature, inventory, rig, desired, *, calibrated_rest=False, reach_offset=None):
     target = armature.pose.bones[rig["target"].name]
     pole = armature.pose.bones[rig["pole"].name]
     end = armature.pose.bones[rig["chain"][2]]
     changed = {target.name, pole.name}
     desired_end = desired[end.name]
-    _set_solver_position(context, armature, rig, desired_end.translation)
-    pole_matrix = pole.matrix.copy()
-    pole_matrix.translation = _pole_position(armature, rig, desired)
-    _set_matrix(context, armature, pole, pole_matrix)
+    solver_position = desired_end.translation + (reach_offset if reach_offset is not None else Vector())
+    _set_solver_position(context, armature, rig, solver_position)
+    if not calibrated_rest:
+        pole_matrix = pole.matrix.copy()
+        pole_matrix.translation = _pole_position(armature, rig, desired)
+        _set_matrix(context, armature, pole, pole_matrix)
 
     if inventory["schema"] == _limb().ROLL_DECOUPLED_SCHEMA:
         # The ORI frames carry the freely authored FK roll. Their existing
@@ -374,9 +376,12 @@ def _match_ik(context, armature, inventory, rig, desired):
             _set_matrix(context, armature, pb, desired[source])
             changed.add(pb.name)
 
-    target[PROPERTY] = 1.0
-    _update(context, armature)
-    _match_pole_plane(context, armature, rig, desired)
+    # Calibrated reach trials are already in IK. The solver-position write
+    # above has just refreshed the graph; don't dirty it again for the same value.
+    if not calibrated_rest or target.get(PROPERTY) != 1.0:
+        target[PROPERTY] = 1.0
+        _update(context, armature)
+    _match_pole_plane(context, armature, rig, desired,precise=calibrated_rest)
     end_constraint = next(con for _pb, con, record in rig["entries"] if record["role"] == "END_ROTATION")
     offset = rig.get("auto_offset_rotation")
     if rig.get("foot_controls") and rig['foot_controls'].get('auto_follow') == 1 and rig['auto_align']:
@@ -437,11 +442,57 @@ def _match_ik(context, armature, inventory, rig, desired):
         pivot = solver.matrix.translation.copy()
         transform = Matrix.Translation(pivot) @ delta.to_matrix().to_4x4() @ Matrix.Translation(-pivot)
         _set_matrix(context, armature, target, transform @ target.matrix)
-    _set_solver_position(context, armature, rig, desired_end.translation)
+    _set_solver_position(context, armature, rig, solver_position)
     return changed
 
 
-def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=None):
+def _refine_calibrated_reach(context, armature, inventory, rig, desired):
+    """Fit float32 shallow-limb reach using generated controls only.
+
+    A sub-micron target distance residual can amplify into a visible elbow
+    residual on a nearly straight chain. Bound the search to a few parts per
+    million of limb length; keep the best evaluated full pose, never relax the
+    builder's native Rest, skin or surface checks.
+    """
+    start,joint,end=[desired[n].translation for n in rig['chain']]
+    axis=end-start
+    length=(joint-start).length+(end-joint).length
+    if length<1e-8 or _limb()._project_perpendicular(joint-start,axis).length>length*.01:
+        return
+    axis.normalize()
+    errors=_pose_errors(armature,desired)
+    if errors[0]<=length*2e-6 and errors[1]<=1e-5:return
+    controls=[armature.pose.bones[rig[k].name] for k in ('target','pole')]
+    baseline=[p.matrix_basis.copy() for p in controls]
+    best=[m.copy() for m in baseline]
+    def score():
+        position,rotation,scale=_pose_errors(armature,desired)
+        return position/length+rotation+scale
+    best_score=score();best_offset=0.;bound=length*4e-6;step=bound/4
+    evaluated_positions=set()
+    for _level in range(3):
+        center=best_offset
+        for index in range(-4,5):
+            offset=max(-bound,min(bound,center+step*index))
+            # Levels overlap, and Blender's float32 position can round distinct
+            # offsets to the same candidate. Each trial starts from the same
+            # two control bases, so retain the first evaluation of that position.
+            position=tuple(end+axis*offset)
+            if position in evaluated_positions:continue
+            evaluated_positions.add(position)
+            for pb,matrix in zip(controls,baseline):pb.matrix_basis=matrix
+            _update(context,armature)
+            _match_ik(context,armature,inventory,rig,desired,calibrated_rest=True,reach_offset=axis*offset)
+            error=score()
+            if error<best_score:
+                best_score,best_offset=error,offset
+                best=[p.matrix_basis.copy() for p in controls]
+        step*=.25
+    for pb,matrix in zip(controls,best):pb.matrix_basis=matrix
+    _update(context,armature)
+
+
+def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=None, calibrated_rest=False):
     """Switch one limb and match its evaluated pose; restore everything on error."""
     if mode not in {"IK", "FK"}:
         raise _error("Choose IK or FK.")
@@ -470,7 +521,9 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
     try:
         ensure_switching(armature, inventory, keys=(key,))
         _update(context, armature)
-        affected = _match_fk(context, armature, rig, desired) if mode == "FK" else _match_ik(context, armature, inventory, rig, desired)
+        affected = _match_fk(context, armature, rig, desired) if mode == "FK" else _match_ik(context, armature, inventory, rig, desired,calibrated_rest=calibrated_rest)
+        if mode=='IK' and calibrated_rest:
+            _refine_calibrated_reach(context,armature,inventory,rig,desired)
         affected.update(_match_toe(context, armature, rig, desired))
         # Removal of an optional extension restores its native Toe constraint
         # baseline first. The caller can include that Toe matrix here so it is

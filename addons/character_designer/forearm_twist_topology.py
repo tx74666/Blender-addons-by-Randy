@@ -258,7 +258,7 @@ def _measure_loop(mesh_obj, armature, lower_name, vertices):
     return {"vertices": list(vertices), "position": sum(positions) / len(positions)}
 
 
-def capture_loop(mesh_obj, armature, lower_name, vertex_indices=None, *, edge_indices=None):
+def capture_loop(mesh_obj, armature, lower_name, vertex_indices=None, *, edge_indices=None, _graph=None):
     """Capture one closed base-mesh loop without changing selection or topology.
 
     Vertex input may be unordered. An already ordered cycle retains its start
@@ -266,7 +266,7 @@ def capture_loop(mesh_obj, armature, lower_name, vertex_indices=None, *, edge_in
     Manual capture deliberately does not depend on deform weights or clamp the
     artist's endpoint position to the bone; automatic expansion is span-limited.
     """
-    mesh, edges, lookup, faces = _mesh_graph(mesh_obj)
+    mesh, edges, lookup, faces = _graph if _graph is not None else _mesh_graph(mesh_obj)
     if vertex_indices is not None and edge_indices is not None:
         raise ForearmTopologyError("Supply vertices or edges for one loop, not both.")
     preferred = None
@@ -316,14 +316,15 @@ def selected_loop(mesh_obj, armature, lower_name):
     return capture_loop(mesh_obj, armature, lower_name, vertex_indices=vertices)
 
 
-def adjacent_rings(mesh_obj, armature, lower_name, seed_vertices):
+def adjacent_rings(mesh_obj, armature, lower_name, seed_vertices, *, _graph=None):
     """Return complete neighboring loops across the seed's adjacent quad strips.
 
     Incomplete strips, poles, and non-quad interruptions are reported explicitly;
     no geometric nearest-neighbor connection is manufactured across a gap.
     """
-    seed = capture_loop(mesh_obj, armature, lower_name, seed_vertices)
-    mesh, edges, lookup, faces = _mesh_graph(mesh_obj)
+    graph = _graph if _graph is not None else _mesh_graph(mesh_obj)
+    seed = capture_loop(mesh_obj, armature, lower_name, seed_vertices, _graph=graph)
+    mesh, edges, lookup, faces = graph
     vertices = seed["vertices"]
     opposite = set()
     seed_set = set(vertices)
@@ -348,7 +349,7 @@ def adjacent_rings(mesh_obj, armature, lower_name, seed_vertices):
             changed = bool(addition)
             component.update(addition)
         pending.difference_update(component)
-        rings.append(capture_loop(mesh_obj, armature, lower_name, edge_indices=sorted(component)))
+        rings.append(capture_loop(mesh_obj, armature, lower_name, edge_indices=sorted(component), _graph=graph))
     if len(rings) > 2:
         raise ForearmTopologyError("Adjacent expansion reached more than two neighboring loops.")
     return sorted(rings, key=lambda ring: (ring["position"], min(ring["vertices"])))
@@ -365,7 +366,10 @@ def expand_rings(mesh_obj, armature, lower_name, seed_vertices, *, hand_name=Non
     """
     if diagnostics is not None and not isinstance(diagnostics, list):
         raise ForearmTopologyError("Expansion diagnostics must be supplied as a list.")
-    seed = capture_loop(mesh_obj, armature, lower_name, seed_vertices)
+    # One immutable connectivity snapshot per expansion, never cached across
+    # calls: direct topology edits are still checked on the next capture.
+    graph = _mesh_graph(mesh_obj)
+    seed = capture_loop(mesh_obj, armature, lower_name, seed_vertices, _graph=graph)
     if not -_RING_END_PADDING <= seed["position"] <= 1.0 + _RING_END_PADDING:
         raise ForearmTopologyError("Choose a seed loop between the forearm's elbow and wrist.")
     found = {frozenset(seed["vertices"]): seed}
@@ -373,7 +377,7 @@ def expand_rings(mesh_obj, armature, lower_name, seed_vertices, *, hand_name=Non
     while queue:
         current = queue.pop(0)
         try:
-            neighbors = adjacent_rings(mesh_obj, armature, lower_name, current["vertices"])
+            neighbors = adjacent_rings(mesh_obj, armature, lower_name, current["vertices"], _graph=graph)
         except ForearmTopologyError as exc:
             if diagnostics is not None and str(exc) not in diagnostics:
                 diagnostics.append(str(exc))

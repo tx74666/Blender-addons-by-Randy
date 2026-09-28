@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 61, 64),
+    "version": (0, 67, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -92,6 +92,7 @@ from .ui_constants import (
     UI_PAGE_HAIR,
     UI_PAGE_ITEMS,
     UI_PAGE_MISC,
+    UI_PAGE_MODELING,
     UI_PAGE_RIG,
     UI_PAGE_WEIGHT,
     UI_PAGES,
@@ -100,6 +101,7 @@ from .ui_constants import (
     active_ui_page,
 )
 from .weight_symmetry import WEIGHT_SYMMETRY_CLASSES
+from . import curve_tools
 from .topology_symmetry import TOPOLOGY_SYMMETRY_CLASSES
 from .mesh_mirror_ui import (
     MESH_MIRROR_CLASSES, register_mesh_mirror_runtime, unregister_mesh_mirror_runtime,
@@ -620,7 +622,8 @@ def _bind_centerline_controls(settings, target):
     """Bind the compact controls to one active generated Curve, or release them."""
 
     global _CENTERLINE_CONTROL_UPDATE_GUARD
-    if target is not None and not _is_character_designer_centerline(target):
+    if target is not None and (not _is_character_designer_centerline(target)
+                               or curve_tools.object_mode(target) != "HAIR"):
         target = None
     current = getattr(settings, "centerline_control_target", None)
     if current is target:
@@ -722,6 +725,11 @@ class CharacterDesignerState(PropertyGroup):
         description="Choose which CDesigner tool family is visible",
         items=UI_PAGE_ITEMS,
         default=UI_PAGE_DEFAULT,
+        options={"SKIP_SAVE"},
+    )
+    curve_tools_mode: EnumProperty(
+        name="Mode", items=curve_tools.MODES, default="GENERAL",
+        description="General centerlines or the existing Hair profile rules",
         options={"SKIP_SAVE"},
     )
     finger_axis: EnumProperty(
@@ -2555,10 +2563,11 @@ def _ordered_simple_edge_path(vertex_indices, edge_keys):
     return tuple(ordered) if len(ordered) == len(vertex_indices) else ()
 
 
-def _quad_band_from_rail_edge(bm, edge_key):
+def _quad_band_from_rail_edge(bm, edge_key, *, edge_by_key=None):
     """Expand one longitudinal guide edge across its complete quad band."""
 
-    edge_by_key = {_bm_edge_key(edge): edge for edge in bm.edges}
+    if edge_by_key is None:
+        edge_by_key = {_bm_edge_key(edge): edge for edge in bm.edges}
     start_edge = edge_by_key.get(tuple(sorted(edge_key)))
     if start_edge is None:
         raise CenterlineError("A selected guide edge no longer exists.")
@@ -3269,7 +3278,7 @@ def _layer_band_normals(bm, layers):
     return tuple(results)
 
 
-def _build_cross_section_metadata(source_obj, bm, layers, centers, regular_kind):
+def _build_cross_section_metadata(source_obj, bm, layers, centers, regular_kind, *, tool_mode="HAIR"):
     """Capture lossless sizing and a stable local frame without shaping the Curve."""
 
     _validate_source_matrix(source_obj)
@@ -3294,7 +3303,10 @@ def _build_cross_section_metadata(source_obj, bm, layers, centers, regular_kind)
     boundary_span_vectors = tuple(value[2] for value in boundary_spans)
     anchors = _track_layer_anchors(bm, layers, profile_span_pairs)
     band_normals = _layer_band_normals(bm, layers)
-    front_bands = _front_band_descriptors(bm, layers, centers)
+    if tool_mode not in {"GENERAL", "HAIR"}:
+        raise CenterlineError("Choose General or Hair curve tools.")
+    front_bands = (_front_band_descriptors(bm, layers, centers) if tool_mode == "HAIR"
+                   else (None,) * (len(layers) - 1))
 
     sections = []
     previous_axis = None
@@ -3444,7 +3456,10 @@ def _build_cross_section_metadata(source_obj, bm, layers, centers, regular_kind)
                     (bm.verts[first].co + bm.verts[second].co) * 0.5
                 )
 
-        if len(layer) == 1:
+        if tool_mode == "GENERAL" and len(layer) != 1:
+            front_target = centers[layer_index].copy()
+            front_target_source = "SECTION_CENTER"
+        elif len(layer) == 1:
             front_target = centers[layer_index].copy()
             front_target_source = "POINT_CENTER"
         elif front_edge_midpoints:
@@ -3504,7 +3519,7 @@ def _build_cross_section_metadata(source_obj, bm, layers, centers, regular_kind)
         previous_tangent = tangent.copy()
         previous_shape_normal = shape_normal.copy()
 
-    return {
+    result = {
         "version": METADATA_VERSION,
         "space": METADATA_SPACE,
         "point_count": len(centers),
@@ -3516,6 +3531,9 @@ def _build_cross_section_metadata(source_obj, bm, layers, centers, regular_kind)
         ],
         "sections": sections,
     }
+    if tool_mode == "GENERAL":
+        result["curve_tools_mode"] = tool_mode
+    return result
 
 
 def _reject_json_constant(value):
@@ -3657,6 +3675,7 @@ def _metadata_section_is_valid(section, *, is_first, is_last, metadata_version=M
             "FRONT_WIDE_FACE_EDGE",
             "MAX_NORMAL_PROJECTION",
             "POINT_CENTER",
+            "SECTION_CENTER",
         }:
             return False
         if is_point and target_source != "POINT_CENTER":
@@ -3684,6 +3703,8 @@ def _curve_cross_section_metadata(curve_obj, *, validate_spline=True):
         or metadata.get("version") != marker_version
         or marker_version not in SUPPORTED_METADATA_VERSIONS
         or metadata.get("space") != METADATA_SPACE
+        or metadata.get("curve_tools_mode", "HAIR") not in {"GENERAL", "HAIR"}
+        or curve_obj.get(curve_tools.MODE_KEY, "HAIR") != metadata.get("curve_tools_mode", "HAIR")
     ):
         return None
 
@@ -3848,6 +3869,7 @@ def _preview_input_signature(context, settings, *, audit_topology=True):
     root_mesh = settings.root_mesh
     digest = hashlib.sha256()
     header = (
+        curve_tools.settings_mode(settings),
         _rna_pointer(obj),
         _rna_pointer(obj.data),
         _rna_pointer(root_object),
@@ -3939,6 +3961,7 @@ def _auto_preview_input_signature(context):
     )
     return (
         "AUTO",
+        curve_tools.settings_mode(_settings(context)),
         _rna_pointer(obj),
         _rna_pointer(obj.data),
         getattr(context, "mode", ""),
@@ -4279,6 +4302,7 @@ def _update_live_preview(context, force=False, *, _timer_driven=False):
             layers,
             centers,
             regular_kind,
+            tool_mode=curve_tools.settings_mode(settings),
         )
         _publish_live_preview(
             settings,
@@ -4399,6 +4423,7 @@ def _update_auto_live_preview(context, force=False):
             layers,
             centers,
             regular_kind,
+            tool_mode=curve_tools.settings_mode(settings),
         )
         _publish_live_preview(
             settings,
@@ -5075,6 +5100,7 @@ def _curve_profile_solution(
     alignment,
     centered_coordinates=None,
     blend_factor=HAIR_BLEND_DEFAULT,
+    existing_data=None,
 ):
     """Resolve Curve points/radii/tilts without mutating Blender data."""
 
@@ -5087,6 +5113,18 @@ def _curve_profile_solution(
         centered_coordinates = tuple(Vector(value) for value in centered_coordinates)
     if len(centered_coordinates) != len(sections):
         raise CenterlineError("Hair profile metadata does not match its center points.")
+
+    if metadata.get("curve_tools_mode") == "GENERAL":
+        # General extracts a path. It never infers a hair profile or root/tip roll.
+        # Refresh keeps user-authored radius, tilt and bevel settings.
+        count = len(centered_coordinates)
+        points = (existing_data.splines[0].points if existing_data and
+                  len(existing_data.splines) == 1 and existing_data.splines[0].type == "POLY" else ())
+        if points and len(points) != count:
+            raise CenterlineError("The General path point count changed; create a new path to preserve its Radius/Tilt edits.")
+        return (centered_coordinates, existing_data.bevel_depth if existing_data else 0.0,
+                tuple(p.radius for p in points) if points else (1.0,) * count,
+                tuple(p.tilt for p in points) if points else (0.0,) * count)
 
     bevel_depth, radii, _legacy_tilts = _curve_profile_parameters(metadata)
     placement_factor = _alignment_factor(alignment, blend_factor)
@@ -5168,7 +5206,8 @@ def _create_centerline_object(
         curve_data.render_resolution_u = 1
         curve_data.twist_mode = "MINIMUM"
         curve_data.twist_smooth = 0.0
-        curve_data.fill_mode = "HALF"
+        tool_mode = metadata.get("curve_tools_mode", "HAIR") if metadata else "HAIR"
+        curve_data.fill_mode = "FULL" if tool_mode == "GENERAL" else "HALF"
         curve_data.bevel_mode = "ROUND"
         curve_data.bevel_resolution = HAIR_PROFILE_BEVEL_RESOLUTION
         curve_data.use_fill_caps = False
@@ -5177,6 +5216,8 @@ def _create_centerline_object(
 
         if metadata is None:
             raise ValueError("Cross-section metadata is required for a shaped centerline.")
+        if tool_mode == "GENERAL":
+            alignment = HAIR_ALIGNMENT_CENTERED
         if alignment is None:
             alignment = (
                 HAIR_ALIGNMENT_FRONT_FLUSH
@@ -5215,7 +5256,9 @@ def _create_centerline_object(
         curve_obj.show_in_front = True
         curve_obj["character_designer_generator"] = GENERATOR_ID
         curve_obj["character_designer_source"] = source_obj.name
-        curve_obj["character_designer_profile"] = "ROUND_HALF_WIDTH_AND_FRONT"
+        curve_obj[curve_tools.MODE_KEY] = tool_mode
+        curve_obj["character_designer_profile"] = ("GENERAL_CENTERLINE" if tool_mode == "GENERAL"
+                                                  else "ROUND_HALF_WIDTH_AND_FRONT")
         curve_obj["character_designer_profile_depth_local"] = float(bevel_depth)
         curve_obj["character_designer_profile_tip_radius"] = float(
             metadata.get("profile_tip_radius", HAIR_PROFILE_TIP_RADIUS)
@@ -5333,31 +5376,33 @@ def _metadata_from_recorded_source(curve_obj):
             layers,
             centers,
             regular_kind,
+            tool_mode=curve_tools.object_mode(curve_obj),
         )
         return source_obj, layers, centers, metadata
     finally:
         bm.free()
 
 
-def _configure_centerline_data(curve_data, solution):
+def _configure_centerline_data(curve_data, solution, *, tool_mode="HAIR"):
     coordinates, bevel_depth, radii, tilts = solution
     material_index = (
         int(curve_data.splines[0].material_index)
         if len(curve_data.splines) == 1
         else 0
     )
-    curve_data.dimensions = "3D"
-    curve_data.resolution_u = 1
-    curve_data.render_resolution_u = 1
-    curve_data.twist_mode = "MINIMUM"
-    curve_data.twist_smooth = 0.0
-    curve_data.fill_mode = "HALF"
-    curve_data.bevel_mode = "ROUND"
-    curve_data.bevel_resolution = HAIR_PROFILE_BEVEL_RESOLUTION
-    curve_data.use_fill_caps = False
-    curve_data.extrude = 0.0
-    curve_data.taper_object = None
-    curve_data.bevel_depth = bevel_depth
+    if tool_mode == "HAIR":
+        curve_data.dimensions = "3D"
+        curve_data.resolution_u = 1
+        curve_data.render_resolution_u = 1
+        curve_data.twist_mode = "MINIMUM"
+        curve_data.twist_smooth = 0.0
+        curve_data.fill_mode = "HALF"
+        curve_data.bevel_mode = "ROUND"
+        curve_data.bevel_resolution = HAIR_PROFILE_BEVEL_RESOLUTION
+        curve_data.use_fill_caps = False
+        curve_data.extrude = 0.0
+        curve_data.taper_object = None
+        curve_data.bevel_depth = bevel_depth
     curve_data.splines.clear()
     spline = curve_data.splines.new(type="POLY")
     spline.material_index = material_index
@@ -5499,6 +5544,16 @@ def _commit_existing_centerline(
 
     if not _is_character_designer_centerline(curve_obj):
         raise CenterlineError("Select one valid Character Designer centerline.")
+    if (curve_obj.library or curve_obj.data.library or curve_obj.override_library
+            or curve_obj.data.shape_keys or curve_obj.data.animation_data):
+        raise CenterlineError("This centerline is linked, animated, or has Shape Keys; nothing was overwritten.")
+    tool_mode = curve_tools.object_mode(curve_obj)
+    if metadata.get("curve_tools_mode", "HAIR") != tool_mode:
+        raise CenterlineError("Keep the existing Curve's General/Hair mode when updating it.")
+    if tool_mode == "GENERAL":
+        alignment = HAIR_ALIGNMENT_CENTERED
+        if tuple(tuple(sorted(layer)) for layer in layers) != _stored_centerline_layers(curve_obj):
+            raise CenterlineError("Keep this General curve's recorded section order to preserve Radius and Tilt.")
     if metadata.get("version") != METADATA_VERSION:
         raise CenterlineError("Updated centerline metadata must use the current version.")
     source_name = source_obj.name if source_obj is not None else curve_obj.get(
@@ -5512,6 +5567,7 @@ def _commit_existing_centerline(
         metadata,
         alignment,
         blend_factor=placement_factor,
+        existing_data=curve_obj.data,
     )
     metadata_json = json.dumps(metadata, separators=(",", ":"), allow_nan=False)
     layers_json = json.dumps(layers, separators=(",", ":"))
@@ -5576,7 +5632,8 @@ def _commit_existing_centerline(
 
     def write_properties(curve_data):
         curve_obj["character_designer_source"] = source_name
-        curve_obj["character_designer_profile"] = "ROUND_HALF_WIDTH_AND_FRONT"
+        curve_obj["character_designer_profile"] = ("GENERAL_CENTERLINE" if tool_mode == "GENERAL"
+                                                  else "ROUND_HALF_WIDTH_AND_FRONT")
         curve_obj["character_designer_profile_depth_local"] = float(
             curve_data.bevel_depth
         )
@@ -5616,7 +5673,7 @@ def _commit_existing_centerline(
     old_data = curve_obj.data
     new_data = old_data.copy()
     try:
-        _configure_centerline_data(new_data, solution)
+        _configure_centerline_data(new_data, solution, tool_mode=tool_mode)
         curve_obj.data = new_data
         if curve_obj.data is not new_data:
             raise CenterlineError("Blender did not replace the Curve data in the current mode.")
@@ -5663,10 +5720,24 @@ def _scene_centerlines_for_source(context, source_obj):
     return related
 
 
-def _automatic_centerline_target(context, source_obj, layers):
+def _centerline_input_order(target, layers, centers):
+    """Keep a General path's authored direction when the selection is reversed."""
+    if target is None or curve_tools.object_mode(target) != "GENERAL":
+        return layers, centers
+    saved = _stored_centerline_layers(target)
+    incoming = tuple(tuple(sorted(layer)) for layer in layers)
+    if incoming == saved:
+        return layers, centers
+    if tuple(reversed(incoming)) == saved:
+        return tuple(reversed(layers)), tuple(reversed(centers))
+    raise CenterlineError("The selected sections differ from this General curve; its Radius/Tilt edits were kept.")
+
+
+def _automatic_centerline_target(context, source_obj, layers, *, tool_mode="HAIR"):
     """Resolve a safe in-scene overwrite target without exposing target state."""
 
-    candidates = _scene_centerlines_for_source(context, source_obj)
+    candidates = tuple(obj for obj in _scene_centerlines_for_source(context, source_obj)
+                       if curve_tools.object_mode(obj) == tool_mode)
     if not candidates:
         return None
 
@@ -5954,9 +6025,9 @@ def _open_half_round_section(
     if _classify_slice(layer, adjacency, label="An applied open profile") != "OPEN":
         raise CenterlineError("An open recovery layer is not one simple profile row.")
     endpoints = tuple(sorted(index for index in layer if len(adjacency[index]) == 1))
-    if len(endpoints) != 2 or len(layer) < 4:
+    if len(endpoints) != 2 or len(layer) < 3:
         raise CenterlineError(
-            "An applied Half Round profile needs at least four vertices per cross-section."
+            "An applied Half Round profile needs at least three vertices per cross-section."
         )
     first = bm.verts[endpoints[0]].co
     second = bm.verts[endpoints[1]].co
@@ -5990,6 +6061,8 @@ def _open_half_round_section(
     minimum_depth = min(value[0] for value in coordinates)
     half_width = max(abs(value[1]) for value in coordinates)
     scale = max(depth, half_width)
+    if abs(half_width - depth) <= max(EPSILON, scale * 1.0e-6):
+        half_width = depth
     tolerance = _recovery_profile_tolerance(scale)
     if depth <= tolerance or half_width + tolerance < depth or minimum_depth < -tolerance:
         raise CenterlineError("The selected open profile is not a recoverable Half Round shape.")
@@ -6036,6 +6109,52 @@ def _closed_profile_section(bm, layer, tangent, metadata_section):
     )
     if hint is None:
         hint = _deterministic_perpendicular(profile_tangent)
+
+    # A regular round profile's longest polygon edge is a chord, not its
+    # diameter. Using that chord as the frame can classify an octagon as a
+    # rectangle and shrink its recovered radius. Recognize the actual circle
+    # first, requiring both a common radius and Blender's uniform sampling.
+    deltas = tuple(bm.verts[index].co - origin for index in layer)
+    projected = tuple(
+        delta - profile_tangent * delta.dot(profile_tangent)
+        for delta in deltas
+    )
+    radial_lengths = tuple(delta.length for delta in projected)
+    mean_radius = sum(radial_lengths) / len(radial_lengths)
+    circle_tolerance = max(RECOVERY_PROFILE_ABSOLUTE_TOLERANCE, mean_radius * 1.0e-5)
+    if mean_radius > circle_tolerance and all(
+        abs(radius - mean_radius) <= circle_tolerance for radius in radial_lengths
+    ):
+        perpendicular = profile_tangent.cross(hint).normalized()
+        angles = sorted(math.atan2(delta.dot(perpendicular), delta.dot(hint)) for delta in projected)
+        angular_step = math.tau / len(angles)
+        angular_tolerance = max(1.0e-5, circle_tolerance / mean_radius)
+        uniform = all(
+            abs(((angles[(index + 1) % len(angles)] - angle) % math.tau) - angular_step)
+            <= angular_tolerance
+            for index, angle in enumerate(angles)
+        )
+        if uniform:
+            if max(abs(delta.dot(tangent)) for delta in deltas) > _recovery_profile_tolerance(mean_radius):
+                raise CenterlineError("A closed applied profile is too skewed across its tangent.")
+            # Follow the source's longitudinal column, not a fresh nearest
+            # vertex on each ring: independent phase choices preserve vertex
+            # positions but can twist the faces between consecutive rings.
+            anchor = metadata_section.get("anchor_vertex")
+            if anchor not in layer:
+                raise CenterlineError("The round profile has no stable source column.")
+            axis = _project_to_normal_plane(bm.verts[anchor].co - origin, profile_tangent)
+            if axis is None:
+                raise CenterlineError("The round profile source column has no radial direction.")
+            return {
+                "coordinate": origin.copy(),
+                "axis": axis,
+                "profile_tangent": profile_tangent.copy(),
+                "depth": float(mean_radius),
+                "half_width": float(mean_radius),
+                "vertex_count": len(layer),
+                "profile_kind": "ROUND_FULL",
+            }
     layer_set = set(layer)
     boundary_edges = tuple(
         edge
@@ -6046,69 +6165,86 @@ def _closed_profile_section(bm, layer, tangent, metadata_section):
     boundary_edges = tuple(set(boundary_edges))
     if not boundary_edges:
         raise CenterlineError("The closed profile has no boundary edges.")
-    longest_edge = max(boundary_edges, key=lambda edge: edge.calc_length())
-    long_axis = _project_to_normal_plane(
-        longest_edge.verts[1].co - longest_edge.verts[0].co,
-        profile_tangent,
-    )
-    if long_axis is None:
-        raise CenterlineError("The closed profile boundary has no usable direction.")
-    short_axis = _unit_vector_or_none(profile_tangent.cross(long_axis))
-    if short_axis is None:
-        raise CenterlineError("The closed profile has no stable orientation frame.")
-    if short_axis.dot(hint) < 0.0:
-        short_axis.negate()
-        long_axis.negate()
-
-    short_extent = max(
-        abs((bm.verts[index].co - origin).dot(short_axis)) for index in layer
-    )
-    long_extent = max(
-        abs((bm.verts[index].co - origin).dot(long_axis)) for index in layer
-    )
-    if short_extent > long_extent:
-        short_axis, long_axis = long_axis, short_axis
-        short_extent, long_extent = long_extent, short_extent
-    depth = short_extent
-    half_width = long_extent
-    tolerance = _recovery_profile_tolerance(max(depth, half_width))
-    if depth <= tolerance or half_width + tolerance < depth:
-        raise CenterlineError("The closed applied profile has no usable width and depth.")
-
-    coordinates = []
-    tangent_deviation = 0.0
-    for index in layer:
-        delta = bm.verts[index].co - origin
-        tangent_deviation = max(tangent_deviation, abs(delta.dot(tangent)))
-        coordinates.append((delta.dot(short_axis), delta.dot(long_axis)))
-    if tangent_deviation > tolerance:
-        raise CenterlineError("A closed applied profile is too skewed across its tangent.")
-
-    rectangle_matches = all(
-        min(
-            abs(abs(short_value) - depth),
-            abs(abs(long_value) - half_width),
+    coordinate_precision = max(
+        abs(component) for index in layer for component in bm.verts[index].co
+    ) * (2.0 ** -22)
+    # Low-resolution arc chords can be longer than the straight Extrude edge.
+    # Fit observed edge frames against the complete section instead of letting
+    # one longest edge decide the profile's orientation.
+    candidate_axes = []
+    for edge in boundary_edges:
+        edge_axis = _project_to_normal_plane(
+            edge.verts[1].co - edge.verts[0].co, profile_tangent,
         )
-        <= tolerance
-        for short_value, long_value in coordinates
-    )
-    if rectangle_matches:
-        profile_kind = "RECTANGLE"
-    else:
+        if edge_axis is None:
+            continue
+        for axis in (edge_axis, profile_tangent.cross(edge_axis).normalized()):
+            if any(abs(axis.dot(previous)) > 1.0 - 1.0e-7 for previous in candidate_axes):
+                continue
+            if axis.dot(hint) < 0.0:
+                axis.negate()
+            candidate_axes.append(axis)
+    candidates = []
+    for short_axis in candidate_axes:
+        long_axis = profile_tangent.cross(short_axis).normalized()
+        coordinates = tuple((delta.dot(short_axis), delta.dot(long_axis)) for delta in deltas)
+        depth = max(abs(value[0]) for value in coordinates)
+        half_width = max(abs(value[1]) for value in coordinates)
+        numeric_tolerance = max(EPSILON, max(depth, half_width) * 1.0e-6, coordinate_precision)
+        if depth > half_width + numeric_tolerance:
+            continue
+        if abs(half_width - depth) <= numeric_tolerance:
+            half_width = depth
+        tolerance = _recovery_profile_tolerance(max(depth, half_width))
+        if depth <= tolerance:
+            continue
+        if max(abs(delta.dot(tangent)) for delta in deltas) > tolerance:
+            raise CenterlineError("A closed applied profile is too skewed across its tangent.")
+
+        rectangle_error = max(
+            min(abs(abs(short_value) - depth), abs(abs(long_value) - half_width))
+            for short_value, long_value in coordinates
+        )
+        # Six vertices on a capsule's bounding box are not rectangle corners.
+        corner_error = max(
+            min(
+                max(abs(short_value - short_sign * depth), abs(long_value - long_sign * half_width))
+                for short_value, long_value in coordinates
+            )
+            for short_sign in (-1, 1) for long_sign in (-1, 1)
+        )
+        rectangle_error = max(rectangle_error, corner_error)
+        if rectangle_error <= tolerance:
+            # A square has two equivalent outline frames. Curve Profile places
+            # its extra samples on the depth-side edges; retain that sampling
+            # phase instead of rotating the recovered vertices by 90 degrees.
+            side_samples = sum(abs(abs(value[0]) - depth) <= numeric_tolerance * 2.0 for value in coordinates)
+            candidates.append((int(rectangle_error / numeric_tolerance), -side_samples,
+                               rectangle_error, "RECTANGLE", short_axis, depth, half_width))
+
         local_extrude = max(0.0, half_width - depth)
-        for short_value, long_value in coordinates:
-            long_value = abs(long_value)
-            if long_value <= local_extrude + tolerance:
-                residual = abs(abs(short_value) - depth)
-            else:
-                residual = abs(
-                    math.hypot(short_value, long_value - local_extrude) - depth
-                )
-            if residual > tolerance:
-                raise CenterlineError(
-                    "The closed profile is neither a rectangle nor a Round + Extrude capsule."
-                )
-        profile_kind = "ROUND_FULL"
+        capsule_error = max(
+            abs(abs(short_value) - depth)
+            if abs(long_value) <= local_extrude + tolerance else
+            abs(math.hypot(short_value, abs(long_value) - local_extrude) - depth)
+            for short_value, long_value in coordinates
+        )
+        if capsule_error <= tolerance:
+            candidates.append((int(capsule_error / numeric_tolerance), 0,
+                               capsule_error, "ROUND_FULL", short_axis, depth, half_width))
+    if not candidates:
+        raise CenterlineError(
+            "The closed profile is neither a rectangle nor a Round + Extrude capsule."
+        )
+    _band, _sampling, _error, profile_kind, short_axis, depth, half_width = min(
+        candidates, key=lambda candidate: candidate[:3],
+    )
+    if profile_kind == "ROUND_FULL" and half_width == depth:
+        raise CenterlineError(
+            "The round profile has unresolved sampling or an extrusion below reliable precision."
+        )
+    if 0.0 < half_width - depth <= 4.0 * max(EPSILON, half_width * 1.0e-6, coordinate_precision):
+        raise CenterlineError("The profile extrusion is below reliable coordinate precision.")
     return {
         "coordinate": origin.copy(),
         "axis": short_axis.copy(),
@@ -6153,6 +6289,15 @@ def _transport_recovery_axes(coordinates, axes):
     _tangents, baselines = _minimum_twist_baselines(
         tuple({"tangent_local": tangent} for tangent in tangents)
     )
+    if math.hypot(tangents[0].x, tangents[0].y) <= 1.0e-6:
+        # Arithmetic means of float32 rings give an exactly vertical authored
+        # path tiny XY noise. Blender keeps the vertical minimum-twist frame;
+        # normalizing Z cross that noise would choose an arbitrary roll here.
+        baseline = _project_to_normal_plane(Vector((-1.0, 0.0, 0.0)), tangents[0])
+        stable_baselines = [baseline]
+        for previous_tangent, tangent in zip(tangents, tangents[1:]):
+            stable_baselines.append(_transport_axis(stable_baselines[-1], previous_tangent, tangent))
+        baselines = tuple(stable_baselines)
     tilts = []
     for axis, tangent, baseline in zip(axes, tangents, baselines):
         target = _project_to_normal_plane(axis, tangent)
@@ -6255,15 +6400,17 @@ def _infer_recovery_bevel_resolution(profile_kind, measures, extrude_ratio):
     if len(counts) != 1:
         raise CenterlineError("Applied profile resolution changes along this strand.")
     count = next(iter(counts))
+    # An actual Extrude adds profile vertices even when its distance is small;
+    # the broad shape-fit tolerance must not decide which sampling was used.
+    has_extrude = extrude_ratio > 0.0
     if profile_kind == "HALF_ROUND":
-        if count < 4 or count % 2:
+        minimum = 4 if has_extrude else 3
+        offset = 4 if has_extrude else 3
+        if count < minimum or (count - offset) % 2:
             raise CenterlineError("Half Round profile vertex count is not supported.")
-        resolution = count // 2 - 2
-        if 2 * (resolution + 2) != count:
-            raise CenterlineError("Half Round profile resolution could not be recovered.")
-        return max(0, resolution)
+        return (count - offset) // 2
     if profile_kind == "ROUND_FULL":
-        if extrude_ratio <= RECOVERY_PROFILE_RELATIVE_TOLERANCE:
+        if not has_extrude:
             if count < 4 or count % 2:
                 raise CenterlineError("Round profile vertex count is not supported.")
             resolution = count // 2 - 2
@@ -6275,12 +6422,10 @@ def _infer_recovery_bevel_resolution(profile_kind, measures, extrude_ratio):
             raise CenterlineError("Round profile resolution could not be recovered.")
         return resolution
     if profile_kind == "RECTANGLE":
-        if count < 6 or (count - 2) % 4:
+        offset = 6 if has_extrude else 4
+        if count < offset or (count - offset) % 4:
             raise CenterlineError("Rectangle Curve Profile resolution is not supported.")
-        resolution = (count - 2) // 4 - 1
-        if resolution < 0:
-            raise CenterlineError("Rectangle profile resolution could not be recovered.")
-        return resolution
+        return (count - offset) // 4
     return 0
 
 
@@ -6313,6 +6458,7 @@ def _recovery_profile_solution(bm, record, metadata):
     profile_tangents = []
     profile_kind = None
     measure_by_index = {}
+    source_anchor_frame = None
     for index, (layer, tangent, section) in enumerate(
         zip(layers, tangents, metadata["sections"])
     ):
@@ -6331,6 +6477,26 @@ def _recovery_profile_solution(bm, record, metadata):
         else:
             measure = _closed_profile_section(bm, layer, tangent, section)
             current_kind = measure["profile_kind"]
+            # Symmetric profiles have equivalent +/- axes. Keep the source's
+            # tracked vertex in the same side of the first ring's local frame,
+            # so a changing surface hint cannot turn inter-ring faces by 180°.
+            anchor = section.get("anchor_vertex")
+            if anchor not in layer:
+                raise CenterlineError("The closed profile has no stable source column.")
+            anchor_delta = _project_to_normal_plane(
+                bm.verts[anchor].co - measure["coordinate"], measure["profile_tangent"],
+            )
+            if anchor_delta is None:
+                raise CenterlineError("The source column has no usable profile direction.")
+            axis = measure["axis"]
+            frame_anchor = Vector((
+                anchor_delta.dot(axis),
+                anchor_delta.dot(measure["profile_tangent"].cross(axis)),
+            ))
+            if source_anchor_frame is None:
+                source_anchor_frame = frame_anchor
+            elif source_anchor_frame.dot(frame_anchor) < 0.0:
+                measure["axis"] = -axis
         if profile_kind is None:
             profile_kind = current_kind
         elif profile_kind != current_kind:
@@ -7493,6 +7659,7 @@ class CHARACTERDESIGNER_OT_build_centerline(Operator):
                 layers,
                 centers,
                 regular_kind,
+                tool_mode=curve_tools.settings_mode(settings),
             )
             created = _create_centerline_object(
                 context,
@@ -7514,6 +7681,8 @@ class CHARACTERDESIGNER_OT_build_centerline(Operator):
                     f"{_compact_number(summary['maximum_profile_span'])} BU; Round/Half Depth "
                     f"{_compact_number(created.data.bevel_depth)} BU; tip "
                     f"{HAIR_PROFILE_TIP_RADIUS * 100.0:.1f}%."
+                ) if curve_tools.object_mode(created) == "HAIR" else (
+                    f"Built {created.name}: {len(centers)} centerline points."
                 ),
             )
         except CenterlineError as exc:
@@ -7588,6 +7757,7 @@ class CHARACTERDESIGNER_OT_confirm_centerline(Operator):
                 layers,
                 centers,
                 regular_kind,
+                tool_mode=curve_tools.settings_mode(settings),
             )
             created = _create_centerline_object(
                 context,
@@ -7614,6 +7784,8 @@ class CHARACTERDESIGNER_OT_confirm_centerline(Operator):
         success_message = (
             f"Created {created.name} · {len(centers)} points · Round/Half Depth "
             f"{_compact_number(created.data.bevel_depth)} BU."
+        ) if curve_tools.object_mode(created) == "HAIR" else (
+            f"Created {created.name} · {len(centers)} centerline points."
         )
         _set_live_preview_enabled(settings, False)
         _stop_live_preview(settings, clear_capture=True)
@@ -7640,12 +7812,15 @@ class CHARACTERDESIGNER_OT_set_front_alignment(Operator):
 
     @classmethod
     def poll(cls, context):
-        return _is_character_designer_centerline(context.active_object)
+        return (_is_character_designer_centerline(context.active_object)
+                and curve_tools.object_mode(context.active_object) == "HAIR")
 
     def execute(self, context):
         settings = _settings(context)
         target = context.active_object
         try:
+            if curve_tools.object_mode(target) != "HAIR":
+                raise CenterlineError("Surface alignment applies only to Hair curves.")
             metadata = _curve_cross_section_metadata(target)
             source_obj = None
             layers = _stored_centerline_layers(target)
@@ -7775,12 +7950,14 @@ class CHARACTERDESIGNER_OT_update_existing_centerline(Operator):
                     raise CenterlineError("Select at least two connected cross-sections.")
                 if not direction_confirmable:
                     raise CenterlineError("Direction unclear - select one end as Start.")
+                layers, centers = _centerline_input_order(target, layers, centers)
                 metadata = _build_cross_section_metadata(
                     source_obj,
                     bm,
                     layers,
                     centers,
                     regular_kind,
+                    tool_mode=curve_tools.object_mode(target),
                 )
             else:
                 target = context.active_object
@@ -7848,7 +8025,7 @@ class CHARACTERDESIGNER_OT_generate_or_update_centerline(Operator):
     bl_idname = "character_designer.generate_or_update_centerline"
     bl_label = "Generate / Update Centerline"
     bl_description = (
-        "Create from the selected hair loops, overwrite the matching in-scene "
+        "Create from selected strip or tube cross-sections, overwrite the matching in-scene "
         "centerline, or refresh the active centerline from its recorded source"
     )
     bl_options = {"REGISTER", "UNDO"}
@@ -7871,7 +8048,8 @@ class CHARACTERDESIGNER_OT_generate_or_update_centerline(Operator):
         created = False
         try:
             if context.mode == "EDIT_MESH":
-                alignment = settings.centerline_placement
+                alignment = (settings.centerline_placement if curve_tools.settings_mode(settings) == "HAIR"
+                             else HAIR_ALIGNMENT_CENTERED)
                 if alignment not in HAIR_ALIGNMENTS:
                     alignment = HAIR_ALIGNMENT_CENTERED
                 placement_factor = _alignment_factor(
@@ -7890,17 +8068,18 @@ class CHARACTERDESIGNER_OT_generate_or_update_centerline(Operator):
                     raise CenterlineError("Select at least two connected cross-sections.")
                 if not direction_confirmable:
                     raise CenterlineError("Direction unclear - make one end edge active.")
+                target = _automatic_centerline_target(
+                    context, source_obj, layers,
+                    tool_mode=curve_tools.settings_mode(settings),
+                )
+                layers, centers = _centerline_input_order(target, layers, centers)
                 metadata = _build_cross_section_metadata(
                     source_obj,
                     bm,
                     layers,
                     centers,
                     regular_kind,
-                )
-                target = _automatic_centerline_target(
-                    context,
-                    source_obj,
-                    layers,
+                    tool_mode=curve_tools.settings_mode(settings),
                 )
                 if target is None:
                     target = _create_centerline_object(
@@ -7990,7 +8169,7 @@ class CHARACTERDESIGNER_OT_recover_applied_curve(Operator):
     bl_label = "Recover Applied Curve"
     bl_description = (
         "Recover editable Curve points, Radius, Tilt, and a compatible profile "
-        "from selected applied-hair bands or longitudinal guide edges while "
+        "from selected strip/tube bands or longitudinal guide edges while "
         "preserving Mirror and Subdivision modifiers in their original order"
     )
     bl_options = {"REGISTER", "UNDO"}
@@ -8052,7 +8231,7 @@ class CHARACTERDESIGNER_OT_recover_applied_curve(Operator):
             return {"CANCELLED"}
 
         if not results:
-            message = "No applied hair component was recovered."
+            message = "No applied Curve component was recovered."
             _set_status(settings, "INFO", message)
             self.report({"INFO"}, message)
             return {"CANCELLED"}
@@ -8206,6 +8385,9 @@ class CHARACTERDESIGNER_OT_set_ui_page(Operator):
         if self.page == UI_PAGE_CLOTHING:
             settings.ui_page = UI_PAGE_RIG
             settings.rig_section = 'SKIRT'
+        elif self.page == UI_PAGE_HAIR:
+            settings.ui_page = UI_PAGE_MODELING
+            settings.curve_tools_mode = 'HAIR'
         else:
             settings.ui_page = self.page
         return {"FINISHED"}
@@ -8238,7 +8420,7 @@ def _draw_page_tab(row, active_page, page, text, icon):
 def _draw_page_tabs(layout, active_page):
     tab_box = layout.box()
     first_row = tab_box.row(align=True)
-    _draw_page_tab(first_row, active_page, UI_PAGE_HAIR, "Hair", "CURVE_DATA")
+    _draw_page_tab(first_row, active_page, UI_PAGE_MODELING, "Modeling", "EDITMODE_HLT")
     _draw_page_tab(first_row, active_page, UI_PAGE_WEIGHT, "Weight", "MOD_ARMATURE")
     _draw_page_tab(first_row, active_page, UI_PAGE_RIG, "Rig", "CONSTRAINT_BONE")
 
@@ -8278,120 +8460,146 @@ class CHARACTERDESIGNER_PT_main(Panel):
     bl_category = SIDEBAR_CATEGORY
 
     def draw(self, context):
-        layout = self.layout
-        settings = _settings(context)
-        if settings is None:
-            layout.label(text="Add-on state unavailable", icon="ERROR")
-            return
+        _draw_page_tabs(self.layout, active_ui_page(context))
+        _draw_refresh_action(self.layout)
 
-        page = active_ui_page(context)
-        _draw_page_tabs(layout, page)
-        if page != UI_PAGE_HAIR:
-            _draw_refresh_action(layout)
-            return
 
-        layout.label(text="Hair Centerline", icon="CURVE_DATA")
-        curve_control = bool(
-            context.mode in {"OBJECT", "EDIT_CURVE"}
-            and _is_character_designer_centerline(context.active_object)
-            and (
-                context.mode != "EDIT_CURVE"
-                or context.edit_object is context.active_object
-            )
+def _draw_curve_tools(layout, context):
+    settings = _settings(context)
+    if settings is None:
+        layout.label(text="Add-on state unavailable", icon="ERROR")
+        return
+
+    layout.prop(settings, "curve_tools_mode", text="Mode")
+    curve_control = bool(
+        context.mode in {"OBJECT", "EDIT_CURVE"}
+        and _is_character_designer_centerline(context.active_object)
+        and (
+            context.mode != "EDIT_CURVE"
+            or context.edit_object is context.active_object
         )
-        object_refresh = bool(curve_control and context.mode == "OBJECT")
-        _bind_centerline_controls(
-            settings,
-            context.active_object if curve_control else None,
+    )
+    object_refresh = bool(curve_control and context.mode == "OBJECT")
+    _bind_centerline_controls(
+        settings,
+        context.active_object if curve_control else None,
+    )
+    tool_mode = (curve_tools.object_mode(context.active_object) if curve_control
+                 else curve_tools.settings_mode(settings))
+    if curve_control and tool_mode != curve_tools.settings_mode(settings):
+        layout.label(text="Selected curve: " + tool_mode.title(), icon="INFO")
+    if curve_control and tool_mode == "HAIR":
+        stored_alignment = context.active_object.get(
+            "character_designer_alignment",
+            HAIR_ALIGNMENT_CENTERED,
         )
-        if curve_control:
-            stored_alignment = context.active_object.get(
-                "character_designer_alignment",
-                HAIR_ALIGNMENT_CENTERED,
+        if stored_alignment not in HAIR_ALIGNMENTS:
+            stored_alignment = HAIR_ALIGNMENT_CENTERED
+        placement_row = layout.row(align=True)
+        for mode, label in (
+            (HAIR_ALIGNMENT_CENTERED, "Centered"),
+            (HAIR_ALIGNMENT_FRONT_FLUSH, "Surface"),
+            (HAIR_ALIGNMENT_BLEND, "Blend"),
+        ):
+            action = placement_row.operator(
+                "character_designer.set_front_alignment",
+                text=label,
+                depress=stored_alignment == mode,
             )
-            if stored_alignment not in HAIR_ALIGNMENTS:
-                stored_alignment = HAIR_ALIGNMENT_CENTERED
-            placement_row = layout.row(align=True)
-            for mode, label in (
-                (HAIR_ALIGNMENT_CENTERED, "Centered"),
-                (HAIR_ALIGNMENT_FRONT_FLUSH, "Surface"),
-                (HAIR_ALIGNMENT_BLEND, "Blend"),
-            ):
-                action = placement_row.operator(
-                    "character_designer.set_front_alignment",
-                    text=label,
-                    depress=stored_alignment == mode,
-                )
-                action.mode = mode
-            if stored_alignment == HAIR_ALIGNMENT_BLEND:
-                blend_row = layout.row(align=True)
-                blend_row.prop(
-                    settings,
-                    "centerline_blend_factor",
-                    text="Mix",
-                    slider=True,
-                )
-        else:
-            placement_row = layout.row(align=True)
-            placement_row.prop(settings, "centerline_placement", expand=True)
-            if settings.centerline_placement == HAIR_ALIGNMENT_BLEND:
-                blend_row = layout.row(align=True)
-                blend_row.prop(
-                    settings,
-                    "centerline_blend_factor",
-                    text="Mix",
-                    slider=True,
-                )
-        if context.mode == "EDIT_MESH" and context.edit_object is not None:
-            layout.operator(
-                "character_designer.generate_or_update_centerline",
-                text="Generate / Update Centerline",
-                icon="CURVE_DATA",
-            )
-            recovery_output_row = layout.row(align=True)
-            recovery_output_row.prop(settings, "recovery_source_action", expand=True)
-            recovery_mode_row = layout.row(align=True)
-            recovery_mode_row.prop(settings, "recovery_curve_mode", expand=True)
-            if settings.recovery_curve_mode == RECOVERY_CURVE_MODE_BEZIER:
-                recovery_points_row = layout.row(align=True)
-                recovery_points_row.prop(
-                    settings,
-                    "recovery_control_points",
-                    text="Control Points",
-                    slider=True,
-                )
-            recovery_preview_row = layout.row(align=True)
-            recovery_preview_row.prop(
+            action.mode = mode
+        if stored_alignment == HAIR_ALIGNMENT_BLEND:
+            blend_row = layout.row(align=True)
+            blend_row.prop(
                 settings,
-                "recovery_preview_enabled",
-                text="Preview",
-                toggle=True,
-                icon="HIDE_OFF" if settings.recovery_preview_enabled else "HIDE_ON",
+                "centerline_blend_factor",
+                text="Mix",
+                slider=True,
             )
-            if settings.preview_mode == "RECOVERY" and settings.preview_message:
-                preview_message_row = layout.row()
-                preview_message_row.label(
-                    text=settings.preview_message,
-                    icon="INFO",
-                )
-            layout.operator(
-                "character_designer.recover_applied_curve",
-                text="Recover Applied Curve",
-                icon="MOD_CURVE",
+    elif tool_mode == "HAIR":
+        placement_row = layout.row(align=True)
+        placement_row.prop(settings, "centerline_placement", expand=True)
+        if settings.centerline_placement == HAIR_ALIGNMENT_BLEND:
+            blend_row = layout.row(align=True)
+            blend_row.prop(
+                settings,
+                "centerline_blend_factor",
+                text="Mix",
+                slider=True,
             )
-        elif object_refresh:
-            layout.operator(
-                "character_designer.generate_or_update_centerline",
-                text="Refresh Centerline",
-                icon="FILE_REFRESH",
+    if context.mode == "EDIT_MESH" and context.edit_object is not None:
+        layout.operator(
+            "character_designer.generate_or_update_centerline",
+            text="Generate / Update Centerline",
+            icon="CURVE_DATA",
+        )
+        recovery_output_row = layout.row(align=True)
+        recovery_output_row.prop(settings, "recovery_source_action", expand=True)
+        recovery_mode_row = layout.row(align=True)
+        recovery_mode_row.prop(settings, "recovery_curve_mode", expand=True)
+        if settings.recovery_curve_mode == RECOVERY_CURVE_MODE_BEZIER:
+            recovery_points_row = layout.row(align=True)
+            recovery_points_row.prop(
+                settings,
+                "recovery_control_points",
+                text="Control Points",
+                slider=True,
             )
-        elif not curve_control:
-            layout.label(text="Select hair loops in Mesh Edit Mode.", icon="INFO")
+        recovery_preview_row = layout.row(align=True)
+        recovery_preview_row.prop(
+            settings,
+            "recovery_preview_enabled",
+            text="Preview",
+            toggle=True,
+            icon="HIDE_OFF" if settings.recovery_preview_enabled else "HIDE_ON",
+        )
+        if settings.preview_mode == "RECOVERY" and settings.preview_message:
+            preview_message_row = layout.row()
+            preview_message_row.label(
+                text=settings.preview_message,
+                icon="INFO",
+            )
+        layout.operator(
+            "character_designer.recover_applied_curve",
+            text="Recover Applied Curve",
+            icon="MOD_CURVE",
+        )
+    elif object_refresh:
+        layout.operator(
+            "character_designer.generate_or_update_centerline",
+            text="Refresh Centerline",
+            icon="FILE_REFRESH",
+        )
+    elif not curve_control and not (context.active_object and context.active_object.type == "CURVE"):
+        layout.label(text="Select strip / tube loops in Mesh Edit Mode.", icon="INFO")
+    if context.active_object and context.active_object.type == "CURVE":
+        if tool_mode == "GENERAL":
+            row = layout.row(align=True)
+            row.prop(context.active_object.data, "bevel_depth", text="Depth")
+            row.prop(context.active_object.data, "bevel_resolution", text="Resolution")
+        row = layout.row(align=True)
+        row.enabled = context.mode == "OBJECT"
+        row.operator("character_designer.curve_to_mesh_copy", text="Curve to Mesh (Copy)", icon="OUTLINER_OB_MESH")
 
-        if settings.last_level == "ERROR" and settings.last_message:
-            _draw_message(layout, "ERROR", settings.last_message)
+    if settings.last_level == "ERROR" and settings.last_message:
+        _draw_message(layout, "ERROR", settings.last_message)
 
-        _draw_refresh_action(layout)
+
+
+class CHARACTERDESIGNER_PT_curve_tools(Panel):
+    bl_label = "Curve Tools"
+    bl_idname = "CHARACTERDESIGNER_PT_curve_tools"
+    bl_parent_id = "CHARACTERDESIGNER_PT_main"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = SIDEBAR_CATEGORY
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
+        return active_ui_page(context) == UI_PAGE_MODELING
+
+    def draw(self, context):
+        _draw_curve_tools(self.layout, context)
 
 
 class CHARACTERDESIGNER_PT_rig_sections(Panel):
@@ -8435,6 +8643,8 @@ CLASSES = (
     CHARACTERDESIGNER_OT_set_ui_page,
     CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
+    CHARACTERDESIGNER_PT_curve_tools,
+    *curve_tools.CLASSES,
     *FINGER_ROOT_CLASSES,
     *FINGER_BONES_CLASSES,
     *CHARACTER_SETUP_CLASSES,
@@ -8543,6 +8753,7 @@ def _validate_registration_integrity():
 
 
 def register():
+    from . import body_calibration_ui, control_pose_assets, control_weight_paint
     centerline_registered = hasattr(bpy.types.WindowManager, "character_designer")
     delta_registered = hasattr(
         bpy.types.WindowManager,
@@ -8588,6 +8799,9 @@ def register():
         register_finger_root_runtime()
         register_animation_runtime()
         register_reference_view_handlers()
+        body_calibration_ui.register()
+        control_pose_assets.register()
+        control_weight_paint.register()
         register_limb_ik_viewport_handler()
         register_bone_collection_handlers()
         register_bone_display_sync()
@@ -8665,6 +8879,9 @@ def register():
         register_finger_root_runtime()
         register_animation_runtime()
         register_reference_view_handlers()
+        body_calibration_ui.register()
+        control_pose_assets.register()
+        control_weight_paint.register()
         register_limb_ik_viewport_handler()
         register_bone_collection_handlers()
         register_bone_display_sync()
@@ -8678,6 +8895,9 @@ def register():
         unregister_finger_root_runtime()
         unregister_animation_runtime()
         unregister_forearm_twist_runtime()
+        control_pose_assets.unregister()
+        control_weight_paint.unregister()
+        body_calibration_ui.unregister()
         unregister_limb_ik_viewport_handler()
         unregister_bone_collection_handlers()
         unregister_bone_display_sync()
@@ -8700,6 +8920,10 @@ def register():
 
 
 def unregister():
+    from . import body_calibration_ui, control_pose_assets, control_weight_paint
+    control_pose_assets.unregister()
+    control_weight_paint.unregister()
+    body_calibration_ui.unregister()
     stop_export_ui()
     unregister_mesh_mirror_runtime()
     unregister_finger_bones_runtime()

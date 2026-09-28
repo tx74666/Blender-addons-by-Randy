@@ -109,8 +109,8 @@ def resolve_target(context, source, armature=None):
     return candidates[0][2:]
 
 
-def _cap_vertices(source, plans):
-    """Validate a complete partition and the residual region touching roots."""
+def _binding_regions(source, plans):
+    """Partition strict strand cores, short terminal disks and the head cap."""
     covered = {index for plan in plans for index in plan["vertices"]}
     roots = {index for plan in plans for index in plan["layers"][0]}
     bm = bmesh.from_edit_mesh(source.data).copy() if source.mode == "EDIT" else bmesh.new()
@@ -127,6 +127,8 @@ def _cap_vertices(source, plans):
         discovered = topology._discover(source, bm, allowed, edges, adjacency, set())
         if any(set(plan["vertices"]) - covered for plan in discovered):
             raise rig.HairBonesRigError("Capture all hair strands before binding; uncaptured long strands are not a head cap.")
+        tip_patches = topology.terminal_patches(source, bm, plans, allowed=allowed, adjacency=adjacency)
+        covered.update(index for vertices in tip_patches.values() for index in vertices)
         remaining = set(range(len(bm.verts))) - covered
         pending = set(remaining)
         while pending:
@@ -143,9 +145,33 @@ def _cap_vertices(source, plans):
                         boundary.add(neighbor)
             if not boundary or not boundary.issubset(roots):
                 raise rig.HairBonesRigError("Uncaptured geometry does not form a cap joined only to strand roots; refine the capture first.")
-        return tuple(sorted(remaining))
+        return tuple(sorted(remaining)), tip_patches
     finally:
         bm.free()
+
+
+def _cap_vertices(source, plans):
+    """Compatibility query for the validated head-controlled region."""
+    return _binding_regions(source, plans)[0]
+
+
+def _write_terminal_weights(source, armature, tip_patches, chains):
+    """Continue each closed strand's final bone through its short tip disk."""
+    last_bones = {chain["signature"]: chain["bones"][-1] for chain in chains}
+    deform = {bone.name for bone in armature.data.bones if bone.use_deform}
+    names = {group.index: group.name for group in source.vertex_groups}
+    weights = {}
+    for signature, indices in tip_patches.items():
+        final = last_bones.get(signature)
+        if final is None:
+            raise rig.HairBonesRigError("A terminal hair patch has no generated source chain.")
+        for index in indices:
+            for assignment in source.data.vertices[index].groups:
+                name = names[assignment.group]
+                if name in deform and name != final:
+                    weights.setdefault(name, {})[index] = 0.0
+            weights.setdefault(final, {})[index] = 1.0
+    rig._write_weights(source, weights)
 
 
 def _read(source):
@@ -213,7 +239,7 @@ def bind_hair(context, source, plans, *, bone_count=4, armature=None):
     plans = tuple(plans)
     snapshot = rig._mesh_snapshot(source)
     rig._plan_copy(plans, snapshot, bone_count)
-    cap = _cap_vertices(source, plans)
+    cap, tip_patches = _binding_regions(source, plans)
     state = rig._context_snapshot(context, source, target)
     parent, parent_data = source.parent, _parent_state(source)
     existing = next((item for item in source.modifiers if item.type == "ARMATURE"), None)
@@ -227,6 +253,11 @@ def bind_hair(context, source, plans, *, bone_count=4, armature=None):
         rig._mode(context, source, "OBJECT")
         old_groups = _capture_vertex_groups(source)
         deform = {bone.name for bone in target.data.bones if bone.use_deform}
+        terminal_vertices = {index for indices in tip_patches.values() for index in indices}
+        for group in old_groups:
+            if (group["name"] in deform and group["lock_weight"]
+                    and any(index in terminal_vertices for index, _ in group["weights"])):
+                raise rig.HairBonesRigError(f"Unlock '{group['name']}' before assigning hair tip weights.")
         influencing = {group["name"] for group in old_groups if group["name"] in deform
                        and any(weight > rig.EPSILON for _, weight in group["weights"])}
         rig._check_rest(context, target, influencing | {head})
@@ -241,6 +272,12 @@ def bind_hair(context, source, plans, *, bone_count=4, armature=None):
             rig._write_weights(source, weights)
         result = rig.build_hair_bones(context, source, plans, bone_count=bone_count,
                                      armature=target, parent_bone=head, mirror_controls=True)
+        if tip_patches:
+            rig._mode(context, source, "OBJECT")
+            _write_terminal_weights(source, target, tip_patches, result["chains"])
+            rig._select_chains(context, target,
+                               tuple(name for chain in result["chains"] for name in chain["bones"]))
+            context.view_layer.update()
         current_groups = _capture_vertex_groups(source)
         previous = {item["name"]: item for item in old_groups}
         affected = [item["name"] for item in current_groups if item != previous.get(item["name"])]
@@ -251,11 +288,12 @@ def bind_hair(context, source, plans, *, bone_count=4, armature=None):
                 "modifier": next(item.name for item in source.modifiers if item.type == "ARMATURE"),
                 "mirrors": [{"name": item.name, "flip": flag} for item, flag in mirrors],
                 "created_collections": sorted(set(target.data.collections.keys()) - collections_before),
-                "front_before": front_before, "cap_vertices": cap}
+                "front_before": front_before, "cap_vertices": cap, "tip_patches": tip_patches}
         source[BINDING_KEY] = json.dumps(data, sort_keys=True, separators=(",", ":"))
         if parent:
             source[OLD_PARENT_KEY] = parent
         result["cap_vertices"] = cap
+        result["tip_patches"] = tip_patches
         return result
     except Exception:
         # The rig service is transactional. If failure follows its successful

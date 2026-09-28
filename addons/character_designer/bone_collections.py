@@ -40,6 +40,8 @@ def public_collections(armature):
 
 
 def _structural_edit_guard(armature):
+    if bpy.context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
+        raise ValueError('Use Back to Controls before changing Bone Collections or rebuilding controls.')
     if VIEW_KEY in armature.data:
         raise ValueError("Restore the temporary bone display view before changing Bone Collections or rebuilding controls.")
 
@@ -596,6 +598,8 @@ def _frame_visibility(scene, _depsgraph=None):
     """Follow keyed modes without changing the artist's visible/solo switches."""
     from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls, spine_ik_fk, root_control
     for armature in scene.objects:
+        if scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
+            continue
         if (armature.type != "ARMATURE" or armature.mode == "EDIT"
                 or armature.library or armature.data.library or armature.data.users != 1
                 or not armature.is_editable or not armature.data.get(PROFILE_KEY)

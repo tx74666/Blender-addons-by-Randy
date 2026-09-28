@@ -763,22 +763,23 @@ def _restore_context(context, armature, snapshot):
             raise LimbIKError("The original Edit Armature is no longer active.")
         if bpy.ops.object.mode_set(mode="EDIT") != {"FINISHED"}:
             raise LimbIKError("Blender could not restore Armature Edit Mode.")
+        # Assigning active can select it; restore the exact flags afterwards.
+        armature.data.edit_bones.active = armature.data.edit_bones.get(snapshot["active_bone"])
         for bone in armature.data.edit_bones:
             values = snapshot["bone_selection"].get(bone.name, (False, False, False))
             bone.select, bone.select_head, bone.select_tail = values
-        armature.data.edit_bones.active = armature.data.edit_bones.get(snapshot["active_bone"])
     elif original_mode == "POSE":
         if context.view_layer.objects.active is not armature:
             raise LimbIKError("The original Pose Armature is no longer active.")
         if bpy.ops.object.mode_set(mode="POSE") != {"FINISHED"}:
             raise LimbIKError("Blender could not restore Pose Mode.")
+        armature.data.bones.active = armature.data.bones.get(snapshot["active_bone"])
         for bone in armature.pose.bones:
             bone.select = snapshot["bone_selection"].get(bone.name, False)
-        armature.data.bones.active = armature.data.bones.get(snapshot["active_bone"])
     elif original_mode == "OBJECT":
+        armature.data.bones.active = armature.data.bones.get(snapshot["active_bone"])
         for bone in armature.pose.bones:
             bone.select = snapshot["bone_selection"].get(bone.name, False)
-        armature.data.bones.active = armature.data.bones.get(snapshot["active_bone"])
 
 
 def _project_perpendicular(vector, axis):
@@ -1295,7 +1296,9 @@ def _restore_direct_registry_original(context, armature, registry):
             if existing is not None and _canonical_json(existing) != _canonical_json(state):
                 raise LimbIKError(f"Direct Pre-Roll Rest registry disagrees about source bone '{name}'.")
             states[name] = state
-    _restore_edit_rest_states(context, armature, states)
+    from . import body_calibration
+    if not body_calibration.calibrated(armature):
+        _restore_edit_rest_states(context, armature, states)
     for name, state in states.items():
         if not _rest_state_matches(armature.data.bones.get(name), state):
             raise LimbIKError(f"Direct Pre-Roll could not exactly restore source Rest bone '{name}'.")
@@ -5429,6 +5432,11 @@ def _build_plans(
     foot_widget_kinds=None,
     target_rotation_version=None,
 ):
+    from . import body_calibration
+    if body_calibration.calibrated(armature):
+        if schema != DIRECT_PREROLL_SCHEMA:
+            raise LimbIKError("This character uses confirmed Direct calibration; do not replace it with a different solver implicitly.")
+        body_calibration.require_confirmed(context, armature)
     inventory = _validate_inventory(armature)
     if target_rotation_version is None:
         requested_target_rotation_version = _default_target_rotation_version(schema)
@@ -5497,7 +5505,11 @@ def _build_plans(
         elif TARGET_ROTATION_VERSION_KEY in armature.data:
             del armature.data[TARGET_ROTATION_VERSION_KEY]
         if _is_direct_preroll_schema(schema):
-            missing = _apply_direct_preroll(context, armature, missing, transaction)
+            from . import body_calibration
+            if body_calibration.calibrated(armature):
+                missing = body_calibration.register_direct_rest(context, armature, missing, transaction)
+            else:
+                missing = _apply_direct_preroll(context, armature, missing, transaction)
         _create_constraint_shells(armature, armature_id, missing, transaction, schema=schema, create_master=create_master)
         _create_control_bones(context, armature, armature_id, missing, transaction, schema=schema, create_master=create_master,
                               target_rotation_version=requested_target_rotation_version)
@@ -5525,6 +5537,15 @@ def _build_plans(
             if (plan.chain.kind, plan.chain.side) not in verified["rigs"]:
                 raise LimbIKError(f"Generated {plan.chain.side} {plan.chain.kind.title()} rig did not pass ownership verification.")
         context.view_layer.update()
+        if body_calibration.calibrated(armature):
+            # Rest is already confirmed. Match only generated controls to the
+            # exact saved pose before validation; no skin/rest matrix round trip.
+            limb_ik_fk.ensure_switching(armature, verified,
+                keys={(plan.chain.kind,plan.chain.side) for plan in missing})
+            for plan in missing:
+                limb_ik_fk.switch_limb(context,armature,(plan.chain.kind,plan.chain.side),'IK',
+                    keyframe=False,desired_pose={n:source_pose_before[n] for n in plan.chain.names},
+                    calibrated_rest=True)
         replanned_bones = {
             name
             for plan in missing
@@ -8831,8 +8852,26 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if settings is None:
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
-        from . import body_setup_ui
-        body_setup_ui.draw_actions(layout, context)
+        from . import body_setup_ui, body_calibration_ui
+        if body_calibration_ui.draw(layout, context):
+            # Native mapping remains reachable before Generate. The stored old
+            # Setup/Controls choice no longer gates this workflow.
+            layout.prop(settings, "show_body_setup_advanced", text="Advanced",
+                        icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
+            if settings.show_body_setup_advanced:
+                mapping = layout.box()
+                body_calibration_ui.draw_advanced(mapping, context)
+                mapping.operator("character_designer.limb_ik_analyze", text="Analyze Rig", icon="VIEWZOOM")
+                mapping.prop(settings, "selected_limb", text="")
+                active = context.object
+                armature = active if active is not None and active.type == "ARMATURE" else settings.armature
+                fields = mapping.column()
+                fields.enabled = armature is not None and settings.armature == armature
+                if armature is not None and settings.armature != armature:
+                    mapping.label(text="Analyze this rig to edit its mapping.", icon="INFO")
+                kind, side = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
+                _draw_limb_fields(fields, settings, armature, kind, side)
+            return
         layout.prop(settings, "selected_limb", text="")
         active = context.object
         if active is not None and active.type == "ARMATURE":

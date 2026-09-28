@@ -1,7 +1,7 @@
 """One reversible operation for the character's supported body controls."""
 from contextlib import contextmanager
 
-from . import (body_setup_plan, body_setup_transaction, character_setup,
+from . import (body_calibration, body_setup_plan, body_setup_transaction, character_setup,
                control_colors, bone_collections, limb_ik)
 
 
@@ -37,6 +37,8 @@ def _runtime_paused():
 
 
 def _require_rig(context, rig):
+    if context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
+        raise ValueError('Use Back to Controls before changing the generated rig.')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ValueError('Finish the current edit and use Body Setup in Object or Pose Mode.')
     active = limb_ik._require_active_armature(context, limb_ik._settings(context), analyzed=False)
@@ -62,7 +64,8 @@ def _verify_skin(rig, before, tolerance=1e-4):
 
 def _limbs(context, rig, kwargs):
     from . import limb_ik_fk
-    skin = _native_skin(rig)
+    calibrated = body_calibration.calibrated(rig)
+    skin = _native_skin(rig) if not calibrated else None
     inventory = limb_ik._validate_inventory(rig)
     state = limb_ik._neutralize_existing_master(context, rig)
     try:
@@ -79,6 +82,9 @@ def _limbs(context, rig, kwargs):
                              target_rotation_version=inventory['target_rotation_version'] if inventory['rigs'] else None)
     finally:
         limb_ik._restore_master_state(context, rig, state)
+    if calibrated:
+        # The builder matches the saved native pose before its strict validation.
+        return
     for item in kwargs['chains']:
         names = [item[role] for role in limb_ik.ROLES]
         desired = {name: skin[name] @ rig.data.bones[name].matrix_local for name in names}
@@ -137,9 +143,20 @@ def generate(context, rig):
     result = {'created': [], 'reused': [item['key'] for item in proposed['components'] if item['status'] == 'REUSE'],
               'skipped': [item for item in proposed['components'] if item['status'] == 'SKIP'], 'plan': proposed}
     pending = [item for item in proposed['components'] if item['status'] == 'ADD']
+    protected_rest = body_calibration.native_rest(rig)
+    from . import body_setup_removal
+    context.view_layer.update()
+    protected_skin = _native_skin(rig)
+    surfaces = body_setup_removal._bound_surfaces(context,rig)
     if not pending:
         def update_axes():
             result['updated'] = limb_ik.sync_wrist_local_axes(rig)
+            body_calibration.verify_rest(rig,protected_rest)
+            context.view_layer.update()
+            _verify_skin(rig,protected_skin)
+            body_setup_removal._check_surfaces(context,rig,surfaces)
+            from . import control_pose_assets
+            control_pose_assets.capture_baseline(rig)
             return result
         result = _atomic(context, rig, update_axes)
         context.scene.character_designer_finger_definition.overlays_enabled = False
@@ -149,6 +166,12 @@ def generate(context, rig):
 
     def commit():
         layout = bone_collections.capture_managed_layout(rig)
+        inventory = limb_ik._validate_inventory(rig)
+        if body_calibration.uses_workflow(rig,inventory):
+            body_calibration.require_confirmed(context,rig)
+            value = body_calibration.record(rig)
+            value['direct'] = True
+            body_calibration.save(rig,value)
         for entry in pending:
             _add(context, rig, entry)
             result['created'].append(entry['key'])
@@ -157,10 +180,14 @@ def generate(context, rig):
         control_colors.sync(rig)
         context.view_layer.update()
         _verify_skin(rig, before)
+        body_calibration.verify_rest(rig,protected_rest)
+        body_setup_removal._check_surfaces(context,rig,surfaces)
         validated = plan(context, rig)
         if validated['blocked']:
             raise ValueError('The resulting Body Setup did not pass validation: ' + ' '.join(
                 entry['reason'] for entry in validated['components'] if entry['status'] in {'BLOCKED', 'NEEDS_MAPPING'}))
+        from . import control_pose_assets
+        control_pose_assets.capture_baseline(rig)
         return result
 
     result = _atomic(context, rig, commit)
@@ -174,6 +201,9 @@ def remove(context, rig, *, keep_native_rest=True):
     """Remove owned body components together, retaining the visible character."""
     from . import body_setup_removal
     _require_rig(context, rig)
+    if body_calibration.calibrated(rig) and not keep_native_rest:
+        raise ValueError('Confirmed calibration belongs to Apply/Undo; Remove must keep native Rest.')
+    protected_rest = body_calibration.native_rest(rig)
     prepared = body_setup_removal.preflight(context, rig, keep_native_rest=keep_native_rest)
     before = _native_skin(rig)
 
@@ -183,6 +213,8 @@ def remove(context, rig, *, keep_native_rest=True):
         control_colors.cleanup(rig)
         context.view_layer.update()
         _verify_skin(rig, before, tolerance=2e-4)
+        if keep_native_rest:
+            body_calibration.verify_rest(rig,protected_rest)
         return result
 
     return _atomic(context, rig, commit)

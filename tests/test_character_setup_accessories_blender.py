@@ -53,7 +53,8 @@ def test_saved_hair_source_and_main_rig_after_reopen():
     empty_selection()
     hair._settings(bpy.context).source = None
     assert hair._source(bpy.context) is source
-    assert ("label", "Main Rig: Saved Main Rig", True) in panel_calls()
+    assert ("operator", "character_designer.hair_bind_to_character", True) in panel_calls()
+    assert not any(item[0] == "label" and item[1].startswith("Main Rig:") for item in panel_calls())
 
     with tempfile.TemporaryDirectory(prefix="cd_saved_hair_") as temporary:
         path = str(Path(temporary) / "character.blend")
@@ -80,12 +81,14 @@ def test_saved_hair_source_and_main_rig_after_reopen():
     print("PASS saved hair references survive reopen and bind with another object selected")
 
 
-def test_explicit_hair_override_and_active_source_still_win():
+def test_character_setup_ignores_legacy_hair_override_and_keeps_active_source():
     source, _, main_rig = hair_fixture(count=1)
     clear_profile()
-    other_rig = make_armature("Explicit Override")
+    other_rig = make_armature("Obsolete Hair Override")
     setup.settings(bpy.context).rig = main_rig
     settings = hair._settings(bpy.context)
+    # A saved value from the retired override UI must never silently replace
+    # the Main Rig shown in Character Setup.
     settings.target_armature = other_rig
     # A stale remembered mesh must not override the selected source.
     old_mesh = bpy.data.meshes.new("Remembered Hair Data")
@@ -99,12 +102,13 @@ def test_explicit_hair_override_and_active_source_still_win():
     empty_selection()
     settings.source = None
     assert hair._source(bpy.context) is source
-    before = len(main_rig.data.bones)
+    before = len(other_rig.data.bones)
+    assert ("operator", "character_designer.hair_bind_to_character", True) in panel_calls()
     call("hair_bind_to_character")
-    assert source[hair_rig.RIG_KEY] is other_rig
-    assert len(main_rig.data.bones) == before
+    assert source[hair_rig.RIG_KEY] is main_rig
+    assert len(other_rig.data.bones) == before
     call("hair_remove_binding")
-    print("PASS explicit hair rig and active mesh retain precedence")
+    print("PASS Character Setup ignores obsolete Hair override and active source retains precedence")
 
 
 def test_skirt_uses_main_rig_and_remembers_source():
@@ -142,7 +146,7 @@ if __name__ == "__main__":
     cd.register()
     try:
         test_saved_hair_source_and_main_rig_after_reopen()
-        test_explicit_hair_override_and_active_source_still_win()
+        test_character_setup_ignores_legacy_hair_override_and_keeps_active_source()
         test_skirt_uses_main_rig_and_remembers_source()
         print("CHARACTER_SETUP_ACCESSORIES_OK")
     finally:

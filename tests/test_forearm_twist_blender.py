@@ -316,7 +316,7 @@ def test_start_cancel_and_confirm():
         before_surface = evaluated_points(mesh)
         before_lock = bpy.context.scene.render.use_lock_interface
         before_index = mesh.active_shape_key_index
-        record = runtime.start_test(bpy.context, mesh, side="L")
+        record = runtime.start_test(bpy.context, mesh, side="L", initial_angle=math.pi / 2)
         assert len(record["rings"]) == RING_COUNT
         assert len(mesh.data.shape_keys.key_blocks) == 4
         assert structure_snapshot(armature, mesh) == before_structure
@@ -337,14 +337,14 @@ def test_start_cancel_and_confirm():
         assert mesh.active_shape_key_index == before_index
         assert bpy.context.scene.render.use_lock_interface == before_lock
         assert_points_close(evaluated_points(mesh), before_surface, f"{method} cancel surface")
-        runtime.start_test(bpy.context, mesh)
+        runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
         runtime.set_ratio(bpy.context, 3, 0.33)
         runtime.finish_test(bpy.context, confirm=True)
         assert_pose_snapshot(armature, before_pose, f"{method} confirm restores pose")
         assert abs(record_for(mesh)["rings"][3]["ratio"] - 0.33) < 1.0e-8
         assert_runtime_geometry(fixture, f"{method} confirmed original pose")
         before_json = mesh[runtime.RECORD_KEY]
-        runtime.start_test(bpy.context, mesh)
+        runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
         runtime.set_ratio(bpy.context, 3, 0.72)
         runtime.finish_test(bpy.context, confirm=False)
         assert mesh[runtime.RECORD_KEY] == before_json
@@ -371,14 +371,14 @@ def test_unsupported_stack_is_transactional():
     mirror = mesh.modifiers.new("Unsupported preceding Mirror", "MIRROR")
     mesh.modifiers.move(len(mesh.modifiers) - 1, 0)
     before_structure = structure_snapshot(armature, mesh)
-    assert_refused(lambda: runtime.start_test(bpy.context, mesh), "Preceding Mirror")
+    assert_refused(lambda: runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2), "Preceding Mirror")
     assert_pose_snapshot(armature, before_pose, "Preceding Mirror refusal")
     assert structure_snapshot(armature, mesh) == before_structure
     assert key_snapshot(mesh) == before_keys
     assert runtime.RECORD_KEY not in mesh and runtime._SESSION is None
     mesh.modifiers.remove(mirror)
     mesh.modifiers[0].use_deform_preserve_volume = True
-    assert_refused(lambda: runtime.start_test(bpy.context, mesh), "Preserve Volume")
+    assert_refused(lambda: runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2), "Preserve Volume")
     assert runtime.RECORD_KEY not in mesh and runtime._SESSION is None
     print("PASS unsupported stack transactional refusal")
 
@@ -386,7 +386,7 @@ def test_unsupported_stack_is_transactional():
 def test_current_frame_animation_and_reload():
     fixture = make_fixture(BUILD_METHODS[0], side="R", transformed_objects=True)
     mesh, armature, target = fixture["mesh"], fixture["armature"], fixture["target"]
-    runtime.start_test(bpy.context, mesh, side="R")
+    runtime.start_test(bpy.context, mesh, side="R", initial_angle=math.pi / 2)
     runtime.set_ratio(bpy.context, 4, 0.58)
     runtime.finish_test(bpy.context, confirm=True)
     before_structure = structure_snapshot(armature, mesh)
@@ -408,7 +408,7 @@ def test_current_frame_animation_and_reload():
     assert structure_snapshot(armature, mesh) == before_structure
     assert {name: snapshot[3] for name, snapshot in key_snapshot(mesh).items()} == source_coordinates
     animated_pose = pose_snapshot(armature)
-    runtime.start_test(bpy.context, mesh, side="R")
+    runtime.start_test(bpy.context, mesh, side="R", initial_angle=math.pi / 2)
     assert runtime._SESSION["pose_locked"], "Animated targets need a settings-only preview"
     runtime.set_ratio(bpy.context, 3, .42)
     runtime.finish_test(bpy.context, confirm=False)
@@ -446,7 +446,7 @@ def test_auto_align_preview_and_error_recovery():
         pose_target(fixture, -15.0, bend=0.14, side_wave=0.12, elbow_offset=0.02)
         before_pose = pose_snapshot(armature)
         before_structure = structure_snapshot(armature, mesh)
-        runtime.start_test(bpy.context, mesh)
+        runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
         assert_runtime_geometry(fixture, f"{method} Auto Align 90-degree calibration")
         bpy.context.window_manager.character_designer_forearm_twist.test_angle = -math.pi / 2
         assert_runtime_geometry(fixture, f"{method} Auto Align negative preview")
@@ -475,7 +475,7 @@ def test_initial_basis_lifecycle():
     before_pose = pose_snapshot(armature)
     before_structure = structure_snapshot(armature, mesh)
     before_points = evaluated_points(mesh)
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     assert len(mesh.data.shape_keys.key_blocks) == 2
     runtime.finish_test(bpy.context, confirm=False)
     assert mesh.data.shape_keys is None
@@ -483,7 +483,7 @@ def test_initial_basis_lifecycle():
     assert_pose_snapshot(armature, before_pose, "First-created Basis cancel")
     assert structure_snapshot(armature, mesh) == before_structure
     assert_points_close(evaluated_points(mesh), before_points, "First-created Basis cancel surface")
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, confirm=True)
     runtime.remove_calibration(bpy.context, mesh, "L")
     assert mesh.data.shape_keys is None
@@ -505,7 +505,7 @@ def test_noncoplanar_loop_has_one_saved_share():
                 key.data[vertex_index].co += shift
             mesh.data.vertices[vertex_index].co = basis.data[vertex_index].co
     mesh.data.update()
-    record = runtime.start_test(bpy.context, mesh)
+    record = runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     assert len(record["rings"]) == RING_COUNT
     positions = dict(zip(record["vertices"], record["positions"]))
     for ring in record["rings"]:
@@ -533,7 +533,7 @@ def test_noncoplanar_loop_has_one_saved_share():
 def test_managed_key_rename_recovery():
     fixture = make_fixture(BUILD_METHODS[0])
     mesh = fixture["mesh"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, True)
     pose_target(fixture, 65.0)
     record = record_for(mesh)
@@ -578,7 +578,7 @@ def test_managed_key_rename_recovery():
     # renamed while the add-on was absent), removal must refuse ambiguous data.
     fixture = make_fixture(BUILD_METHODS[0])
     mesh = fixture["mesh"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, True)
     record = record_for(mesh)
     owned = mesh.data.shape_keys.key_blocks[record["key"]]
@@ -614,7 +614,7 @@ def test_existing_fk_without_generated_ik():
         before_structure = structure_snapshot(armature, mesh)
         before_keys = key_snapshot(mesh)
         for confirm in (False, True):
-            runtime.start_test(bpy.context, mesh, side=side)
+            runtime.start_test(bpy.context, mesh, side=side, initial_angle=math.pi / 2)
             assert hand.rotation_mode == "XYZ"
             matrices = deformation_matrices(armature)
             angle = geometry.twist_angle(matrices[fixture["lower_name"]], matrices[fixture["hand_name"]], fixture["axis"])
@@ -629,7 +629,7 @@ def test_existing_fk_without_generated_ik():
         assert_runtime_geometry(fixture, f"Existing FK {mode} saved correction")
         runtime.remove_calibration(bpy.context, mesh, side)
         constraint = hand.constraints.new("LIMIT_ROTATION")
-        assert_refused(lambda: runtime.start_test(bpy.context, mesh, side), "Constrained FK hand")
+        assert_refused(lambda: runtime.start_test(bpy.context, mesh, side, initial_angle=math.pi / 2), "Constrained FK hand")
         hand.constraints.remove(constraint)
         assert runtime.RECORD_KEY not in mesh
         assert structure_snapshot(armature, mesh) == before_structure

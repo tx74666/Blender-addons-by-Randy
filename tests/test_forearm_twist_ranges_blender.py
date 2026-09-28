@@ -4,6 +4,7 @@ Uses generated disposable fixtures only; never reads or writes production X.
 """
 from __future__ import annotations
 
+import math
 import copy
 import json
 import os
@@ -54,7 +55,7 @@ def test_bounded_evaluated_deformation_and_idempotence():
         mesh, arm = f["mesh"], f["armature"]
         structure = fixtures.structure_snapshot(arm, mesh)
         originals = fixtures.key_snapshot(mesh)
-        runtime.start_test(bpy.context, mesh)
+        runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
         runtime.set_range(bpy.context, 1, 6)
         runtime.set_ratio(bpy.context, 3, .77)
         record = fixtures.record_for(mesh)
@@ -81,7 +82,7 @@ def test_bounded_evaluated_deformation_and_idempotence():
 def test_explicit_profile_edits_and_refusal_atomicity():
     f = fixtures.make_fixture("ROLL_DECOUPLED", build_ik=False)
     mesh = f["mesh"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.set_range(bpy.context, 1, 6)
     runtime.set_ratio(bpy.context, 1, .15)
     runtime.set_ratio(bpy.context, 6, .83)
@@ -120,7 +121,7 @@ def test_cancel_reentry_and_save_reopen_keep_authored_capture():
     f = fixtures.make_fixture("ROLL_DECOUPLED", build_ik=False)
     mesh, arm = f["mesh"], f["armature"]
     fixtures.pose_target(f, 22., bend=.04)
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.set_range(bpy.context, 1, 6)
     runtime.set_ratio(bpy.context, 2, .19)
     runtime.set_ratio(bpy.context, 5, .79)
@@ -128,7 +129,7 @@ def test_cancel_reentry_and_save_reopen_keep_authored_capture():
     runtime.finish_test(bpy.context, confirm=True)
     confirmed = fixtures.record_for(mesh)
     raw, buffer, pose = mesh[runtime.RECORD_KEY], keys(mesh), fixtures.pose_snapshot(arm)
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     assert fixtures.record_for(mesh) == confirmed, "Reentry must keep saved rings, shares, bounds and current loop"
     runtime.set_range(bpy.context, 2, 5)
     runtime.set_ratio(bpy.context, 3, .93)
@@ -154,7 +155,7 @@ def test_manual_capture_addition_preserves_indices_and_legacy_opt_in():
     mesh, arm = f["mesh"], f["armature"]
     captured = [topology.capture_loop(mesh, arm, f["lower_name"], ring)
                 for index, ring in enumerate(f["rings"]) if index != 3]
-    runtime.start_test(bpy.context, mesh, rings_override=captured)
+    runtime.start_test(bpy.context, mesh, rings_override=captured, initial_angle=math.pi / 2)
     runtime.set_range(bpy.context, 1, 5)
     runtime.set_ratio(bpy.context, 2, .37)
     editing.set_current(bpy.context, 4)
@@ -170,7 +171,7 @@ def test_manual_capture_addition_preserves_indices_and_legacy_opt_in():
     assert all(r == old_by_ids[frozenset(r["vertices"])] for r in complete["rings"]
                if frozenset(r["vertices"]) in old_by_ids)
     assert next(r for r in complete["rings"] if frozenset(r["vertices"]) == frozenset(added["vertices"]))["vertices"] == added["vertices"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     assert fixtures.record_for(mesh) == complete, "Reentry rediscovered or replaced manual loops"
     runtime.finish_test(bpy.context, confirm=True)
     # An old file evaluates using its saved behavior until the user explicitly
@@ -182,7 +183,7 @@ def test_manual_capture_addition_preserves_indices_and_legacy_opt_in():
     legacy_raw = mesh[runtime.RECORD_KEY]
     runtime.update_runtime(bpy.context.scene)
     assert mesh[runtime.RECORD_KEY] == legacy_raw, "Runtime silently opted legacy data into bounded behavior"
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     migrated = fixtures.record_for(mesh)
     assert "range_start" in migrated and migrated["rings"] == legacy["L"]["rings"]
     runtime.finish_test(bpy.context, confirm=False)
@@ -193,7 +194,7 @@ def test_manual_capture_addition_preserves_indices_and_legacy_opt_in():
 def test_overlay_matches_deformed_world_space_and_boundary_layering():
     f = fixtures.make_fixture("ROLL_DECOUPLED", transformed_objects=True)
     mesh = f["mesh"]
-    runtime.start_test(bpy.context, mesh)
+    runtime.start_test(bpy.context, mesh, initial_angle=math.pi / 2)
     runtime.set_range(bpy.context, 2, 5)
     runtime.set_ratio(bpy.context, 3, .81)
     editing.set_current(bpy.context, 2)
@@ -250,7 +251,7 @@ def bilateral_fixture():
 def test_mirror_ranges_uses_geometric_pairs_and_failure_rolls_back():
     f = bilateral_fixture()
     mesh, arm = f["mesh"], f["armature"]
-    runtime.start_test(bpy.context, mesh, symmetry=False)
+    runtime.start_test(bpy.context, mesh, symmetry=False, initial_angle=math.pi / 2)
     runtime.set_range(bpy.context, 1, 6)
     runtime.set_ratio(bpy.context, 2, .29)
     editing.set_current(bpy.context, 4)
@@ -283,7 +284,7 @@ def test_mirror_ranges_uses_geometric_pairs_and_failure_rolls_back():
 def test_paired_remove_refusal_preserves_a_renamed_other_side():
     f = bilateral_fixture()
     mesh, arm = f["mesh"], f["armature"]
-    runtime.start_test(bpy.context, mesh, symmetry=True)
+    runtime.start_test(bpy.context, mesh, symmetry=True, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, confirm=True)
     records = runtime._records(mesh)
     left = runtime._managed_key(mesh, "L", records["L"])
@@ -320,7 +321,7 @@ def test_paired_remove_refusal_preserves_a_renamed_other_side():
 def test_paired_remove_name_collision_refuses_before_either_deletion():
     f = bilateral_fixture()
     mesh, arm = f["mesh"], f["armature"]
-    runtime.start_test(bpy.context, mesh, symmetry=True)
+    runtime.start_test(bpy.context, mesh, symmetry=True, initial_angle=math.pi / 2)
     runtime.finish_test(bpy.context, confirm=True)
     records = runtime._records(mesh)
     left = runtime._managed_key(mesh, "L", records["L"])

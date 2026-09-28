@@ -11,7 +11,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, 
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Vector
 
-from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
+from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MODELING, active_ui_page
 
 
 DELTA_TIMER_INTERVAL = 0.04
@@ -1806,6 +1806,8 @@ class CHARACTERDESIGNER_OT_delta_select_group(Operator):
 
 class CHARACTERDESIGNER_PT_delta_symmetry(Panel):
     bl_label = "Build Symmetry"
+    bl_parent_id = "CHARACTERDESIGNER_PT_main"
+    bl_order = 3
     bl_idname = "CHARACTERDESIGNER_PT_delta_symmetry"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -1814,7 +1816,7 @@ class CHARACTERDESIGNER_PT_delta_symmetry(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) == UI_PAGE_MISC
+        return active_ui_page(context) == UI_PAGE_MODELING
 
     def draw(self, context):
         layout = self.layout

@@ -126,6 +126,15 @@ namespace CharacterDesigner.Unity
         }
 
         /// <summary>
+        /// End explicit editor sampling and restore the imported mesh without
+        /// changing enabled state. Live Play instances retain their runtime owner.
+        /// </summary>
+        public void ReleasePreview()
+        {
+            if (!Application.IsPlaying(gameObject)) Release();
+        }
+
+        /// <summary>
         /// Evaluate both arms from the original input, then commit together. This
         /// entry point also permits isolated editor validation without Play Mode.
         /// Failure restores ordinary skinning instead of leaving one arm corrected.

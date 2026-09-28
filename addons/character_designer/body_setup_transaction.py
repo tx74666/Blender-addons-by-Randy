@@ -551,8 +551,16 @@ def discard(snapshot):
     """Release only temporary geometry backups, after successful commit/rollback."""
     if snapshot.get('closed'):
         return
+    unused = {}
     for mesh in snapshot.get('backups', ()):
-        if _pointer(mesh) and not mesh.users:
-            bpy.data.meshes.remove(mesh)
+        pointer = _pointer(mesh)
+        if (pointer and isinstance(mesh, bpy.types.Mesh) and mesh.users == 0
+                and mesh.library is None and not mesh.is_evaluated):
+            unused[pointer] = mesh
+    if unused:
+        # These are this checkpoint's local, unused copies only. A single
+        # removal avoids scanning the full scene once for every widget backup.
+        # Do not purge other orphans or unlink a backup adopted by an object.
+        bpy.data.batch_remove(ids=tuple(unused.values()))
     snapshot['backups'] = []
     snapshot['closed'] = True

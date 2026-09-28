@@ -1,5 +1,5 @@
 """Read-only discovery for the combined Body Setup workflow."""
-from . import (body_detail_visuals, character_setup, eye_controls, foot_controls,
+from . import (body_calibration, body_detail_visuals, character_setup, eye_controls, foot_controls,
                head_neck_visuals, limb_fk_visuals, limb_ik, root_control,
                spine_ik_fk, torso_controls)
 
@@ -63,9 +63,10 @@ def _animated_limb_ancestor(armature, names):
 
 def _preflight_limbs(context, armature, inventory, chains, settings):
     """Check the same source geometry and resources the limb builder will use."""
-    schema = inventory['schema'] or limb_ik.ROLL_DECOUPLED_SCHEMA
+    schema = (limb_ik.DIRECT_PREROLL_SCHEMA if body_calibration.uses_workflow(armature,inventory)
+              else inventory['schema'] or limb_ik.ROLL_DECOUPLED_SCHEMA)
     direct = limb_ik._is_direct_preroll_schema(schema)
-    if direct and root_control.get_record(armature):
+    if direct and not body_calibration.calibrated(armature) and root_control.get_record(armature):
         raise limb_ik.LimbIKError('Remove the existing Direct Root before adding missing limbs, then generate Body Setup again.')
     if inventory['rigs']:
         if inventory['target_rotation_version'] != limb_ik._default_target_rotation_version(schema):
@@ -81,10 +82,12 @@ def _preflight_limbs(context, armature, inventory, chains, settings):
         # anatomical default remains an explicit Advanced operation.
         upper, lower = armature.pose.bones[chain.upper], armature.pose.bones[chain.lower]
         direction = limb_ik._project_perpendicular(lower.head-upper.head, lower.tail-upper.head).normalized()
-        item['pole_distance'] = float(settings.pole_distance_ratio) if settings is not None else .75
+        item['pole_distance'] = (float(body_calibration.settings(armature).pole_distance) if body_calibration.uses_workflow(armature,inventory)
+                                 else float(settings.pole_distance_ratio) if settings is not None else .75)
         item['pole_direction'] = list(direction)
         if direct:
-            if any(not limb_ik._pose_bone_is_at_rest(armature, name) for name in chain.names):
+            rest_check = body_calibration.at_rest if body_calibration.uses_workflow(armature,inventory) else limb_ik._pose_bone_is_at_rest
+            if any(not rest_check(armature, name) for name in chain.names):
                 raise limb_ik.LimbIKError(f'{chain.side} {chain.kind.title()} is posed. Adding Direct limbs requires their unconstrained Rest pose.')
             if any(child.name != chain.lower and child.use_connect for child in armature.data.bones[chain.upper].children):
                 raise limb_ik.LimbIKError(f'{chain.upper} has a connected sibling that Direct Pre-Roll would move.')
@@ -98,13 +101,18 @@ def _limbs(context, armature, inventory):
     existing = inventory['rigs']
     settings = limb_ik._settings(context)
     mapped = settings is not None and settings.armature == armature
+    workflow = body_calibration.uses_workflow(armature,inventory)
+    calibration = body_calibration.settings(armature)
     missing = [(kind, side) for kind in limb_ik.KINDS for side in limb_ik.SIDES
-               if (kind, side) not in existing]
+               if (kind, side) not in existing and (not workflow or
+               (calibration.include_arms if kind == 'ARM' else calibration.include_legs))]
+    calibrated_chains = {(c.kind,c.side):c for kind in sorted({kind for kind,side in missing})
+                         for c in body_calibration.chains(context,armature,kind)} if workflow else {}
     analysis = limb_ik.analyze_armature(armature) if missing else None
     chains, skipped, problems = [], [], []
     for kind, side in missing:
         try:
-            chain = limb_ik._chain_from_settings(settings, armature, kind, side) if mapped else None
+            chain = calibrated_chains.get((kind,side)) if workflow else limb_ik._chain_from_settings(settings, armature, kind, side) if mapped else None
         except _ERRORS as exc:
             problems.append(str(exc))
             continue
@@ -123,7 +131,7 @@ def _limbs(context, armature, inventory):
             skipped.append(f'{side} {kind.title()}: {protected}')
             continue
         chains.append({'kind': kind, 'side': side, **dict(zip(limb_ik.ROLES, chain.names))})
-    method = 'DIRECT_PREROLL' if limb_ik._is_direct_preroll_schema(inventory['schema']) else 'ROLL_DECOUPLED'
+    method = 'DIRECT_PREROLL' if workflow or limb_ik._is_direct_preroll_schema(inventory['schema']) else 'ROLL_DECOUPLED'
     if problems:
         return _entry('LIMBS', 'NEEDS_MAPPING', ' '.join(problems), method=method, chains=chains), chains
     if chains and existing and inventory['schema'] not in {limb_ik.DIRECT_PREROLL_SCHEMA, limb_ik.ROLL_DECOUPLED_SCHEMA}:
@@ -165,7 +173,10 @@ def plan(context, rig):
         return finish()
     try:
         inventory = limb_ik._validate_inventory(rig)
-        result['schema'] = inventory['schema'] or limb_ik.ROLL_DECOUPLED_SCHEMA
+        result['schema'] = (limb_ik.DIRECT_PREROLL_SCHEMA if body_calibration.uses_workflow(rig,inventory)
+                            else inventory['schema'] or limb_ik.ROLL_DECOUPLED_SCHEMA)
+        if body_calibration.uses_workflow(rig,inventory):
+            body_calibration.require_confirmed(context,rig)
         result['source_digest'] = limb_ik._armature_digest(rig)
         limb_entry, pending = _limbs(context, rig, inventory)
         components['LIMBS'] = limb_entry

@@ -64,6 +64,9 @@ class CHARACTERDESIGNER_OT_body_setup(Operator):
                 _service().remove(context, context.object)
                 message = 'Body controls removed; native bind bones, pose and calibration kept.'
             else:
+                from . import body_calibration
+                if not _has_generated(context.object) and not body_calibration.generation_ready(context, context.object):
+                    raise ValueError('Confirm Arms, Legs and the existing Finger captures before Generate.')
                 result = _service().generate(context, context.object)
                 message = (f"Body Setup: {_count(result.get('created'))} added, "
                            f"{_count(result.get('reused'))} reused, {_count(result.get('skipped'))} skipped.")
@@ -76,16 +79,24 @@ class CHARACTERDESIGNER_OT_body_setup(Operator):
             return {'CANCELLED'}
 
 
-def draw_actions(layout, context):
+def draw_actions(layout, context, *, ready=None):
     rig = context.object
     if rig is None or rig.type != 'ARMATURE':
         layout.label(text='Select the main armature.', icon='INFO')
         return
     try:
         exists = _has_generated(rig)
+        if not exists:
+            if ready is None:
+                from . import body_calibration
+                ready = body_calibration.generation_ready(context, rig)
+            if not ready: return
         layout.operator('character_designer.body_setup',
-                        text='Update Body Setup' if exists else 'Generate Body Setup',
+                        text='Update' if exists else 'Generate',
                         icon='ARMATURE_DATA').action = 'GENERATE'
+        if not exists: return
+        from . import control_weight_paint
+        control_weight_paint.draw(layout, context)
         row = layout.row()
         row.alert = True
         row.enabled = exists

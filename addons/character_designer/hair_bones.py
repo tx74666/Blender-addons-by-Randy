@@ -80,7 +80,7 @@ def _bind(operator, context):
         source = _source(context)
         obj, plans = _groups().build_plans(context, source=source)
         result = _binding().bind_hair(context, obj, plans, bone_count=settings.bone_count,
-                                      armature=_setup().preferred_rig(context, settings.target_armature))
+                                      armature=_setup().preferred_rig(context))
         settings.source = obj
         _setup().remember_asset(context, obj, "HAIR")
     except (ValueError, RuntimeError) as exc:
@@ -115,10 +115,20 @@ class CHARACTERDESIGNER_OT_select_hair_strands(Operator):
     bl_idname = "character_designer.select_hair_strands"
     bl_label = "Select Hair Strands"
     bl_description = (
-        "Find long hair strips up to their root junctions. Selected vertices limit "
-        "the search; deselect all to search the visible mesh"
+        "Find all visible hair strands up to their root junctions, regardless of "
+        "the current selection; keep the head cap anchored to Head when binding"
     )
     bl_options = {"REGISTER", "UNDO"}
+    use_selected: BoolProperty(
+        name="Only Strands at Selected Tips",
+        description="Limit discovery to strands touching selected visible vertices",
+        default=False, options={"SKIP_SAVE"},
+    )
+    replace_capture: BoolProperty(
+        name="Refresh Strand Capture",
+        description="Replace the saved strand capture after validating the current mesh",
+        default=False, options={"HIDDEN", "SKIP_SAVE"},
+    )
 
     @classmethod
     def poll(cls, context):
@@ -126,15 +136,20 @@ class CHARACTERDESIGNER_OT_select_hair_strands(Operator):
 
     def execute(self, context):
         try:
-            obj, plans = select_strands(context)
-            _groups().capture_plans(obj, plans)
+            if self.use_selected:
+                from .hair_bones_topology import _edit
+                _, bm = _edit(context)
+                if not any(vertex.select and not vertex.hide for vertex in bm.verts):
+                    raise ValueError("Select a tip or strand vertex first, or use Select All Hair Strands.")
+            obj, plans = select_strands(context, respect_selection=self.use_selected)
+            _groups().capture_plans(obj, plans, replace=self.replace_capture)
             _settings(context).source = obj
             _setup().remember_asset(context, obj, "HAIR")
         except (ValueError, RuntimeError) as exc:
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
         count = len(plans)
-        _report(self, context, f"Captured {count} hair strand{'s' if count != 1 else ''}. Bind Hair to Character to add their independent chains.")
+        _report(self, context, f"Captured {count} hair strand{'s' if count != 1 else ''}.")
         return {"FINISHED"}
 
 
@@ -275,46 +290,44 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
         source = _source(context)
         if source:
             layout.label(text=f"Source: {source.name}", icon="OUTLINER_OB_MESH")
-        layout.label(text="One independent chain per strand.")
-        layout.operator("character_designer.select_hair_strands", icon="RESTRICT_SELECT_OFF")
+        capture_error = None
         try:
             strands = _groups().captured_strand_count(source) if source else 0
         except (ValueError, RuntimeError) as exc:
-            layout.label(text=str(exc), icon="ERROR")
+            capture_error = str(exc)
             strands = 0
+        capture = layout.operator("character_designer.select_hair_strands",
+                                  text="Refresh Hair Strands" if capture_error else "Select Hair Strands",
+                                  icon="FILE_REFRESH" if capture_error else "RESTRICT_SELECT_OFF")
+        capture.use_selected = False
+        capture.replace_capture = bool(capture_error)
+        if capture_error:
+            layout.label(text="Refresh strands before binding.", icon="ERROR")
         try:
             bound = _binding().is_bound(source) if source else False
         except (ValueError, RuntimeError) as exc:
             layout.label(text=str(exc), icon="ERROR")
             bound = False
         if source:
-            if not bound:
-                layout.prop(settings, 'show_attachment_override')
-                if settings.show_attachment_override or settings.target_armature is not None:
-                    layout.prop(settings, "target_armature")
             target = None
             try:
-                preferred = _setup().preferred_rig(context, settings.target_armature)
+                preferred = _setup().preferred_rig(context)
                 target, head = _binding().resolve_target(context, source, armature=preferred)
-                label = 'Attached Rig' if bound else "Main Rig" if preferred is not None and settings.target_armature is None else "Rig"
-                layout.label(text=f"{label}: {target.name}", icon="ARMATURE_DATA")
-                layout.label(text=f"Head: {getattr(head, 'name', head)}", icon="BONE_DATA")
                 if bound and preferred is not None:
                     desired = _setup().bone_mapping_status(context, 'HEAD', armature=preferred)
                     if preferred != target or desired['name'] != head:
                         layout.label(text='Character Setup differs; existing hair is unchanged.', icon='INFO')
             except (ValueError, RuntimeError) as exc:
-                layout.label(text=str(exc), icon="INFO")
+                if not capture_error:
+                    layout.label(text=str(exc), icon="ERROR")
             if strands:
-                if any(mod.type == "MIRROR" for mod in source.modifiers):
-                    layout.label(text=f"{strands} captured strands")
-                    layout.label(text="Mirror: both sides + center", icon="MOD_MIRROR")
-                else:
-                    layout.label(text=f"{strands} strands / {strands} chains")
-                layout.prop(settings, "bone_count")
-                row = layout.row()
-                row.enabled = target is not None and not bound
-                row.operator("character_designer.hair_bind_to_character", icon="BONE_DATA")
+                layout.label(text=f"{strands} strands")
+            settings_row = layout.row()
+            settings_row.enabled = not bound
+            settings_row.prop(settings, "bone_count")
+            row = layout.row()
+            row.enabled = bool(strands) and target is not None and not bound
+            row.operator("character_designer.hair_bind_to_character", icon="BONE_DATA")
             if bound:
                 remove_row = layout.row()
                 remove_row.alert = True
@@ -325,15 +338,6 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
                 cleanup_row.operator("character_designer.hair_cleanup_generated_copies", icon="TRASH")
             if not _source_edit(context):
                 layout.operator("character_designer.hair_show_source", text="Edit Source", icon="EDITMODE_HLT")
-            if _groups().GROUPS_KEY in source:
-                layout.operator("character_designer.hair_clear_groups", text="Recapture Strands", icon="FILE_REFRESH")
-        if _source_edit(context):
-            layout.label(text="Select a tip to limit the search.", icon="INFO")
-            layout.label(text="Deselect all to find visible strands.")
-        elif context.mode == "POSE":
-            layout.label(text="Rotate hair bones in Pose Mode.", icon="INFO")
-        else:
-            layout.label(text="Select hair in Mesh Edit Mode.", icon="INFO")
 
 
 HAIR_BONES_CLASSES = (

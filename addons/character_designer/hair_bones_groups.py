@@ -184,13 +184,18 @@ def _validate_overlap(plans):
             owners[index] = index in roots
 
 
-def capture_plans(obj, plans):
-    """Add newly identified strands as singleton groups, preserving all groups."""
+def capture_plans(obj, plans, *, replace=False):
+    """Validate then save a capture; explicit refresh can replace stale metadata.
+
+    Replacement keeps the old capture until every new strand has passed, so a
+    failed discovery or validation never leaves the source without its record.
+    """
     plans = tuple(plans)
     if not plans:
         raise HairGroupsError("Select Hair Strands before capturing groups.")
     with _mesh(obj) as bm:
-        data = _read(obj, bm) or {"version": 1, "topology": _topology(bm), "strands": [], "groups": []}
+        data = (None if replace else _read(obj, bm)) or {
+            "version": 1, "topology": _topology(bm), "strands": [], "groups": []}
         edges = tuple(topology._cd()._bm_edge_key(edge) for edge in bm.edges)
         known = {item["signature"]: item for item in data["strands"]}
         for plan in plans:

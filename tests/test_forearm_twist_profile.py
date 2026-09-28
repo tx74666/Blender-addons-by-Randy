@@ -1,14 +1,24 @@
 """Pure profile/range checks; run with ordinary Python, without bpy."""
 import copy
+import ast
 import importlib.util
 import math
 import pathlib
 import unittest
+from unittest.mock import patch
 
 PATH = pathlib.Path(__file__).resolve().parents[1] / "addons" / "character_designer" / "forearm_twist_profile.py"
 SPEC = importlib.util.spec_from_file_location("forearm_twist_profile", PATH)
 profile = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(profile)
+
+# The production reference sampler itself is pure Python. Extract it without
+# importing mathutils so these equivalence checks also run outside Blender.
+MATH_TREE = ast.parse(PATH.with_name("forearm_twist_math.py").read_text(encoding="utf-8"))
+MATH_REFERENCE = {"math": math, "TwistMathError": ValueError}
+exec(compile(ast.Module(body=[node for node in MATH_TREE.body
+                            if isinstance(node, ast.FunctionDef) and node.name in {"_finite", "profile_ratio"}],
+                        type_ignores=[]), str(PATH.with_name("forearm_twist_math.py")), "exec"), MATH_REFERENCE)
 
 
 def rings():
@@ -19,6 +29,50 @@ def rings():
 
 
 class ProfileTests(unittest.TestCase):
+    def test_compiled_sampler_matches_runtime_ratio_and_boundary_mask(self):
+        captured = rings()
+        # Deliberately nonmonotonic shares also exercise decreasing segments.
+        captured[2]["ratio"], captured[4]["ratio"] = .83, .17
+        knots = profile.profile_knots(captured)
+        samples = [-1., 2., *(ring["position"] for ring in captured),
+                   *(step / 997 for step in range(998))]
+        for transition in (0., .1, .5):
+            compiled = profile.compile_sampler(captured, start=1, end=5, transition=transition)
+            for position in samples:
+                ratio, influence = compiled(position)
+                self.assertAlmostEqual(ratio, MATH_REFERENCE["profile_ratio"](position, knots), places=14)
+                self.assertEqual(influence, profile.range_influence(position, captured, 1, 5, transition))
+        unlimited = profile.compile_sampler(captured)
+        for position in samples:
+            self.assertEqual(unlimited(position)[1], 1.0)
+
+    def test_compiled_sampler_validates_once_and_keeps_an_immutable_snapshot(self):
+        captured = rings()
+        before = copy.deepcopy(captured)
+        with patch.object(profile, "profile_knots", wraps=profile.profile_knots) as validate:
+            compiled = profile.compile_sampler(captured, start=0, end=6)
+            for position in [step / 100 for step in range(101)]:
+                compiled(position)
+            self.assertEqual(validate.call_count, 1)
+        expected = compiled(.29)
+        captured[3]["ratio"] = .9
+        captured[3]["position"] = .3
+        self.assertEqual(compiled(.29), expected)
+        self.assertEqual(before[3]["ratio"], expected[0])
+        self.assertNotEqual(profile.compile_sampler(captured, start=0, end=6)(.29), expected)
+
+    def test_compiled_sampler_rejects_invalid_bounds_and_degenerate_knots(self):
+        for kwargs in ({"start": 1}, {"end": 5}, {"start": 2, "end": 2},
+                       {"start": True, "end": 5}, {"start": 0, "end": 6, "transition": .6}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(profile.ForearmProfileError):
+                profile.compile_sampler(rings(), **kwargs)
+        with self.assertRaises(profile.ForearmProfileError):
+            profile.compile_sampler([{"position": 0., "ratio": 0.}, {"position": 1e-9, "ratio": 1.}])
+        compiled = profile.compile_sampler(rings())
+        for bad in (float("nan"), float("inf"), True, "0.3"):
+            with self.assertRaises(profile.ForearmProfileError):
+                compiled(bad)
+
     def test_default_ease_uses_original_rest_position(self):
         self.assertEqual(profile.ease_ratio(-.2), 0.0)
         self.assertEqual(profile.ease_ratio(1.2), 1.0)

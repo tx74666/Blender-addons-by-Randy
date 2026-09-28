@@ -32,6 +32,167 @@ SURFACE_SAMPLE_EXPORT_PREFIX = "RR_SurfaceSample_Export"
 SURFACE_TEXT_ROLE = "surface_text"
 SURFACE_TEXT_EXPORT_ROLE = "solid_geometry"
 SURFACE_TEXT_EXPORT_PREFIX = "RR_SurfaceText_Geometry"
+SURFACE_TEXT_FRAME_PREFIX = "RR_STFrame"
+
+
+def _surface_text_id(source):
+    identity = str(source.get("rr_surface_text_id", "") or "")
+    peers = sorted((obj for obj in bpy.data.objects if obj.type == "FONT" and
+                    obj.get("rr_surface_text_id") == identity),
+                   key=lambda obj: (getattr(obj, "session_uid", 0), obj.name_full)) if identity else []
+    if not identity or (peers and peers[0] is not source):
+        if not getattr(source, "is_editable", True):
+            raise RuntimeError("Make the Surface Text local before assigning its persistent identity.")
+        identity = uuid.uuid4().hex
+        source["rr_surface_text_id"] = identity
+    return identity
+
+
+def surface_text_frame_names(source):
+    identity = _surface_text_id(source)[:24]
+    return [f"{SURFACE_TEXT_FRAME_PREFIX}_{identity}_{axis}" for axis in "OXYZ"]
+
+
+def _source_topology_fingerprint(mesh):
+    return hashlib.sha256(repr([(tuple(poly.vertices)) for poly in mesh.polygons]).encode()).hexdigest()
+
+
+@contextmanager
+def _evaluated_sampling_mesh(source):
+    """Evaluate tagged source faces on a private copy; never mutate the authored sample."""
+    sample = _surface_text_sampling_surface(source)
+    target = _surface_text_target(source)
+    if sample is None or target is None or target.type != "MESH":
+        raise RuntimeError("Surface Text has no selected sampling region; bind the existing text to selected faces.")
+    indices = list(sample.get("rr_surface_source_face_indices", ()))
+    if sample.get("rr_surface_role") != "sampling_surface" or not indices:
+        raise RuntimeError("Surface Text has no selected sampling region; bind the existing text to selected faces.")
+    expected_topology = str(sample.get("rr_surface_source_topology", ""))
+    if not expected_topology or expected_topology != _source_topology_fingerprint(target.data):
+        raise RuntimeError("Surface Text source topology changed or predates region validation; rebind its selected faces.")
+    if min(indices) < 0 or max(indices) >= len(target.data.polygons):
+        raise RuntimeError("Surface Text selected face indices are no longer valid; rebind its selected faces.")
+    allowed = {"SUBSURF", "TRIANGULATE", "SIMPLE_DEFORM", "SMOOTH", "CORRECTIVE_SMOOTH",
+               "LAPLACIANSMOOTH", "LATTICE", "ARMATURE", "SHRINKWRAP", "DISPLACE", "CAST",
+               "WARP", "WAVE", "WEIGHTED_NORMAL", "NORMAL_EDIT", "MIRROR"}
+    active = [modifier for modifier in target.modifiers if modifier.show_viewport or modifier.show_render]
+    for modifier in active:
+        if modifier.type not in allowed or modifier.show_viewport != modifier.show_render:
+            raise RuntimeError(f"Surface Text cannot verify modifier '{modifier.name}' ({modifier.type}); apply it and rebind the selected region.")
+    mirrors = [modifier for modifier in active if modifier.type == "MIRROR"]
+    mirror_plane = None
+    if mirrors:
+        mirror = mirrors[0]
+        axes = [axis for axis, enabled in enumerate(mirror.use_axis) if enabled]
+        if len(mirrors) != 1 or len(axes) != 1 or any(mirror.use_bisect_axis) or any(mirror.use_bisect_flip_axis):
+            raise RuntimeError("Surface Text needs a single non-bisect Mirror axis or an applied/rebound surface.")
+        if any(modifier.type not in {"MIRROR", "TRIANGULATE", "WEIGHTED_NORMAL", "NORMAL_EDIT"} for modifier in active):
+            raise RuntimeError("Surface Text cannot prove the selected Mirror side with this modifier stack; apply and rebind it.")
+        plane_inverse = (mirror.mirror_object.matrix_world if mirror.mirror_object else target.matrix_world).inverted()
+        axis = axes[0]
+        values = [(plane_inverse @ target.matrix_world @ target.data.vertices[index].co)[axis]
+                  for face_index in indices for index in target.data.polygons[face_index].vertices]
+        nonzero = [value for value in values if abs(value) > 1.0e-6]
+        if not nonzero or min(nonzero) * max(nonzero) < 0:
+            raise RuntimeError("The selected Surface Text region crosses the Mirror plane; select one unambiguous side.")
+        sign = 1 if nonzero[0] > 0 else -1
+        if str(sample.get("rr_surface_mirror_side", "Original")) != "Original":
+            sign = -sign
+        mirror_plane = (plane_inverse, axis, sign)
+    clone = None
+    clone_mesh = None
+    evaluated = None
+    try:
+        clone_mesh = target.data.copy()
+        attribute_name = "rr_text_region_" + uuid.uuid4().hex[:12]
+        attribute = clone_mesh.attributes.new(attribute_name, "INT", "FACE")
+        selected = set(indices)
+        for polygon in clone_mesh.polygons:
+            attribute.data[polygon.index].value = 1 if polygon.index in selected else 0
+        clone = target.copy()
+        clone.data = clone_mesh
+        bpy.context.scene.collection.objects.link(clone)
+        clone.hide_viewport = False
+        clone.hide_set(False)
+        bpy.context.view_layer.update()
+        evaluated = clone.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=bpy.context.evaluated_depsgraph_get())
+        tagged = mesh.attributes.get(attribute_name)
+        if tagged is None or tagged.domain != "FACE" or len(tagged.data) != len(mesh.polygons):
+            raise RuntimeError("The evaluated modifiers lost the selected-face mapping; apply and rebind the surface.")
+        inverse_sample = sample.matrix_world.inverted()
+        vertices, faces = [], []
+        for polygon in mesh.polygons:
+            if tagged.data[polygon.index].value != 1:
+                continue
+            points_world = [evaluated.matrix_world @ mesh.vertices[index].co for index in polygon.vertices]
+            if mirror_plane:
+                plane_inverse, axis, sign = mirror_plane
+                side = [(plane_inverse @ point)[axis] * sign for point in points_world]
+                if max(side) <= 1.0e-6:
+                    continue
+                if min(side) < -1.0e-6:
+                    raise RuntimeError("An evaluated Surface Text face crosses the chosen Mirror side.")
+            first = len(vertices)
+            vertices.extend(tuple(inverse_sample @ point) for point in points_world)
+            faces.append(tuple(range(first, len(vertices))))
+        if not faces or any(not math.isfinite(component) for point in vertices for component in point):
+            raise RuntimeError("The evaluated selected Surface Text region is empty or non-finite.")
+        yield vertices, faces
+    finally:
+        if evaluated is not None:
+            evaluated.to_mesh_clear()
+        if clone is not None:
+            bpy.data.objects.remove(clone, do_unlink=True)
+        if clone_mesh is not None and clone_mesh.users == 0:
+            bpy.data.meshes.remove(clone_mesh)
+
+
+def _editable_surface_descriptor(source, sample):
+    if sample is None or sample.get("rr_surface_role") != "sampling_surface":
+        return {"editableVersion": 0, "editableError": "Bind this existing Font to a selected surface region first."}
+    if not sample.get("rr_surface_source_topology"):
+        return {"editableVersion": 0, "editableError": "Rebind this older selected region to validate evaluated geometry."}
+    with _evaluated_sampling_mesh(source) as (vertices, _faces):
+        points = [Vector(point) for point in vertices]
+    sample_inverse = sample.matrix_world.inverted()
+    source_basis = sample_inverse.to_3x3() @ source.matrix_world.to_3x3()
+    right, up, depth = (source_basis.col[index].normalized() for index in range(3))
+    basis = Matrix((right, up, depth)).transposed()
+    if abs(basis.determinant()) < SURFACE_TEXT_EPSILON:
+        raise RuntimeError("The authored Surface Text frame is degenerate.")
+    # Tangents and the depth axis are vectors; the projection normal is a
+    # covector. They differ when the authored sampling transform is nonuniform.
+    normal = source_basis.inverted().transposed().col[2].normalized()
+    coordinates = [basis.inverted() @ point for point in points]
+    low = Vector(tuple(min(point[axis] for point in coordinates) for axis in range(3)))
+    high = Vector(tuple(max(point[axis] for point in coordinates) for axis in range(3)))
+    scene_scale = _scene_scale_length(bpy.context.scene)
+    shrinkwrap, solidify = _surface_text_modifier_pair(source)
+    thickness = float(solidify.thickness) if solidify else 0.0
+    thickness_sign = 1.0 if thickness > 0.0 else -1.0 if thickness < 0.0 else 0.0
+    # Solidify's two offsets are t * (offset +/- 1) / 2. Flip Normals
+    # swaps shell winding, not these positions, so it does not change the split.
+    solid_front_fraction = max(0.0, min(1.0,
+        (1.0 + thickness_sign * float(solidify.offset)) * 0.5)) if solidify else 0.0
+    material = source.active_material
+    return {
+        "editableVersion": 1, "textId": _surface_text_id(source), "text": source.data.body,
+        "fontName": source.data.font.name if source.data.font else "",
+        "fontSizeMeters": float(source.data.size) * source.matrix_world.to_3x3().col[0].length * scene_scale,
+        "characterSpacing": float(source.data.space_character), "lineSpacing": float(source.data.space_line),
+        "alignment": str(source.data.align_x), "verticalAlignment": str(source.data.align_y),
+        "materialName": material.name if material else "",
+        "surfaceOffsetMeters": float(shrinkwrap.offset) * scene_scale if shrinkwrap else 0.0,
+        "solidFrontFraction": solid_front_fraction,
+        "regionCenter": _vector_values(basis @ ((low + high) * 0.5)),
+        "regionSize": [float(high.x - low.x), float(high.y - low.y)],
+        "readDirection": _vector_values(right), "upDirection": _vector_values(up),
+        "surfaceNormal": _vector_values(normal),
+        "textCenter": _vector_values(sample_inverse @ source.matrix_world.translation),
+        "coordinateSpace": "sampling-local-blender", "sceneUnitMeters": scene_scale,
+        "frameObjectNames": surface_text_frame_names(source),
+    }
 
 
 def _scene_scale_length(scene):
@@ -577,7 +738,7 @@ def create_surface_text_sampling_export_aliases(root):
         return []
 
     with _transient_mesh_resources() as (aliases, meshes):
-        seen_sources = set()
+        aliases_by_source = {}
         collection = next(iter(root.users_collection), None) or bpy.context.scene.collection
         for source in find_surface_text_objects_for_export(root):
             surface_obj = _surface_text_sampling_surface(source)
@@ -585,9 +746,8 @@ def create_surface_text_sampling_export_aliases(root):
                 continue
             if surface_obj.get("rr_surface_role") != "sampling_surface":
                 continue
-            if surface_obj in seen_sources:
+            if surface_obj in aliases_by_source:
                 continue
-            seen_sources.add(surface_obj)
 
             alias_name = surface_sampling_export_name(surface_obj)
             existing_alias = bpy.data.objects.get(alias_name) if alias_name else None
@@ -604,13 +764,31 @@ def create_surface_text_sampling_export_aliases(root):
                     f"'{existing_alias.name_full}'."
                 )
 
-            mesh = surface_obj.data.copy()
-            meshes.append(mesh)
+            if surface_obj.get("rr_surface_source_topology"):
+                with _evaluated_sampling_mesh(source) as (vertices, faces):
+                    mesh = bpy.data.meshes.new(alias_name + "Mesh")
+                    meshes.append(mesh)
+                    mesh.from_pydata(vertices, [], faces)
+                    mesh.update()
+            else:
+                mesh = surface_obj.data.copy()
+                meshes.append(mesh)
+            # A top-level, translation-only alias is representable by FBX TRS
+            # even when the source inherits nonuniform scale or shear. Bake
+            # only this disposable mesh; keep the persistent sampling object.
+            alias_world = Matrix.Translation(surface_obj.matrix_world.translation)
+            source_to_alias = alias_world.inverted() @ surface_obj.matrix_world
+            determinant = source_to_alias.to_3x3().determinant()
+            if not math.isfinite(determinant) or abs(determinant) <= 1.0e-12:
+                raise RuntimeError("The Surface Text sampling transform is degenerate.")
+            mesh.transform(source_to_alias)
+            if determinant < 0.0:
+                mesh.flip_normals()
+            mesh.update()
             alias = bpy.data.objects.new(alias_name, mesh)
             aliases.append(alias)
             collection.objects.link(alias)
-            alias.parent = surface_obj.parent
-            alias.matrix_world = surface_obj.matrix_world.copy()
+            alias.matrix_world = alias_world
             alias.hide_render = False
             alias.hide_viewport = False
             alias.hide_select = False
@@ -618,7 +796,37 @@ def create_surface_text_sampling_export_aliases(root):
             alias["rr_surface_role"] = "sampling_surface_export_alias"
             alias["rr_surface_source_object"] = surface_obj.name
             alias["rr_surface_identity"] = str(surface_obj.get("rr_surface_identity", ""))
+            aliases_by_source[surface_obj] = alias
         return aliases
+
+
+def create_surface_text_frame_export_aliases(root):
+    with _transient_mesh_resources() as (objects, _meshes):
+        collection = next(iter(root.users_collection), None) or bpy.context.scene.collection
+        for source in find_surface_text_objects_for_export(root):
+            sample = _surface_text_sampling_surface(source)
+            if sample is None or not sample.get("rr_surface_source_topology"):
+                continue
+            alias = bpy.data.objects.get(surface_sampling_export_name(sample))
+            if not _is_stale_sampling_alias(alias, sample):
+                raise RuntimeError("Create the validated sampling alias before its Surface Text frame markers.")
+            _create_frame_markers(source, sample, alias, collection, objects)
+        return objects
+
+
+def _create_frame_markers(source, sample, alias, collection, objects):
+    source_to_alias = alias.matrix_world.inverted() @ sample.matrix_world
+    for name, point in zip(surface_text_frame_names(source),
+                           ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1))):
+        if bpy.data.objects.get(name) is not None:
+            raise RuntimeError(f"Surface Text frame marker name is already used: '{name}'.")
+        marker = bpy.data.objects.new(name, None)
+        objects.append(marker)
+        collection.objects.link(marker)
+        marker.parent = alias
+        marker.matrix_parent_inverse = Matrix.Identity(4)
+        marker.location = source_to_alias @ Vector(point)
+        marker["rr_surface_role"] = "sampling_frame_export_alias"
 
 
 def _create_surface_mesh(context, target, surface):
@@ -683,6 +891,7 @@ def _create_surface_mesh(context, target, surface):
     surface_obj["rr_surface_source_object_full_name"] = target.name_full
     surface_obj["rr_surface_source_face_count"] = int(surface["source_face_count"])
     surface_obj["rr_surface_source_face_indices"] = source_face_indices
+    surface_obj["rr_surface_source_topology"] = _source_topology_fingerprint(target.data)
     surface_obj["rr_surface_connected_components"] = int(surface["connected_components"])
     surface_obj["rr_surface_mirror_side"] = str(surface.get("candidate_label", "Original"))
     surface_obj["rr_surface_mirror_axis"] = int(surface.get("mirror_axis", -1))
@@ -749,6 +958,35 @@ def _surface_text_modifier_pair(source):
         None,
     )
     return shrinkwrap, solidify
+
+
+def bind_existing_surface_text(context, source, target, surface):
+    """Explicitly rebind selected faces, preserving the authored Font and its pose/settings."""
+    if source is None or source.type != "FONT":
+        raise RuntimeError("Choose an existing editable Font object.")
+    shrinkwrap, solidify = _surface_text_modifier_pair(source)
+    if shrinkwrap is None or solidify is None:
+        raise RuntimeError("The existing Font needs Shrinkwrap and Solidify modifiers before binding.")
+    previous_properties = dict(source.items())
+    previous_target = shrinkwrap.target
+    sample = mesh = None
+    try:
+        sample, mesh = _create_surface_mesh(context, target, surface)
+        shrinkwrap.target = target
+        _annotate_text_object(context, source, target, surface, sample)
+        source["rr_surface_text_thickness_meters"] = abs(float(solidify.thickness)) * _scene_scale_length(context.scene)
+        with _evaluated_sampling_mesh(source):
+            pass
+        return sample
+    except BaseException:
+        shrinkwrap.target = previous_target
+        for key in list(source.keys()):
+            if key not in previous_properties:
+                del source[key]
+        for key, value in previous_properties.items():
+            source[key] = value
+        _remove_surface_mesh(sample, mesh)
+        raise
 
 
 def _surface_text_target(source):
@@ -874,7 +1112,8 @@ def build_surface_text_manifest(root):
             (modifier for modifier in source.modifiers if modifier.type == "SOLIDIFY"),
             None,
         )
-        authored_thickness = source.get("rr_surface_text_thickness_meters")
+        authored_thickness = (abs(float(solidify.thickness)) * scene_scale *
+                              source.matrix_world.to_3x3().col[2].length) if solidify else source.get("rr_surface_text_thickness_meters")
         try:
             thickness_meters = abs(float(authored_thickness))
         except (TypeError, ValueError):
@@ -893,8 +1132,7 @@ def build_surface_text_manifest(root):
         ):
             sampling_export_name = surface_sampling_export_name(sampling_surface)
 
-        descriptors.append(
-            {
+        descriptor = {
                 "fontObjectName": source.name,
                 "fontObjectFullName": source.name_full,
                 "targetObjectName": target.name if target is not None else "",
@@ -905,7 +1143,8 @@ def build_surface_text_manifest(root):
                 "exportObjectName": f"{SURFACE_TEXT_EXPORT_PREFIX}_{_safe_name(source.name)}",
                 "thicknessMeters": round(thickness_meters, 6),
             }
-        )
+        descriptor.update(_editable_surface_descriptor(source, sampling_surface))
+        descriptors.append(descriptor)
     return descriptors
 
 
@@ -1446,6 +1685,49 @@ def _execute_surface_request(context, operator, state, request):
 
     operator.report({"INFO"}, "Created editable Surface Text with Shrinkwrap and Solidify.")
     return {"FINISHED"}
+
+
+class RR_OT_bind_surface_text(bpy.types.Operator):
+    bl_idname = "rr_builder.bind_surface_text"
+    bl_label = "Bind Existing Surface Text"
+    bl_description = "Bind an existing Font to selected faces without changing its text, pose or material"
+    bl_options = {"REGISTER", "UNDO"}
+
+    font_object_name: bpy.props.StringProperty(name="Existing Text")
+    mirror_side: bpy.props.EnumProperty(name="Selected side", items=(
+        ("ORIGINAL", "Original", "Use the original selected faces"),
+        ("MIRRORED", "Mirrored", "Use the one supported Mirror side")), default="ORIGINAL")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "EDIT_MESH" and context.object is not None and context.object.type == "MESH"
+
+    def draw(self, context):
+        self.layout.prop_search(self, "font_object_name", bpy.data, "objects", text="Existing Font")
+        self.layout.prop(self, "mirror_side")
+        self.layout.label(text="Keeps text, font, material, transform and modifier settings.")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def execute(self, context):
+        state = _capture_state(context)
+        try:
+            request = _read_surface_request(context)
+            source = bpy.data.objects.get(self.font_object_name)
+            candidates = request["mirror_candidates"]
+            if self.mirror_side == "MIRRORED" and not candidates:
+                raise RuntimeError("This surface has no supported mirrored candidate.")
+            surface = candidates[1 if self.mirror_side == "MIRRORED" else 0] if candidates else request["surface"]
+            bpy.ops.object.mode_set(mode="OBJECT")
+            bind_existing_surface_text(context, source, request["target"], surface)
+        except Exception as exception:
+            self.report({"ERROR"}, str(exception))
+            return {"CANCELLED"}
+        finally:
+            _restore_state(context, state)
+        self.report({"INFO"}, "Bound selected faces; the existing text and authored pose were retained.")
+        return {"FINISHED"}
 
 
 class RR_OT_add_surface_text(bpy.types.Operator):

@@ -49,12 +49,13 @@ def call(name, **kwargs):
 
 
 class Layout:
-    def __init__(self, calls=None):
+    def __init__(self, calls=None, operators=None):
         self.calls = [] if calls is None else calls
+        self.operators = [] if operators is None else operators
         self.enabled = True
 
     def row(self, **kwargs):
-        return Layout(self.calls)
+        return Layout(self.calls, self.operators)
 
     def label(self, **kwargs):
         self.calls.append(("label", kwargs.get("text"), self.enabled))
@@ -64,13 +65,41 @@ class Layout:
 
     def operator(self, name, **kwargs):
         self.calls.append(("operator", name, self.enabled))
-        return SimpleNamespace()
+        properties = SimpleNamespace()
+        self.operators.append((name, kwargs, properties, self.enabled))
+        return properties
+
+
+def panel_layout():
+    layout = Layout()
+    ui.CHARACTERDESIGNER_PT_hair_bones.draw(SimpleNamespace(layout=layout), bpy.context)
+    return layout
 
 
 def panel_calls():
-    layout = Layout()
-    ui.CHARACTERDESIGNER_PT_hair_bones.draw(SimpleNamespace(layout=layout), bpy.context)
-    return layout.calls
+    return panel_layout().calls
+
+
+def append_strand(source):
+    """Make a real topology change that discovery can capture again."""
+    builder = Fixture()
+    builder.tube(sides=5, rows=6, origin=(8, 0, 0))
+    bm = bm_for(source)
+    vertices = [bm.verts.new(coordinate) for coordinate in builder.vertices]
+    for face in builder.faces:
+        bm.faces.new(tuple(vertices[index] for index in face))
+    bmesh.update_edit_mesh(source.data, loop_triangles=True, destructive=True)
+
+
+def assert_cancelled(name, message, **kwargs):
+    try:
+        result = getattr(bpy.ops.character_designer, name)(**kwargs)
+    except RuntimeError as exc:
+        # Blender promotes an operator's ERROR report to RuntimeError.
+        assert message in str(exc), str(exc)
+    else:
+        assert result == {"CANCELLED"}, result
+        assert message in ui._settings(bpy.context).last_message
 
 
 def test_registration_contract():
@@ -169,6 +198,71 @@ def test_bind_remove_preserves_original_mesh_and_character_rig():
     print("PASS test_bind_remove_preserves_original_mesh_and_character_rig")
 
 
+def test_compact_panel_keeps_binding_controls_before_capture():
+    fixture(count=2)
+    layout = panel_layout()
+    selections = [item for item in layout.operators
+                  if item[0] == "character_designer.select_hair_strands"]
+    assert len(selections) == 1
+    _, options, properties, _ = selections[0]
+    assert options["text"] == "Select Hair Strands"
+    assert properties.use_selected is False
+    assert ("prop", "bone_count", True) in layout.calls
+    assert ("operator", "character_designer.hair_bind_to_character", False) in layout.calls
+    assert not any(item[1] in {"target_armature", "show_attachment_override",
+                              "character_designer.hair_clear_groups"} for item in layout.calls)
+    labels = [item[1] for item in layout.calls if item[0] == "label"]
+    assert not any(text.startswith(("Main Rig:", "Attached Rig:", "Head:")) for text in labels)
+    assert not any(text in {"One independent chain per strand.",
+                           "Head controls the cap and strand roots.",
+                           "All: find every visible strand.",
+                           "Selected Tips: limit the search."} for text in labels)
+    print("PASS compact panel preserves visible binding controls before capture")
+
+
+def test_stale_capture_refresh_restores_binding_controls():
+    source, _, _ = fixture(count=2)
+    call("select_hair_strands")
+    saved = source[groups.GROUPS_KEY]
+    append_strand(source)
+    layout = panel_layout()
+    assert ("prop", "bone_count", True) in layout.calls
+    assert ("operator", "character_designer.hair_bind_to_character", False) in layout.calls
+    refresh = [item for item in layout.operators
+               if item[0] == "character_designer.select_hair_strands"]
+    assert len(refresh) == 1
+    _, options, properties, _ = refresh[0]
+    assert options["text"] == "Refresh Hair Strands"
+    assert properties.use_selected is False and properties.replace_capture is True
+    assert source[groups.GROUPS_KEY] == saved, "Drawing the panel must not clear stale captures"
+    call("select_hair_strands", use_selected=False, replace_capture=True)
+    assert groups.captured_strand_count(source) == 3
+    assert source[groups.GROUPS_KEY] != saved
+    assert ("operator", "character_designer.hair_bind_to_character", True) in panel_calls()
+    call("hair_bind_to_character")
+    assert len(rig._read_records(source)["chains"]) == 3
+    call("hair_remove_binding")
+    print("PASS stale capture keeps Bind visible and explicit refresh enables real binding")
+
+
+def test_failed_refresh_preserves_previous_capture():
+    source, _, _ = fixture(count=2)
+    call("select_hair_strands")
+    saved = source[groups.GROUPS_KEY]
+    append_strand(source)
+    with patch.object(ui, "select_strands", side_effect=ValueError("Discovery failed")):
+        assert_cancelled("select_hair_strands", "Discovery failed", replace_capture=True)
+    assert source[groups.GROUPS_KEY] == saved
+    _, plans = ui.select_strands(bpy.context, respect_selection=False)
+    invalid = dict(plans[-1], vertices=())
+    # Validate at least one good strand first, then reject an invalid record.
+    with patch.object(ui, "select_strands", return_value=(source, (plans[0], invalid))):
+        assert_cancelled("select_hair_strands", "incomplete", replace_capture=True)
+    assert source[groups.GROUPS_KEY] == saved
+    assert ("operator", "character_designer.hair_bind_to_character", False) in panel_calls()
+    print("PASS discovery and validation failures preserve the previous capture")
+
+
 def test_legacy_generate_redirects_to_same_character_binding():
     source, _, armature = fixture(count=1)
     settings = ui._settings(bpy.context)
@@ -231,6 +325,9 @@ def test_legacy_copy_source_resolution_and_explicit_cleanup_wiring():
 if __name__ == "__main__":
     try:
         test_registration_contract()
+        test_compact_panel_keeps_binding_controls_before_capture()
+        test_stale_capture_refresh_restores_binding_controls()
+        test_failed_refresh_preserves_previous_capture()
         test_bind_remove_preserves_original_mesh_and_character_rig()
         test_legacy_generate_redirects_to_same_character_binding()
         test_legacy_copy_source_resolution_and_explicit_cleanup_wiring()

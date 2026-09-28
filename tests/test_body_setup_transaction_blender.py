@@ -1,6 +1,9 @@
 """Composite rollback keeps native IDs and restores edited owned resources."""
 import os
 import sys
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import bpy
 from mathutils import Vector
@@ -210,6 +213,97 @@ def test_first_body_build_failure_restores_native_only_rig():
     no_backups()
 
 
+def test_discard_batches_only_unreferenced_snapshot_meshes():
+    base.reset_scene()
+    artist = bpy.data.meshes.new('__CD_BODY_TRANSACTION__Artist orphan')
+    artist.from_pydata([(1,2,3)],[],[])
+    artist['artist_note'] = 'not owned by this checkpoint'
+    artist_pointer = artist.as_pointer()
+    first = bpy.data.meshes.new('__CD_BODY_TRANSACTION__First')
+    second = bpy.data.meshes.new('__CD_BODY_TRANSACTION__Second')
+    adopted = bpy.data.meshes.new('__CD_BODY_TRANSACTION__Adopted')
+    obj = bpy.data.objects.new('Artist uses a backup',adopted)
+    bpy.context.scene.collection.objects.link(obj)
+    fake_user = bpy.data.meshes.new('__CD_BODY_TRANSACTION__Kept')
+    fake_user.use_fake_user = True
+    deleted = bpy.data.meshes.new('__CD_BODY_TRANSACTION__Already removed')
+    bpy.data.meshes.remove(deleted)
+    material = bpy.data.materials.new('Artist orphan material')
+    pointers = {first.as_pointer(),second.as_pointer()}
+    snap = {'closed':False,'backups':[first,second,first,adopted,fake_user,deleted,None,material]}
+    batch_remove = bpy.data.batch_remove
+    calls = []
+    def remove(*,ids):
+        calls.append(tuple(mesh.as_pointer() for mesh in ids))
+        batch_remove(ids=ids)
+    proxy = SimpleNamespace(types=bpy.types,data=SimpleNamespace(batch_remove=remove))
+    with patch.object(transaction,'bpy',proxy):
+        transaction.discard(snap)
+        transaction.discard(snap)
+    assert len(calls) == 1 and len(calls[0]) == 2 and set(calls[0]) == pointers
+    assert snap['closed'] and snap['backups'] == []
+    assert not transaction._pointer(first) and not transaction._pointer(second)
+    assert not transaction._pointer(deleted)
+    assert obj.data == adopted and adopted.users == 1
+    assert fake_user.use_fake_user and fake_user.users == 1
+    assert artist.as_pointer() == artist_pointer and tuple(artist.vertices[0].co) == (1,2,3)
+    assert artist['artist_note'] == 'not owned by this checkpoint' and artist.users == 0
+    assert material.name in bpy.data.materials and material.users == 0
+    # Closing the checkpoint relinquishes its reference to adopted copies.
+    bpy.data.objects.remove(obj,do_unlink=True)
+    assert adopted.users == 0
+    transaction.discard(snap)
+    assert adopted.name in bpy.data.meshes and adopted.users == 0
+    fake_user.use_fake_user = False
+
+
+def test_discard_keeps_library_linked_mesh_even_without_users():
+    base.reset_scene()
+    with tempfile.TemporaryDirectory(prefix='body-transaction-library-') as folder:
+        path = os.path.join(folder,'library.blend')
+        source = bpy.data.meshes.new('Linked backup source')
+        source_object = bpy.data.objects.new('Linked backup owner',source)
+        name = source_object.name
+        bpy.data.libraries.write(path,{source_object},fake_user=False)
+        bpy.data.objects.remove(source_object,do_unlink=True)
+        bpy.data.meshes.remove(source)
+        with bpy.data.libraries.load(path,link=True) as (_source,target):
+            target.objects = [name]
+        loaded_object = target.objects[0]
+        linked = loaded_object.data
+        bpy.data.objects.remove(loaded_object,do_unlink=True)
+        assert linked.library and linked.users == 0
+        pointer = linked.as_pointer()
+        snap = {'closed':False,'backups':[linked]}
+        def unexpected(**_kwargs): raise AssertionError('Linked ID removal')
+        with patch.object(transaction,'bpy',SimpleNamespace(types=bpy.types,
+                data=SimpleNamespace(batch_remove=unexpected))):
+            transaction.discard(snap)
+            transaction.discard(snap)
+        assert linked.as_pointer() == pointer and linked.library and linked.users == 0
+        assert snap['closed'] and not snap['backups']
+        bpy.data.meshes.remove(linked)
+
+
+def test_discard_failed_batch_keeps_checkpoint_retryable():
+    base.reset_scene()
+    mesh = bpy.data.meshes.new('__CD_BODY_TRANSACTION__Retry')
+    pointer = mesh.as_pointer()
+    snap = {'closed':False,'backups':[mesh]}
+    def fail(**_kwargs): raise RuntimeError('Injected batch failure')
+    with patch.object(transaction,'bpy',SimpleNamespace(types=bpy.types,data=SimpleNamespace(batch_remove=fail))):
+        try:
+            transaction.discard(snap)
+        except RuntimeError as exc:
+            assert str(exc) == 'Injected batch failure'
+        else:
+            raise AssertionError('Injected batch failure was swallowed')
+    assert not snap['closed'] and snap['backups'] == [mesh] and mesh.as_pointer() == pointer
+    transaction.discard(snap)
+    transaction.discard(snap)
+    assert snap['closed'] and not snap['backups'] and not transaction._pointer(mesh)
+
+
 if __name__ == '__main__':
     for test in (test_noop_capture_preserves_resource_users_and_pose,
                  test_partial_removal_restores_graph_and_edited_widgets,
@@ -217,7 +311,10 @@ if __name__ == '__main__':
                  test_failed_add_removes_only_new_helpers_and_widgets,
                  test_entire_existing_body_teardown_can_be_recovered,
                  test_surviving_edited_mesh_and_native_animation_keep_ids,
-                 test_first_body_build_failure_restores_native_only_rig):
+                 test_first_body_build_failure_restores_native_only_rig,
+                 test_discard_batches_only_unreferenced_snapshot_meshes,
+                 test_discard_keeps_library_linked_mesh_even_without_users,
+                 test_discard_failed_batch_keeps_checkpoint_retryable):
         test()
         print('PASS', test.__name__, flush=True)
-    print('BODY_SETUP_TRANSACTION_TESTS_PASS 7', flush=True)
+    print('BODY_SETUP_TRANSACTION_TESTS_PASS 10', flush=True)

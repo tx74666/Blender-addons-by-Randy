@@ -513,6 +513,7 @@ class CHARACTERDESIGNER_OT_unity_open_path(Operator):
 
 class CHARACTERDESIGNER_PT_unity_export(Panel):
     bl_label = 'Unity Export'
+    bl_parent_id = 'CHARACTERDESIGNER_PT_main'
     bl_idname = 'CHARACTERDESIGNER_PT_unity_export'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'

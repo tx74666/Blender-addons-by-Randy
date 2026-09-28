@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 14),
+    "version": (0, 2, 19),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -28,6 +28,7 @@ from mathutils import Matrix, Vector
 try:
     from . import rr_icon_lighting
     from . import rr_image_io
+    from . import rr_standard_export_transaction
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
     from .rr_layout_snapshot import *
@@ -36,11 +37,13 @@ try:
     from .rr_point_bookmarks import *
     from .rr_surface_text import (
         RR_OT_add_surface_text,
+        RR_OT_bind_surface_text,
         SURFACE_TEXT_EXPORT_PREFIX,
         build_surface_text_manifest,
         create_surface_text_export_meshes,
         cleanup_stale_surface_text_sampling_aliases,
         create_surface_text_sampling_export_aliases,
+        create_surface_text_frame_export_aliases,
         find_surface_text_objects_for_export,
     )
     from .rr_naming import *
@@ -56,6 +59,7 @@ try:
 except ImportError:
     import rr_icon_lighting
     import rr_image_io
+    import rr_standard_export_transaction
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
     from rr_layout_snapshot import *
@@ -64,11 +68,13 @@ except ImportError:
     from rr_point_bookmarks import *
     from rr_surface_text import (
         RR_OT_add_surface_text,
+        RR_OT_bind_surface_text,
         SURFACE_TEXT_EXPORT_PREFIX,
         build_surface_text_manifest,
         create_surface_text_export_meshes,
         cleanup_stale_surface_text_sampling_aliases,
         create_surface_text_sampling_export_aliases,
+        create_surface_text_frame_export_aliases,
         find_surface_text_objects_for_export,
     )
     from rr_naming import *
@@ -5263,13 +5269,25 @@ def build_material_surface_contract(material):
                 rounded_manifest_float(channel)
                 for channel in color[:4]
             ]
+    emission_color = unlinked_socket_default(principled, "Emission Color", "Emission")
+    emission_strength = unlinked_socket_default(principled, "Emission Strength")
+    if emission_color is not None and emission_strength is not None:
+        color = list(emission_color)
+        if len(color) >= 3 and all(math.isfinite(float(value)) for value in color) and math.isfinite(float(emission_strength)):
+            contract["emissionColor"] = [rounded_manifest_float(value) for value in (color + [1.0])[:4]]
+            contract["emissionStrength"] = rounded_manifest_float(emission_strength)
     return contract
+
+
+def get_export_material_objects(root):
+    """Material ownership includes editable Fonts, without changing mesh collectors."""
+    return list(dict.fromkeys(get_export_asset_meshes(root) + find_surface_text_objects_for_export(root)))
 
 
 def build_material_surface_contracts(root):
     contracts = {}
     seen_materials = set()
-    for obj in get_export_asset_meshes(root):
+    for obj in get_export_material_objects(root):
         for slot in obj.material_slots:
             material = slot.material
             if material is None or material.name in seen_materials:
@@ -8176,7 +8194,7 @@ def prepare_material_maps_for_unity(root):
     seen_materials = set()
 
     try:
-        for obj in get_export_asset_meshes(root):
+        for obj in get_export_material_objects(root):
             for slot in obj.material_slots:
                 material = slot.material
                 if material is None or material.name in seen_materials:
@@ -8714,13 +8732,20 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
     used_names = set()
     seen_materials = set()
 
-    for obj in get_export_asset_meshes(root):
+    for obj in get_export_material_objects(root):
         for slot in obj.material_slots:
             material = slot.material
             if material is None or material.name in seen_materials:
                 continue
 
             seen_materials.add(material.name)
+            principled = directly_connected_principled_node(material)
+            if principled is not None and any(
+                socket is not None and socket.is_linked
+                for socket in (principled.inputs.get("Emission Color") or principled.inputs.get("Emission"),
+                               principled.inputs.get("Emission Strength"))
+            ):
+                warnings.append(f"{root.name}: material '{material.name}' has linked emission; Unity cannot restore it from a scalar contract.")
             base_node = find_image_node(material, ("basecolor", "base_color", "albedo", "diffuse", "diff"))
             rough_node = find_image_node(material, ("roughness", "rough"))
             normal_node = find_image_node(material, ("normal", "nor_gl", "nor", "nrm"))
@@ -8782,6 +8807,7 @@ def export_fbx(root, model_path):
         # it returns, this export owns exactly those objects and their meshes.
         transient_surface_objects.extend(create_surface_text_export_meshes(root))
         transient_surface_objects.extend(create_surface_text_sampling_export_aliases(root))
+        transient_surface_objects.extend(create_surface_text_frame_export_aliases(root))
         export_objects.extend(transient_surface_objects)
         export_objects = [obj for obj in dict.fromkeys(export_objects) if obj is not None]
 
@@ -9494,6 +9520,7 @@ def write_surface_text_source_snapshot(root, snapshot_path):
             compress=True,
         )
 
+        snapshot_units = getattr(getattr(getattr(bpy, "context", None), "scene", None), "unit_settings", None)
         command = [
             blender_binary,
             "--background",
@@ -9507,6 +9534,10 @@ def write_surface_text_source_snapshot(root, snapshot_path):
             library_path,
             "--output",
             snapshot_path,
+            "--unit-scale",
+            str(getattr(snapshot_units, "scale_length", 1.0)),
+            "--unit-system",
+            str(getattr(snapshot_units, "system", "NONE")),
         ]
         completed = subprocess.run(
             command,
@@ -9515,6 +9546,7 @@ def write_surface_text_source_snapshot(root, snapshot_path):
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=120,
         )
         if completed.returncode != 0:
             output = (completed.stderr or completed.stdout or "").strip().splitlines()
@@ -9613,11 +9645,62 @@ def export_builder_asset(
 
     validate_standard_output_route(settings)
     validate_reference_layout_settings(settings)
-
     if not mesh_objects_have_export_geometry(get_export_asset_meshes(obj)):
         raise RuntimeError(f"{obj.name} has no exportable mesh geometry.")
-
     validate_export_identity(obj)
+
+    # Modular and Variant exports retain their existing publication contracts.
+    # Ordinary Standard exports must finish all resources before replacing the
+    # previous package; deleting textures in staging cannot damage live output.
+    if (
+        obj is not None
+        and export_mode_is_standard(settings)
+        and object_manager_variant_group_root(obj) is None
+    ):
+        asset_id = export_asset_id(obj)
+
+        def export_staged(staging_root):
+            return _export_builder_asset_contents(
+                obj,
+                ExportSettingsOutputRootProxy(settings, staging_root),
+                export_model,
+                include_icon,
+                shared_icon_root,
+                queue_import,
+                icon_render_cache,
+                retire_legacy_alias=False,
+            )
+
+        result = rr_standard_export_transaction.export_package(
+            settings.output_root,
+            asset_id,
+            variant_export_transaction_parent(settings.output_root),
+            export_staged,
+        )
+        published_directory = os.path.join(settings.output_root, asset_id)
+        manifest = read_existing_manifest(os.path.join(published_directory, "manifest.json"))
+        model_file = manifest.get("modelFile", "")
+        retire_standard_flat_model_alias(
+            settings, asset_id,
+            os.path.join(published_directory, model_file) if model_file else "",
+        )
+        return result
+    return _export_builder_asset_contents(
+        obj, settings, export_model, include_icon, shared_icon_root,
+        queue_import, icon_render_cache,
+    )
+
+
+def _export_builder_asset_contents(
+    obj,
+    settings,
+    export_model=None,
+    include_icon=None,
+    shared_icon_root=None,
+    queue_import=True,
+    icon_render_cache=None,
+    retire_legacy_alias=True,
+):
     reference_layout = build_reference_layout_for_export(
         obj,
         enabled=export_mode_uses_reference_layout(settings),
@@ -9684,11 +9767,12 @@ def export_builder_asset(
             existing_manifest.get("bounds"),
             reference_layout,
         )
-        retire_standard_flat_model_alias(
-            settings,
-            asset_id,
-            os.path.join(asset_dir, existing_manifest.get("modelFile") or "model.fbx"),
-        )
+        if retire_legacy_alias:
+            retire_standard_flat_model_alias(
+                settings,
+                asset_id,
+                os.path.join(asset_dir, existing_manifest.get("modelFile") or "model.fbx"),
+            )
         if queue_import and not export_mode_is_standard(settings):
             queue_unity_builder_import([manifest_path])
         return asset_id, asset_type, "skipped"
@@ -9762,11 +9846,12 @@ def export_builder_asset(
             existing_manifest,
             os.path.join(asset_dir, model_file),
         )
-    retire_standard_flat_model_alias(
-        settings,
-        asset_id,
-        os.path.join(asset_dir, model_file) if model_file else "",
-    )
+    if retire_legacy_alias:
+        retire_standard_flat_model_alias(
+            settings,
+            asset_id,
+            os.path.join(asset_dir, model_file) if model_file else "",
+        )
     write_manifest(
         obj,
         manifest_path,
@@ -10367,7 +10452,7 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         description="Active RandomRealm panel page",
         items=(
             ("EXPORTER", "Export", "Export queue, output, and export actions"),
-            ("BAKE", "Bake", "Bake selected procedural materials to PBR texture maps"),
+            ("BAKE", "Texture", "PBR texture preparation, baking, image saving, and texture packages"),
             ("MODELING", "Modeling", "Modeling helpers for origins and edit selections"),
             ("ICON", "Icon", "Thumbnail framing and reference images"),
             ("LAYOUT", "Layout", "Layout snapshot tools"),
@@ -10453,6 +10538,26 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         name="Icon",
         description="Show icon rendering controls",
         default=False,
+    )
+    export_queue_expanded: bpy.props.BoolProperty(
+        name="Export Queue",
+        description="Expand export queue and output settings",
+        default=True,
+    )
+    export_group_expanded: bpy.props.BoolProperty(
+        name="Group",
+        description="Expand export group controls",
+        default=True,
+    )
+    export_reference_expanded: bpy.props.BoolProperty(
+        name="Reference",
+        description="Expand reference layout settings",
+        default=True,
+    )
+    export_icon_expanded: bpy.props.BoolProperty(
+        name="Icon",
+        description="Expand icon framing, lighting, and previews",
+        default=True,
     )
     export_group_members_expanded: bpy.props.BoolProperty(
         name="Members",
@@ -13498,7 +13603,7 @@ class RR_OT_set_ui_page(bpy.types.Operator):
     page: bpy.props.EnumProperty(
         items=(
             ("EXPORTER", "Export", "Export queue, output, and export actions"),
-            ("BAKE", "Bake", "Bake selected procedural materials to PBR maps"),
+            ("BAKE", "Texture", "PBR texture preparation, baking, image saving, and texture packages"),
             ("MODELING", "Modeling", "Modeling helpers for origins and edit selections"),
             ("ICON", "Icon", "Thumbnail framing and reference images"),
             ("LAYOUT", "Layout", "Layout snapshot tools"),
@@ -13510,8 +13615,12 @@ class RR_OT_set_ui_page(bpy.types.Operator):
     )
 
     def execute(self, context):
-        # Keep the saved ANIMATION enum ordinal and old scripts compatible.
-        context.scene.rr_builder_export_settings.ui_page = "EXPORTER" if self.page == "ANIMATION" else self.page
+        # Keep saved enum ordinals and old scripts compatible. BAKE now hosts
+        # all texture tools, including the former standalone TEXTURES page.
+        context.scene.rr_builder_export_settings.ui_page = {
+            "ANIMATION": "EXPORTER",
+            "TEXTURES": "BAKE",
+        }.get(self.page, self.page)
         return {"FINISHED"}
 
 
@@ -13548,7 +13657,11 @@ class RR_OT_set_export_section(bpy.types.Operator):
     )
 
     def execute(self, context):
-        context.scene.rr_builder_export_settings.export_active_section = self.section
+        settings = context.scene.rr_builder_export_settings
+        if self.section == "TEXTURES":
+            settings.ui_page = "BAKE"
+        else:
+            settings.export_active_section = self.section
         return {"FINISHED"}
 
 
@@ -13624,13 +13737,15 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             settings = context.scene.rr_builder_export_settings
             layout = self.layout
 
-            active_page = settings.ui_page if settings.ui_page in {"EXPORTER", "BAKE", "MODELING", "LAYOUT"} else "EXPORTER"
+            saved_page = "BAKE" if settings.ui_page == "TEXTURES" else settings.ui_page
+            active_page = saved_page if saved_page in {"EXPORTER", "BAKE", "MODELING", "LAYOUT"} else "EXPORTER"
             self.draw_page_tabs(layout, active_page)
 
             if active_page == "EXPORTER":
                 self.draw_exporter_page(layout, context, settings)
             elif active_page == "BAKE":
                 self.draw_bake_page(layout, context, settings)
+                self.draw_texture_page(layout)
             elif active_page == "MODELING":
                 self.draw_modeling_page(layout, context, settings)
             elif active_page == "LAYOUT":
@@ -13643,7 +13758,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         tab_box = layout.box()
         first_row = tab_box.row(align=True)
         self.draw_page_tab(first_row, active_page, "EXPORTER", "Export", "EXPORT")
-        self.draw_page_tab(first_row, active_page, "BAKE", "Bake", "RENDER_RESULT")
+        self.draw_page_tab(first_row, active_page, "BAKE", "Texture", "TEXTURE")
         self.draw_page_tab(first_row, active_page, "MODELING", "Modeling", "MESH_DATA")
         second_row = tab_box.row(align=True)
         self.draw_page_tab(second_row, active_page, "LAYOUT", "Layout", "FILE_TICK")
@@ -13666,8 +13781,10 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         )
         operator.page = page
 
-    def draw_fold_panel(self, layout, settings, property_name, text):
-        panel_prop = getattr(layout, "panel_prop", None)
+    def draw_fold_panel(self, layout, settings, property_name, text, *, use_native_panel=True):
+        # Blender's native panel cannot be nested inside a box. Use the same
+        # saved flag and arrow in boxed sections without trying an invalid panel.
+        panel_prop = getattr(layout, "panel_prop", None) if use_native_panel else None
         if callable(panel_prop):
             try:
                 header, panel = panel_prop(settings, property_name)
@@ -13713,9 +13830,6 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         if settings.show_export_icon_section:
             self.draw_icon_page(layout, context, settings)
 
-        if settings.show_export_textures_section:
-            self.draw_texture_page(layout)
-
     def draw_export_section_filter(self, layout, settings):
         panel = self.draw_fold_panel(layout, settings, "export_sections_expanded", "Sections")
         if panel is None:
@@ -13724,9 +13838,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         row = panel.row(align=True)
         self.draw_export_section_toggle(row, settings, "show_export_queue_section", "Queue")
         self.draw_export_section_toggle(row, settings, "show_export_group_section", "Group")
-        row = panel.row(align=True)
         self.draw_export_section_toggle(row, settings, "show_export_icon_section", "Icon")
-        self.draw_export_section_toggle(row, settings, "show_export_textures_section", "Textures")
 
     def draw_export_section_tab(self, row, settings, section, text):
         operator = row.operator(
@@ -13762,8 +13874,10 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             )
 
     def draw_export_queue_box(self, layout, context, settings):
-        queue_box = layout.box()
-        queue_box.label(text="Export Queue")
+        queue_panel = self.draw_fold_panel(layout, settings, "export_queue_expanded", "Export Queue")
+        if queue_panel is None:
+            return
+        queue_box = queue_panel.box()
         mode_row = queue_box.row(align=True)
         mode_row.prop(settings, "export_mode", expand=True)
         if export_mode_is_standard(settings) and is_managed_builder_bridge_output_root(
@@ -13789,20 +13903,23 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         export_queue.include_model = settings.include_model_with_export
         export_queue.include_icon = settings.include_icon_with_export
         reference_box = queue_box.box()
-        reference_box.label(text="Reference")
-        reference_row = reference_box.row(align=True)
-        reference_row.prop(settings, "use_reference_layout", text="Use Layout")
-        if settings.use_reference_layout:
-            reference = get_reference_object(context.scene)
-            if reference is None:
-                reference_row.operator("rr_builder.mark_reference", text="", icon="PINNED")
-            else:
-                reference_row.operator("rr_builder.clear_reference", text="", icon="X")
-            reference_box.prop(
-                getattr(context.scene, "rr_builder_reference_layout", None),
-                "include_reference_mesh",
-                text="Include Mesh",
-            )
+        reference_panel = self.draw_fold_panel(
+            reference_box, settings, "export_reference_expanded", "Reference", use_native_panel=False,
+        )
+        if reference_panel is not None:
+            reference_row = reference_panel.row(align=True)
+            reference_row.prop(settings, "use_reference_layout", text="Use Layout")
+            if settings.use_reference_layout:
+                reference = get_reference_object(context.scene)
+                if reference is None:
+                    reference_row.operator("rr_builder.mark_reference", text="", icon="PINNED")
+                else:
+                    reference_row.operator("rr_builder.clear_reference", text="", icon="X")
+                reference_panel.prop(
+                    getattr(context.scene, "rr_builder_reference_layout", None),
+                    "include_reference_mesh",
+                    text="Include Mesh",
+                )
         resource_row = queue_box.row(align=True)
         resource_row.prop(settings, "include_model_with_export", text="Model")
         resource_row.prop(settings, "include_icon_with_export", text="Icon")
@@ -13899,8 +14016,10 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         if assembly_root is None and not can_create:
             return
 
-        group_box = layout.box()
-        group_box.label(text="Group")
+        group_panel = self.draw_fold_panel(layout, settings, "export_group_expanded", "Group")
+        if group_panel is None:
+            return
+        group_box = group_panel.box()
         type_row = group_box.row(align=True)
         type_row.prop(settings, "object_manager_assembly_type", text="")
         if assembly_root is not None:
@@ -14191,8 +14310,12 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             text="Add Surface Text",
             icon="FONT_DATA",
         )
+        surface_text_box.operator("rr_builder.bind_surface_text", text="Bind Existing Text to Selected Faces", icon="LINKED")
 
     def draw_icon_page(self, layout, context, settings):
+        layout = self.draw_fold_panel(layout, settings, "export_icon_expanded", "Icon")
+        if layout is None:
+            return
         row = layout.row(align=True)
         down = row.operator("rr_builder.step_icon_size", text="", icon="TRIA_LEFT")
         down.direction = -1
@@ -14739,6 +14862,7 @@ CLASSES = (
     RR_OT_bake_selected_pbr,
     RR_OT_apply_modeling_origin_point,
     RR_OT_add_surface_text,
+    RR_OT_bind_surface_text,
     RR_OT_store_point_bookmark,
     RR_OT_point_bookmark_to_cursor,
     RR_OT_clear_point_bookmark,
