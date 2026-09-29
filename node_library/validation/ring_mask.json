@@ -1,0 +1,61 @@
+{
+  "passed": true,
+  "asset_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+  "asset_metadata": {
+    "name": "Ring Mask",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "inputs": [
+      "Inner Radius",
+      "Ring Width",
+      "Edge Softness"
+    ],
+    "outputs": [
+      "Mask"
+    ],
+    "nodes": 35,
+    "default_group_node_width": 300,
+    "tags": [
+      "Randy",
+      "Shader",
+      "Ring Mask",
+      "Normalized UV",
+      "Mask",
+      "Textures",
+      "Concentric Rings"
+    ]
+  },
+  "catalog": "Textures",
+  "ui_search_tested": false,
+  "render_repeated": false,
+  "baseline_sha256": "d6ef10a34ec737beb297505ee5c7a36dcae2f3623413bfd99fafe93128c1cb52",
+  "baseline_verification_sha256": "95c810ba4b3f6e33594f3e2536e9d8a0cb4983a88c88360f34c1200532da1db7",
+  "baseline_test_count": 63,
+  "tests": [
+    {
+      "name": "append_and_validate_english_interface_and_catalog",
+      "passed": true
+    },
+    {
+      "name": "functional_graph_and_defaults_identical_to_render_verified_baseline",
+      "passed": true
+    },
+    {
+      "name": "all_asset_display_text_is_english",
+      "passed": true
+    },
+    {
+      "name": "embedded_asset_thumbnail_present",
+      "passed": true
+    },
+    {
+      "name": "save_reopen_preserves_english_asset_metadata",
+      "passed": true
+    }
+  ],
+  "asset": "node_library/assets/Randy_Ring_Mask.blend",
+  "blender": "5.2.0 LTS",
+  "baseline_verification": "node_library/validation/ring_mask_baseline.json",
+  "original_report_sha256": "d00cab6cf22947156fa23d44af2091a00c8d6f5f508e7fc6b7aeb729ce17dc48",
+  "evidence_note": "Five metadata/persistence checks on this exact asset, including unchanged functional graph versus the 63-check historical baseline; numerical rendering was not repeated.",
+  "baseline_verification_hash_mode": "utf8-lf"
+}

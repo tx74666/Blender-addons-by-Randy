@@ -1,0 +1,7 @@
+# Asset catalogs for the repository's personal node library.
+VERSION 1
+
+cf2bcdf9-39fa-43f1-96bd-55db33bbaf8d:Randy:Randy
+67c33df7-9a94-5d93-b9ca-21feef71eadb:Randy/Primitives:Randy-Primitives
+a1f8b514-e0ed-5fc8-9c14-12c5d9c0d57e:Randy/Patterns:Randy-Patterns
+cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2:Textures:Textures

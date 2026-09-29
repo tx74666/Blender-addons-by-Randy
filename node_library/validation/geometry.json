@@ -1,0 +1,265 @@
+{
+  "blender": "5.2.0 LTS",
+  "blender_hash": "fbe6228777e7",
+  "asset_sha256": "82cbb67997dbddeb2d3176b456daeef33b1ad6cb6f631ef8ae3f806f2f53fff2",
+  "ui_search_tested": false,
+  "tests": [
+    {
+      "name": "saved_bundle_reopened",
+      "passed": true
+    },
+    {
+      "name": "ring_default",
+      "passed": true,
+      "vertex_count": 1024,
+      "face_count": 1024,
+      "bounds": [
+        [
+          -1.100000023841858,
+          1.100000023841858
+        ],
+        [
+          -1.100000023841858,
+          1.100000023841858
+        ],
+        [
+          -0.10000000149011612,
+          0.10000000149011612
+        ]
+      ],
+      "all_smooth": true,
+      "materials": []
+    },
+    {
+      "name": "ring_parameters_material_smoothing",
+      "passed": true,
+      "vertex_count": 128,
+      "face_count": 128,
+      "bounds": [
+        [
+          -2.200000047683716,
+          2.200000047683716
+        ],
+        [
+          -2.200000047683716,
+          2.200000047683716
+        ],
+        [
+          -0.20000000298023224,
+          0.20000000298023224
+        ]
+      ],
+      "all_smooth": false,
+      "materials": [
+        "Verification material"
+      ]
+    },
+    {
+      "name": "pattern_default_realized_by_downstream_node",
+      "passed": true,
+      "vertex_count": 96,
+      "face_count": 72,
+      "bounds": [
+        [
+          -2.200000047683716,
+          2.200000047683716
+        ],
+        [
+          -2.200000047683716,
+          2.200000047683716
+        ],
+        [
+          -0.05000000074505806,
+          0.05000000074505806
+        ]
+      ],
+      "all_smooth": false,
+      "materials": []
+    },
+    {
+      "name": "pattern_count_radius_angle_orientation_scale_realize",
+      "passed": true,
+      "vertex_count": 40,
+      "face_count": 30,
+      "bounds": [
+        [
+          -3.183565855026245,
+          2.7980761528015137
+        ],
+        [
+          -2.8406362533569336,
+          3.034442663192749
+        ],
+        [
+          -0.07500000298023224,
+          0.07500000298023224
+        ]
+      ],
+      "all_smooth": false,
+      "materials": []
+    },
+    {
+      "name": "pattern_single_copy_zero_radius",
+      "passed": true,
+      "vertex_count": 8,
+      "face_count": 6,
+      "bounds": [
+        [
+          -0.20000000298023224,
+          0.20000000298023224
+        ],
+        [
+          -0.10000000149011612,
+          0.10000000149011612
+        ],
+        [
+          -0.05000000074505806,
+          0.05000000074505806
+        ]
+      ],
+      "all_smooth": false,
+      "materials": []
+    },
+    {
+      "name": "pattern_default_keeps_12_instances",
+      "passed": true,
+      "instance_count": 12
+    },
+    {
+      "name": "direct_modifiers_and_socket_values",
+      "passed": true,
+      "ring_vertices": 1024,
+      "pattern_vertices": 32
+    },
+    {
+      "name": "blank_file_append_save_reopen_evaluate",
+      "passed": true
+    }
+  ],
+  "assets": [
+    {
+      "name": "Randy Circular Pattern 环形阵列",
+      "catalog_id": "a1f8b514-e0ed-5fc8-9c14-12c5d9c0d57e",
+      "is_modifier": true,
+      "is_tool": false,
+      "name_utf8_bytes": 35,
+      "tags": [
+        "Randy",
+        "Geometry Nodes",
+        "Native",
+        "Circular",
+        "Array",
+        "Pattern",
+        "Radial",
+        "环形阵列",
+        "图案",
+        "圆周排列"
+      ],
+      "sockets": [
+        {
+          "name": "Geometry 几何",
+          "direction": "OUTPUT",
+          "type": "NodeSocketGeometry"
+        },
+        {
+          "name": "Geometry 几何",
+          "direction": "INPUT",
+          "type": "NodeSocketGeometry"
+        },
+        {
+          "name": "Count 数量",
+          "direction": "INPUT",
+          "type": "NodeSocketInt"
+        },
+        {
+          "name": "Radius 半径",
+          "direction": "INPUT",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Angle Offset 起始角",
+          "direction": "INPUT",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Outward 朝外",
+          "direction": "INPUT",
+          "type": "NodeSocketBool"
+        },
+        {
+          "name": "Rotation Offset 自转角",
+          "direction": "INPUT",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Scale 缩放",
+          "direction": "INPUT",
+          "type": "NodeSocketVector"
+        },
+        {
+          "name": "Realize 实体化",
+          "direction": "INPUT",
+          "type": "NodeSocketBool"
+        }
+      ]
+    },
+    {
+      "name": "Randy Ring 圆环",
+      "catalog_id": "67c33df7-9a94-5d93-b9ca-21feef71eadb",
+      "is_modifier": true,
+      "is_tool": false,
+      "name_utf8_bytes": 17,
+      "tags": [
+        "Randy",
+        "Geometry Nodes",
+        "Native",
+        "Ring",
+        "Torus",
+        "圆环",
+        "圆圈",
+        "基础形状"
+      ],
+      "sockets": [
+        {
+          "name": "Geometry 几何",
+          "direction": "OUTPUT",
+          "type": "NodeSocketGeometry"
+        },
+        {
+          "name": "Radius 半径",
+          "direction": "INPUT",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Tube Radius 管半径",
+          "direction": "INPUT",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Segments 环分段",
+          "direction": "INPUT",
+          "type": "NodeSocketInt"
+        },
+        {
+          "name": "Sides 截面分段",
+          "direction": "INPUT",
+          "type": "NodeSocketInt"
+        },
+        {
+          "name": "Smooth 平滑",
+          "direction": "INPUT",
+          "type": "NodeSocketBool"
+        },
+        {
+          "name": "Material 材质",
+          "direction": "INPUT",
+          "type": "NodeSocketMaterial"
+        }
+      ]
+    }
+  ],
+  "passed": true,
+  "asset_file": "node_library/assets/Randy_Toolkit.blend",
+  "original_report_sha256": "40f8a0fbbedb5b7bded452357751788ca8a5fd6c12ae80c214951cd9990fc6fa",
+  "evidence_note": "Existing nine-check geometry validation for the exact distributed asset; local fixture paths omitted."
+}

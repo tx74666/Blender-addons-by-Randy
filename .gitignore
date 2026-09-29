@@ -10,3 +10,4 @@ __pycache__/
 *.blend@
 .codex-backups/
 .pytest_cache/
+/node_library/_build/

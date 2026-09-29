@@ -1,0 +1,1602 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset_sha256": "d6ef10a34ec737beb297505ee5c7a36dcae2f3623413bfd99fafe93128c1cb52",
+  "blender": "5.2.0 LTS",
+  "ui_search_tested": false,
+  "render_engine": "Cycles CPU",
+  "tolerance": 0.0002,
+  "tests": [
+    {
+      "name": "append_native_shader_asset_and_validate_interface",
+      "passed": true
+    },
+    {
+      "name": "multiple_independent_instances_in_one_material",
+      "passed": true
+    },
+    {
+      "name": "appended_asset_save_reopen",
+      "passed": true
+    },
+    {
+      "name": "default_center_empty",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        8
+      ]
+    },
+    {
+      "name": "default_ring_middle_white",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        8
+      ]
+    },
+    {
+      "name": "default_inside_hole",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        8
+      ]
+    },
+    {
+      "name": "default_beyond_ring",
+      "uv": [
+        0.9,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        8
+      ]
+    },
+    {
+      "name": "default_off_axis_same_radius",
+      "uv": [
+        0.6875,
+        0.75
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        8
+      ]
+    },
+    {
+      "name": "default_cardinal_same_radius",
+      "uv": [
+        0.8125,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        8
+      ]
+    },
+    {
+      "name": "default_left",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        8
+      ]
+    },
+    {
+      "name": "default_top",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        8
+      ]
+    },
+    {
+      "name": "default_bottom",
+      "uv": [
+        0.5,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0
+      ],
+      "use_defaults": true,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        24
+      ]
+    },
+    {
+      "name": "inner_inclusive",
+      "uv": [
+        0.625,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        24
+      ]
+    },
+    {
+      "name": "outer_inclusive",
+      "uv": [
+        0.875,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        24
+      ]
+    },
+    {
+      "name": "just_inside_hole",
+      "uv": [
+        0.6245,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        24
+      ]
+    },
+    {
+      "name": "just_beyond_outer",
+      "uv": [
+        0.8755,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        24
+      ]
+    },
+    {
+      "name": "hard_middle",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        24
+      ]
+    },
+    {
+      "name": "rim_right",
+      "uv": [
+        1,
+        0.5
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        24
+      ]
+    },
+    {
+      "name": "rim_left",
+      "uv": [
+        0,
+        0.5
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        24
+      ]
+    },
+    {
+      "name": "rim_top",
+      "uv": [
+        0.5,
+        1
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        40
+      ]
+    },
+    {
+      "name": "rim_bottom",
+      "uv": [
+        0.5,
+        0
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        40
+      ]
+    },
+    {
+      "name": "outside_disk_corner",
+      "uv": [
+        1,
+        1
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        40
+      ]
+    },
+    {
+      "name": "outside_disk_inside_uv_square",
+      "uv": [
+        0.95,
+        0.95
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        40
+      ]
+    },
+    {
+      "name": "outside_uv_right",
+      "uv": [
+        1.001,
+        0.5
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        40
+      ]
+    },
+    {
+      "name": "outside_uv_left",
+      "uv": [
+        -0.001,
+        0.5
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        40
+      ]
+    },
+    {
+      "name": "overshoot_no_artificial_fade_at_disk_rim",
+      "uv": [
+        1.0,
+        0.5
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        40
+      ]
+    },
+    {
+      "name": "zero_width_at_inner",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "values": [
+        0.5,
+        0,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        40
+      ]
+    },
+    {
+      "name": "zero_width_at_center_soft",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        0,
+        0.1
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        56
+      ]
+    },
+    {
+      "name": "negative_linked_width",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "values": [
+        0.5,
+        -0.25,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        56
+      ]
+    },
+    {
+      "name": "negative_linked_inner_clamps_to_zero",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        -0.5,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        56
+      ]
+    },
+    {
+      "name": "negative_linked_inner_clamps_not_absolute",
+      "uv": [
+        0.625,
+        0.5
+      ],
+      "values": [
+        -0.5,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        56
+      ]
+    },
+    {
+      "name": "negative_linked_softness_is_hard",
+      "uv": [
+        0.625,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        -0.5
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        56
+      ]
+    },
+    {
+      "name": "high_linked_inner_clamps_to_one_rim",
+      "uv": [
+        1.0,
+        0.5
+      ],
+      "values": [
+        2,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        56
+      ]
+    },
+    {
+      "name": "high_linked_inner_empty_interior",
+      "uv": [
+        0.9995,
+        0.5
+      ],
+      "values": [
+        2,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        56
+      ]
+    },
+    {
+      "name": "high_linked_inner_clipped_exterior",
+      "uv": [
+        1.0005,
+        0.5
+      ],
+      "values": [
+        2,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        56
+      ]
+    },
+    {
+      "name": "zero_inner_hard_center_filled",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        72
+      ]
+    },
+    {
+      "name": "soft_inner_edge_zero",
+      "uv": [
+        0.625,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        72
+      ]
+    },
+    {
+      "name": "soft_inner_quarter",
+      "uv": [
+        0.640625,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.15625,
+      "rgb": [
+        0.15625,
+        0.15625,
+        0.15625
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        72
+      ]
+    },
+    {
+      "name": "soft_inner_half",
+      "uv": [
+        0.65625,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        72
+      ]
+    },
+    {
+      "name": "soft_inner_plateau",
+      "uv": [
+        0.6875,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        72
+      ]
+    },
+    {
+      "name": "soft_outer_plateau",
+      "uv": [
+        0.8125,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        72
+      ]
+    },
+    {
+      "name": "soft_outer_half",
+      "uv": [
+        0.84375,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        72
+      ]
+    },
+    {
+      "name": "soft_outer_quarter",
+      "uv": [
+        0.859375,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.15625,
+      "rgb": [
+        0.15625,
+        0.15625,
+        0.15625
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        72
+      ]
+    },
+    {
+      "name": "soft_outer_edge_zero",
+      "uv": [
+        0.875,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        88
+      ]
+    },
+    {
+      "name": "soft_hole_empty",
+      "uv": [
+        0.6,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        88
+      ]
+    },
+    {
+      "name": "soft_exterior_empty",
+      "uv": [
+        0.9,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        88
+      ]
+    },
+    {
+      "name": "narrow_ring_clamps_softness_peak_white",
+      "uv": [
+        0.765625,
+        0.5
+      ],
+      "values": [
+        0.5,
+        0.0625,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        88
+      ]
+    },
+    {
+      "name": "narrow_ring_inner_half_fade",
+      "uv": [
+        0.7578125,
+        0.5
+      ],
+      "values": [
+        0.5,
+        0.0625,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        88
+      ]
+    },
+    {
+      "name": "narrow_ring_outer_half_fade",
+      "uv": [
+        0.7734375,
+        0.5
+      ],
+      "values": [
+        0.5,
+        0.0625,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        88
+      ]
+    },
+    {
+      "name": "narrow_ring_inner_edge_zero",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "values": [
+        0.5,
+        0.0625,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        88
+      ]
+    },
+    {
+      "name": "narrow_ring_outer_edge_zero",
+      "uv": [
+        0.78125,
+        0.5
+      ],
+      "values": [
+        0.5,
+        0.0625,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        88
+      ]
+    },
+    {
+      "name": "zero_inner_soft_center_has_no_pinhole",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        104
+      ]
+    },
+    {
+      "name": "zero_inner_soft_inner_region_filled",
+      "uv": [
+        0.625,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        104
+      ]
+    },
+    {
+      "name": "zero_inner_soft_outer_half",
+      "uv": [
+        0.71875,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        104
+      ]
+    },
+    {
+      "name": "zero_inner_soft_outer_edge_zero",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        104
+      ]
+    },
+    {
+      "name": "large_linked_width_and_softness_center",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        8,
+        4
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        104
+      ]
+    },
+    {
+      "name": "large_linked_width_and_softness_rim",
+      "uv": [
+        1.0,
+        0.5
+      ],
+      "values": [
+        0,
+        8,
+        4
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        104
+      ]
+    },
+    {
+      "name": "large_linked_width_still_clips_disk",
+      "uv": [
+        1.005,
+        0.5
+      ],
+      "values": [
+        0,
+        8,
+        4
+      ],
+      "use_defaults": false,
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        104
+      ]
+    },
+    {
+      "name": "instance_a_white",
+      "uv": [
+        0.6875,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.25,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        104
+      ]
+    },
+    {
+      "name": "instance_b_same_uv_black",
+      "uv": [
+        0.6875,
+        0.5
+      ],
+      "values": [
+        0.625,
+        0.25,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        120
+      ]
+    },
+    {
+      "name": "same_material_instances_red_ring",
+      "uv": [
+        0.6875,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.25,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 1.0,
+      "independent_instances": true,
+      "expected_rgb": [
+        1,
+        0,
+        0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        120
+      ]
+    },
+    {
+      "name": "same_material_instances_green_ring",
+      "uv": [
+        0.875,
+        0.5
+      ],
+      "values": [
+        0.25,
+        0.25,
+        0
+      ],
+      "use_defaults": false,
+      "linked_parameters": false,
+      "expected": 0.0,
+      "independent_instances": true,
+      "expected_rgb": [
+        0,
+        1,
+        0
+      ],
+      "rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        120
+      ]
+    },
+    {
+      "name": "source_asset_unchanged",
+      "passed": true
+    }
+  ],
+  "asset_metadata": {
+    "name": "Randy Ring Mask 圆环遮罩",
+    "catalog_id": "a1f8b514-e0ed-5fc8-9c14-12c5d9c0d57e",
+    "inputs": [
+      "Inner Radius 内半径",
+      "Ring Width 环宽",
+      "Edge Softness 边缘柔和度"
+    ],
+    "outputs": [
+      "Mask"
+    ],
+    "nodes": 35,
+    "default_group_node_width": 300,
+    "tags": [
+      "Randy",
+      "Shader",
+      "Ring Mask",
+      "Normalized UV",
+      "Mask",
+      "圆环",
+      "圆环遮罩",
+      "同心圆",
+      "材质"
+    ]
+  },
+  "shader_sample_count": 59,
+  "maximum_absolute_error": 0,
+  "evidence_note": "Historical numerical baseline; local fixture paths omitted. This older asset is not distributed.",
+  "original_report_sha256": "0e4a8ac7160333952dbf2c3307c5c37ae00abe9dbc05ac6130ce143d52c8345f"
+}

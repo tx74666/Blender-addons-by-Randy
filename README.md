@@ -1,5 +1,7 @@
 # Blender add-ons by Randy
 
+**Randy Node Library:** [Asset catalog and usage](node_library/README.md) · [Change history](node_library/CHANGELOG.md) · [Machine-readable manifest](node_library/manifest.json). Native shader and geometry nodes are maintained here alongside the add-ons; each node update records its source, version, asset file, and validation. Changes stay local until the owner commits and pushes them with GitHub Desktop.
+
 RR Helper 和 Character Designer 的源码、安装包及插件测试集中维护在这里。
 
 | 插件 | 当前版本 | 源码 | Blender 安装包 |

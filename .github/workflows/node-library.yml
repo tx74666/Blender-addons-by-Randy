@@ -1,0 +1,28 @@
+name: Node library integrity
+
+on:
+  push:
+    paths:
+      - 'node_library/**'
+      - 'tools/randy_node_assets/**'
+      - '.github/workflows/node-library.yml'
+  pull_request:
+    paths:
+      - 'node_library/**'
+      - 'tools/randy_node_assets/**'
+      - '.github/workflows/node-library.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check node library manifest, sources and saved verification
+        run: python -B tools/randy_node_assets/verify_library.py

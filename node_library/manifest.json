@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "library_version": "0.1.1",
+  "blender_version": "5.2.0",
+  "catalog_file": "node_library/assets/blender_assets.cats.txt",
+  "bundles": [
+    {
+      "id": "ring_mask",
+      "path": "node_library/assets/Randy_Ring_Mask.blend",
+      "sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+      "source": {
+        "build": "tools/randy_node_assets/build_ring_mask.py",
+        "verify": "tools/randy_node_assets/verify_ring_mask.py",
+        "deploy": "tools/randy_node_assets/deploy_ring_mask.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_ring_mask.py": "72ba91e194e572372de93ad22d0e8ef8bea5b3d49e70dd7fadda3a2c7faaf684",
+        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+        "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067"
+      },
+      "verification": "node_library/validation/ring_mask.json"
+    },
+    {
+      "id": "geometry",
+      "path": "node_library/assets/Randy_Toolkit.blend",
+      "sha256": "82cbb67997dbddeb2d3176b456daeef33b1ad6cb6f631ef8ae3f806f2f53fff2",
+      "source": {
+        "build": "tools/randy_node_assets/build_assets.py",
+        "verify": "tools/randy_node_assets/verify_assets.py",
+        "deploy": "tools/randy_node_assets/deploy_assets.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_assets.py": "4b613a3b0bdace8d1644c52699b558b2c7ba1b63db69ad8b2ae5aeac4458536d",
+        "tools/randy_node_assets/verify_assets.py": "fe938023bc6c520d36f1827a034711c460db6f09cbced57ed4981af5decaea7e",
+        "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
+      },
+      "verification": "node_library/validation/geometry.json"
+    }
+  ],
+  "assets": [
+    {
+      "id": "ring_mask",
+      "name": "Ring Mask",
+      "display_name": "Ring Mask",
+      "version": "0.1.1",
+      "node_tree_type": "ShaderNodeTree",
+      "bundle_id": "ring_mask",
+      "catalog_path": "Textures",
+      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+      "description": "Normalized UV radial mask. UV center is (0.5, 0.5); the disk rim has radius 1.",
+      "inputs": [
+        {
+          "name": "Inner Radius",
+          "type": "NodeSocketFloat",
+          "default": 0.6
+        },
+        {
+          "name": "Ring Width",
+          "type": "NodeSocketFloat",
+          "default": 0.08
+        },
+        {
+          "name": "Edge Softness",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Mask",
+          "type": "NodeSocketFloat"
+        }
+      ]
+    },
+    {
+      "id": "circular_pattern",
+      "name": "Randy Circular Pattern 环形阵列",
+      "display_name": "Circular Pattern",
+      "version": "0.1.0",
+      "node_tree_type": "GeometryNodeTree",
+      "bundle_id": "geometry",
+      "catalog_path": "Randy/Patterns",
+      "catalog_id": "a1f8b514-e0ed-5fc8-9c14-12c5d9c0d57e",
+      "description": "Arrange geometry in a circular pattern.",
+      "interface_note": "Existing bilingual UI retained; this publication does not migrate installed geometry nodes.",
+      "inputs": [
+        {
+          "name": "Geometry 几何",
+          "type": "NodeSocketGeometry"
+        },
+        {
+          "name": "Count 数量",
+          "type": "NodeSocketInt"
+        },
+        {
+          "name": "Radius 半径",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Angle Offset 起始角",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Outward 朝外",
+          "type": "NodeSocketBool"
+        },
+        {
+          "name": "Rotation Offset 自转角",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Scale 缩放",
+          "type": "NodeSocketVector"
+        },
+        {
+          "name": "Realize 实体化",
+          "type": "NodeSocketBool"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Geometry 几何",
+          "type": "NodeSocketGeometry"
+        }
+      ]
+    },
+    {
+      "id": "ring",
+      "name": "Randy Ring 圆环",
+      "display_name": "Ring",
+      "version": "0.1.0",
+      "node_tree_type": "GeometryNodeTree",
+      "bundle_id": "geometry",
+      "catalog_path": "Randy/Primitives",
+      "catalog_id": "67c33df7-9a94-5d93-b9ca-21feef71eadb",
+      "description": "Generate a parametric torus.",
+      "interface_note": "Existing bilingual UI retained; this publication does not migrate installed geometry nodes.",
+      "inputs": [
+        {
+          "name": "Radius 半径",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Tube Radius 管半径",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Segments 环分段",
+          "type": "NodeSocketInt"
+        },
+        {
+          "name": "Sides 截面分段",
+          "type": "NodeSocketInt"
+        },
+        {
+          "name": "Smooth 平滑",
+          "type": "NodeSocketBool"
+        },
+        {
+          "name": "Material 材质",
+          "type": "NodeSocketMaterial"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Geometry 几何",
+          "type": "NodeSocketGeometry"
+        }
+      ]
+    }
+  ],
+  "source_hash_mode": "utf8-lf"
+}
