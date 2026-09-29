@@ -204,6 +204,8 @@ def test_persistent_reference_migration(rr, directory):
     reference = make_object("LegacyReference", mesh=True)
     reference[rr.REFERENCE_MARK_PROP] = True
     scene.rr_builder_reference_layout.reference_object = reference
+    scene.rr_builder_reference_layout.core_ui_version = 0
+    scene.rr_builder_reference_layout.legacy_layout_pending = False
     settings = scene.rr_builder_export_settings
     settings.use_reference_layout = False
     settings.reference_layout_state_initialized = False

@@ -1650,7 +1650,7 @@ class ExporterUvContractTests(unittest.TestCase):
             rgb.as_pointer(),
         )
 
-    def test_existing_model_skip_requires_matching_contract_hash(self):
+    def test_existing_model_resource_validation_requires_matching_contract_hash(self):
         obj, _, _, _ = make_quad("ContractHash")
         with tempfile.TemporaryDirectory(prefix="rr_exporter_manifest_") as asset_dir:
             model_path = os.path.join(asset_dir, "model.fbx")
@@ -1712,7 +1712,7 @@ class ExporterUvContractTests(unittest.TestCase):
                 )
             )
 
-    def test_skip_existing_reuses_model_but_always_renders_requested_icon(self):
+    def test_model_and_icon_reexport_even_with_legacy_skip_enabled(self):
         self.assert_icon_refresh_preserves_requested_resources(
             request_model=True,
             previous_resources=["model", "icon"],
@@ -1778,6 +1778,7 @@ class ExporterUvContractTests(unittest.TestCase):
             self.assertNotEqual(current_bounds, original_bounds)
 
             rendered = []
+            exported_models = []
             queued = []
             original_render = exporter.render_or_copy_shared_icon
             original_export_fbx = exporter.export_fbx
@@ -1789,11 +1790,16 @@ class ExporterUvContractTests(unittest.TestCase):
                     handle.write(b"fresh icon")
                 return destination
 
-            def reject_model_export(*_args, **_kwargs):
-                raise AssertionError("A verified existing model must be reused.")
+            def export_fresh_model(root, destination):
+                if not request_model:
+                    raise AssertionError("An explicit Icon-only request must preserve its existing model.")
+                exported_models.append(root.name)
+                with open(destination, "wb") as handle:
+                    handle.write(b"fresh model")
+                return []
 
             exporter.render_or_copy_shared_icon = render_fresh_icon
-            exporter.export_fbx = reject_model_export
+            exporter.export_fbx = export_fresh_model
             exporter.queue_unity_builder_import = lambda paths, **_kwargs: queued.extend(paths) or paths
             try:
                 result = exporter.export_builder_asset(
@@ -1814,16 +1820,19 @@ class ExporterUvContractTests(unittest.TestCase):
 
             self.assertEqual(result[2], "exported")
             self.assertEqual(rendered, [(obj.name, True)])
+            self.assertEqual(exported_models, [obj.name] if request_model else [])
             self.assertEqual(queued, [manifest_path])
             with open(model_path, "rb") as handle:
-                self.assertEqual(handle.read(), b"verified model")
+                self.assertEqual(handle.read(), b"fresh model" if request_model else b"verified model")
             with open(icon_path, "rb") as handle:
                 self.assertEqual(handle.read(), b"fresh icon")
             refreshed_manifest = exporter.read_existing_manifest(manifest_path)
             self.assertEqual(refreshed_manifest["modelFile"], "model.fbx")
             self.assertEqual(refreshed_manifest["iconFile"], "icon.png")
             self.assertEqual(refreshed_manifest["exportedResources"], expected_resources)
-            self.assertEqual(refreshed_manifest["bounds"], original_bounds)
+            self.assertEqual(
+                refreshed_manifest["bounds"], current_bounds if request_model else original_bounds,
+            )
             self.assertTrue(
                 exporter.uv_export_contract_matches_model(
                     refreshed_manifest,
@@ -1831,9 +1840,9 @@ class ExporterUvContractTests(unittest.TestCase):
                 )
             )
 
-    def test_model_only_skip_normalizes_a_previous_icon_only_manifest(self):
+    def test_model_only_reexports_after_icon_only_even_with_legacy_skip_enabled(self):
         obj, _, _, _ = make_quad("Cube_200x200x200_Wood")
-        with tempfile.TemporaryDirectory(prefix="rr_exporter_model_reuse_") as output_root:
+        with tempfile.TemporaryDirectory(prefix="rr_exporter_model_refresh_") as output_root:
             asset_id = exporter.export_asset_id(obj)
             asset_dir = os.path.join(output_root, asset_id)
             os.makedirs(asset_dir, exist_ok=True)
@@ -1865,15 +1874,25 @@ class ExporterUvContractTests(unittest.TestCase):
             original_bounds = exporter.read_existing_manifest(manifest_path)["bounds"]
             for vertex in obj.data.vertices:
                 vertex.co.x *= 2.0
+            current_center, current_size = exporter.mesh_world_bounds(obj)
+            current_bounds = {
+                "center": [round(current_center.x, 5), round(current_center.y, 5), round(current_center.z, 5)],
+                "size": [round(current_size.x, 5), round(current_size.y, 5), round(current_size.z, 5)],
+            }
+            self.assertNotEqual(current_bounds, original_bounds)
 
             queued = []
+            exported_models = []
             original_export_fbx = exporter.export_fbx
             original_queue = exporter.queue_unity_builder_import
 
-            def reject_model_export(*_args, **_kwargs):
-                raise AssertionError("A verified existing model must be reused.")
+            def export_fresh_model(root, destination):
+                exported_models.append(root.name)
+                with open(destination, "wb") as handle:
+                    handle.write(b"fresh model")
+                return []
 
-            exporter.export_fbx = reject_model_export
+            exporter.export_fbx = export_fresh_model
             exporter.queue_unity_builder_import = lambda paths, **_kwargs: queued.extend(paths) or paths
             try:
                 result = exporter.export_builder_asset(
@@ -1890,13 +1909,18 @@ class ExporterUvContractTests(unittest.TestCase):
                 exporter.export_fbx = original_export_fbx
                 exporter.queue_unity_builder_import = original_queue
 
-            self.assertEqual(result[2], "skipped")
+            self.assertEqual(result[2], "exported")
+            self.assertEqual(exported_models, [obj.name])
             self.assertEqual(queued, [manifest_path])
+            with open(model_path, "rb") as handle:
+                self.assertEqual(handle.read(), b"fresh model")
+            with open(icon_path, "rb") as handle:
+                self.assertEqual(handle.read(), b"existing icon")
             normalized_manifest = exporter.read_existing_manifest(manifest_path)
             self.assertEqual(normalized_manifest["modelFile"], "model.fbx")
             self.assertEqual(normalized_manifest["iconFile"], "icon.png")
             self.assertEqual(normalized_manifest["exportedResources"], ["model"])
-            self.assertEqual(normalized_manifest["bounds"], original_bounds)
+            self.assertEqual(normalized_manifest["bounds"], current_bounds)
             self.assertTrue(
                 exporter.uv_export_contract_matches_model(
                     normalized_manifest,
@@ -1947,12 +1971,12 @@ class ExporterUvContractTests(unittest.TestCase):
 
         self.assertIsNone(exporter.build_material_surface_contract(material))
 
-    def test_existing_model_skip_detects_changed_surface_contract(self):
+    def test_existing_model_resource_validation_detects_changed_surface_contract(self):
         obj, _, _, _ = make_quad("SurfaceContractHash")
         glass, principled = make_surface_material("Glass")
         obj.data.materials[0] = glass
 
-        with tempfile.TemporaryDirectory(prefix="rr_exporter_surface_skip_") as asset_dir:
+        with tempfile.TemporaryDirectory(prefix="rr_exporter_surface_validation_") as asset_dir:
             model_path = os.path.join(asset_dir, "model.fbx")
             manifest_path = os.path.join(asset_dir, "manifest.json")
             with open(model_path, "wb") as handle:

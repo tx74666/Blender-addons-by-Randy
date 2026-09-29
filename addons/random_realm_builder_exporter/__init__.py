@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 19),
+    "version": (0, 2, 24),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -130,10 +130,10 @@ UNITY_UV_EXPORT_CONTRACT_VERSION = rr_unity_uv_export_contract.CONTRACT_VERSION
 
 
 def export_mode_uses_reference_layout(settings):
-    return bool(
-        settings is not None and
-        getattr(settings, "use_reference_layout", False)
-    )
+    scene = getattr(settings, "id_data", None)
+    if not isinstance(scene, bpy.types.Scene):
+        scene = bpy.context.scene
+    return settings is not None and reference_layout_is_active(scene)
 
 
 def export_mode_is_standard(settings):
@@ -169,13 +169,53 @@ def validate_reference_layout_settings(settings):
     if not export_mode_uses_reference_layout(settings):
         return None
 
-    reference = get_reference_object()
+    scene = getattr(settings, "id_data", None)
+    if not isinstance(scene, bpy.types.Scene):
+        scene = bpy.context.scene
+    reference = get_reference_object(scene)
     if reference is None:
         raise RuntimeError(
-            "Use Reference Layout is enabled, but no valid Reference is set."
+            "The Core Object is no longer available in this scene."
         )
+    if object_manager_variant_group_root(reference) is not None:
+        raise RuntimeError("Choose a separate object or assembly as Core; a Variants group or member cannot be Core.")
     validate_export_identity(reference)
     return reference
+
+
+def validate_core_exclusion(roots, reference):
+    core_meshes = set(get_export_asset_meshes(reference))
+    for root in roots:
+        if root == reference:
+            continue
+        members = (
+            object_manager_member_candidate_objects(root)
+            if is_object_manager_assembly_root(root)
+            else list(root.children_recursive)
+        )
+        if reference in members and core_meshes.intersection(get_export_asset_meshes(root)):
+            raise RuntimeError(
+                f"{root.name} contains the Core Object. Export its other parts separately "
+                "or enable Export Core Object."
+            )
+
+
+def core_roots_for_export_batch(roots, settings, scene=None):
+    """Apply the Core inclusion choice before writing any assets or manifests."""
+    scene = scene or bpy.context.scene
+    if not export_mode_uses_reference_layout(settings):
+        return list(roots)
+    reference = validate_reference_layout_settings(settings)
+    if not include_reference_mesh(scene):
+        validate_core_exclusion(roots, reference)
+        return [root for root in roots if root != reference]
+    if not get_asset_meshes(reference):
+        raise RuntimeError("Export Core Object is enabled, but the Core has no exportable mesh.")
+    result = list(roots)
+    for candidate in expand_related_export_roots([reference]):
+        if candidate not in result:
+            result.append(candidate)
+    return result
 
 
 def use_unity_standard_output(settings):
@@ -9153,6 +9193,7 @@ def write_manifest(
     bounds_override=None,
     reference_layout=None,
     source_blend_override=None,
+    model_contract_manifest=None,
 ):
     validate_export_identity(root)
     if isinstance(bounds_override, dict):
@@ -9183,9 +9224,18 @@ def write_manifest(
         "warnings": warnings or [],
         "materialMaps": material_maps or [],
     }
-    surface_text = build_surface_text_manifest(root)
-    if surface_text:
-        manifest["surfaceText"] = surface_text
+    if isinstance(model_contract_manifest, dict):
+        # Icon-only exports retain the metadata paired with the unchanged FBX.
+        # Current Font nodes may no longer match that model or its source snapshot.
+        for field in ("sourceBlend", "sourceObject", "surfaceText"):
+            if field in model_contract_manifest:
+                manifest[field] = model_contract_manifest[field]
+            else:
+                manifest.pop(field, None)
+    else:
+        surface_text = build_surface_text_manifest(root)
+        if surface_text:
+            manifest["surfaceText"] = surface_text
     if isinstance(uv_export_contract, dict):
         manifest["uvExport"] = dict(uv_export_contract)
     if isinstance(reference_layout, dict):
@@ -9729,64 +9779,11 @@ def _export_builder_asset_contents(
     group_manifest = build_group_manifest(obj)
     surface_contracts = build_material_surface_contracts(obj) if export_model else None
 
-    skip_existing_models = getattr(settings, "skip_existing_exports", True)
-    can_reuse_existing_model = (
-        skip_existing_models
-        and export_model
-        and output_has_requested_resources(
-            asset_dir,
-            export_model=True,
-            include_icon=False,
-            group_manifest=group_manifest,
-            expected_surface_contracts=surface_contracts,
-            require_exported_resource_declaration=False,
-        )
-    )
-    if can_reuse_existing_model and not include_icon:
-        # A preceding icon refresh intentionally leaves an icon-only manifest.
-        # Normalize the queued request back to model-only so Unity imports the
-        # verified FBX requested by this export instead of replaying the icon.
-        existing_warnings = existing_manifest.get("warnings", [])
-        warnings = list(existing_warnings) if isinstance(existing_warnings, list) else []
-        existing_material_maps = existing_manifest.get("materialMaps", [])
-        material_maps = list(existing_material_maps) if isinstance(existing_material_maps, list) else []
-        write_manifest(
-            obj,
-            manifest_path,
-            asset_id,
-            asset_type,
-            infer_asset_category(obj, asset_type),
-            settings.profile_name,
-            "model.fbx",
-            "icon.png" if os.path.exists(icon_path) else "",
-            ["model"],
-            warnings,
-            material_maps,
-            group_manifest,
-            existing_uv_export_contract(existing_manifest, model_path),
-            existing_manifest.get("bounds"),
-            reference_layout,
-        )
-        if retire_legacy_alias:
-            retire_standard_flat_model_alias(
-                settings,
-                asset_id,
-                os.path.join(asset_dir, existing_manifest.get("modelFile") or "model.fbx"),
-            )
-        if queue_import and not export_mode_is_standard(settings):
-            queue_unity_builder_import([manifest_path])
-        return asset_id, asset_type, "skipped"
-
-    # Skip Existing skips the FBX bake, not the requested Unity import resource.
-    # A verified local model does not prove that Unity installed it successfully:
-    # keep Model + Icon as a complete request so a failed first import can retry.
-    # Icon framing/lighting are not cached by the manifest, so render fresh pixels.
-    if can_reuse_existing_model and include_icon:
-        export_model = False
-
+    # Model is an explicit request to regenerate geometry and its paired data.
+    # Legacy saved skip_existing_exports values no longer affect this request.
     warnings = []
     material_maps = []
-    exported_resources = ["model"] if can_reuse_existing_model else []
+    exported_resources = []
     uv_export_contract = None
     source_blend_override = None
 
@@ -9869,6 +9866,7 @@ def _export_builder_asset_contents(
         existing_manifest.get("bounds") if not export_model else None,
         reference_layout,
         source_blend_override,
+        model_contract_manifest=existing_manifest if not export_model and model_file else None,
     )
     if queue_import and not export_mode_is_standard(settings):
         queue_unity_builder_import([manifest_path])
@@ -10236,6 +10234,7 @@ def publish_staged_variant_group(
             backup_folder = os.path.join(backup_root, member_id)
             if not os.path.isdir(staged_folder):
                 raise RuntimeError(f"Variant member '{member_id}' staging folder is missing.")
+            rr_standard_export_transaction.prepare_published_metadata(staged_folder, target_folder)
             if os.path.exists(target_folder):
                 os.replace(target_folder, backup_folder)
                 backups[target_folder] = backup_folder
@@ -10423,7 +10422,8 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
     )
     use_reference_layout: bpy.props.BoolProperty(
         name="Use Reference Layout",
-        description="Use the saved reference layout for this export batch",
+        description="Legacy file compatibility; new Core markers automatically enable layout",
+        options={"HIDDEN"},
         default=False,
     )
     reference_layout_state_initialized: bpy.props.BoolProperty(
@@ -10611,13 +10611,14 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
     )
     include_model_with_export: bpy.props.BoolProperty(
         name="Model",
-        description="Export model.fbx and material texture references",
+        description="Re-export model.fbx and material texture references, updating the existing package",
         default=True,
     )
     skip_existing_exports: bpy.props.BoolProperty(
-        name="Skip Existing Models",
-        description="Reuse verified model output while always rendering a newly requested icon",
-        default=True,
+        name="Legacy Skip Existing Models",
+        description="Compatibility field for older scenes; Model exports always regenerate the model",
+        default=False,
+        options={"HIDDEN"},
     )
     pbr_bake_resolution: bpy.props.IntProperty(
         name="Size",
@@ -11539,6 +11540,18 @@ def draw_preview_reference_pair(layout, context, settings):
 
 
 class RR_UL_export_queue_items(bpy.types.UIList):
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        reference = get_reference_object(context.scene) if reference_layout_is_active(context.scene) else None
+        core_index = next((index for index, item in enumerate(items) if queue_item_object(item) == reference), -1)
+        if reference is None or core_index <= 0:
+            return [], []
+        order = [core_index] + [index for index in range(len(items)) if index != core_index]
+        new_order = [0] * len(items)
+        for display_index, item_index in enumerate(order):
+            new_order[item_index] = display_index
+        return [], new_order
+
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         root = queue_item_object(item)
         row = layout.row(align=True)
@@ -11548,9 +11561,16 @@ class RR_UL_export_queue_items(bpy.types.UIList):
         else:
             label = object_manager_display_name(root) if root else item.object_name or "<missing>"
             icon_name = "OBJECT_DATA" if root else "ERROR"
-        if root is not None and is_reference_object(root):
-            icon_name = "SOLO_ON"
-        row.label(text=label, icon=icon_name)
+        if root is not None:
+            is_core = reference_layout_is_active(context.scene) and root == get_reference_object(context.scene)
+            star = row.operator(
+                "rr_builder.toggle_core", text="", icon="SOLO_ON" if is_core else icon_name,
+                depress=is_core, emboss=False,
+            )
+            star.object_name = root.name
+            row.label(text=label)
+        else:
+            row.label(text=label, icon="ERROR")
         row.label(text=f"{item.icon_zoom:.2f}x")
 
 
@@ -11846,7 +11866,10 @@ class RR_OT_export_queue(bpy.types.Operator):
             return {"CANCELLED"}
 
         settings = context.scene.rr_builder_export_settings
-        if len(settings.export_queue) == 0:
+        migrate_reference_layout_scene(context.scene)
+        if len(settings.export_queue) == 0 and not (
+            export_mode_uses_reference_layout(settings) and include_reference_mesh(context.scene)
+        ):
             self.report({"ERROR"}, "Export queue is empty.")
             return {"CANCELLED"}
         if not self.include_model and not self.include_icon:
@@ -11894,6 +11917,11 @@ class RR_OT_export_queue(bpy.types.Operator):
                 failed.append(
                     f"{object_manager_display_name(root)}: no exportable mesh variants or assembly members"
                 )
+            if use_reference_layout and not include_reference_mesh(context.scene):
+                if root == reference:
+                    # Keep an explicitly queued Core available for a later batch.
+                    continue
+                expanded = [candidate for candidate in expanded if candidate != reference]
             source_names_by_index[index] = {candidate.name for candidate in expanded}
             for candidate in expanded:
                 stable_id = ensure_export_identity(candidate)[0]
@@ -11912,10 +11940,10 @@ class RR_OT_export_queue(bpy.types.Operator):
 
         if use_reference_layout and include_reference_mesh(context.scene):
             reference_roots = expand_related_export_roots([reference])
-            if not reference_roots:
+            if not get_asset_meshes(reference):
                 self.report(
                     {"ERROR"},
-                    "Include Reference Mesh is enabled, but the Reference has no exportable mesh.",
+                    "Export Core Object is enabled, but the Core has no exportable mesh.",
                 )
                 return {"CANCELLED"}
             for candidate in reference_roots:
@@ -11933,8 +11961,18 @@ class RR_OT_export_queue(bpy.types.Operator):
                 seen_export_roots.add(root_key)
                 seen_export_root_objects[root_key] = candidate
 
+        if not roots and not failed:
+            self.report({"INFO"}, "Core is excluded from this batch. Add other objects or enable Export Core Object.")
+            return {"CANCELLED"}
+
+        if use_reference_layout and not include_reference_mesh(context.scene):
+            try:
+                validate_core_exclusion(roots, reference)
+            except RuntimeError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+
         exported = []
-        skipped = []
         successful_root_names = set()
         icon_render_cache = {}
         try:
@@ -11963,7 +12001,7 @@ class RR_OT_export_queue(bpy.types.Operator):
                     if item is not None and index >= 0:
                         settings.queue_active_index = index
                     prepare_framing_for_root(root, settings, item)
-                    asset_id, asset_type, status = export_builder_asset(
+                    asset_id, asset_type, _status = export_builder_asset(
                         root,
                         export_settings,
                         self.include_model,
@@ -11973,10 +12011,7 @@ class RR_OT_export_queue(bpy.types.Operator):
                         icon_render_cache=icon_render_cache,
                     )
                     successful_root_names.add(root.name)
-                    if status == "skipped":
-                        skipped.append(f"{asset_id} ({asset_type})")
-                    else:
-                        exported.append(f"{asset_id} ({asset_type})")
+                    exported.append(f"{asset_id} ({asset_type})")
                 except Exception as exc:
                     failed.append(f"{root.name}: {exc}")
         finally:
@@ -12028,10 +12063,10 @@ class RR_OT_export_queue(bpy.types.Operator):
         cleared_count = len(exported_indices)
         elapsed = time.perf_counter() - export_started
         if failed:
-            self.report({"WARNING"}, f"Exported {len(exported)}, skipped {len(skipped)}, cleared {cleared_count}; {len(failed)} failed items remain ({elapsed:.1f}s). See console.")
-            return {"CANCELLED" if not exported and not skipped else "FINISHED"}
+            self.report({"WARNING"}, f"Exported {len(exported)}, cleared {cleared_count}; {len(failed)} failed items remain ({elapsed:.1f}s). See console.")
+            return {"CANCELLED" if not exported else "FINISHED"}
 
-        self.report({"INFO"}, f"Exported {len(exported)}, skipped {len(skipped)}, cleared {cleared_count} queued assets in {elapsed:.1f}s.")
+        self.report({"INFO"}, f"Exported {len(exported)}, cleared {cleared_count} queued assets in {elapsed:.1f}s.")
         return {"FINISHED"}
 
 
@@ -12493,7 +12528,7 @@ class RR_OT_create_bounding_box_collider(bpy.types.Operator):
         collider.select_set(True)
         context.view_layer.objects.active = collider
 
-        self.report({"INFO"}, f"Created '{collider.name}' for {root.name}. Re-export Model with Skip Existing Models off.")
+        self.report({"INFO"}, f"Created '{collider.name}' for {root.name}. Export Model to update the package.")
         return {"FINISHED"}
 
 
@@ -12509,7 +12544,7 @@ class RR_OT_use_selected_as_collider(bpy.types.Operator):
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Linked '{collider.name}' to {owner.name}. Re-export Model with Skip Existing Models off.")
+        self.report({"INFO"}, f"Linked '{collider.name}' to {owner.name}. Export Model to update the package.")
         return {"FINISHED"}
 
 
@@ -13886,10 +13921,34 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             warning_row = queue_box.row()
             warning_row.alert = True
             warning_row.label(text="Standard needs a separate output folder", icon="ERROR")
+        draw_reference_layout_controls(
+            queue_box, context, context.scene.rr_builder_reference_layout,
+        )
         row = queue_box.row(align=True)
         row.operator("rr_builder.queue_selected", text="Add Selection to Queue", icon="ADD")
+        active = context.view_layer.objects.active
+        selected = context.selected_objects
+        candidate = active if active in selected else next(iter(selected), None)
+        reference = get_reference_object(context.scene)
+        has_core = reference_layout_is_active(context.scene)
+        mark_row = row.row(align=True)
+        mark_row.enabled = candidate is not None or has_core
+        mark = mark_row.operator(
+            "rr_builder.toggle_core", text="", icon="SOLO_ON" if has_core else "SOLO_OFF",
+            depress=has_core, emboss=False,
+        )
+        mark_target = candidate if candidate is not None else reference if has_core else None
+        if mark_target is not None:
+            mark.object_name = mark_target.name
         row.operator("rr_builder.remove_queue_item", text="", icon="REMOVE")
         row.operator("rr_builder.clear_queue", text="", icon="TRASH")
+        if has_core and not any(
+            queue_item_object(item) == reference for item in settings.export_queue
+        ):
+            pinned = queue_box.row(align=True)
+            star = pinned.operator("rr_builder.toggle_core", text="", icon="SOLO_ON", depress=True, emboss=False)
+            star.object_name = reference.name
+            pinned.label(text=object_manager_display_name(reference))
         queue_box.template_list(
             "RR_UL_export_queue_items",
             "",
@@ -13902,33 +13961,11 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         export_queue = queue_box.operator("rr_builder.export_queue", text="Export", icon="EXPORT")
         export_queue.include_model = settings.include_model_with_export
         export_queue.include_icon = settings.include_icon_with_export
-        reference_box = queue_box.box()
-        reference_panel = self.draw_fold_panel(
-            reference_box, settings, "export_reference_expanded", "Reference", use_native_panel=False,
-        )
-        if reference_panel is not None:
-            reference_row = reference_panel.row(align=True)
-            reference_row.prop(settings, "use_reference_layout", text="Use Layout")
-            if settings.use_reference_layout:
-                reference = get_reference_object(context.scene)
-                if reference is None:
-                    reference_row.operator("rr_builder.mark_reference", text="", icon="PINNED")
-                else:
-                    reference_row.operator("rr_builder.clear_reference", text="", icon="X")
-                reference_panel.prop(
-                    getattr(context.scene, "rr_builder_reference_layout", None),
-                    "include_reference_mesh",
-                    text="Include Mesh",
-                )
         resource_row = queue_box.row(align=True)
         resource_row.prop(settings, "include_model_with_export", text="Model")
         resource_row.prop(settings, "include_icon_with_export", text="Icon")
-        resource_row.prop(settings, "skip_existing_exports", text="Skip")
         queue_box.operator("rr_builder.create_bounding_box_collider", text="Create Box Collider", icon="MESH_CUBE")
         queue_box.operator("rr_builder.use_selected_as_collider", text="Use Selected as Collider", icon="LINKED")
-        if settings.skip_existing_exports:
-            queue_box.label(text="Changed mesh or collider?", icon="INFO")
-            queue_box.label(text="Turn off Skip Existing Models.")
         self.draw_export_output_row(queue_box, settings)
 
     def draw_object_manager_tree_row(self, layout, obj, selected_objects, depth, active_group_root, label_suffix=""):
@@ -14426,6 +14463,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
 
 def export_objects(mesh_objects, settings, context, source_label, export_model, include_icon):
     sync_object_manager_names()
+    migrate_reference_layout_scene(context.scene)
     export_started = time.perf_counter()
     try:
         validate_standard_output_route(settings)
@@ -14433,9 +14471,14 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
     except Exception as exc:
         show_builder_popup(context, str(exc), title="RR Helper", icon="ERROR")
         return {"CANCELLED"}
-    mesh_objects = expand_related_export_roots(mesh_objects)
+    try:
+        mesh_objects = core_roots_for_export_batch(
+            expand_related_export_roots(mesh_objects), settings, context.scene,
+        )
+    except Exception as exc:
+        show_builder_popup(context, str(exc), title="RR Helper", icon="ERROR")
+        return {"CANCELLED"}
     exported = []
-    skipped = []
     failed = []
     successful_root_names = set()
     icon_render_cache = {}
@@ -14459,7 +14502,7 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
                 if transaction is not None and transaction.get("settings") is None:
                     continue
                 export_settings = transaction["settings"] if transaction is not None else settings
-                asset_id, asset_type, status = export_builder_asset(
+                asset_id, asset_type, _status = export_builder_asset(
                     obj,
                     export_settings,
                     export_model,
@@ -14469,10 +14512,7 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
                     icon_render_cache=icon_render_cache,
                 )
                 successful_root_names.add(obj.name)
-                if status == "skipped":
-                    skipped.append(f"{asset_id} ({asset_type})")
-                else:
-                    exported.append(f"{asset_id} ({asset_type})")
+                exported.append(f"{asset_id} ({asset_type})")
             except Exception as exc:
                 failed.append(f"{obj.name}: {exc}")
     finally:
@@ -14503,10 +14543,10 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
 
     elapsed = time.perf_counter() - export_started
     if failed:
-        message = f"Exported {len(exported)}, skipped {len(skipped)} from {source_label}; failed {len(failed)} ({elapsed:.1f}s). See console."
+        message = f"Exported {len(exported)} from {source_label}; failed {len(failed)} ({elapsed:.1f}s). See console."
         for item in failed:
             print("[RandomRealm Builder Exporter]", item)
-        if exported or skipped:
+        if exported:
             context.window_manager.popup_menu(
                 lambda self, _context: self.layout.label(text=message),
                 title="RR Helper",
@@ -14521,7 +14561,7 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
     else:
         resource_text = "icon only"
     context.window_manager.popup_menu(
-        lambda self, _context: self.layout.label(text=f"Exported {len(exported)}, skipped {len(skipped)} {source_label} assets ({resource_text}) in {elapsed:.1f}s."),
+        lambda self, _context: self.layout.label(text=f"Exported {len(exported)} {source_label} assets ({resource_text}) in {elapsed:.1f}s."),
         title="RR Helper",
         icon="INFO",
     )
@@ -14700,6 +14740,7 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
                         obj,
                         enabled=export_mode_uses_reference_layout(settings),
                     ),
+                    model_contract_manifest=existing_manifest if model_file else None,
                 )
                 if group_root is None:
                     ordinary_manifest_paths.append(manifest_path)
@@ -14843,6 +14884,7 @@ CLASSES = (
     RR_OT_clear_layout_snapshot,
     RR_OT_mark_reference,
     RR_OT_clear_reference,
+    RR_OT_toggle_core,
     RR_OT_step_icon_size,
     RR_OT_step_pbr_bake_size,
     RR_OT_toggle_pbr_bake_material,
@@ -14878,6 +14920,7 @@ CLASSES = (
 
 
 RR_STARTUP_DEFERRED_TIMERS = (
+    (migrate_reference_layout_usage_on_load, 0.1),
     (repair_rr_normal_map_nodes_deferred, 0.2),
     (apply_icon_render_resolution_deferred, 0.1),
     (reset_pbr_bake_runtime_state_deferred, 0.1),

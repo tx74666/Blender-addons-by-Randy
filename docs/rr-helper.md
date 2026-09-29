@@ -1,4 +1,8 @@
-# RR Helper 0.2.5
+# RR Helper
+
+当前导出使用 `Model` / `Icon` 两个开关：勾选 Model 就重新生成模型，勾选 Icon 就生成图标；只导图标时取消 Model。旧场景的 Skip 值不再跳过模型。Icon-only 保留旧 FBX 绑定的来源和 Surface Text 数据，详见 [0.2.24 更新记录](releases/RRHelper_0.2.24_model_icon_20260929.md)。
+
+Core 星标与自动相对布局见 [0.2.20 更新记录](releases/RRHelper_0.2.20_core_object_20260929.md)：`Export Core Object` 只控制本批是否导出 Core 本身。保留 0.2.22 的无边框图标和 0.2.23 的顶部 Core 存在状态。下面保留仓库迁入时的 0.2.5 背景说明。
 
 插件显示名为 **RR Helper**，Python 模块名为 `random_realm_builder_exporter`，
 界面位于 N 侧栏的 **RandomRealm** 标签。

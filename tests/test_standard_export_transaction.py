@@ -1,6 +1,7 @@
 """Small filesystem/fault-injection checks; no Blender process is launched."""
 
 import ast
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import patch
 
 
@@ -334,6 +336,351 @@ class ExporterBoundaryTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 write_snapshot(object(), str(snapshot))
             self.assertEqual([], list(root.glob(".surface_text_source_*")))
+
+
+class VariantPublicationMetadataTests(unittest.TestCase):
+    """Exercise real directory publication; lease/membership services are isolated."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.output = self.root / "output"
+        self.staging = self.root / "staged"
+        self.members = [SimpleNamespace(name="Door_A"), SimpleNamespace(name="Door_B")]
+        self.queued = []
+        for member in self.members:
+            package = self.output / member.name
+            package.mkdir(parents=True)
+            (package / "model.fbx").write_bytes(b"old model")
+            (package / "surface_text_source.rrblend").write_bytes(b"old snapshot")
+            (package / "textures").mkdir()
+            (package / "textures" / "base.png").write_bytes(b"old texture")
+            (package / "textures" / "removed.png").write_bytes(b"removed texture")
+            for relative in ("model.fbx", "surface_text_source.rrblend", "textures", "textures/base.png", "textures/removed.png"):
+                (package / (relative + ".meta")).write_text(f"guid: {member.name}/{relative}\n")
+            (self.output / (member.name + ".meta")).write_text(f"guid: {member.name}\n")
+            manifest = {
+                "id": member.name, "stableId": "stable-" + member.name,
+                "sourceBlend": str(package / "surface_text_source.rrblend"),
+                "modelFile": "model.fbx", "surfaceText": [{"text": "Old Text"}],
+            }
+            (package / "manifest.json").write_text(json.dumps(manifest))
+            staged = self.staging / member.name
+            shutil.copytree(package, staged)
+            shutil.rmtree(staged / "textures")
+            (staged / "textures").mkdir()
+            (staged / "textures" / "base.png").write_bytes(b"fresh texture")
+            # Simulate regenerated resource trees without their Unity sidecars.
+            for sidecar in staged.rglob("*.meta"):
+                sidecar.unlink()
+        self.original = tree_bytes(self.output)
+
+        def verify(root, members, expected_revision=None):
+            paths = [str(Path(root) / member.name / "manifest.json") for member in members]
+            self.assertTrue(all(Path(path).is_file() for path in paths))
+            return paths, "revision-1", "DoorVariants"
+
+        namespace = {
+            "os": os, "shutil": shutil, "tempfile": tempfile,
+            "verify_variant_membership_package": verify,
+            "export_asset_id": lambda member: member.name,
+            "create_variant_publish_claim": lambda *args: ("claim-path", "writer-lease"),
+            "remove_variant_publish_claim": lambda *args: None,
+            "remove_export_path": shutil.rmtree,
+            "rr_standard_export_transaction": transaction,
+            "queue_unity_builder_import": lambda paths: self.queued.extend(paths),
+        }
+        tree = ast.parse((ADDON / "__init__.py").read_text(encoding="utf-8-sig"))
+        node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "publish_staged_variant_group")
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(ADDON / "__init__.py"), "exec"), namespace)
+        self.publish = namespace["publish_staged_variant_group"]
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def make_fresh_snapshot(self, member):
+        package = self.staging / member.name
+        (package / "model.fbx").write_bytes(b"fresh model")
+        snapshot = package / "surface_text_source.rrblend"
+        snapshot.write_bytes(b"fresh snapshot")
+        path = package / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest.update(sourceBlend=str(snapshot), surfaceText=[{"text": "Fresh Text"}])
+        path.write_text(json.dumps(manifest))
+
+    def test_shared_metadata_helper_preserves_existing_source_binding_and_surviving_guids(self):
+        member = self.members[0]
+        staged = self.staging / member.name
+        previous = self.output / member.name
+        original_manifest = (staged / "manifest.json").read_bytes()
+        transaction.prepare_published_metadata(str(staged), str(previous))
+        self.assertEqual(original_manifest, (staged / "manifest.json").read_bytes())
+        self.assertEqual(b"old snapshot", (staged / "surface_text_source.rrblend").read_bytes())
+        for relative in ("model.fbx.meta", "surface_text_source.rrblend.meta", "textures.meta", "textures/base.png.meta"):
+            self.assertEqual((previous / relative).read_bytes(), (staged / relative).read_bytes(), relative)
+        self.assertFalse((staged / "textures" / "removed.png.meta").exists())
+
+    def test_variant_publication_rebases_fresh_snapshot_preserves_cached_binding_and_guids(self):
+        self.make_fresh_snapshot(self.members[0])
+        manifests, revision = self.publish(str(self.staging), str(self.output), self.members)
+        self.assertEqual("revision-1", revision)
+        self.assertEqual(manifests, self.queued)
+        self.assertFalse(self.staging.exists())
+        for index, member in enumerate(self.members):
+            with self.subTest(member=member.name):
+                package = self.output / member.name
+                manifest = json.loads((package / "manifest.json").read_text())
+                self.assertEqual(str(package / "surface_text_source.rrblend"), manifest["sourceBlend"])
+                self.assertEqual("stable-" + member.name, manifest["stableId"])
+                self.assertEqual(b"fresh snapshot" if index == 0 else b"old snapshot", Path(manifest["sourceBlend"]).read_bytes())
+                self.assertEqual(b"fresh model" if index == 0 else b"old model", (package / "model.fbx").read_bytes())
+                for relative, contents in self.original.items():
+                    if relative.endswith(".meta") and "removed.png" not in relative:
+                        self.assertEqual(contents, (self.output / relative).read_bytes(), relative)
+                self.assertFalse((package / "textures" / "removed.png.meta").exists())
+
+    def test_missing_second_variant_snapshot_rolls_back_all_published_members(self):
+        for member in self.members:
+            self.make_fresh_snapshot(member)
+        (self.staging / self.members[1].name / "surface_text_source.rrblend").unlink()
+        with self.assertRaisesRegex(RuntimeError, "snapshot is missing"):
+            self.publish(str(self.staging), str(self.output), self.members)
+        self.assertEqual(self.original, tree_bytes(self.output))
+        self.assertEqual([], self.queued)
+        self.assertFalse(self.staging.exists())
+
+
+class ModelIconContractTests(unittest.TestCase):
+    """Exercise real export/manifest branches against temporary package files."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temporary.name)
+        self.package = self.directory / "Door"
+        self.package.mkdir()
+        self.model = self.package / "model.fbx"
+        self.snapshot = self.package / "surface_text_source.rrblend"
+        self.manifest_path = self.package / "manifest.json"
+        self.model.write_bytes(b"verified cached model")
+        self.snapshot.write_bytes(b"snapshot for cached model")
+        (self.package / "icon.png").write_bytes(b"old icon")
+        (self.package / "model.fbx.meta").write_text("guid: existing-model-guid\n")
+        self.old_surface = [{
+            "text": "Tasks", "editableVersion": 1,
+            "samplingSurfaceExportObjectName": "OldSample",
+            "frameObjectNames": ["O", "X", "Y", "Z"],
+        }, {"text": "Intro", "editableVersion": 1, "exportObjectName": "OldIntro"}]
+        self.new_surface = [{
+            "text": "Changed", "editableVersion": 0,
+            "exportObjectName": "NewText",
+        }]
+        self.current_layout = {"role": "member", "relativeAuthoringMatrix": ["new relative placement"]}
+        self.old = {
+            "id": "Door", "stableId": "stable-door", "previousIds": ["Door_Old"],
+            "sourceObject": "Old FBX Node", "sourceBlend": str(self.snapshot),
+            "surfaceText": self.old_surface, "modelFile": "model.fbx", "iconFile": "icon.png",
+            "exportedResources": ["icon"],
+            "bounds": {"center": [1, 2, 3], "size": [4, 5, 6]},
+            "uvExport": {"modelSha256": hashlib.sha256(self.model.read_bytes()).hexdigest()},
+            "materialMaps": [{"material": "Lit"}], "warnings": [],
+            "referenceLayout": {"role": "member", "relativeAuthoringMatrix": ["old placement"]},
+        }
+        self.write_old()
+        self.surface_calls = []
+        self.model_exports = []
+        self.import_requests = []
+        self.root = SimpleNamespace(name="Renamed Authoring Node")
+        self.settings = SimpleNamespace(
+            output_root=str(self.directory), export_mode="GENERAL", profile_name="Default",
+            include_model_with_export=True, include_icon_with_export=False, skip_existing_exports=True,
+        )
+
+        def current_surface(root):
+            self.surface_calls.append(root.name)
+            return self.new_surface
+
+        def export_fbx(root, path):
+            self.model_exports.append(root.name)
+            Path(path).write_bytes(b"fresh model")
+            return []
+
+        def write_snapshot(root, path):
+            Path(path).write_bytes(b"fresh snapshot")
+            return path
+
+        self.namespace = {
+            "os": os, "json": json, "uuid": uuid, "datetime": datetime, "timezone": timezone,
+            "bpy": SimpleNamespace(data=SimpleNamespace(filepath="current-authoring.blend")),
+            "validate_export_identity": lambda root: None,
+            "ensure_export_identity": lambda root, asset_id: ("stable-door", ["Door_Old"]),
+            "build_surface_text_manifest": current_surface,
+            "mesh_world_bounds": lambda root: (
+                SimpleNamespace(x=8, y=9, z=10), SimpleNamespace(x=11, y=12, z=13)),
+            "build_reference_layout_for_export": lambda *args, **kwargs: self.current_layout,
+            "export_mode_uses_reference_layout": lambda settings: True,
+            "export_asset_id": lambda root: "Door", "infer_export_asset_type": lambda *args: "Prop",
+            "infer_asset_category": lambda *args: "Props", "build_group_manifest": lambda *args, **kwargs: None,
+            "shared_builder_icon_root": lambda root: root,
+            "build_material_surface_contracts": lambda root: {"Lit": {}},
+            # Existing complete packages must still rebake whenever Model is requested.
+            "output_has_requested_resources": lambda *args, **kwargs: True,
+            "current_uv_export_contract": lambda path: {
+                "modelSha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()},
+            "export_fbx": export_fbx, "write_surface_text_source_snapshot": write_snapshot,
+            "build_material_map_manifest": lambda *args: ([{"material": "FreshLit"}], []),
+            "object_manager_variant_group_root": lambda root: None,
+            "render_or_copy_shared_icon": lambda root, settings, path, **kwargs: Path(path).write_bytes(b"fresh icon"),
+            "queue_unity_builder_import": lambda paths: self.import_requests.extend(paths),
+            "EXPORT_MODE_BUILDING": "BUILDING", "EXPORT_MODE_GENERAL": "GENERAL",
+        }
+        tree = ast.parse((ADDON / "__init__.py").read_text(encoding="utf-8-sig"))
+        names = {
+            "write_manifest", "read_existing_manifest", "_export_builder_asset_contents",
+            "render_icon_objects", "existing_uv_export_contract", "export_mode_is_standard",
+        }
+        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual(names, {node.name for node in functions})
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(ADDON / "__init__.py"), "exec"), self.namespace)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def write_old(self):
+        self.manifest_path.write_text(json.dumps(self.old), encoding="utf-8")
+
+    def run_contents(self, model=None, icon=None):
+        result = self.namespace["_export_builder_asset_contents"](
+            self.root, self.settings, export_model=model, include_icon=icon,
+            retire_legacy_alias=False)
+        return result, json.loads(self.manifest_path.read_text(encoding="utf-8"))
+
+    def assert_identity_preserved(self, manifest):
+        for field in ("id", "stableId", "previousIds"):
+            self.assertEqual(self.old[field], manifest[field], field)
+        self.assertEqual("guid: existing-model-guid\n", (self.package / "model.fbx.meta").read_text())
+
+    def assert_cached_contract(self, manifest):
+        for field in ("sourceObject", "sourceBlend", "surfaceText", "bounds", "uvExport", "materialMaps"):
+            if field in self.old:
+                self.assertEqual(self.old[field], manifest[field], field)
+            else:
+                self.assertNotIn(field, manifest)
+        self.assert_identity_preserved(manifest)
+        self.assertEqual(self.current_layout, manifest["referenceLayout"])
+        self.assertEqual(b"verified cached model", self.model.read_bytes())
+        self.assertEqual(b"snapshot for cached model", self.snapshot.read_bytes())
+        self.assertEqual([], self.surface_calls)
+        self.assertEqual([], self.model_exports)
+
+    def assert_fresh_model(self, manifest):
+        self.assert_identity_preserved(manifest)
+        self.assertEqual(self.new_surface, manifest["surfaceText"])
+        self.assertEqual(self.root.name, manifest["sourceObject"])
+        self.assertEqual(str(self.snapshot), manifest["sourceBlend"])
+        self.assertEqual(b"fresh model", self.model.read_bytes())
+        self.assertEqual(b"fresh snapshot", self.snapshot.read_bytes())
+        self.assertEqual([{"material": "FreshLit"}], manifest["materialMaps"])
+        self.assertEqual({"center": [8, 9, 10], "size": [11, 12, 13]}, manifest["bounds"])
+        self.assertEqual(hashlib.sha256(b"fresh model").hexdigest(), manifest["uvExport"]["modelSha256"])
+        self.assertEqual(self.current_layout, manifest["referenceLayout"])
+
+    def test_model_request_reexports_despite_legacy_skip_in_both_modes(self):
+        for mode in ("GENERAL", "BUILDING"):
+            with self.subTest(mode=mode):
+                self.settings.export_mode = mode
+                self.write_old()
+                self.model_exports.clear()
+                result, manifest = self.run_contents()
+                self.assertEqual("exported", result[2])
+                self.assertEqual(["model"], manifest["exportedResources"])
+                self.assertEqual([self.root.name], self.model_exports)
+                self.assert_fresh_model(manifest)
+                self.assertEqual(b"old icon", (self.package / "icon.png").read_bytes())
+        self.assertEqual([str(self.manifest_path)], self.import_requests)
+
+    def test_model_request_reexports_when_legacy_skip_property_is_absent(self):
+        del self.settings.skip_existing_exports
+        result, manifest = self.run_contents()
+        self.assertEqual("exported", result[2])
+        self.assertEqual([self.root.name], self.model_exports)
+        self.assert_fresh_model(manifest)
+
+    def test_model_and_icon_refresh_both_resources_despite_legacy_skip(self):
+        self.settings.include_icon_with_export = True
+        _, manifest = self.run_contents()
+        self.assertEqual(["model", "icon"], manifest["exportedResources"])
+        self.assertEqual([self.root.name], self.model_exports)
+        self.assertEqual(b"fresh icon", (self.package / "icon.png").read_bytes())
+        self.assert_fresh_model(manifest)
+
+    def test_icon_only_preserves_model_contract_in_both_modes(self):
+        self.settings.include_model_with_export = False
+        self.settings.include_icon_with_export = True
+        for mode in ("GENERAL", "BUILDING"):
+            with self.subTest(mode=mode):
+                self.settings.export_mode = mode
+                _, manifest = self.run_contents()
+                self.assertEqual(["icon"], manifest["exportedResources"])
+                self.assertEqual(b"fresh icon", (self.package / "icon.png").read_bytes())
+                self.assert_cached_contract(manifest)
+        self.assertEqual([str(self.manifest_path)], self.import_requests)
+
+    def test_icon_only_does_not_invent_missing_model_source_fields(self):
+        for field in ("sourceBlend", "sourceObject", "surfaceText"):
+            self.old.pop(field)
+        self.write_old()
+        _, manifest = self.run_contents(model=False, icon=True)
+        self.assert_cached_contract(manifest)
+
+    def test_icon_only_preserves_explicit_empty_surface_text(self):
+        self.old["surfaceText"] = []
+        self.write_old()
+        _, manifest = self.run_contents(model=False, icon=True)
+        self.assert_cached_contract(manifest)
+
+    def test_second_model_export_rebakes_and_removes_deleted_text_contract(self):
+        self.run_contents()
+        self.new_surface = []
+        _, manifest = self.run_contents()
+        self.assertEqual([self.root.name, self.root.name], self.model_exports)
+        self.assertNotIn("surfaceText", manifest)
+        self.assertEqual("current-authoring.blend", manifest["sourceBlend"])
+        self.assert_identity_preserved(manifest)
+
+    def test_no_resource_request_leaves_existing_package_untouched(self):
+        original = tree_bytes(self.package)
+        with self.assertRaisesRegex(RuntimeError, "Enable Model, Icon"):
+            self.run_contents(model=False, icon=False)
+        self.assertEqual(original, tree_bytes(self.package))
+        self.assertEqual([], self.model_exports)
+
+    def run_separate_icon_renderer(self):
+        noop = lambda *args, **kwargs: None
+        self.namespace.update({
+            "sync_object_manager_names": noop, "validate_standard_output_route": noop,
+            "validate_reference_layout_settings": noop, "show_builder_popup": noop,
+            "expand_related_export_roots": lambda roots: roots,
+            "prepare_variant_export_transactions": lambda *args: ([], {}, []),
+            "finalize_variant_export_transactions": lambda *args: (set(), []),
+            "queue_item_for_root": lambda *args: None, "load_image_for_preview": noop,
+        })
+        self.namespace["bpy"].ops = SimpleNamespace(object=SimpleNamespace(select_all=noop))
+        context = SimpleNamespace(view_layer=SimpleNamespace(objects=SimpleNamespace(active=None)), selected_objects=[])
+        result = self.namespace["render_icon_objects"]([self.root], self.settings, context, "selected")
+        self.assertEqual({"FINISHED"}, result)
+        return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+
+    def test_separate_icon_renderer_preserves_model_contract(self):
+        manifest = self.run_separate_icon_renderer()
+        self.assertEqual(["icon"], manifest["exportedResources"])
+        self.assertEqual(b"fresh icon", (self.package / "icon.png").read_bytes())
+        self.assert_cached_contract(manifest)
+
+    def test_separate_icon_renderer_does_not_invent_missing_model_source_fields(self):
+        for field in ("sourceBlend", "sourceObject", "surfaceText"):
+            self.old.pop(field)
+        self.write_old()
+        self.assert_cached_contract(self.run_separate_icon_renderer())
 
 
 if __name__ == "__main__":

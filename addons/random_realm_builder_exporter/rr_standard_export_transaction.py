@@ -49,6 +49,17 @@ def _prepare_package(staged_package, previous_package, asset_id):
         if digest.hexdigest() != expected_hash:
             raise RuntimeError("Standard staged model does not match its manifest SHA-256.")
 
+    prepare_published_metadata(staged_package, previous_package, manifest)
+
+
+def prepare_published_metadata(staged_package, previous_package, manifest=None):
+    """Keep snapshot paths and surviving Unity GUIDs valid after directory publication."""
+    staged_package = os.path.abspath(staged_package)
+    previous_package = os.path.abspath(previous_package)
+    manifest_path = os.path.join(staged_package, "manifest.json")
+    if manifest is None:
+        with open(manifest_path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
     source_blend = manifest.get("sourceBlend", "")
     if source_blend:
         source_blend = os.path.abspath(source_blend)
@@ -58,7 +69,7 @@ def _prepare_package(staged_package, previous_package, asset_id):
             is_snapshot = False
         if is_snapshot:
             if not os.path.isfile(source_blend):
-                raise RuntimeError("Standard staged Surface Text snapshot is missing.")
+                raise RuntimeError("Staged Surface Text snapshot is missing.")
             manifest["sourceBlend"] = os.path.join(
                 previous_package, os.path.relpath(source_blend, staged_package)
             )
