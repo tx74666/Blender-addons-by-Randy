@@ -181,6 +181,8 @@ class CoreObjectTests(unittest.TestCase):
         self.assertEqual(block["referenceStableId"], core[rr.REFERENCE_STABLE_ID_PROP])
         self.assertEqual(block["sourceStableId"], obj[rr.EXPORT_STABLE_ID_PROP])
         expected = core.matrix_world.inverted() @ obj.matrix_world
+        expected = rr.unity_reference_layout_matrix(expected)
+        self.assertEqual(block["coordinateSpace"], "UNITY")
         actual = block["relativeAuthoringMatrix"]
         self.assertEqual(len(actual), 16)
         for row in range(4):

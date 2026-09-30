@@ -13,6 +13,7 @@ from mathutils import Matrix
 
 
 REFERENCE_LAYOUT_VERSION = 1
+REFERENCE_LAYOUT_COORDINATE_SPACE = "UNITY"
 CORE_UI_VERSION = 1
 REFERENCE_MARK_PROP = "rr_reference_marked"
 REFERENCE_STABLE_ID_PROP = "rr_reference_stable_id"
@@ -96,6 +97,33 @@ def authoring_relative_matrix(reference, member):
     if not _matrix_is_finite(relative):
         raise ValueError("Reference relative layout contains non-finite values.")
     return relative
+
+
+def unity_reference_layout_matrix(matrix, scene=None):
+    """Match export_fbx's -Z/Y axes, Blender units, and Unity's X reflection.
+
+    FBX_SCALE_NONE bakes Blender's unit conversion into the exported objects.
+    Blender treats a NONE unit system as meters even if scale_length was set.
+    Conjugating the whole matrix preserves rotations as well as translation;
+    converting only its position would break rotated Core layouts.
+    """
+    scene = scene or bpy.context.scene
+    units = scene.unit_settings
+    meters_per_unit = 1.0 if units.system == "NONE" else float(units.scale_length)
+    if not isfinite(meters_per_unit) or meters_per_unit <= 0.0:
+        raise ValueError("Reference layout unit scale must be finite and positive.")
+    if not _matrix_is_finite(matrix):
+        raise ValueError("Reference layout transform contains non-finite values.")
+    basis = Matrix((
+        (-meters_per_unit, 0.0, 0.0, 0.0),
+        (0.0, 0.0, meters_per_unit, 0.0),
+        (0.0, -meters_per_unit, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+    converted = basis @ matrix @ basis.inverted()
+    if not _matrix_is_finite(converted):
+        raise ValueError("Reference layout converted transform contains non-finite values.")
+    return converted
 
 
 def is_reference_object(obj, scene=None):
@@ -226,8 +254,10 @@ def build_reference_layout_for_export(root, scene=None, enabled=True):
     frame_version = reference_frame_version(scene)
     is_root_reference = root == reference
     relative = Matrix.Identity(4) if is_root_reference else authoring_relative_matrix(reference, root)
+    relative = unity_reference_layout_matrix(relative, scene)
     return {
         "version": REFERENCE_LAYOUT_VERSION,
+        "coordinateSpace": REFERENCE_LAYOUT_COORDINATE_SPACE,
         "role": "reference" if is_root_reference else "member",
         "referenceStableId": reference_stable_id,
         "referenceFrameVersion": frame_version,

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 26),
+    "version": (0, 2, 36),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -29,6 +29,7 @@ from mathutils import Matrix, Vector
 try:
     from . import rr_icon_lighting
     from . import rr_image_io
+    from . import rr_material_shader
     from . import rr_standard_export_transaction
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
@@ -60,6 +61,7 @@ try:
 except ImportError:
     import rr_icon_lighting
     import rr_image_io
+    import rr_material_shader
     import rr_standard_export_transaction
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
@@ -10514,6 +10516,36 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         description="Show Export page section toggles",
         default=True,
     )
+    texture_sections_expanded: bpy.props.BoolProperty(
+        name="Sections",
+        description="Show Texture page section toggles",
+        default=True,
+    )
+    show_texture_shader_section: bpy.props.BoolProperty(
+        name="Shader",
+        description="Show Material to Shader controls",
+        default=True,
+    )
+    show_texture_pbr_section: bpy.props.BoolProperty(
+        name="PBR",
+        description="Show PBR Framework controls",
+        default=True,
+    )
+    show_texture_packages_section: bpy.props.BoolProperty(
+        name="Packages",
+        description="Show Texture Packages controls",
+        default=True,
+    )
+    pbr_framework_expanded: bpy.props.BoolProperty(
+        name="PBR Framework",
+        description="Expand PBR target preparation and image saving controls",
+        default=False,
+    )
+    texture_packages_expanded: bpy.props.BoolProperty(
+        name="Texture Packages",
+        description="Expand texture package import controls",
+        default=False,
+    )
     export_active_section: bpy.props.EnumProperty(
         name="Section",
         description="Active Export page section",
@@ -10776,6 +10808,17 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         description="Last manual PBR framework operation",
         default="",
         options={"HIDDEN", "SKIP_SAVE"},
+    )
+    material_shader_expanded: bpy.props.BoolProperty(
+        name="Material → Shader", default=False,
+        description="Import simple Surface nodes directly or reuse complex shaders as groups",
+    )
+    material_shader_search: bpy.props.StringProperty(
+        name="Search", default="", options={"SKIP_SAVE", "TEXTEDIT_UPDATE"},
+        description="Filter materials in the current file by name",
+    )
+    material_shader_source_index: bpy.props.IntProperty(
+        name="Source Material", default=-1, min=-1, options={"SKIP_SAVE"},
     )
     object_manager_auto_select_assembly: bpy.props.BoolProperty(
         name="Auto Select",
@@ -11603,6 +11646,136 @@ def export_object_type_icon(obj):
         "FONT": "OUTLINER_OB_FONT",
         "CURVE": "OUTLINER_OB_CURVE",
     }.get(obj.type, "OBJECT_DATA")
+
+
+def selected_material_shader_source(context):
+    settings = context.scene.rr_builder_export_settings
+    index = settings.material_shader_source_index
+    if index < 0 or index >= len(bpy.data.materials):
+        return None
+    material = bpy.data.materials[index]
+    query = settings.material_shader_search.strip().casefold()
+    return material if query in material.name.casefold() else None
+
+
+def matching_material_shader_sources(settings):
+    query = settings.material_shader_search.strip().casefold()
+    if not query:
+        return []
+    return [(index, material) for index, material in enumerate(bpy.data.materials)
+            if query in material.name.casefold()]
+
+
+def draw_material_shader_source(layout, settings, index, material):
+    row = layout.row(align=True)
+    existing = rr_material_shader.generated_shader_group(material)
+    reusable = existing is not None and not rr_material_shader.validate_reusable_shader_group(existing)
+    row.enabled = reusable or not bool(rr_material_shader.validate_material_surface(material))
+    op = row.operator(
+        "rr_builder.select_material_shader_source", text=material.name,
+        icon="CHECKMARK" if existing is not None else "MATERIAL",
+        depress=settings.material_shader_source_index == index,
+    )
+    op.source_name = material.name
+    op.source_library = material.library.filepath if material.library else ""
+
+
+class RR_OT_select_material_shader_source(bpy.types.Operator):
+    bl_idname = "rr_builder.select_material_shader_source"
+    bl_label = "Select Material"
+    bl_description = "Choose this source material without importing it"
+    bl_options = {"INTERNAL"}
+
+    source_name: bpy.props.StringProperty(options={"HIDDEN"})
+    source_library: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        for index, material in enumerate(bpy.data.materials):
+            if (material.name == self.source_name
+                    and (material.library.filepath if material.library else "") == self.source_library):
+                context.scene.rr_builder_export_settings.material_shader_source_index = index
+                return {"FINISHED"}
+        return {"CANCELLED"}
+
+
+class RR_OT_import_material_shader(bpy.types.Operator):
+    bl_idname = "rr_builder.import_material_shader"
+    bl_label = "Material → Shader"
+    bl_description = "Copy simple Surface nodes directly; create or reuse a group for complex shaders. Leave the imported output unconnected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    action: bpy.props.EnumProperty(
+        items=(("IMPORT", "Import Shader", "Insert native nodes for a simple shader, or create/reuse a group for a complex shader"),
+               ("EXISTING", "Use Existing", "Import Shader (legacy action; simple nodes are copied directly)"),
+               ("REFRESH", "Refresh", "Update the existing group for all its users")),
+        default="IMPORT", options={"HIDDEN"},
+    )
+    source_name: bpy.props.StringProperty(options={"HIDDEN"})
+    source_library: bpy.props.StringProperty(options={"HIDDEN"})
+    target_name: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def _source(self):
+        return next((material for material in bpy.data.materials
+                     if material.name == self.source_name
+                     and (material.library.filepath if material.library else "") == self.source_library), None)
+
+    def invoke(self, context, event):
+        source = selected_material_shader_source(context)
+        if source is None:
+            self.report({"WARNING"}, "Select a source material.")
+            return {"CANCELLED"}
+        target = rr_material_shader.get_current_shader_material(context)
+        if self.action != "REFRESH" and target is None:
+            self.report({"WARNING"}, "Open one material at the root of the Shader Editor.")
+            return {"CANCELLED"}
+        self.source_name = source.name
+        self.source_library = source.library.filepath if source.library else ""
+        self.target_name = target.name if target else ""
+        if self.action == "REFRESH":
+            return context.window_manager.invoke_props_dialog(self, width=380)
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text=f"Source: {self.source_name}", icon="MATERIAL")
+        if self.action == "REFRESH":
+            layout.label(text="Refresh the existing shader group?")
+            layout.label(text="All materials using this group will update.")
+        else:
+            layout.label(text=f"Target: {self.target_name}", icon="NODE_MATERIAL")
+            source = self._source()
+            target = rr_material_shader.get_current_shader_material(context)
+            if source is not None and source == target:
+                layout.label(text="Source is the target; its nodes will stay unchanged.")
+                layout.label(text="No node will be inserted into the source material.")
+            else:
+                layout.label(text="Import this Surface shader without connecting its output?")
+
+    def execute(self, context):
+        source = self._source()
+        if source is None:
+            self.report({"WARNING"}, "The source material is no longer available.")
+            return {"CANCELLED"}
+        try:
+            if self.action == "REFRESH":
+                group = rr_material_shader.generated_shader_group(source)
+                if group is None:
+                    raise ValueError("No existing shader group to refresh.")
+                rr_material_shader.refresh_material_shader_group(source, group)
+                self.report({"INFO"}, f"Refreshed {group.name}; existing references preserved.")
+            else:
+                target = rr_material_shader.get_current_shader_material(context)
+                if target is None or target.name != self.target_name:
+                    raise ValueError("The Shader Editor target changed; select the material and try again.")
+                group, node, status = rr_material_shader.import_material_shader(source, target)
+                detail = "Group ready; source material unchanged." if node is None else f"Inserted into {target.name}; not connected."
+                self.report({"INFO"}, f"{group.name if group is not None else source.name}: {detail}")
+        except Exception as exc:
+            self.report({"WARNING"}, str(exc))
+            return {"CANCELLED"}
+        for area in context.screen.areas if context.screen else ():
+            area.tag_redraw()
+        return {"FINISHED"}
 
 
 class RR_UL_export_queue_items(bpy.types.UIList):
@@ -13628,7 +13801,7 @@ class RR_OT_bake_selected_pbr(bpy.types.Operator):
 class RR_OT_apply_modeling_origin_point(bpy.types.Operator):
     bl_idname = "rr_builder.apply_modeling_origin_point"
     bl_label = "Apply Origin"
-    bl_description = "Move mesh or curve origins to selected elements, or mesh origins to automatic points, without moving visible geometry"
+    bl_description = "Select Empty objects, then a target object last to use its origin; select only Empties to use the 3D Cursor. Parts stay in place. In Edit Mode, use selected mesh elements or curve points"
     bl_options = {"REGISTER", "UNDO"}
 
     mode: bpy.props.EnumProperty(
@@ -13848,8 +14021,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             if active_page == "EXPORTER":
                 self.draw_exporter_page(layout, context, settings)
             elif active_page == "BAKE":
-                self.draw_bake_page(layout, context, settings)
-                self.draw_texture_page(layout)
+                self.draw_texture_sections(layout, context, settings)
             elif active_page == "MODELING":
                 self.draw_modeling_page(layout, context, settings)
             elif active_page == "LAYOUT":
@@ -14238,9 +14410,76 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         else:
             layout_box.label(text="No layout saved")
 
-    def draw_texture_page(self, layout):
-        texture_box = layout.box()
-        texture_box.label(text="Texture Packages")
+    def draw_material_shader_page(self, layout, context, settings):
+        box = layout.box()
+        body = self.draw_fold_panel(
+            box, settings, "material_shader_expanded", "Material → Shader", use_native_panel=False,
+        )
+        if body is None:
+            return
+        body.prop(settings, "material_shader_search", text="Search", icon="VIEWZOOM")
+        query = settings.material_shader_search.strip()
+        if query:
+            matches = matching_material_shader_sources(settings)
+            results = body.column(align=True)
+            for index, material in matches:
+                draw_material_shader_source(results, settings, index, material)
+            if not matches:
+                body.label(text="No matching materials.", icon="INFO")
+        source = selected_material_shader_source(context)
+        if source is None:
+            if not bpy.data.materials:
+                body.label(text="No materials in this file.", icon="INFO")
+            row = body.row()
+            row.enabled = False
+            row.operator("rr_builder.import_material_shader", text="Import Shader", icon="NODETREE")
+            return
+        target = rr_material_shader.get_current_shader_material(context)
+        error = rr_material_shader.validate_material_surface(source)
+        existing = rr_material_shader.generated_shader_group(source)
+        simple = rr_material_shader.is_simple_material_surface(source)
+        if not query:
+            body.label(text=source.name, icon="CHECKMARK" if existing is not None else "MATERIAL")
+        reuse_error = rr_material_shader.validate_reusable_shader_group(existing) if existing is not None else ""
+        if error:
+            body.label(text=error, icon="INFO")
+        if reuse_error and not simple:
+            body.label(text=reuse_error, icon="INFO")
+        if target is None:
+            body.label(text="Open one material in the Shader Editor.", icon="INFO")
+        actions = body.row(align=True)
+        insert = actions.row(align=True)
+        insert.enabled = not (reuse_error if existing is not None and not simple else error) and target is not None
+        op = insert.operator(
+            "rr_builder.import_material_shader", text="Import Shader", icon="NODETREE",
+        )
+        op.action = "IMPORT"
+        if existing is not None:
+            refresh = actions.row(align=True)
+            refresh.enabled = not error and existing.is_editable
+            refresh.operator("rr_builder.import_material_shader", text="Refresh", icon="FILE_REFRESH").action = "REFRESH"
+
+    def draw_texture_sections(self, layout, context, settings):
+        panel = self.draw_fold_panel(layout, settings, "texture_sections_expanded", "Sections")
+        if panel is not None:
+            row = panel.row(align=True)
+            self.draw_export_section_toggle(row, settings, "show_texture_shader_section", "Shader")
+            self.draw_export_section_toggle(row, settings, "show_texture_pbr_section", "PBR")
+            self.draw_export_section_toggle(row, settings, "show_texture_packages_section", "Packages")
+
+        if settings.show_texture_shader_section:
+            self.draw_material_shader_page(layout, context, settings)
+        if settings.show_texture_pbr_section:
+            self.draw_bake_page(layout, context, settings)
+        if settings.show_texture_packages_section:
+            self.draw_texture_page(layout, settings)
+
+    def draw_texture_page(self, layout, settings):
+        texture_box = self.draw_fold_panel(
+            layout.box(), settings, "texture_packages_expanded", "Texture Packages", use_native_panel=False,
+        )
+        if texture_box is None:
+            return
         texture_box.operator(
             "rr_builder.apply_latest_texture_packages",
             text="Apply Latest Packages",
@@ -14256,8 +14495,11 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         bake_status = "" if stale_bake_runtime else (settings.pbr_bake_status or "")
         bake_progress = 0.0 if stale_bake_runtime else float(settings.pbr_bake_progress)
 
-        bake_box = layout.box()
-        bake_box.label(text="PBR Framework")
+        bake_box = self.draw_fold_panel(
+            layout.box(), settings, "pbr_framework_expanded", "PBR Framework", use_native_panel=False,
+        )
+        if bake_box is None:
+            return
         row = bake_box.row(align=True)
         down = row.operator("rr_builder.step_pbr_bake_size", text="", icon="TRIA_LEFT")
         down.direction = -1
@@ -14272,6 +14514,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             settings,
             "pbr_framework_materials_expanded",
             f"Materials ({len(materials)}/{len(available_materials)})",
+            use_native_panel=False,
         )
         if material_box is not None:
             if available_materials:
@@ -14326,7 +14569,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         selection_label = modeling_origin_selection_label(context)
 
         selection_row = origin_box.row(align=True)
-        selection_row.enabled = bool(selection_label)
+        selection_row.enabled = bool(selection_label or modeling_empty_origin_selection(context)[0])
         selection_op = selection_row.operator(
             "rr_builder.apply_modeling_origin_point",
             text="Apply to Selection",
@@ -14349,7 +14592,6 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             bottom_op = bottom_row.operator(
                 "rr_builder.apply_modeling_origin_point",
                 text="Bottom",
-                icon="TRIA_DOWN",
             )
             bottom_op.mode = "BOTTOM"
 
@@ -14908,6 +15150,8 @@ CLASSES = (
     RRBuilderReferenceLayoutSettings,
     RR_UL_export_queue_items,
     RR_UL_reference_items,
+    RR_OT_select_material_shader_source,
+    RR_OT_import_material_shader,
     RR_OT_queue_selected,
     RR_OT_remove_queue_item,
     RR_OT_clear_queue,

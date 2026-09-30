@@ -2159,6 +2159,8 @@ class ExporterUvContractTests(unittest.TestCase):
                 self.assertEqual(layout["referenceStableId"], reference_stable_id)
                 self.assertEqual(layout["sourceStableId"], member_stable_id)
                 expected_relative = reference.matrix_world.inverted() @ member.matrix_world
+                expected_relative = exporter.unity_reference_layout_matrix(expected_relative)
+                self.assertEqual(layout["coordinateSpace"], "UNITY")
                 actual_relative = Matrix(
                     [
                         layout["relativeAuthoringMatrix"][0:4],
