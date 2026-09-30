@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 24),
+    "version": (0, 2, 26),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import time
 import uuid
 from datetime import datetime, timezone
@@ -3042,6 +3043,52 @@ def queue_roots(settings):
         if root is not None:
             roots.append(root)
     return roots
+
+
+def replace_queued_members_with_assembly(context, root, members):
+    """Keep an already queued selection as one asset after Make Assembly."""
+    if object_manager_assembly_type(root) != "ASSEMBLY":
+        return 0
+    settings = getattr(context.scene, "rr_builder_export_settings", None)
+    if settings is None:
+        return 0
+    reference = get_reference_object(context.scene)
+    member_objects = set(members)
+    for member in members:
+        member_objects.update(member.children_recursive)
+    indices = [
+        index for index, item in enumerate(settings.export_queue)
+        if (queued := queue_item_object(item)) in member_objects
+        and queued != reference
+        and object_manager_variant_group_root(queued) is None
+    ]
+    if not indices:
+        return 0
+
+    # Retain the earliest item's place and authored framing. A previous single
+    # part thumbnail does not describe the new assembly and must be regenerated.
+    first_index = indices[0]
+    item = settings.export_queue[first_index]
+    if not item.framing_initialized:
+        initialize_queue_item_framing(item, queue_item_object(item), settings)
+    item.object_name = root.name
+    item.icon_preview_root_name = root.name
+    item.preview_path = ""
+    save_icon_framing_to_object(root, item)
+
+    original_index = settings.queue_active_index
+    removed = indices[1:]
+    for index in reversed(removed):
+        settings.export_queue.remove(index)
+    active_index = (
+        first_index if original_index in indices
+        else original_index - sum(index < original_index for index in removed)
+    )
+    set_queue_active_index_without_preview_sync(
+        settings, max(0, min(active_index, len(settings.export_queue) - 1)),
+    )
+    reset_scene_selection_queue_lookup()
+    return len(indices)
 
 
 def queue_root_contains_object(root, obj):
@@ -11227,13 +11274,21 @@ def load_image_for_preview(settings, context, image_path):
     return image
 
 
-def show_builder_popup(context, message, title="RR Helper", icon="INFO"):
+def show_builder_popup(context, message, title="RR Helper", icon="INFO", details=()):
     if bpy.app.background or context is None or context.window_manager is None:
         print(f"[{title}] {message}")
         return
 
+    lines = [message]
+    for detail in details[:2]:
+        lines.extend(textwrap.wrap(" ".join(str(detail).split()), width=96, max_lines=2, placeholder="..."))
+
+    def draw_popup(self, _context):
+        for line in lines:
+            self.layout.label(text=line)
+
     context.window_manager.popup_menu(
-        lambda self, _context: self.layout.label(text=message),
+        draw_popup,
         title=title,
         icon=icon,
     )
@@ -11539,6 +11594,17 @@ def draw_preview_reference_pair(layout, context, settings):
         right.label(text="No reference.")
 
 
+def export_object_type_icon(obj):
+    if obj is None:
+        return "ERROR"
+    return {
+        "EMPTY": "OUTLINER_OB_EMPTY",
+        "MESH": "OUTLINER_OB_MESH",
+        "FONT": "OUTLINER_OB_FONT",
+        "CURVE": "OUTLINER_OB_CURVE",
+    }.get(obj.type, "OBJECT_DATA")
+
+
 class RR_UL_export_queue_items(bpy.types.UIList):
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
@@ -11560,7 +11626,7 @@ class RR_UL_export_queue_items(bpy.types.UIList):
             icon_name = "OUTLINER_OB_GROUP_INSTANCE"
         else:
             label = object_manager_display_name(root) if root else item.object_name or "<missing>"
-            icon_name = "OBJECT_DATA" if root else "ERROR"
+            icon_name = export_object_type_icon(root)
         if root is not None:
             is_core = reference_layout_is_active(context.scene) and root == get_reference_object(context.scene)
             star = row.operator(
@@ -12063,7 +12129,9 @@ class RR_OT_export_queue(bpy.types.Operator):
         cleared_count = len(exported_indices)
         elapsed = time.perf_counter() - export_started
         if failed:
-            self.report({"WARNING"}, f"Exported {len(exported)}, cleared {cleared_count}; {len(failed)} failed items remain ({elapsed:.1f}s). See console.")
+            message = f"Exported {len(exported)}, cleared {cleared_count}; {len(failed)} failed items remain ({elapsed:.1f}s). See console."
+            self.report({"WARNING"}, message)
+            show_builder_popup(context, message, icon="ERROR", details=failed)
             return {"CANCELLED" if not exported else "FINISHED"}
 
         self.report({"INFO"}, f"Exported {len(exported)}, cleared {cleared_count} queued assets in {elapsed:.1f}s.")
@@ -12155,6 +12223,7 @@ class RR_OT_create_object_assembly(bpy.types.Operator):
                 getattr(settings, "object_manager_assembly_name", ""),
                 getattr(settings, "object_manager_assembly_type", OBJECT_MANAGER_ASSEMBLY_TYPE_DEFAULT),
             )
+            replace_queued_members_with_assembly(context, root, members)
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -13859,8 +13928,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             if assembly_root is None and context.selected_objects:
                 assembly_root = object_manager_group_from_settings(settings)
             create_members = selected_objects_for_object_manager_assembly(context)
-            if assembly_root is not None or len(create_members) >= 2:
-                self.draw_export_group_box(layout, context, settings, assembly_root, create_members)
+            self.draw_export_group_box(layout, context, settings, assembly_root, create_members)
 
         if settings.show_export_icon_section:
             self.draw_icon_page(layout, context, settings)
@@ -13973,10 +14041,10 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         for _index in range(max(0, depth)):
             row.label(text="", icon="BLANK1")
         if is_object_manager_assembly_root(obj):
-            icon = "OUTLINER_OB_GROUP_INSTANCE" if object_manager_assembly_type(obj) == "VARIANTS" else "OBJECT_DATA"
+            icon = "OUTLINER_OB_GROUP_INSTANCE" if object_manager_assembly_type(obj) == "VARIANTS" else export_object_type_icon(obj)
             label = f"{object_manager_display_name(obj)} [{object_manager_assembly_type_label(obj)}]"
         else:
-            icon = "MESH_DATA" if obj.type == "MESH" else "EMPTY_DATA"
+            icon = export_object_type_icon(obj)
             label = obj.name
         if is_object_manager_assembly_root(obj):
             members = object_manager_selection_objects(obj)
@@ -14050,9 +14118,6 @@ class RR_PT_builder_exporter(bpy.types.Panel):
 
     def draw_export_group_box(self, layout, context, settings, assembly_root, create_members):
         can_create = len(create_members) >= 2
-        if assembly_root is None and not can_create:
-            return
-
         group_panel = self.draw_fold_panel(layout, settings, "export_group_expanded", "Group")
         if group_panel is None:
             return
@@ -14095,7 +14160,10 @@ class RR_PT_builder_exporter(bpy.types.Panel):
                 )
 
         if assembly_root is None:
-            group_box.label(text=f"{len(create_members)} selected", icon="CHECKMARK")
+            if can_create:
+                group_box.label(text=f"{len(create_members)} selected", icon="CHECKMARK")
+            else:
+                group_box.label(text="Select 2+ parts to make a group", icon="INFO")
 
         action_row = group_box.row(align=True)
         create_row = action_row.row(align=True)
@@ -14546,12 +14614,7 @@ def export_objects(mesh_objects, settings, context, source_label, export_model, 
         message = f"Exported {len(exported)} from {source_label}; failed {len(failed)} ({elapsed:.1f}s). See console."
         for item in failed:
             print("[RandomRealm Builder Exporter]", item)
-        if exported:
-            context.window_manager.popup_menu(
-                lambda self, _context: self.layout.label(text=message),
-                title="RR Helper",
-                icon="ERROR",
-            )
+        show_builder_popup(context, message, icon="ERROR", details=failed)
         return {"CANCELLED"}
 
     if export_model and include_icon:
