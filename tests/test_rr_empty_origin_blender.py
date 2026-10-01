@@ -301,8 +301,21 @@ class EmptyOriginTests(unittest.TestCase):
                         self.assert_numeric_close(new["channels"][channel], old["channels"][channel])
                 else:
                     self.assert_numeric_close(new["world"], old["world"])
-                    self.assert_numeric_close(new["basis"], old["basis"])
-                    self.assert_snapshot_equal(new["channels"], old["channels"])
+                    if origin._origin_matrix_matches(new["basis"], old["basis"]):
+                        self.assert_snapshot_equal(new["channels"], old["channels"])
+                    else:
+                        # Static direct children with only WORLD constraints
+                        # may absorb a parent translation. Geometry and all
+                        # other channels stay unchanged, including shear.
+                        self.assertIn(new["parent"], selected_names)
+                        self.assertTrue(all(origin._origin_constraint_uses_world_owner(constraint)
+                                            for constraint in bpy.data.objects[name].constraints))
+                        self.assertIsNone(old["animation"])
+                        self.assertFalse(old["drivers"])
+                        self.assert_numeric_close(new["parent_inverse"].translation, Vector())
+                        self.assert_numeric_close(new["parent_inverse"].to_3x3(), old["parent_inverse"].to_3x3())
+                        for channel in ROTATION_SCALE_CHANNELS:
+                            self.assert_numeric_close(new["channels"][channel], old["channels"][channel])
 
     def assert_rejected_without_changes(self, context=None):
         before = snapshot()
@@ -395,7 +408,7 @@ class EmptyOriginTests(unittest.TestCase):
         self.assertEqual(self.apply(ContextWithSelection([leaf, branch, root])), 2)
         self.assert_success_preserved(before, [root, branch], expected_target)
 
-    def test_multilevel_children_keep_world_geometry_local_channels_and_parent_ids(self):
+    def test_multilevel_children_keep_world_geometry_and_parent_ids(self):
         root, branch, leaf, curve = self.make_hierarchy()
         parents = {obj.name: obj.parent for obj in (branch, leaf, curve)}
         before = snapshot()
@@ -403,6 +416,328 @@ class EmptyOriginTests(unittest.TestCase):
         self.assert_success_preserved(before, [root])
         for obj in (branch, leaf, curve):
             self.assertEqual(obj.parent, parents[obj.name])
+
+    def test_elevator_bottom_location_reflects_ground_height_after_empty_rebase(self):
+        root = make_object("ElevatorRoot")
+        root.location = (200, 31, 8.1)
+        bottom = make_object("ElevatorBottom", "MESH", root)
+        bottom.location = (0, 0, 0.001 - 8.1)
+        select([root])
+        bpy.context.scene.cursor.location = (200, 31, 0)
+        before = snapshot()
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root])
+        self.assert_numeric_close(bottom.location, (0, 0, 0.001))
+        self.assert_numeric_close(bottom.matrix_world.translation, (200, 31, 0.001))
+        self.assert_numeric_close(bottom.matrix_parent_inverse, Matrix.Identity(4))
+
+    def test_existing_compensation_can_be_normalized_without_moving_empty_or_bottom(self):
+        root = make_object("PreviouslyRebasedElevator")
+        root.location = (200, 31, 0)
+        bottom = make_object("PreviouslyCompensatedBottom", "MESH", root)
+        bottom.location = (0, 0, 0.001 - 8.1)
+        bottom.matrix_parent_inverse = Matrix.Translation((0, 0, 8.1))
+        select([bottom])
+        before = snapshot()
+        self.assertEqual(origin.normalize_empty_child_origin_channels(bpy.context, [bottom]), 1)
+        after = snapshot()
+        self.assert_snapshot_equal(after["objects"][root.name], before["objects"][root.name])
+        self.assert_numeric_close(bottom.location, (0, 0, 0.001))
+        for field in ("world", "world_geometry", "local_geometry", "constraints", "animation"):
+            self.assert_numeric_close(after["objects"][bottom.name][field], before["objects"][bottom.name][field])
+        for field in ("selected", "active", "mode", "cursor", "flags"):
+            self.assert_numeric_close(after[field], before[field])
+
+    def make_world_constrained_elevator(self, existing_compensation=False):
+        root = make_object("WorldConstrainedElevatorRoot")
+        root.location = (200, 31, 0 if existing_compensation else 8.1)
+        parts = {}
+        for name, z in (("Bottom", 0.001 - 8.1), ("Casing", -8.1),
+                        ("Door1.L", -8.1), ("Door1.R", -8.1),
+                        ("Door2.L", 0), ("Door2.R", 0)):
+            part = make_object("Elevator" + name, "MESH", root)
+            part.location = (0, 0, z)
+            if existing_compensation:
+                part.matrix_parent_inverse = Matrix.Translation((0, 0, 8.1))
+            parts[name] = part
+        for level in (1, 2):
+            right, left = parts[f"Door{level}.R"], parts[f"Door{level}.L"]
+            limit = right.constraints.new("LIMIT_ROTATION")
+            limit.owner_space = "WORLD"
+            limit.use_limit_z = True
+            limit.min_z = 0
+            limit.max_z = math.radians(35)
+            copied = left.constraints.new("COPY_ROTATION")
+            copied.target = right
+            copied.owner_space = "WORLD"
+            copied.target_space = "WORLD"
+            copied.use_x = False
+            copied.use_y = False
+            copied.invert_z = True
+        select([root])
+        bpy.context.scene.cursor.location = (200, 31, 0)
+        return root, parts
+
+    def test_all_six_world_constrained_elevator_parts_show_true_relative_heights(self):
+        root, parts = self.make_world_constrained_elevator()
+        before = snapshot()
+        geometry = {name: evaluated_world_vertices(obj) for name, obj in parts.items()}
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root])
+        for name, part in parts.items():
+            expected = 0.001 if name == "Bottom" else (8.1 if name.startswith("Door2") else 0)
+            self.assert_numeric_close(part.location, (0, 0, expected))
+            self.assert_numeric_close(part.matrix_world.translation, (200, 31, expected))
+            self.assert_numeric_close(part.matrix_parent_inverse, Matrix.Identity(4))
+            self.assert_numeric_close(evaluated_world_vertices(part), geometry[name])
+
+    def test_existing_world_door_compensation_can_be_normalized_without_moving_parts(self):
+        root, parts = self.make_world_constrained_elevator(existing_compensation=True)
+        before = snapshot()
+        self.assertEqual(origin.normalize_empty_child_origin_channels(bpy.context, parts.values()), 6)
+        after = snapshot()
+        self.assert_snapshot_equal(after["objects"][root.name], before["objects"][root.name])
+        for name, part in parts.items():
+            expected = 0.001 if name == "Bottom" else (8.1 if name.startswith("Door2") else 0)
+            self.assert_numeric_close(part.location, (0, 0, expected))
+            for field in ("world", "world_geometry", "local_geometry", "constraints", "animation"):
+                self.assert_numeric_close(after["objects"][part.name][field], before["objects"][part.name][field])
+
+    def test_world_door_rotation_behavior_survives_rebase_and_repeated_empty_moves(self):
+        root, parts = self.make_world_constrained_elevator()
+        samples = (-0.3, 0.25, 0.9)
+        expected = {}
+        for angle in samples:
+            for level in (1, 2):
+                parts[f"Door{level}.R"].rotation_euler.z = angle
+            bpy.context.view_layer.update()
+            expected[angle] = {name: (obj.matrix_world.copy(), evaluated_world_vertices(obj))
+                               for name, obj in parts.items()}
+        self.assertEqual(self.apply(), 1)
+        for destination in ((200, 31, 0), (201, -7, 2), (200, 31, 0)):
+            bpy.context.scene.cursor.location = destination
+            self.assertEqual(self.apply(), 1)
+            for angle in samples:
+                for level in (1, 2):
+                    parts[f"Door{level}.R"].rotation_euler.z = angle
+                bpy.context.view_layer.update()
+                for name, obj in parts.items():
+                    self.assert_numeric_close(obj.matrix_world, expected[angle][name][0])
+                    self.assert_numeric_close(evaluated_world_vertices(obj), expected[angle][name][1])
+        for part in parts.values():
+            self.assert_numeric_close(part.matrix_parent_inverse, Matrix.Identity(4))
+
+    def test_external_world_constraint_reader_allows_target_channel_normalization(self):
+        root, parts = self.make_world_constrained_elevator(existing_compensation=True)
+        target = parts["Door1.R"]
+        reader = make_object("ExternalWorldLocationReader", "MESH")
+        reader.location = (-3, 4, 7)
+        constraint = reader.constraints.new("COPY_LOCATION")
+        constraint.target = target
+        constraint.owner_space = "LOCAL"
+        constraint.target_space = "WORLD"
+        child = make_object("ExternalReaderChild", "MESH", reader)
+        before = snapshot()
+        geometry = {obj: evaluated_world_vertices(obj) for obj in (reader, child)}
+        self.assertEqual(origin.normalize_empty_child_origin_channels(bpy.context, [target]), 1)
+        self.assert_numeric_close(target.location, (0, 0, 0))
+        after = snapshot()
+        for obj in (reader, child):
+            self.assert_snapshot_equal(after["objects"][obj.name], before["objects"][obj.name])
+            self.assert_numeric_close(evaluated_world_vertices(obj), geometry[obj])
+
+    def test_custom_constraint_reader_still_protects_target_channels(self):
+        root, parts = self.make_world_constrained_elevator(existing_compensation=True)
+        target = parts["Casing"]
+        reader = make_object("ExternalCustomSpaceReader", "MESH")
+        constraint = reader.constraints.new("LIMIT_LOCATION")
+        constraint.owner_space = "CUSTOM"
+        constraint.space_object = target
+        constraint.use_min_z = True
+        constraint.min_z = -100
+        before = snapshot()
+        self.assertEqual(origin.normalize_empty_child_origin_channels(bpy.context, [target]), 0)
+        self.assert_snapshot_equal(snapshot(), before)
+
+    def test_unsupported_constraint_owner_keeps_compensated_channels(self):
+        root, parts = self.make_world_constrained_elevator(existing_compensation=True)
+        target = parts["Casing"]
+        constraint = target.constraints.new("FOLLOW_PATH")
+        constraint.owner_space = "WORLD"
+        before = snapshot()
+        self.assertEqual(origin.normalize_empty_child_origin_channels(bpy.context, [target]), 0)
+        self.assert_snapshot_equal(snapshot(), before)
+
+    def test_normalization_verifies_world_reader_matrices_and_rolls_back(self):
+        root, parts = self.make_world_constrained_elevator(existing_compensation=True)
+        reader = make_object("VerifiedExternalWorldReader", "MESH")
+        constraint = reader.constraints.new("COPY_LOCATION")
+        constraint.target = parts["Door1.R"]
+        constraint.target_space = "WORLD"
+        before = snapshot()
+        watched = origin._origin_channel_normalization_watch_objects(parts.values())
+        self.assertIn(reader, watched)
+        with mock.patch.object(origin, "_origin_matrix_matches", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "normalizing Location"):
+                origin.normalize_empty_child_origin_channels(bpy.context, parts.values())
+        self.assert_snapshot_equal(snapshot(), before)
+
+    def test_normalization_verifies_evaluated_geometry_and_rolls_back(self):
+        root, parts = self.make_world_constrained_elevator(existing_compensation=True)
+        before = snapshot()
+        with mock.patch.object(origin, "_origin_geometry_matches", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "evaluated geometry while normalizing Location"):
+                origin.normalize_empty_child_origin_channels(bpy.context, parts.values())
+        self.assert_snapshot_equal(snapshot(), before)
+
+    def test_normalization_retains_rotated_nonuniform_sheared_inverse_and_delta_channels(self):
+        root = make_object("ShearedInverseRoot")
+        root.location = (9, -7, 4)
+        root.rotation_euler = (0.3, -0.5, 0.7)
+        root.scale = (-1.2, 0.8, 2.1)
+        child = make_object("ShearedInverseChild", "MESH", root)
+        child.location = (3, -2, 1)
+        child.rotation_mode = "QUATERNION"
+        child.rotation_quaternion = Vector((1, 2, 3)).to_track_quat("Z", "Y")
+        child.scale = (0.7, -1.3, 1.8)
+        child.delta_location = (0.5, -0.75, 0.25)
+        child.delta_scale = (1.1, 0.9, 1.2)
+        child.matrix_parent_inverse = Matrix(((1.1, 0.3, -0.2, 4.0),
+                                             (0.2, -0.8, 0.4, -3.0),
+                                             (-0.1, 0.2, 1.7, 2.0),
+                                             (0.0, 0.0, 0.0, 1.0)))
+        select([root])
+        before = snapshot()
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root])
+        self.assert_numeric_close(child.matrix_parent_inverse.to_3x3(), before["objects"][child.name]["parent_inverse"].to_3x3())
+        self.assert_numeric_close(child.matrix_parent_inverse.translation, Vector())
+
+    def test_local_constraint_reader_outside_assembly_keeps_target_channels(self):
+        root, branch, leaf, curve = self.make_hierarchy(transformed_parent=True)
+        reader = make_object("ExternalLocalLocationReader", "MESH")
+        constraint = reader.constraints.new("COPY_LOCATION")
+        constraint.target = curve
+        constraint.target_space = "LOCAL"
+        constraint.owner_space = "WORLD"
+        before = snapshot()
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root])
+        self.assert_snapshot_equal(snapshot()["objects"][curve.name]["channels"], before["objects"][curve.name]["channels"])
+        self.assert_numeric_close(reader.matrix_world, before["objects"][reader.name]["world"])
+
+    def test_modifier_reference_keeps_child_channels_even_with_fixed_world_geometry(self):
+        root, branch, leaf, curve = self.make_hierarchy()
+        reader = make_object("ExternalMirrorReader", "MESH")
+        modifier = reader.modifiers.new("MirrorUsingChild", "MIRROR")
+        modifier.mirror_object = curve
+        before = snapshot()
+        vertices = evaluated_world_vertices(reader)
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root])
+        self.assert_snapshot_equal(snapshot()["objects"][curve.name]["channels"], before["objects"][curve.name]["channels"])
+        self.assert_numeric_close(evaluated_world_vertices(reader), vertices)
+
+    def test_unrelated_object_material_or_embedded_tree_driver_disables_channel_normalization(self):
+        for driver_owner in ("OBJECT", "MATERIAL", "NODE_TREE"):
+            with self.subTest(driver_owner=driver_owner):
+                clear_scene()
+                root, branch, leaf, curve = self.make_hierarchy()
+                if driver_owner == "OBJECT":
+                    reader = make_object("ArbitraryChannelReader")
+                    driver = reader.driver_add("location", 0).driver
+                else:
+                    material = bpy.data.materials.new("ArbitraryMaterialChannelReader")
+                    self.addCleanup(bpy.data.materials.remove, material)
+                    if driver_owner == "NODE_TREE":
+                        material.use_nodes = True
+                        driver = material.node_tree.driver_add('nodes["Principled BSDF"].inputs[1].default_value').driver
+                    else:
+                        driver = material.driver_add("diffuse_color", 0).driver
+                driver.expression = "1.0"
+                before = snapshot()
+                self.assertEqual(self.apply(), 1)
+                self.assert_success_preserved(before, [root])
+                after = snapshot()
+                for child in (branch, curve):
+                    self.assert_snapshot_equal(after["objects"][child.name]["channels"], before["objects"][child.name]["channels"])
+                if driver_owner != "OBJECT":
+                    # A subtest's driver must not protect the next subtest.
+                    if driver_owner == "NODE_TREE":
+                        material.node_tree.driver_remove('nodes["Principled BSDF"].inputs[1].default_value')
+                    else:
+                        material.driver_remove("diffuse_color", 0)
+
+    def test_animated_nla_and_constrained_children_keep_original_channels(self):
+        for protected_reason in ("ANIMATION", "NLA", "CONSTRAINT"):
+            with self.subTest(protected_reason=protected_reason):
+                clear_scene()
+                root, branch, leaf, curve = self.make_hierarchy()
+                if protected_reason in {"ANIMATION", "NLA"}:
+                    curve.keyframe_insert("location", frame=1)
+                    if protected_reason == "NLA":
+                        action = curve.animation_data.action
+                        track = curve.animation_data.nla_tracks.new()
+                        track.strips.new("PreservedLocalChannels", 1, action)
+                        curve.animation_data.action = None
+                else:
+                    constraint = curve.constraints.new("LIMIT_LOCATION")
+                    constraint.owner_space = "LOCAL"
+                    constraint.use_min_z = True
+                    constraint.min_z = -100
+                before = snapshot()
+                self.assertEqual(self.apply(), 1)
+                self.assert_success_preserved(before, [root])
+                self.assert_snapshot_equal(snapshot()["objects"][curve.name]["channels"], before["objects"][curve.name]["channels"])
+
+    def test_protected_active_direct_child_target_is_not_normalized(self):
+        root, branch, leaf, curve = self.make_hierarchy()
+        select([root, curve], active=curve)
+        before = snapshot()
+        expected = before["objects"][curve.name]["world"].translation.copy()
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root], expected)
+        self.assert_snapshot_equal(snapshot()["objects"][curve.name]["channels"], before["objects"][curve.name]["channels"])
+
+    def test_multiple_empty_moves_and_repeated_same_point_do_not_accumulate_offsets(self):
+        root, branch, leaf, curve = self.make_hierarchy(transformed_parent=True)
+        select([root, branch], active=branch)
+        before = snapshot()
+        self.assertEqual(self.apply(), 2)
+        self.assert_success_preserved(before, [root, branch])
+        first = snapshot()
+        self.assertEqual(self.apply(), 2)
+        self.assert_snapshot_equal(snapshot(), first)
+
+    def test_singular_parent_inverse_is_retained_without_decomposing_child(self):
+        root = make_object("SingularChildInverseRoot")
+        root.location = (4, 2, 9)
+        child = make_object("SingularChildInverse", "MESH", root)
+        child.matrix_parent_inverse = Matrix(((0.0, 0.0, 0.0, 3.0),
+                                             (0.0, 1.0, 0.0, -2.0),
+                                             (0.0, 0.0, 1.0, 1.0),
+                                             (0.0, 0.0, 0.0, 1.0)))
+        select([root])
+        before = snapshot()
+        self.assertEqual(self.apply(), 1)
+        self.assert_success_preserved(before, [root])
+        self.assert_snapshot_equal(snapshot()["objects"][child.name]["channels"], before["objects"][child.name]["channels"])
+
+    def test_failed_verification_after_child_normalization_restores_locations_and_inverses(self):
+        root, branch, leaf, curve = self.make_hierarchy()
+        before = snapshot()
+        normalize = origin.normalize_empty_child_origin_channels
+
+        def normalize_then_fail(context, objects, **kwargs):
+            count = normalize(context, objects, **kwargs)
+            self.assertGreater(count, 0)
+            self.assertGreater((branch.location - Vector(before["objects"][branch.name]["channels"]["location"])).length, 0.1)
+            raise RuntimeError("Injected failure after child normalization")
+
+        with mock.patch.object(origin, "normalize_empty_child_origin_channels", side_effect=normalize_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "after child normalization"):
+                self.apply()
+        self.assert_snapshot_equal(snapshot(), before)
 
     def test_rotated_nonuniform_negative_scale_ancestor_preserves_full_world_matrices(self):
         root, branch, leaf, curve = self.make_hierarchy(transformed_parent=True)

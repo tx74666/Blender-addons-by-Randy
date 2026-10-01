@@ -163,6 +163,153 @@ def _origin_constraint_dependency_is_unsafe(obj, selected, inverse_owners, seen)
     return False
 
 
+def _origin_file_has_drivers():
+    # A scripted driver can read arbitrary channels without an RNA variable.
+    # Include data and embedded shader trees, not only object transforms.
+    for prop in bpy.data.bl_rna.properties:
+        if prop.type != "COLLECTION":
+            continue
+        for block in getattr(bpy.data, prop.identifier):
+            for owner in (block, getattr(block, "node_tree", None)):
+                animation = getattr(owner, "animation_data", None)
+                if animation and animation.drivers:
+                    return True
+    return False
+
+
+def _origin_constraint_uses_world_owner(constraint):
+    # Replacing parent-inverse translation with Location preserves the matrix
+    # fed into a WORLD constraint. A LOCAL/CUSTOM constraint can instead read
+    # the edited channels, even when its current output happens to look fixed.
+    return (constraint.type in _ORIGIN_STABLE_CONSTRAINT_TYPES
+            and constraint.owner_space == "WORLD")
+
+
+def _origin_constraint_reads_world_target(constraint, obj):
+    # Only ordinary world target edges have this guarantee. Keep custom-space
+    # and collection/unknown references conservative rather than assuming that
+    # every object pointer has the same space semantics as `target`.
+    return (constraint.type in _ORIGIN_STABLE_CONSTRAINT_TYPES
+            and getattr(constraint, "target", None) == obj
+            and getattr(constraint, "target_space", None) == "WORLD"
+            and getattr(constraint, "space_object", None) != obj)
+
+
+def _origin_child_channel_rebase_offsets(objects, protected_objects=()):
+    candidates = set(objects) - set(protected_objects)
+    if not candidates or _origin_file_has_drivers():
+        return {}
+    # A part can supply local channels to a different object or bone. WORLD
+    # readers remain valid because the target world matrix is preserved;
+    # LOCAL/CUSTOM and unsupported readers must keep their target's channels.
+    blocked = set()
+    for owner in bpy.data.objects:
+        constraint_owners = [owner]
+        if owner.pose is not None:
+            constraint_owners.extend(owner.pose.bones)
+        for constraint_owner in constraint_owners:
+            for constraint in constraint_owner.constraints:
+                for target in candidates.intersection(_origin_constraint_object_references(constraint)):
+                    if not _origin_constraint_reads_world_target(constraint, target):
+                        blocked.add(target)
+        for modifier in owner.modifiers:
+            for candidate in candidates - blocked:
+                if _origin_modifier_references_selected_object(modifier, {candidate}):
+                    blocked.add(candidate)
+
+    offsets = {}
+    for obj in candidates - blocked:
+        animation = obj.animation_data
+        if (obj.parent is None or obj.parent.type != "EMPTY" or obj.parent_type != "OBJECT"
+                or any(not _origin_constraint_uses_world_owner(constraint) for constraint in obj.constraints)
+                or not obj.is_editable
+                or obj.is_property_readonly("location")
+                or obj.is_property_readonly("matrix_parent_inverse")
+                or (animation and (animation.action or animation.nla_tracks or animation.drivers))):
+            continue
+        inverse = obj.matrix_parent_inverse.copy()
+        if not all(_origin_matrix_is_finite(matrix) for matrix in (
+            inverse, obj.matrix_world, obj.matrix_basis,
+        )):
+            continue
+        try:
+            offset = inverse.to_3x3().inverted() @ inverse.translation
+        except ValueError:
+            continue
+        if all(math.isfinite(value) for value in offset):
+            offsets[obj] = offset
+    return offsets
+
+
+def _origin_channel_normalization_watch_objects(objects):
+    # Include sibling/world readers and their descendants, not just the edited
+    # children. Their evaluated geometry can reveal a dependency which a matrix
+    # check alone would miss (for example an object-space geometry operation).
+    watched = set(objects)
+    pending = list(objects)
+    while pending:
+        obj = pending.pop()
+        for child in obj.children:
+            if child not in watched:
+                watched.add(child)
+                pending.append(child)
+        for owner in bpy.data.objects:
+            if owner in watched:
+                continue
+            constraint_owners = [owner]
+            if owner.pose is not None:
+                constraint_owners.extend(owner.pose.bones)
+            referenced = any(
+                obj in _origin_constraint_object_references(constraint)
+                for constraint_owner in constraint_owners for constraint in constraint_owner.constraints
+            ) or any(_origin_modifier_references_selected_object(modifier, {obj})
+                     for modifier in owner.modifiers)
+            if referenced:
+                watched.add(owner)
+                pending.append(owner)
+    return watched
+
+
+def normalize_empty_child_origin_channels(context, objects, *, protected_objects=()):
+    """Absorb safe parent offsets into Location without moving child geometry.
+
+    Only the inverse's translation is removed. Its full linear transform,
+    including shear, stays intact; no rotation/scale decomposition is needed.
+    Existing compensated children can be repaired with this helper as well.
+    """
+    context.view_layer.update()
+    offsets = _origin_child_channel_rebase_offsets(objects, protected_objects)
+    if not offsets:
+        return 0
+    previous = {obj: (obj.location.copy(), obj.matrix_parent_inverse.copy(), obj.matrix_world.copy())
+                for obj in offsets}
+    watched = _origin_channel_normalization_watch_objects(offsets)
+    world_matrices = {obj: obj.matrix_world.copy() for obj in watched | set(context.scene.objects)}
+    depsgraph = context.evaluated_depsgraph_get()
+    geometry = {obj: _origin_evaluated_geometry(obj, depsgraph) for obj in watched}
+    try:
+        for obj, offset in offsets.items():
+            inverse = obj.matrix_parent_inverse.copy()
+            inverse.translation = Vector()
+            obj.location += offset
+            obj.matrix_parent_inverse = inverse
+        context.view_layer.update()
+        for obj, world in world_matrices.items():
+            if not _origin_matrix_matches(obj.matrix_world, world):
+                raise RuntimeError(f"{obj.name}: unable to preserve its position while normalizing Location.")
+        depsgraph = context.evaluated_depsgraph_get()
+        for obj, expected in geometry.items():
+            if not _origin_geometry_matches(_origin_evaluated_geometry(obj, depsgraph), expected):
+                raise RuntimeError(f"{obj.name}: unable to preserve its evaluated geometry while normalizing Location.")
+    except Exception:
+        for obj, (location, inverse, _) in previous.items():
+            obj.location = location
+            obj.matrix_parent_inverse = inverse
+        context.view_layer.update()
+        raise
+    return len(offsets)
+
+
 def _origin_evaluated_geometry(obj, depsgraph):
     if obj.type not in {"MESH", "CURVE", "SURFACE", "FONT"}:
         return None
@@ -274,7 +421,7 @@ def apply_empty_origins_to_point(context, objects, target, *, protected_objects=
             raise RuntimeError(f"{obj.name}: zero scale or a singular transform prevents repositioning.") from exc
 
     original_world = {obj: obj.matrix_world.copy() for obj in affected}
-    original_locations = {obj: obj.location.copy() for obj in objects}
+    original_locations = {obj: obj.location.copy() for obj in selected | inverse_owners}
     original_inverses = {obj: obj.matrix_parent_inverse.copy() for obj in inverse_owners}
     depsgraph = context.evaluated_depsgraph_get()
     original_geometry = {obj: _origin_evaluated_geometry(obj, depsgraph)
@@ -282,6 +429,12 @@ def apply_empty_origins_to_point(context, objects, target, *, protected_objects=
     try:
         for obj in objects:
             _apply_empty_origin(context, obj, target)
+        # Finish all selected Empty moves first. Static independent children
+        # can show useful local positions, including WORLD-only constrained
+        # parts. Animated/local-dependent parts retain their compensation.
+        normalize_empty_child_origin_channels(
+            context, inverse_owners, protected_objects=selected | set(protected_objects),
+        )
         for obj, matrix in original_world.items():
             expected = matrix.copy()
             if obj in selected:

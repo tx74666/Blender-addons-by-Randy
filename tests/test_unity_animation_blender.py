@@ -120,6 +120,9 @@ def test_native_mapping_time_and_actual_skin(folder):
     reset()
     rig = make_rig()
     path, expected, data = package(rig, folder)
+    data['loopTime'] = True
+    Path(path).write_text(json.dumps(data), encoding='utf-8')
+    source_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     mesh = bpy.data.meshes.new("Skin")
     points = [(.62, .09, 1.2), (.58, .085, 1.21), (.60, .10, 1.18)]
     mesh.from_pydata(points, [], [(0, 1, 2)])
@@ -138,6 +141,10 @@ def test_native_mapping_time_and_actual_skin(folder):
     artist_before = [tuple(v.co) for v in artist.data]
     original_rest, original_mesh = rest_hash(rig), [tuple(v.co) for v in mesh.vertices]
     result = ua.import_test_action(bpy.context, rig, path, start_frame=7)
+    assert result.action['unity_loop_time'] is True
+    assert result.action[ua.PACKAGE_HASH_KEY] == source_hash
+    Path(path).write_text('{}', encoding='utf-8')
+    assert result.action[ua.PACKAGE_HASH_KEY] == source_hash
     assert result.sample_count == 4 and result.mapping_error < 1e-6
     assert abs(result.last_frame - (7 + 24 / 1.001)) < 1e-5
     assert bpy.context.scene.tool_settings.use_keyframe_insert_auto
@@ -221,7 +228,7 @@ def test_preflight_failure_and_atomic_rollback(folder):
         ua.import_test_action(bpy.context, rig, path)
         raise AssertionError("Constraint was accepted")
     except ua.UnityAnimationError as exc:
-        assert "Body Setup" in str(exc)
+        assert "constraint" in str(exc).lower() and "hand.L" in str(exc)
     assert rig.pose.bones["hand.L"].constraints[0].as_pointer() == constraint.as_pointer()
     rig.pose.bones["hand.L"].constraints.remove(constraint)
     before = set(bpy.data.actions)

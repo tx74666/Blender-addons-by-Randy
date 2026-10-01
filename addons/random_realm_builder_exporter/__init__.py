@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 36),
+    "version": (0, 2, 39),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -30,6 +30,9 @@ try:
     from . import rr_icon_lighting
     from . import rr_image_io
     from . import rr_material_shader
+    from . import rr_ring_stack
+    from . import rr_ring_stack_ui
+    from . import rr_shader_mixer
     from . import rr_standard_export_transaction
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
@@ -62,6 +65,9 @@ except ImportError:
     import rr_icon_lighting
     import rr_image_io
     import rr_material_shader
+    import rr_ring_stack
+    import rr_ring_stack_ui
+    import rr_shader_mixer
     import rr_standard_export_transaction
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
@@ -10531,6 +10537,16 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         description="Show PBR Framework controls",
         default=True,
     )
+    show_texture_rings_section: bpy.props.BoolProperty(
+        name="Rings",
+        description="Show Ring Stack layers for the current material",
+        default=True,
+    )
+    ring_stack_expanded: bpy.props.BoolProperty(
+        name="Ring Stack",
+        description="Manage ordered ring and arc material layers",
+        default=False,
+    )
     show_texture_packages_section: bpy.props.BoolProperty(
         name="Packages",
         description="Show Texture Packages controls",
@@ -15226,12 +15242,22 @@ CLASSES = (
 )
 
 
+def restore_shader_mixer_index_deferred():
+    # addon_utils registration has no scene access; discover saved native
+    # mixer instances only once normal Blender data access is available.
+    if not hasattr(bpy.data, "materials"):
+        return 0.1
+    rr_shader_mixer.rebuild_index()
+    return None
+
+
 RR_STARTUP_DEFERRED_TIMERS = (
     (migrate_reference_layout_usage_on_load, 0.1),
     (repair_rr_normal_map_nodes_deferred, 0.2),
     (apply_icon_render_resolution_deferred, 0.1),
     (reset_pbr_bake_runtime_state_deferred, 0.1),
     (reset_stale_icon_framing_state_deferred, 0.1),
+    (restore_shader_mixer_index_deferred, 0.1),
 )
 
 
@@ -15300,6 +15326,9 @@ def unregister_object_manager_duplicate_keymap():
 
 
 def register():
+    rr_ring_stack.register()
+    rr_ring_stack_ui.register()
+    rr_shader_mixer.register()
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     configure_object_manager_duplicate_macro()
@@ -15379,6 +15408,9 @@ def unregister():
             bpy.utils.unregister_class(cls)
         except Exception:
             pass
+    rr_shader_mixer.unregister()
+    rr_ring_stack_ui.unregister()
+    rr_ring_stack.unregister()
 
 
 if __name__ == "__main__":

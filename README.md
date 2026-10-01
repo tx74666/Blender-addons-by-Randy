@@ -7,7 +7,9 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.19 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.19.zip](dist/rr_helper-0.2.19.zip) |
-| Character Designer | 0.67.0 | [character_designer](addons/character_designer) | [character_designer-0.67.0.zip](dist/character_designer-0.67.0.zip) |
+| Character Designer | 0.68.0 | [character_designer](addons/character_designer) | [character_designer-0.68.0.zip](dist/character_designer-0.68.0.zip) |
+
+Character Designer 0.68.0 adds **Animation > Link / Import** and **Sync to Unity** for one linked character Action. The accepted Cosha Walk workflow preserves the current Avatar, original assets and unsaved scenes, publishes immutable revisions, and supports candidate Preview plus explicit character-specific Apply/Restore. [Workflow and validation](docs/animation_roundtrip.md) · [Local release record](docs/releases/CharacterDesigner_0.68.0_animation_link_20261001.md).
 
 Character Designer 0.61.64 在全身 **Generate/Update Body Setup** 成功后自动关闭 **Capture Detection** 旁的眼睛，隐藏手指设计辅助显示。保留捕捉与 Mark 数据、生成后的 Rig 控制器；可手动重新打开。生成失败保留原显示状态，开关随 blend 文件保存。
 

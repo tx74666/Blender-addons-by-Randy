@@ -11,6 +11,11 @@ namespace CharacterDesigner.Unity.Editor
         [SerializeField] GameObject target;
         [SerializeField] AnimationClip clip;
         [SerializeField] string folder;
+        [SerializeField] string returnFbx;
+        [SerializeField] string returnClipName;
+        [SerializeField] string returnFolder="Assets";
+        [SerializeField] bool returnLoop;
+        [Serializable] sealed class ReturnMetadata { public bool loop; }
         CharacterAnimationTransfer.Preview preview;
         CharacterAnimationPreviewRenderer renderer;
         bool playing;
@@ -105,7 +110,63 @@ namespace CharacterDesigner.Unity.Editor
                     string path=CharacterAnimationTransfer.Export(target,clip,folder);
                     status="Sent "+Path.GetFileName(path)+". In Blender: Character Designer → Animation → Import Latest from Unity.";
                 });
+            DrawReturnImport();
             EditorGUILayout.HelpBox(status,MessageType.Info);
+        }
+
+        void DrawReturnImport()
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Blender → Unity",EditorStyles.boldLabel);
+            using(new EditorGUILayout.HorizontalScope())
+            {
+                using(new EditorGUI.DisabledScope(true))
+                    EditorGUILayout.TextField("Blender Action FBX",returnFbx??"");
+                if(GUILayout.Button("Browse",GUILayout.Width(65))) Run(()=>
+                {
+                    string initial=string.IsNullOrEmpty(returnFbx)?folder:Path.GetDirectoryName(returnFbx);
+                    string selected=EditorUtility.OpenFilePanel("Choose exported Blender Action",initial??"","fbx");
+                    if(string.IsNullOrEmpty(selected))return;
+                    bool loop=false;
+                    string metadataPath=Path.ChangeExtension(selected,".animation.json");
+                    if(File.Exists(metadataPath))
+                    {
+                        if(new FileInfo(metadataPath).Length>1024*1024)
+                            throw new InvalidOperationException("The animation export metadata is unexpectedly large.");
+                        var metadata=JsonUtility.FromJson<ReturnMetadata>(File.ReadAllText(metadataPath));
+                        if(metadata==null)throw new InvalidOperationException("The animation export metadata is invalid.");
+                        loop=metadata.loop;
+                    }
+                    returnFbx=selected;returnClipName=Path.GetFileNameWithoutExtension(selected);returnLoop=loop;
+                    status="Review the new animation name and Loop setting, then import for the selected character.";
+                });
+            }
+            returnClipName=EditorGUILayout.TextField("New Animation Name",returnClipName??"");
+            returnLoop=EditorGUILayout.Toggle("Loop",returnLoop);
+            using(new EditorGUILayout.HorizontalScope())
+            {
+                returnFolder=EditorGUILayout.TextField("Save in Folder",returnFolder??"Assets");
+                if(GUILayout.Button("…",GUILayout.Width(28))) Run(()=>
+                {
+                    string initial=AssetDatabase.IsValidFolder(returnFolder)?Path.GetFullPath(returnFolder):Application.dataPath;
+                    string selected=EditorUtility.OpenFolderPanel("Choose an existing folder inside Assets",initial,"");
+                    if(string.IsNullOrEmpty(selected))return;
+                    string relative=FileUtil.GetProjectRelativePath(selected.Replace('\\','/'));
+                    if((relative!="Assets" && !relative.StartsWith("Assets/",StringComparison.Ordinal)) || !AssetDatabase.IsValidFolder(relative))
+                        throw new InvalidOperationException("Choose an existing folder inside this project's Assets.");
+                    returnFolder=relative;
+                });
+            }
+            using(new EditorGUI.DisabledScope(target==null || string.IsNullOrWhiteSpace(returnFbx) ||
+                string.IsNullOrWhiteSpace(returnClipName) || EditorApplication.isPlayingOrWillChangePlaymode ||
+                EditorApplication.isCompiling || EditorApplication.isUpdating))
+                if(GUILayout.Button("Import Blender Action")) Run(()=>
+                {
+                    ClosePreview();
+                    var result=CharacterAnimationReturn.Import(returnFbx,target,returnClipName,returnLoop,returnFolder);
+                    clip=result.Clip;time=0;
+                    status="Created "+result.clipPath+". It is selected above; use Preview on Character to inspect it. The character controller is unchanged.";
+                });
         }
 
         void DrawPreview()

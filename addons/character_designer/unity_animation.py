@@ -7,6 +7,7 @@ the same character, then evaluated deformation matrices transfer their motion.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -24,6 +25,8 @@ SCENE_KEY = "character_designer_unity_animation_scene"
 PREVIOUS_ACTION_KEY = "character_designer_unity_animation_previous_action"
 SESSION_KEY = "character_designer_unity_animation_session"
 PACKAGE_KEY = "character_designer_unity_animation_package"
+PACKAGE_HASH_KEY = "character_designer_unity_animation_package_sha256"
+CONTROL_KEYS_KEY = "character_designer_unity_animation_control_keys"
 ACTIVE_KEY = "character_designer_unity_animation_active"
 ORIGINAL_DATA_KEY = "character_designer_unity_animation_original_data"
 PREVIEW_DATA_KEY = "character_designer_unity_animation_preview_data"
@@ -53,11 +56,14 @@ def load_package(filepath):
     if not path.is_file() or path.stat().st_size > 256 * 1024 * 1024:
         raise UnityAnimationError("Choose a Unity animation package smaller than 256 MB.")
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        payload = path.read_bytes()
+        data = json.loads(payload.decode("utf-8-sig"))
     except (ValueError, OSError) as exc:
         raise UnityAnimationError(f"Cannot read Unity animation: {exc}") from exc
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise UnityAnimationError("This is not a Character Designer Unity animation package.")
+    if "loopTime" in data and not isinstance(data["loopTime"], bool):
+        raise UnityAnimationError("The animation loop setting must be true or false.")
     if (data.get("units") != "metres" or data.get("coordinate") != "unity-lh-y-up"
             or data.get("matrixLayout") != "row-major"):
         raise UnityAnimationError("The package must declare Unity metres and row-major matrices.")
@@ -107,10 +113,11 @@ def load_package(filepath):
     if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 1 <= rate <= 240:
         raise UnityAnimationError("Sample rate must be between 1 and 240 Hz.")
     data["_path"] = str(path)
+    data["_sha256"] = hashlib.sha256(payload).hexdigest()
     return data
 
 
-def validate_target(target, names):
+def validate_target(target, names, controls=None):
     if target is None or target.type != "ARMATURE":
         raise UnityAnimationError("Choose the original character Armature.")
     if target.mode == "EDIT":
@@ -130,11 +137,14 @@ def validate_target(target, names):
     names = set(names)
     for name in names:
         pb = target.pose.bones[name]
-        if pb.constraints:
+        if any(controls is None or (name, c.name) not in controls.constraint_keys for c in pb.constraints):
             raise UnityAnimationError(
                 f"'{name}' is driven by constraints. Unity preview currently needs native FK bones; "
                 "your Body Setup was left untouched.")
-        if pb.parent and pb.parent.name not in names:
+        parent = pb.parent
+        while parent and controls and parent.name in controls.control_names:
+            parent = parent.parent
+        if parent and parent.name not in names:
             raise UnityAnimationError(f"'{name}' has an unmapped parent; the original skeleton is required.")
         if not pb.bone.use_inherit_rotation or pb.bone.inherit_scale != "FULL":
             raise UnityAnimationError(f"'{name}' uses unsupported transform inheritance.")
@@ -142,7 +152,8 @@ def validate_target(target, names):
     if ad and ad.use_tweak_mode:
         raise UnityAnimationError("Leave NLA Tweak Mode before starting a test Action.")
     prefixes = tuple(target.pose.bones[name].path_from_id() for name in names)
-    if ad and any(f.data_path.startswith(prefixes) or not f.data_path.startswith("pose.bones[")
+    if ad and any((controls is None or (f.data_path, f.array_index) not in controls.driver_keys)
+                  and (f.data_path.startswith(prefixes) or not f.data_path.startswith("pose.bones["))
                   for f in ad.drivers):
         raise UnityAnimationError("Drivers control the body/object transforms; preview did not replace them.")
     if target.data.animation_data:
@@ -155,6 +166,7 @@ class Mapping:
     conversion: Matrix
     error_metres: float
     rest_world: dict
+    controls: object = None
 
 
 def _mapping(target, data, unit_scale=1.0):
@@ -168,13 +180,17 @@ def _mapping(target, data, unit_scale=1.0):
             candidates[bone["name"]] = index
     if "Hips" not in candidates or len(candidates) < 4:
         raise UnityAnimationError("This package does not contain this character's named body bones.")
-    validate_target(target, candidates)
+    from .unity_animation_controls import build_plan
+    controls = build_plan(target, candidates)
+    validate_target(target, candidates, controls)
     for name, index in candidates.items():
         parent = data["bones"][index]["parent"]
         while parent >= 0 and data["bones"][parent]["name"] not in candidates:
             parent = data["bones"][parent]["parent"]
         exported_parent = data["bones"][parent]["name"] if parent >= 0 else None
         actual_parent = target.data.bones[name].parent
+        while actual_parent and controls and actual_parent.name in controls.control_names:
+            actual_parent = actual_parent.parent
         if exported_parent != (actual_parent.name if actual_parent else None):
             raise UnityAnimationError(f"'{name}' has a different parent in the exported character.")
     rests = {name: target.matrix_world @ target.data.bones[name].matrix_local for name in candidates}
@@ -199,15 +215,20 @@ def _mapping(target, data, unit_scale=1.0):
     affine[:3, :3] = rotation.T * scale
     affine[:3, 3] = translation
     conversion = Matrix(affine.tolist())
-    error = float(np.max(np.linalg.norm(source @ rotation * scale + translation - dest, axis=1))) * unit_scale
+    errors = np.linalg.norm(source @ rotation * scale + translation - dest, axis=1) * unit_scale
+    error = float(np.max(errors))
     if error > 0.0002:
-        raise UnityAnimationError(f"Bind skeletons differ by {error * 1000:.3f} mm; use the matching character export.")
+        largest = ", ".join(f"{bound[int(index)][0]} ({float(errors[index]) * 1000:.3f} mm)"
+                            for index in np.argsort(errors)[::-1][:3])
+        raise UnityAnimationError(
+            f"Bind skeletons differ by {error * 1000:.3f} mm. Largest differences: {largest}. "
+            "Re-export the matching character, then export its Unity animation package again.")
     for name, index in candidates.items():
         incoming = _matrix(data["bones"][index]["rest"], name)
         delta = conversion @ incoming.translation - rests[name].translation
         if delta.length * unit_scale > 0.0002:
             raise UnityAnimationError(f"'{name}' does not match this character's original bind position.")
-    return Mapping(candidates, conversion, error, rests)
+    return Mapping(candidates, conversion, error, rests, controls)
 
 
 def expected_world_matrices(target, package, sample_index, *, unit_scale=1.0, mapping=None):
@@ -327,9 +348,9 @@ def _matches_rest_state(data, saved):
     return True
 
 
-def _snapshot(context, target):
+def _snapshot(context, target, controls=None):
     ad, scene = target.animation_data, context.scene
-    return {
+    result = {
         "had_animation_data": ad is not None,
         "had_action": bool(ad and ad.action),
         "slot": ad.action_slot.handle if ad and ad.action_slot else 0,
@@ -348,6 +369,10 @@ def _snapshot(context, target):
         "autokey": scene.tool_settings.use_keyframe_insert_auto,
         "playing": _playing(context),
     }
+    if controls:
+        from .unity_animation_controls import snapshot_properties
+        result["control_properties"] = snapshot_properties(target, controls)
+    return result
 
 
 def _restore_snapshot(context, target, snapshot, previous):
@@ -362,6 +387,9 @@ def _restore_snapshot(context, target, snapshot, previous):
     ad.action_blend_type = snapshot["blend"]
     ad.action_influence = snapshot["influence"]
     ad.action_extrapolation = snapshot["extrapolation"]
+    if snapshot.get("control_properties"):
+        from .unity_animation_controls import restore_properties
+        restore_properties(target, snapshot["control_properties"])
     for name, fields in snapshot["pose"].items():
         pb = target.pose.bones.get(name)
         if pb:
@@ -384,7 +412,7 @@ def _restore_snapshot(context, target, snapshot, previous):
 
 def active_preview(target):
     action = target.get(ACTIVE_KEY) if target else None
-    return action if (isinstance(action, bpy.types.Action) and action.get(VERSION_KEY) == 1
+    return action if (isinstance(action, bpy.types.Action) and action.get(VERSION_KEY) in {1, 2}
                       and action.get(TARGET_KEY) is target) else None
 
 
@@ -408,7 +436,7 @@ def import_test_action(context, target, filepath, *, start_frame=1):
     mapping = _mapping(target, data, unit_scale)
     if not math.isfinite(start_frame):
         raise UnityAnimationError("The test start frame must be finite.")
-    snapshot = _snapshot(context, target)
+    snapshot = _snapshot(context, target, mapping.controls)
     previous = target.animation_data.action if target.animation_data else None
     fps = snapshot["fps"] / snapshot["fps_base"]
     frames = [start_frame + frame["time"] * fps for frame in data["frames"]]
@@ -417,39 +445,48 @@ def import_test_action(context, target, filepath, *, start_frame=1):
     world_scale = target.matrix_world.to_3x3().col[0].length
     channels, quaternions, eulers = {}, {}, {}
     needs_joint_translation = False
-    for index in range(len(frames)):
-        desired_world = expected_world_matrices(target, data, index, mapping=mapping)
-        desired = {name: world_inv @ mat for name, mat in desired_world.items()}
-        for name in names:
-            pb, bone = target.pose.bones[name], target.data.bones[name]
-            kwargs = ({"parent_matrix": desired[bone.parent.name],
-                       "parent_matrix_local": bone.parent.matrix_local} if bone.parent else {})
-            basis = bone.convert_local_to_pose(desired[name], bone.matrix_local, invert=True, **kwargs)
-            location, rotation, scale = basis.decompose()
-            if bone.use_connect and location.length * world_scale * unit_scale > 1e-7:
-                needs_joint_translation = True
-            reconstructed = Matrix.LocRotScale(location, rotation, scale)
-            if max(abs(basis[i][j] - reconstructed[i][j]) for i in range(4) for j in range(4)) > 2e-5:
-                raise UnityAnimationError(f"'{name}' needs shear at sample {index}; the original rig was left untouched.")
-            if name in quaternions and rotation.dot(quaternions[name]) < 0:
-                rotation.negate()
-            quaternions[name] = rotation.copy()
-            mode = pb.rotation_mode
-            if mode == "QUATERNION":
-                rotation_path, components = "rotation_quaternion", rotation
-            elif mode == "AXIS_ANGLE":
-                axis, angle = rotation.to_axis_angle()
-                rotation_path, components = "rotation_axis_angle", (angle, *axis)
-            else:
-                euler = rotation.to_euler(mode, eulers[name]) if name in eulers else rotation.to_euler(mode)
-                eulers[name] = euler.copy()
-                rotation_path, components = "rotation_euler", euler
-            prefix = pb.path_from_id()
-            for prop, values in (("location", location), (rotation_path, components), ("scale", scale)):
-                for component, value in enumerate(values):
-                    if not math.isfinite(value):
-                        raise UnityAnimationError(f"Invalid output transform on '{name}'.")
-                    channels.setdefault((prefix + "." + prop, component), []).append(value)
+    if mapping.controls:
+        from .unity_animation_controls import bake_channels
+        desired_samples = (
+            {name: world_inv @ matrix for name, matrix in
+             expected_world_matrices(target, data, index, mapping=mapping).items()}
+            for index in range(len(frames)))
+        baked = bake_channels(context, target, mapping.controls, desired_samples)
+        channels, needs_joint_translation = baked.channels, baked.needs_joint_translation
+    else:
+        for index in range(len(frames)):
+            desired_world = expected_world_matrices(target, data, index, mapping=mapping)
+            desired = {name: world_inv @ mat for name, mat in desired_world.items()}
+            for name in names:
+                pb, bone = target.pose.bones[name], target.data.bones[name]
+                kwargs = ({"parent_matrix": desired[bone.parent.name],
+                           "parent_matrix_local": bone.parent.matrix_local} if bone.parent else {})
+                basis = bone.convert_local_to_pose(desired[name], bone.matrix_local, invert=True, **kwargs)
+                location, rotation, scale = basis.decompose()
+                if bone.use_connect and location.length * world_scale * unit_scale > 1e-7:
+                    needs_joint_translation = True
+                reconstructed = Matrix.LocRotScale(location, rotation, scale)
+                if max(abs(basis[i][j] - reconstructed[i][j]) for i in range(4) for j in range(4)) > 2e-5:
+                    raise UnityAnimationError(f"'{name}' needs shear at sample {index}; the original rig was left untouched.")
+                if name in quaternions and rotation.dot(quaternions[name]) < 0:
+                    rotation.negate()
+                quaternions[name] = rotation.copy()
+                mode = pb.rotation_mode
+                if mode == "QUATERNION":
+                    rotation_path, components = "rotation_quaternion", rotation
+                elif mode == "AXIS_ANGLE":
+                    axis, angle = rotation.to_axis_angle()
+                    rotation_path, components = "rotation_axis_angle", (angle, *axis)
+                else:
+                    euler = rotation.to_euler(mode, eulers[name]) if name in eulers else rotation.to_euler(mode)
+                    eulers[name] = euler.copy()
+                    rotation_path, components = "rotation_euler", euler
+                prefix = pb.path_from_id()
+                for prop, values in (("location", location), (rotation_path, components), ("scale", scale)):
+                    for component, value in enumerate(values):
+                        if not math.isfinite(value):
+                            raise UnityAnimationError(f"Invalid output transform on '{name}'.")
+                        channels.setdefault((prefix + "." + prop, component), []).append(value)
     action, preview_data = None, None
     original_data = target.data
     try:
@@ -459,16 +496,21 @@ def import_test_action(context, target, filepath, *, start_frame=1):
         slot, bag = _new_channelbag(action, target)
         for (path, component), values in channels.items():
             _write_curve(bag, path, component, frames, values)
-        action[VERSION_KEY], action[TARGET_KEY] = 1, target
+        action[VERSION_KEY], action[TARGET_KEY] = (2 if mapping.controls else 1), target
+        if mapping.controls:
+            action[CONTROL_KEYS_KEY] = json.dumps(sorted(
+                [name, prop] for name, values in snapshot["control_properties"].items() for prop in values))
         action[SCENE_KEY] = context.scene
         if previous:
             action[PREVIOUS_ACTION_KEY] = previous
         action[SESSION_KEY] = json.dumps(snapshot, separators=(",", ":"))
         action[PACKAGE_KEY] = data["_path"]
+        action[PACKAGE_HASH_KEY] = data["_sha256"]
         action["unity_clip_name"] = clip
         action["unity_sample_rate"] = data["sampleRate"]
         action["unity_start_frame"] = float(start_frame)
         action["unity_duration"] = data["duration"]
+        action["unity_loop_time"] = bool(data.get("loopTime", False))
         if needs_joint_translation:
             # Unity Humanoid can animate joint translations which Blender's
             # connected native bones suppress. Only this disposable data copy
@@ -515,6 +557,14 @@ def restore_preview(context, target):
         raise UnityAnimationError("The current Action changed during preview; it was left untouched.")
     try:
         snapshot = json.loads(action[SESSION_KEY])
+        if action.get(VERSION_KEY) == 2:
+            expected_controls = json.loads(action[CONTROL_KEYS_KEY])
+            properties = snapshot["control_properties"]
+            from .unity_animation_controls import validate_properties
+            validate_properties(target, properties)
+            actual_controls = sorted([name, prop] for name, values in properties.items() for prop in values)
+            if not expected_controls or expected_controls != actual_controls:
+                raise ValueError("Incomplete saved control switches")
         # Validate persisted fields before making any changes.
         for key in ("pose", "slot", "use_nla", "blend", "influence", "extrapolation", "fps",
                     "fps_base", "frame", "start", "end", "preview_start", "preview_end",
@@ -541,6 +591,9 @@ def restore_preview(context, target):
         for key in ("frame", "start", "end", "preview_start", "preview_end"):
             if not isinstance(snapshot[key], (int, float)) or not math.isfinite(snapshot[key]):
                 raise ValueError(key)
+        if "control_properties" in snapshot:
+            from .unity_animation_controls import validate_properties
+            validate_properties(target, snapshot["control_properties"])
     except (KeyError, ValueError, TypeError) as exc:
         raise UnityAnimationError("The saved preview recovery record is incomplete.") from exc
     previous = action.get(PREVIOUS_ACTION_KEY)
@@ -549,6 +602,10 @@ def restore_preview(context, target):
     if previous and previous.is_action_layered and not any(s.handle == snapshot["slot"] for s in previous.slots):
         raise UnityAnimationError("The previous Action slot was removed; preview was left unchanged.")
     current = _snapshot(context, target)
+    if snapshot.get("control_properties"):
+        current["control_properties"] = {
+            name: {prop: target.pose.bones[name][prop] for prop in values}
+            for name, values in snapshot["control_properties"].items()}
     original_data = action.get(ORIGINAL_DATA_KEY)
     preview_data = action.get(PREVIEW_DATA_KEY)
     if preview_data is not None and original_data is None:
