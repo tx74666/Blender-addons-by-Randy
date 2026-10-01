@@ -100,6 +100,22 @@ class ShaderMixerTests(unittest.TestCase):
         self.assertEqual(len(mixer._pairs(first.node_tree)), 2)
         self.assertEqual(len(mixer._pairs(second.node_tree)), 1)
 
+    def test_expanding_library_asset_keeps_template_and_clears_copy_asset_status(self):
+        node = self.add()
+        original = node.node_tree
+        original.asset_mark()
+        original.use_fake_user = True
+        original.asset_data.description = "Reusable library template"
+        interface_before = interface(original)
+        mixer.add_shader_slot(node)
+        self.assertNotEqual(node.node_tree, original)
+        self.assertIsNone(node.node_tree.asset_data)
+        self.assertFalse(node.node_tree.use_fake_user)
+        self.assertIsNotNone(original.asset_data)
+        self.assertTrue(original.use_fake_user)
+        self.assertEqual(interface(original), interface_before)
+        self.assertEqual(original.asset_data.description, "Reusable library template")
+
     def test_extend_preserves_identifiers_links_mask_values_and_node_identity(self):
         node = self.add()
         base = self.tree.nodes["Original Base"]

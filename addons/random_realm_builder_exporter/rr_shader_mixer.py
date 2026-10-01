@@ -291,6 +291,10 @@ def add_shader_slot(node):
     state = _external_state(node)
     candidate = old_group.copy()
     try:
+        # Library assets are reusable templates. Expanded per-node helpers must
+        # not become new assets or survive solely through an inherited fake user.
+        candidate.asset_clear()
+        candidate.use_fake_user = False
         candidate[_PAIRS] = json.dumps(pairs + [_new_pair(candidate, len(pairs) + 1)])
         _build_chain(candidate)
         _validate_group(candidate)
@@ -424,12 +428,6 @@ class RR_OT_add_shader_slot(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def draw_add_menu(self, context):
-    if _editor_tree(context) is not None:
-        self.layout.separator()
-        self.layout.operator(RR_OT_add_mix_shaders.bl_idname, text="Mix Shaders", icon="NODETREE")
-
-
 def draw_context_menu(self, context):
     if RR_OT_add_shader_slot.poll(context):
         self.layout.separator()
@@ -449,8 +447,7 @@ def register():
         for cls in CLASSES:
             if not getattr(cls, "is_registered", False):
                 bpy.utils.register_class(cls)
-        for name, callback in (("NODE_MT_add", draw_add_menu),
-                               ("NODE_MT_context_menu", draw_context_menu)):
+        for name, callback in (("NODE_MT_context_menu", draw_context_menu),):
             if name not in _MENUS:
                 getattr(bpy.types, name).append(callback)
                 _MENUS.add(name)
@@ -464,8 +461,7 @@ def register():
 
 
 def unregister():
-    for name, callback in (("NODE_MT_context_menu", draw_context_menu),
-                           ("NODE_MT_add", draw_add_menu)):
+    for name, callback in (("NODE_MT_context_menu", draw_context_menu),):
         if name in _MENUS:
             getattr(bpy.types, name).remove(callback)
             _MENUS.discard(name)

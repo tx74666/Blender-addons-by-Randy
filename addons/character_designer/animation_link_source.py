@@ -169,7 +169,7 @@ def import_source(context, manifest_path, model_file=None, start_frame=1):
         context.view_layer.update()
         # _mapping checks every bind origin and parent; no tolerance relaxation,
         # body-only fallback or X-rest substitution is permitted in this route.
-        result = unity_animation.import_test_action(context, rig, link['sourcePackage'], start_frame=start_frame)
+        result = unity_animation._import_package_action(context, rig, packet, start_frame=start_frame)
         if result.action[unity_animation.PACKAGE_HASH_KEY] != packet['_sha256'] or _sha256(path) != digest:
             raise _error('A linked input changed during import; the new editing scene was discarded.')
         current_link = animation_link.load_link(manifest_path)

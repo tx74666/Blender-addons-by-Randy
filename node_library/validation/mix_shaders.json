@@ -1,0 +1,621 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Randy_Mix_Shaders.blend",
+  "asset_sha256": "eaf1730cd52f34cbe267f28c0add9015ba281ad62ce00f1ef03aec29ff1a921c",
+  "ring_mask_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+  "source_dependencies_sha256": {
+    "addons/random_realm_builder_exporter/rr_shader_mixer.py": "c368aa88052e576ec0ed56ccd65720115fca532bb3767ba2db4a3b25281e20e1",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+    "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067",
+    "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
+  },
+  "blender": "5.2.0 LTS",
+  "ui_search_tested": false,
+  "render_engine": "Cycles CPU",
+  "tests": [
+    {
+      "name": "append_asset_and_validate_canonical_graph_catalog_interface",
+      "passed": true
+    },
+    {
+      "name": "independent_instances_expand_only_one_keep_old_identifiers_links_values",
+      "passed": true
+    },
+    {
+      "name": "saved_native_asset_instances_reopen_with_links_intact",
+      "passed": true,
+      "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Randy_Mix_Shaders_validation.blend"
+    },
+    {
+      "name": "top_ring_covers_both_lower_rings",
+      "radius": 0.5,
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        6,
+        6
+      ]
+    },
+    {
+      "name": "second_ring_over_third",
+      "radius": 0.3,
+      "uv": [
+        0.65,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        0.0,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        18,
+        6
+      ]
+    },
+    {
+      "name": "third_ring_only",
+      "radius": 0.15,
+      "uv": [
+        0.575,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "expected_rgb": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        30,
+        6
+      ]
+    },
+    {
+      "name": "base_outside_all_rings",
+      "radius": 0.95,
+      "uv": [
+        0.975,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected_rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        6,
+        18
+      ]
+    },
+    {
+      "name": "empty_top_shader_keeps_second",
+      "radius": 0.5,
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        null,
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        18,
+        18
+      ]
+    },
+    {
+      "name": "connected_black_top_shader_covers",
+      "radius": 0.5,
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        30,
+        18
+      ]
+    },
+    {
+      "name": "soft_top_half_blends_second",
+      "radius": 0.425,
+      "uv": [
+        0.7125,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0.05
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        0.5000000000000007,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        0.49999999999999933,
+        0.5000000000000007,
+        0.0
+      ],
+      "rgb": [
+        0.5000051856040955,
+        0.49999481439590454,
+        0.0
+      ],
+      "max_error": 5.185604096125118e-06,
+      "passed": true,
+      "pixel": [
+        6,
+        30
+      ]
+    },
+    {
+      "name": "zero_width_top_keeps_second",
+      "radius": 0.5,
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ]
+      ],
+      "masks": [
+        0.0,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        18,
+        30
+      ]
+    },
+    {
+      "name": "all_empty_overlays_keep_base",
+      "radius": 0.5,
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.4,
+          0.4,
+          0
+        ],
+        [
+          0.25,
+          0.6,
+          0
+        ],
+        [
+          0.1,
+          0.8,
+          0
+        ]
+      ],
+      "colors": [
+        null,
+        null,
+        null
+      ],
+      "masks": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "expected_rgb": [
+        0,
+        0,
+        1
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        30,
+        30
+      ]
+    },
+    {
+      "name": "source_asset_ring_mask_and_generator_dependencies_unchanged",
+      "passed": true
+    }
+  ],
+  "asset_metadata": {
+    "name": "Mix Shaders",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "color_tag": "SHADER",
+    "version": "0.1.0",
+    "inputs": [
+      "Base Shader",
+      "Mask 1",
+      "Shader 1",
+      "_Connected 1"
+    ],
+    "outputs": [
+      "Shader"
+    ],
+    "hidden_runtime_inputs": [
+      "_Connected 1"
+    ],
+    "nodes": 4,
+    "default_group_node_width": 220,
+    "tags": [
+      "Randy",
+      "Textures",
+      "Shader",
+      "Mix Shaders",
+      "Mask",
+      "Ring Mask"
+    ]
+  },
+  "shader_sample_count": 9,
+  "maximum_absolute_error": 5.185604096125118e-06,
+  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Mix_Shaders_numeric_atlas.exr",
+  "render_preview": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Mix_Shaders_numeric_atlas.png",
+  "tolerance": 0.002,
+  "published_asset": "node_library/assets/Randy_Mix_Shaders.blend",
+  "published_preview": "node_library/previews/mix_shaders.png"
+}

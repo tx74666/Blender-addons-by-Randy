@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "library_version": "0.1.1",
+  "library_version": "0.1.2",
   "blender_version": "5.2.0",
   "catalog_file": "node_library/assets/blender_assets.cats.txt",
   "bundles": [
@@ -35,6 +35,28 @@
         "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
       },
       "verification": "node_library/validation/geometry.json"
+    },
+    {
+      "id": "mix_shaders",
+      "path": "node_library/assets/Randy_Mix_Shaders.blend",
+      "sha256": "eaf1730cd52f34cbe267f28c0add9015ba281ad62ce00f1ef03aec29ff1a921c",
+      "source": {
+        "build": "tools/randy_node_assets/build_mix_shaders.py",
+        "verify": "tools/randy_node_assets/verify_mix_shaders.py",
+        "deploy": "tools/randy_node_assets/deploy_mix_shaders.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_mix_shaders.py": "7e5e454bdf9e359ba483dcc86d86b6b60aeb8f01e4ea54eb63b038285253b27d",
+        "tools/randy_node_assets/verify_mix_shaders.py": "4943c06c7aa755104a97a01b10bd4b12dbacc6042bcc5793a9f13c7c9ac278ba",
+        "tools/randy_node_assets/deploy_mix_shaders.py": "73f9a8d725afaff505f4efae66236a54ba01fa5b39c4326e2102593185635868"
+      },
+      "source_dependencies_sha256": {
+        "addons/random_realm_builder_exporter/rr_shader_mixer.py": "c368aa88052e576ec0ed56ccd65720115fca532bb3767ba2db4a3b25281e20e1",
+        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+        "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067",
+        "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
+      },
+      "verification": "node_library/validation/mix_shaders.json"
     }
   ],
   "assets": [
@@ -165,6 +187,46 @@
         {
           "name": "Geometry 几何",
           "type": "NodeSocketGeometry"
+        }
+      ]
+    },
+    {
+      "id": "mix_shaders",
+      "name": "Mix Shaders",
+      "display_name": "Mix Shaders",
+      "version": "0.1.0",
+      "node_tree_type": "ShaderNodeTree",
+      "bundle_id": "mix_shaders",
+      "catalog_path": "Textures",
+      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+      "description": "Expandable Mask / Shader pairs over a Base Shader; earlier slots cover later slots.",
+      "interface_note": "_Connected 1 is a hidden per-instance RR Helper connection-state input.",
+      "runtime_note": "Keep RR Helper enabled for slot expansion and automatic empty-Shader detection. Saved graphs render natively.",
+      "inputs": [
+        {
+          "name": "Base Shader",
+          "type": "NodeSocketShader"
+        },
+        {
+          "name": "Mask 1",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Shader 1",
+          "type": "NodeSocketShader"
+        },
+        {
+          "name": "_Connected 1",
+          "type": "NodeSocketFloat",
+          "default": 0.0,
+          "hidden": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Shader",
+          "type": "NodeSocketShader"
         }
       ]
     }

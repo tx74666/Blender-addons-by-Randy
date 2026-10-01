@@ -1,12 +1,13 @@
 # Randy Node Library
 
-Reusable native Blender node groups, their build scripts, and their change history live in this repository. This directory contains three original assets; third-party libraries such as Higgsas and Node Tools are not bundled.
+Reusable native Blender node groups, their build scripts, and their change history live in this repository. This directory contains four original assets; third-party libraries such as Higgsas and Node Tools are not bundled.
 
-**Library version: 0.1.1.** Built and checked with Blender 5.2. Other Blender versions have not been verified.
+**Library version: 0.1.2.** Built and checked with Blender 5.2. Other Blender versions have not been verified.
 
 | Asset | Editor | Asset catalog | Version | Purpose |
 | --- | --- | --- | --- | --- |
 | Ring Mask | Shader Editor | `Textures` | 0.1.1 | A normalized UV mask for adjustable concentric rings. English interface. |
+| Mix Shaders | Shader Editor | `Textures` | 0.1.0 | Expandable Mask / Shader slots over a Base Shader. RR Helper updates empty-input state. |
 | Randy Ring | Geometry Nodes | `Randy/Primitives` | 0.1.0 | A parametric torus with radius, tube radius, resolution, shading, and material controls. Legacy bilingual interface preserved. |
 | Randy Circular Pattern | Geometry Nodes | `Randy/Patterns` | 0.1.0 | Instances input geometry around a circle, with count, radius, orientation, scale, and optional realization. Legacy bilingual interface preserved. |
 
@@ -23,6 +24,7 @@ The ready-to-use files are in [assets](assets). They are asset-library files, no
 3. In Blender, open **Edit > Preferences > File Paths > Asset Libraries**, add the repository's `node_library/assets` directory, and name the library **Randy Nodes**.
 4. In an Asset Browser, choose that library and use **Library > Refresh** after an update.
 5. In the Shader Editor, use **Shift+A > Textures > Ring Mask**, or search for **Ring Mask**. You can also drag the asset from the Asset Browser into the Shader Editor.
+6. Add **Mix Shaders** from that same **Textures** catalog. There is no separate Mix Shaders entry at the root of the Add menu.
 
 Geometry assets belong in the Geometry Node Editor. Blender filters node assets by editor type.
 
@@ -58,6 +60,28 @@ All samples beyond Radius 1 are black. If Inner Radius + Ring Width exceeds 1, t
 
 Add multiple group instances to make independently adjustable concentric rings. The node modifies no mesh and does not replace an existing material. Exporting a model does not automatically recreate this procedural shader in another application; bake the result or implement equivalent shader logic there.
 
+## Mix Shaders
+
+Use **Shift+A > Textures > Mix Shaders** beside Ring Mask. It is a normal Shader
+Node Group with the **Shader** color tag, one **Shader** output, and these visible
+inputs: **Base Shader**, **Mask 1**, **Shader 1**. Connect an ordinary Ring Mask to
+Mask 1 and any BSDF or imported material shader to Shader 1. The node does not
+automatically connect to Material Output.
+
+With **RR Helper 0.2.40 or later** enabled, select this node and use **right-click
+> Add Shader Slot**, or **F3 > Add Shader Slot**, to add another Mask / Shader
+pair. Existing links and values stay attached; expanding one instance leaves
+other instances unchanged. Connect multiple Ring Mask nodes independently. Earlier
+slots cover later slots, with Base Shader at the bottom.
+
+Keep RR Helper enabled while editing connections: it hides and maintains a
+per-instance `_Connected` input so an empty Shader slot passes through to the
+lower shaders. A connected black shader still covers normally. Saved graphs
+render natively without RR Helper; the add-on is needed to update empty-input
+state after further connection edits and to expand the sockets. Ring Mask itself
+needs no RR Helper and is reused without changes. See [the full
+workflow](../docs/shader_mixer.md).
+
 ## Verification and its limits
 
 The [validation](validation) directory records the evidence and its scope:
@@ -65,6 +89,13 @@ The [validation](validation) directory records the evidence and its scope:
 - Ring Mask's original numerical implementation passed 59 actual shader samples plus 4 structure, instance, persistence, and source-preservation checks: 63 checks in total.
 - The 0.1.1 English naming and `Textures` catalog update passed 5 metadata and graph-equivalence checks. Those checks establish that its computation matches the previously tested graph; they are not a new render run.
 - The two geometry assets passed 9 evaluated-geometry and persistence checks.
+- Mix Shaders verification appends the saved asset, checks its canonical
+  generated graph and Textures catalog, expands one of two shared instances,
+  saves and reopens the native graph, and samples three external Ring Masks in
+  a tiny CPU-rendered atlas. All 13 checks passed, including nine rendered
+  samples. See `validation/mix_shaders.json` for its exact
+  source hashes, sample values and result; a background run does not establish
+  that a particular live Shader Editor menu has refreshed.
 
 The preview above comes from the earlier actual shader render. It illustrates the unchanged computation, not a new render of the 0.1.1 asset. Automated asset checks do not establish that a particular running Blender window has refreshed its menus.
 
@@ -98,6 +129,28 @@ python tools/randy_node_assets/deploy_ring_mask.py --asset node_library/_build/R
 ```
 
 For the geometry pair, use `deploy_assets.py` with the `Randy_Toolkit.blend` build and `geometry-verification.json` report. Both deployment tools check the verified source, preserve unrelated catalog entries, back up replaced files, and support a final read-only `--check`.
+
+Build, verify and publish Mix Shaders in serial factory sessions. Its generator
+calls RR Helper's canonical `rr_shader_mixer` implementation. The manifest and
+verification additionally bind that generator and the shared deployment/oracle
+dependencies by source hash.
+
+```sh
+blender --background --factory-startup --disable-autoexec --threads 2 --python-exit-code 1 --python tools/randy_node_assets/build_mix_shaders.py -- --output node_library/_build/Randy_Mix_Shaders.blend
+blender --background --factory-startup --disable-autoexec --threads 2 --python-exit-code 1 --python tools/randy_node_assets/verify_mix_shaders.py -- --asset node_library/_build/Randy_Mix_Shaders.blend --report node_library/_build/mix-shaders-verification.json
+python tools/randy_node_assets/finalize_mix_shaders.py --asset node_library/_build/Randy_Mix_Shaders.blend --verification node_library/_build/mix-shaders-verification.json
+python tools/randy_node_assets/verify_library.py
+python tools/randy_node_assets/deploy_mix_shaders.py --asset node_library/assets/Randy_Mix_Shaders.blend --verification node_library/validation/mix_shaders.json --library "<existing asset library>" --backups "<backup directory>" --report "<deployment report.json>"
+python tools/randy_node_assets/deploy_mix_shaders.py --asset node_library/assets/Randy_Mix_Shaders.blend --verification node_library/validation/mix_shaders.json --library "<existing asset library>" --backups "<backup directory>" --check
+```
+
+The finalizer accepts only passed evidence bound to the exact unchanged build,
+Ring Mask and source dependencies. It refuses to overwrite an existing different
+published Mix Shaders file or preview; preserve the old publication before
+finalizing a subsequent version. The deployment wrapper reuses Ring Mask's
+guarded catalog merge, backup and rollback implementation in an isolated module;
+it changes only `Randy_Mix_Shaders.blend` and a missing Textures catalog entry.
+Existing Ring Mask, geometry assets and unrelated library contents are preserved.
 
 ## Keep every change visible
 

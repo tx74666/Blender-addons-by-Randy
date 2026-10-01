@@ -4,7 +4,6 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import time
@@ -137,7 +136,6 @@ def _publish(job, result):
               'origin': 'unity-edit' if job['source_package'] else 'blender-original',
               'source_package': job['source_package'],
               'source_package_sha256': job['source_package_sha256'],
-              'fbx_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
               'channels': 'skeletal-only',
               'limitations': 'No Shape Key, material, camera, audio or animation-event export.'}
     # Older imported Actions have no fixed source hash; leave it unknown rather
@@ -148,7 +146,12 @@ def _publish(job, result):
     with tempfile.TemporaryDirectory(prefix='.cdesigner-action-', dir=destination.parent) as staging:
         staging = Path(staging)
         staged_fbx, staged_meta = staging / destination.name, staging / metadata.name
-        shutil.copyfile(source, staged_fbx)
+        digest = hashlib.sha256()
+        with source.open('rb') as incoming, staged_fbx.open('xb') as outgoing:
+            for block in iter(lambda: incoming.read(1024 * 1024), b''):
+                outgoing.write(block)
+                digest.update(block)
+        report['fbx_sha256'] = digest.hexdigest()
         staged_meta.write_text(json.dumps(report, indent=2), encoding='utf-8')
         try:
             for src, dst in ((staged_meta, metadata), (staged_fbx, destination)):

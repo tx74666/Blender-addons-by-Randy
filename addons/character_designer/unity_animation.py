@@ -431,7 +431,19 @@ def import_test_action(context, target, filepath, *, start_frame=1):
         raise UnityAnimationError("Restore the current Unity test before importing another clip.")
     if context.object and context.object.mode == "EDIT":
         raise UnityAnimationError("Leave Edit Mode before importing a test Action.")
-    data = load_package(filepath)
+    return _import_package_action(context, target, load_package(filepath), start_frame=start_frame)
+
+
+def _import_package_action(context, target, data, *, start_frame=1):
+    """Apply this operation's validated packet without parsing a second copy.
+
+    Internal callers must pass load_package's result. Link import retains its
+    fresh final input checks; this is not a persistent cache or a hash shortcut.
+    """
+    if active_preview(target):
+        raise UnityAnimationError("Restore the current Unity test before importing another clip.")
+    if context.object and context.object.mode == "EDIT":
+        raise UnityAnimationError("Leave Edit Mode before importing a test Action.")
     unit_scale = context.scene.unit_settings.scale_length
     mapping = _mapping(target, data, unit_scale)
     if not math.isfinite(start_frame):

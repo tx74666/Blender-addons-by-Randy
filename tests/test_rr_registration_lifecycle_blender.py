@@ -72,7 +72,7 @@ def assert_mixer_unregistered(module):
     mixer = module.rr_shader_mixer
     check(not any(getattr(cls, "is_registered", False) for cls in mixer.CLASSES),
           "Disable leaked Mixer operator classes")
-    check(mixer.draw_add_menu not in menu_callbacks("NODE_MT_add")
+    check(not menu_counts()["NODE_MT_add"]
           and mixer.draw_context_menu not in menu_callbacks("NODE_MT_context_menu"),
           "Disable leaked Mixer menu callbacks")
     check(not any(callback in getattr(bpy.app.handlers, name)
@@ -125,7 +125,7 @@ def assert_registered(module, counts, keys, menus):
     mixer = module.rr_shader_mixer
     check(all(getattr(cls, "is_registered", False) for cls in mixer.CLASSES),
           "Mixer operator classes missing")
-    check(mixer.draw_add_menu in menu_callbacks("NODE_MT_add")
+    check(not menu_counts()["NODE_MT_add"]
           and mixer.draw_context_menu in menu_callbacks("NODE_MT_context_menu"),
           "Registered menus belong to a stale Mixer module")
     check(all(callback in getattr(bpy.app.handlers, name)
@@ -188,7 +188,7 @@ def main():
         if hasattr(bpy.app.handlers, "blend_import_post"):
             expected_handlers["blend_import_post"] = ("remember_object_manager_imported_objects",)
         expected_keys = baseline_keys + len(module.OBJECT_MANAGER_DUPLICATE_KEYMAPS)
-        expected_menus = {"NODE_MT_add": ("draw_add_menu",),
+        expected_menus = {"NODE_MT_add": (),
                           "NODE_MT_context_menu": ("draw_context_menu",)}
         assert_registered(module, expected_handlers, expected_keys, expected_menus)
 

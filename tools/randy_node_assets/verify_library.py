@@ -168,6 +168,14 @@ class LibraryCheck:
                     ast.parse(path.read_text(encoding="utf-8-sig"), filename=value)
                 except (OSError, UnicodeError, SyntaxError) as exc:
                     self.error(f"{label}.source.{role}: Python syntax check failed: {exc}.")
+        dependencies = bundle.get("source_dependencies_sha256")
+        if dependencies is not None:
+            if not isinstance(dependencies, dict) or not dependencies:
+                self.error(f"{label}.source_dependencies_sha256: expected a non-empty source-hash object.")
+            else:
+                for value, expected in dependencies.items():
+                    path = self.path(value, f"{label}.dependency")
+                    self.hash_file(path, expected, f"{label}.dependency", text_lf=True)
 
     def report(self, bundle: dict, assets: list[dict], label: str) -> None:
         path = self.path(bundle.get("verification"), f"{label}.verification")
@@ -178,6 +186,8 @@ class LibraryCheck:
             self.error(f"{label}.verification: the saved verification did not pass.")
         if report.get("asset_sha256") != bundle.get("sha256"):
             self.error(f"{label}.verification: asset_sha256 does not match the bundle.")
+        if "source_dependencies_sha256" in bundle and report.get("source_dependencies_sha256") != bundle["source_dependencies_sha256"]:
+            self.error(f"{label}.verification: generator/source dependencies differ from the manifest.")
         tests = self.unique(report.get("tests"), "name", f"{label}.verification.tests")
         for name, test in tests.items():
             if test.get("passed") is not True:
