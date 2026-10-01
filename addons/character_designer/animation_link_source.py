@@ -31,6 +31,15 @@ def _error(message):
     return unity_animation.UnityAnimationError(message)
 
 
+def _import_action(context, rig, packet, start_frame):
+    # A file-only update can precede a saved-session restart. The animation
+    # module may still be cached from 0.68.0 when this module is first loaded.
+    import_packet = getattr(unity_animation, '_import_package_action', None)
+    if import_packet is None:
+        return unity_animation.import_test_action(context, rig, packet['_path'], start_frame=start_frame)
+    return import_packet(context, rig, packet, start_frame=start_frame)
+
+
 def _sha256(path):
     result = hashlib.sha256()
     with path.open('rb') as stream:
@@ -169,7 +178,7 @@ def import_source(context, manifest_path, model_file=None, start_frame=1):
         context.view_layer.update()
         # _mapping checks every bind origin and parent; no tolerance relaxation,
         # body-only fallback or X-rest substitution is permitted in this route.
-        result = unity_animation._import_package_action(context, rig, packet, start_frame=start_frame)
+        result = _import_action(context, rig, packet, start_frame)
         if result.action[unity_animation.PACKAGE_HASH_KEY] != packet['_sha256'] or _sha256(path) != digest:
             raise _error('A linked input changed during import; the new editing scene was discarded.')
         current_link = animation_link.load_link(manifest_path)

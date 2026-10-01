@@ -1,4 +1,28 @@
-# Character Designer 0.67.0
+# Character Designer 0.68.2
+
+## Compact Unity Export (0.68.2)
+
+Unity Export keeps Main Rig, Folder, Name and Export / Update to Unity visible.
+Folder uses Blender's built-in directory picker; **Open Folder** is a secondary
+action under **Warnings**. **Objects** shows mesh and armature counts in its
+collapsed heading instead of repeating them elsewhere.
+
+**Use Simplified Materials** opens a compact per-material checklist. Checked
+materials use the existing temporary export approximation; **Use Original**
+removes only that material's saved export choice. Original shaders and other
+material choices stay unchanged. Materials on included meshes remain available
+after disabling an approximation, and retained choices can still be cleared.
+
+Objects, material choices and Warnings start collapsed. **Warnings** displays
+its count, actionable messages and one **Open Export Report** button when
+expanded. Expected scope skips remain report notices. Export success uses a
+brief completion notification; failures, cancellation and active progress remain
+visible. Forearm data, runtime-prefab usage and Unity verification status belong
+in the report and companion documentation.
+
+There is currently no production Unity import receipt returned to Blender.
+The export report remains truthful about that limitation; a successful Blender
+export is not recorded as a verified Unity import.
 
 ## Quick Bind hierarchy (0.67.0)
 
@@ -581,11 +605,11 @@ in Edit Mode, enables X-Ray and frames the selection. It does not use stale FBX
 vertex indices or assign weights. A modifier-only problem with no missing source
 vertices is reported for separate inspection rather than selecting guessed points.
 
-**Use Simple BSDF for Export** records a reversible per-material choice on the
+**Use Simplified** records a reversible per-material choice on the
 character. On the next export, only the disposable snapshot receives a simple
 Principled material, retaining safe base-color/image inputs and standard values.
 Procedural patterns and advanced shader effects are approximated; details are in
-the export report. **Use Original on Next Export** restores the original export
+the export report. **Use Original** restores the original export
 choice. Both choices support Undo and saving/reopening; the live shader graph is
 never rewritten. Unity uses its own material shader, and authored Unity material
 remaps are not overwritten by this option.
@@ -682,7 +706,7 @@ subdivided mesh. Their ordinary baseline can differ. Local normal/tangent update
 are approximate and do not reproduce all Blender custom-normal behavior.
 This version does not export animation, configure a Humanoid Avatar,
 translate custom shaders, or install runtime hair/skirt physics.
-**Exported** means files were written; the panel/report explicitly distinguish
+**Exported** means files were written; the report distinguishes
 that from verification inside Unity. Keep the canonical blend as the editable
 source. The scoped exporter and publication regression tests are in
 `tests/test_unity_export_blender.py`.

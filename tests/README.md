@@ -99,7 +99,13 @@ and the final Unity shader appearance were not verified in this update.
 
 `test_unity_export_blender.py` covers export scope, publication ownership and
 rollback. `test_unity_export_ui_blender.py` checks displayed scope and warning
-status. `test_unity_export_worker_blender.py` performs real FBX export/reimport,
+status, saved disclosure defaults, compact per-material choices and native RNA.
+`python tests/test_unity_export_panel.py` checks the actual panel control flow,
+report placement, warning filtering, current failures and material operator
+arguments without launching Blender. Its exporter fixture also checks that
+Unity verification stays unverified and runtime-prefab guidance is report-only.
+This lightweight suite does not verify native rendering or scene persistence.
+`test_unity_export_worker_blender.py` performs real FBX export/reimport,
 artist Shape Keys, modifiers, textures and skin-weight diagnostics; it also checks
 the empty `.forearm.json` removal marker when a previously exported calibration
 has been removed.

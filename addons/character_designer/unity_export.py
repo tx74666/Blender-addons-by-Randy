@@ -343,6 +343,11 @@ def _publish(job, result):
               'unity_status': 'Exported; Unity import has not been verified.',
               'animation_status': 'Rest model only; animation export is not included.',
               'updated_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+    if report.get('forearm_correction', {}).get('meshes'):
+        prefab = Path(filename).stem + '.Runtime.prefab'
+        report['unity_runtime_usage'] = (
+            f'Use {prefab} after the companion Unity importer completes; '
+            'the runtime prefab is generated in Unity, not by this export.')
     # Keep stale owned outputs rather than deleting assets whose GUIDs may be referenced.
     stale = set((prior or {}).get('files', {})) - set(files)
     if stale:

@@ -105,6 +105,14 @@ def _simple_material_entries(config):
     return [entry for entry in config.simple_materials if entry.material is not None]
 
 
+def _material_choices(objects, config):
+    """Keep original choices discoverable and retained overrides removable."""
+    chosen = {entry.material for entry in _simple_material_entries(config)}
+    used = {slot.material for obj in objects if obj.type == 'MESH'
+            for slot in obj.material_slots if slot.material is not None}
+    return sorted(used | chosen, key=lambda material: material.name.casefold()), chosen
+
+
 def _visible_collection_path(layer, obj):
     if layer.exclude or layer.hide_viewport or layer.collection.hide_viewport:
         return False
@@ -123,7 +131,7 @@ def _warning_actions(layout, context, config, message):
         material = bpy.data.materials.get(match[1])
         if material is not None and not any(entry.material == material for entry in _simple_material_entries(config)):
             action = layout.operator('character_designer.unity_simple_material',
-                                     text='Use Simple BSDF for Export', icon='MATERIAL')
+                                     text='Use Simplified', icon='MATERIAL')
             action.material_name = material.name
             action.enabled = True
 
@@ -176,8 +184,18 @@ class CharacterDesignerUnityExport(PropertyGroup):
     asset_id: StringProperty(options={'HIDDEN'})
     extras: CollectionProperty(type=CharacterDesignerUnityExtra)
     simple_materials: CollectionProperty(type=CharacterDesignerUnitySimpleMaterial)
-    show_objects: BoolProperty(name='Objects', default=False)
-    show_warnings: BoolProperty(name='Warnings', default=True)
+    show_objects: BoolProperty(
+        name='Objects', default=False,
+        description='Review meshes with an enabled character Armature binding and change export inclusion',
+    )
+    show_materials: BoolProperty(
+        name='Use Simplified Materials', default=False,
+        description='Choose a temporary Principled BSDF approximation per material for the next export; originals are kept',
+    )
+    show_warnings: BoolProperty(
+        name='Warnings', default=False,
+        description='Review export warnings and open the last completed export report',
+    )
     last_status: StringProperty(name='Last Export', options={'HIDDEN'})
     last_report: StringProperty(name='Export Report', subtype='FILE_PATH', options={'HIDDEN'})
 
@@ -196,8 +214,8 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
         warnings, _notices = _exporter().report_messages(result)
         config.last_status = _success_status(warnings)
         self.report({'WARNING'} if warnings else {'INFO'},
-                    f"Exported {os.path.basename(result['filepath'])}; Unity import not verified."
-                    + (f' {len(warnings)} warning(s); see export report.' if warnings else ''))
+                    f"Exported {os.path.basename(result['filepath'])}."
+                    + (f' {len(warnings)} warning(s); see Warnings.' if warnings else ''))
 
     def _finish_timer(self):
         timer = getattr(self, '_timer', None)
@@ -369,10 +387,16 @@ class CHARACTERDESIGNER_OT_unity_locate_unweighted(Operator):
 class CHARACTERDESIGNER_OT_unity_simple_material(Operator):
     bl_idname = 'character_designer.unity_simple_material'
     bl_label = 'Simple Export Material'
-    bl_description = 'Use a temporary Principled BSDF approximation on the next export; preserve the original shader. Disable to export the original again'
+    bl_description = 'Toggle a temporary Principled BSDF approximation for this material on the next export; preserve the original shader'
     bl_options = {'REGISTER', 'UNDO'}
     material_name: StringProperty(options={'HIDDEN'})
     enabled: BoolProperty(default=True, options={'HIDDEN'})
+
+    @classmethod
+    def description(cls, _context, properties):
+        if properties.enabled:
+            return 'Use a temporary Principled BSDF approximation for this material on the next export; keep the original unchanged'
+        return 'Use this material\'s original shader on the next export; keep other material choices unchanged'
 
     def execute(self, context):
         try:
@@ -495,6 +519,11 @@ class CHARACTERDESIGNER_OT_unity_open_path(Operator):
     bl_options = {'INTERNAL'}
     open_report: BoolProperty(default=False, options={'HIDDEN'})
 
+    @classmethod
+    def description(cls, _context, properties):
+        return ('Open the last completed export report, including Unity verification status and runtime details'
+                if properties.open_report else 'Open the saved export folder')
+
     def execute(self, context):
         try:
             _rig_obj, config = _config(context)
@@ -536,9 +565,9 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             layout.label(text='Choose your character rig to begin.', icon='INFO')
             return
         config = rig.character_designer_unity_export
-        row = layout.row(align=True)
-        row.prop(config, 'directory', text='Folder')
-        row.operator('character_designer.unity_open_path', text='', icon='FILE_FOLDER')
+        # DIR_PATH supplies its own directory picker. Opening the destination
+        # is a secondary action in the report disclosure below.
+        layout.prop(config, 'directory', text='Folder')
         layout.prop(config, 'filename', text='Name')
 
         objects, eligible, warnings, error = [], [], [], ''
@@ -563,53 +592,64 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             layout.label(text='Use Object or Pose Mode to export.', icon='INFO')
         if error:
             layout.label(text=_short(error), icon='ERROR')
-        else:
-            meshes = sum(obj.type == 'MESH' for obj in objects)
-            rigs = sum(obj.type == 'ARMATURE' for obj in objects)
-            layout.label(text=f'{meshes} mesh(es), {rigs} armature(s)', icon='OUTLINER_OB_MESH')
-        layout.label(text='Only meshes with an enabled Armature binding', icon='INFO')
-        if config.last_status:
-            report = _last_report(config)
-            reported_warnings = _exporter().report_messages(report)[0] if report else []
-            status = _success_status(reported_warnings) if report else config.last_status
-            layout.label(text=_short(status),
+        if config.last_status and not config.last_status.startswith('Exported'):
+            layout.label(text=_short(config.last_status),
                          icon='ERROR' if config.last_status.startswith('Export failed') else 'INFO')
-            if config.last_status.startswith('Exported'):
-                layout.label(text='Unity import not verified')
-                if report and report.get('forearm_correction', {}).get('meshes'):
-                    layout.label(text='Forearm correction included', icon='CHECKMARK')
-                    prefab_name = os.path.splitext(report.get('filename', config.filename))[0] + '.Runtime.prefab'
-                    layout.label(text=_short('Use ' + prefab_name))
-            if reported_warnings:
-                row = layout.row()
-                row.prop(config, 'show_warnings', emboss=False,
-                         icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT')
-                if config.show_warnings:
-                    box = layout.box()
-                    scale = context.preferences.system.ui_scale or 1.0
-                    width = max(24, int(getattr(context.region, 'width', 300) / (7 * scale)) - 6)
-                    for warning in reported_warnings:
-                        for index, line in enumerate(textwrap.wrap(_warning_summary(warning), width)):
-                            box.label(text=line, icon='ERROR' if index == 0 else 'BLANK1')
-                        _warning_actions(box, context, config, warning)
-            if config.last_report:
-                layout.operator('character_designer.unity_open_path', text='Open Export Report',
-                                icon='TEXT').open_report = True
-
-        for entry in _simple_material_entries(config):
-            box = layout.box()
-            box.label(text=_short(entry.material.name + ' · Simple BSDF'), icon='MATERIAL')
-            box.label(text='Export approximation; original is kept.')
-            action = box.operator('character_designer.unity_simple_material',
-                                  text='Use Original on Next Export', icon='LOOP_BACK')
-            action.material_name = entry.material.name
-            action.enabled = False
 
         row = layout.row()
-        row.prop(config, 'show_objects', text='Objects', emboss=False,
+        meshes = sum(obj.type == 'MESH' for obj in objects)
+        rigs = sum(obj.type == 'ARMATURE' for obj in objects)
+        row.prop(config, 'show_objects',
+                 text='Objects' if error else f'Objects · {meshes} Meshes · {rigs} Armatures', emboss=False,
                  icon='TRIA_DOWN' if config.show_objects else 'TRIA_RIGHT')
-        if not config.show_objects:
-            return
+        if config.show_objects:
+            CHARACTERDESIGNER_PT_unity_export._draw_objects(
+                layout, context, rig, config, setup, objects, eligible, error)
+
+        materials, chosen = _material_choices(objects, config)
+        row = layout.row()
+        row.prop(config, 'show_materials', text=f'Use Simplified Materials · {len(chosen)}', emboss=False,
+                 icon='TRIA_DOWN' if config.show_materials else 'TRIA_RIGHT')
+        if config.show_materials:
+            box = layout.box()
+            box.enabled = not running
+            for material in materials:
+                selected = material in chosen
+                row = box.row(align=True)
+                action = row.operator('character_designer.unity_simple_material',
+                                      text=_short(material.name, 30), emboss=False,
+                                      icon='CHECKBOX_HLT' if selected else 'CHECKBOX_DEHLT')
+                action.material_name = material.name
+                action.enabled = not selected
+                if selected:
+                    action = row.operator('character_designer.unity_simple_material',
+                                          text='Use Original', icon='LOOP_BACK')
+                    action.material_name = material.name
+                    action.enabled = False
+            if not materials:
+                box.label(text='No materials on included meshes.')
+
+        report = _last_report(config)
+        reported_warnings = _exporter().report_messages(report or {'warnings': warnings})[0]
+        row = layout.row()
+        row.prop(config, 'show_warnings', text=f'Warnings · {len(reported_warnings)}', emboss=False,
+                 icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT')
+        if config.show_warnings:
+            box = layout.box()
+            scale = context.preferences.system.ui_scale or 1.0
+            width = max(24, int(getattr(context.region, 'width', 300) / (7 * scale)) - 6)
+            for warning in reported_warnings:
+                for index, line in enumerate(textwrap.wrap(_warning_summary(warning), width)):
+                    box.label(text=line, icon='ERROR' if index == 0 else 'BLANK1')
+                _warning_actions(box, context, config, warning)
+            if config.last_report:
+                box.operator('character_designer.unity_open_path', text='Open Export Report',
+                             icon='TEXT').open_report = True
+            if config.directory:
+                box.operator('character_designer.unity_open_path', text='Open Folder', icon='FILE_FOLDER')
+
+    @staticmethod
+    def _draw_objects(layout, context, rig, config, setup, objects, eligible, error):
         box = layout.box()
         for obj in sorted(objects, key=lambda obj: (obj.type != 'ARMATURE', obj != setup.body)):
             row = box.row(align=True)
@@ -632,9 +672,6 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                 action.object_name = obj.name
                 action.include = True
                 row.label(text=obj.name, icon='MESH_DATA')
-        for warning in warnings:
-            if ': skipped;' not in warning:
-                box.label(text=_short(warning), icon='INFO')
         try:
             invalid = _invalid_overrides(context, rig, config)
         except (ValueError, RuntimeError):

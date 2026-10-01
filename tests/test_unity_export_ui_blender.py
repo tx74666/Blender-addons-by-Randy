@@ -126,6 +126,10 @@ config.directory = '//UnityTarget/'
 config.filename = 'Cosha'
 assert second.character_designer_unity_export.directory == ''
 assert not ui.CharacterDesignerUnityExport.bl_rna.properties['directory'].is_skip_save
+for name in ('show_objects', 'show_warnings', 'show_materials'):
+    prop = ui.CharacterDesignerUnityExport.bl_rna.properties[name]
+    assert prop.default is False and not prop.is_skip_save, name
+    assert getattr(config, name) is False, name
 
 bpy.ops.object.select_all(action='DESELECT')
 extra.select_set(True)
@@ -208,6 +212,45 @@ for obj in (helper, foreign):
 assert len(config.extras) == 1 and config.extras[0].object == extra
 print('PASS missing/helper/foreign saved reference cleanup restores collection', flush=True)
 
+# Registered material actions save an export choice without modifying either
+# shader. A previously selected, now unused material must remain removable.
+skin, cloth, stale = [bpy.data.materials.new(name) for name in ('Skin', 'Cloth', 'Stale Choice')]
+for material in (skin, cloth, stale):
+    material.use_nodes = True
+    material.node_tree.nodes.new('ShaderNodeRGB').outputs[0].default_value = (.1, .3, .7, 1)
+body.data.materials.append(skin)
+bound.data.materials.append(cloth)
+
+
+def shader_state(material):
+    tree = material.node_tree
+    return (tree.as_pointer(), tuple((node.as_pointer(), node.bl_idname) for node in tree.nodes),
+            tuple((link.from_socket.as_pointer(), link.to_socket.as_pointer()) for link in tree.links),
+            tuple(tuple(node.outputs[0].default_value) for node in tree.nodes if node.bl_idname == 'ShaderNodeRGB'))
+
+
+shaders_before = [shader_state(material) for material in (skin, cloth, stale)]
+for _repeat in range(2):
+    assert bpy.ops.character_designer.unity_simple_material(material_name=cloth.name, enabled=True) == {'FINISHED'}
+assert [entry.material for entry in config.simple_materials] == [cloth]
+config.simple_materials.add().material = stale
+config.show_materials = True
+layout = Layout()
+ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
+material_buttons = [kwargs for identifier, kwargs, _context in layout.buttons
+                    if identifier == 'character_designer.unity_simple_material']
+assert {item['text'] for item in material_buttons if item.get('icon', '').startswith('CHECKBOX_')} == {
+    'Skin', 'Cloth', 'Stale Choice'}
+assert len([item for item in material_buttons if item.get('text') == 'Use Original']) == 2
+assert bpy.ops.character_designer.unity_simple_material(material_name=stale.name, enabled=False) == {'FINISHED'}
+assert bpy.ops.character_designer.unity_simple_material(material_name=cloth.name, enabled=False) == {'FINISHED'}
+assert not config.simple_materials
+assert [shader_state(material) for material in (skin, cloth, stale)] == shaders_before
+assert body.data.materials[0] == skin and bound.data.materials[0] == cloth
+assert bpy.ops.character_designer.unity_simple_material(material_name=cloth.name, enabled=True) == {'FINISHED'}
+config.show_materials = False
+print('PASS registered per-material choices, stale removal, and unchanged source shaders', flush=True)
+
 fake = FakeExport()
 with patch.object(ui, '_exporter', return_value=fake):
     bpy.context.window_manager.character_designer.ui_page = UI_PAGE_MISC
@@ -249,7 +292,8 @@ with patch.object(ui, '_exporter', return_value=fake):
     assert operator.modal(context, Event('TIMER')) == {'FINISHED'}
     assert timer in manager.removed and not ui._MODAL_EXPORTS
     assert config.last_report == 'Cosha.cdesigner.json'
-    assert 'Unity import not verified' in operator.reports[-1][1]
+    assert 'Exported Cosha.fbx' in operator.reports[-1][1]
+    assert 'Unity import not verified' not in operator.reports[-1][1]
 
     operator = Modal(); fake.ready = False
     operator.invoke(context, None)
@@ -280,7 +324,7 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
     with patch.object(ui, '_exporter', return_value=fake):
         layout = Layout()
         ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
-        assert 'Exported · 3 warning(s)' in layout.labels, layout.labels
+        assert not any(label.startswith('Exported') for label in layout.labels), layout.labels
         shown = ' '.join(layout.labels)
         assert 'Cosha: 2 vertices need skin weights.' in shown, shown
         assert 'Skin: set up its shader in Unity.' in shown, shown
@@ -291,7 +335,7 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
             layout = Layout()
             ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
             assert status in layout.labels, layout.labels
-            assert 'show_warnings' not in layout.fields, layout.fields
+            assert 'show_warnings' in layout.fields, layout.fields
             assert 'Exported · 3 warning(s)' not in layout.labels
         operator = Modal()
         operator._result(config, {'filepath': 'Cosha.fbx', 'report_path': str(report_path),
@@ -305,21 +349,27 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
         report_path.write_text(json.dumps({'ok': True, 'warnings': skips}), encoding='utf-8')
         layout = Layout()
         ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
-        assert 'Exported successfully' in layout.labels
-        assert 'show_warnings' not in layout.fields
+        assert 'Exported successfully' not in layout.labels
+        assert 'show_warnings' in layout.fields
         report_path.write_text('broken JSON', encoding='utf-8')
         layout = Layout()
         ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
-        assert 'Exported successfully' in layout.labels
+        assert 'Exported successfully' not in layout.labels
 print('PASS visible actionable warnings, legacy report counts, notices-only success and current failure/cancel precedence', flush=True)
 
 with tempfile.TemporaryDirectory(prefix='cd-export-ui-') as temporary:
     path = str(Path(temporary) / 'profiles.blend')
+    config.show_objects, config.show_materials, config.show_warnings = False, True, True
     bpy.ops.wm.save_as_mainfile(filepath=path)
     bpy.ops.wm.open_mainfile(filepath=path)
-    assert bpy.data.objects['ExportMain'].character_designer_unity_export.directory == '//UnityTarget/'
-    assert bpy.data.objects['ExportSecond'].character_designer_unity_export.directory == ''
-print('PASS save/reopen preserves separate rig destinations', flush=True)
+    saved = bpy.data.objects['ExportMain'].character_designer_unity_export
+    other = bpy.data.objects['ExportSecond'].character_designer_unity_export
+    assert saved.directory == '//UnityTarget/' and other.directory == ''
+    assert not saved.show_objects and saved.show_materials and saved.show_warnings
+    assert [entry.material.name for entry in saved.simple_materials] == ['Cloth']
+    assert not other.simple_materials
+    assert not any(getattr(other, name) for name in ('show_objects', 'show_materials', 'show_warnings'))
+print('PASS save/reopen preserves separate rig destinations, foldouts and material choices', flush=True)
 character_designer.unregister()
 assert not hasattr(bpy.types.Object, 'character_designer_unity_export')
 assert not hasattr(bpy.types, 'CHARACTERDESIGNER_PT_unity_export')

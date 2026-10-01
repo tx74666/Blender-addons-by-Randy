@@ -176,6 +176,25 @@ class ImportBoundaryTests(IsolatedModules):
         action[self.unity.TARGET_KEY] = self.target
         self.target[self.unity.ACTIVE_KEY] = action
 
+    def test_link_reuses_packet_when_current_animation_module_is_available(self):
+        source = self.load('animation_link_source')
+        packet = {'_path': 'Walk.cdanim.json', '_sha256': 'b' * 64}
+        expected = object()
+        with patch.object(self.unity, '_import_package_action', return_value=expected) as convert, \
+                patch.object(self.unity, 'import_test_action') as public:
+            self.assertIs(source._import_action(self.context, self.target, packet, 4), expected)
+        convert.assert_called_once_with(self.context, self.target, packet, start_frame=4)
+        public.assert_not_called()
+
+    def test_file_update_remains_compatible_with_cached_previous_animation_module(self):
+        source = self.load('animation_link_source')
+        source.unity_animation = SimpleNamespace(import_test_action=lambda *args, **kwargs: None)
+        packet = {'_path': 'Walk.cdanim.json', '_sha256': 'b' * 64}
+        expected = object()
+        with patch.object(source.unity_animation, 'import_test_action', return_value=expected) as public:
+            self.assertIs(source._import_action(self.context, self.target, packet, 4), expected)
+        public.assert_called_once_with(self.context, self.target, 'Walk.cdanim.json', start_frame=4)
+
     def test_public_wrapper_loads_once_and_passes_same_validated_dictionary(self):
         packet = {'_path': 'Walk.cdanim.json', '_sha256': 'b' * 64, 'frames': []}
         expected_result = object()

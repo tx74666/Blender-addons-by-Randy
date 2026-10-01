@@ -7,7 +7,9 @@ RR Helper 和 Character Designer 的源码、安装包及插件测试集中维�
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.19 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.19.zip](dist/rr_helper-0.2.19.zip) |
-| Character Designer | 0.68.0 | [character_designer](addons/character_designer) | [character_designer-0.68.0.zip](dist/character_designer-0.68.0.zip) |
+| Character Designer | 0.68.2 | [character_designer](addons/character_designer) | [character_designer-0.68.2.zip](dist/character_designer-0.68.2.zip) |
+
+Character Designer 0.68.2 simplifies **Misc > Unity Export** with one Folder picker, object counts in a collapsed Objects heading, compact per-material export choices, and one collapsed Warnings/report entry. Original shaders and export scope are preserved; Unity verification remains truthful in the report. [Local change and validation record](docs/releases/CharacterDesigner_0.68.2_unity_export_panel_20261001.md).
 
 Character Designer 0.68.0 adds **Animation > Link / Import** and **Sync to Unity** for one linked character Action. The accepted Cosha Walk workflow preserves the current Avatar, original assets and unsaved scenes, publishes immutable revisions, and supports candidate Preview plus explicit character-specific Apply/Restore. [Workflow and validation](docs/animation_roundtrip.md) · [Local release record](docs/releases/CharacterDesigner_0.68.0_animation_link_20261001.md).
 
