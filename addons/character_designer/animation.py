@@ -24,7 +24,32 @@ def _settings(context):
     return context.window_manager.character_designer_animation
 
 
+def _main_rig(context):
+    # Character Setup owns this saved choice. Reading it must not resolve to a
+    # selection fallback or copy it into the transient animation settings.
+    setup = getattr(context.scene, "character_designer_setup", None)
+    return setup.rig if setup is not None else None
+
+
+def _main_rig_error(context, rig):
+    if rig.type != "ARMATURE" or rig.library is not None:
+        return "Main Rig must be a local armature."
+    if context.scene.objects.get(rig.name) != rig:
+        return "Main Rig is not in this scene."
+    return ""
+
+
 def _target(context):
+    worklist = getattr(context.scene, "character_designer_animation_worklist", None)
+    if worklist is not None and worklist.workspace_path:
+        rig = worklist.rig
+        if (rig is not None and rig.type == "ARMATURE" and rig.library is None
+                and context.scene.objects.get(rig.name) == rig):
+            return rig
+        return None
+    rig = _main_rig(context)
+    if rig is not None:
+        return None if _main_rig_error(context, rig) else rig
     settings = _settings(context)
     if settings.target:
         return settings.target
@@ -157,6 +182,7 @@ def _poll_action_export():
     job = animation_export.active_job()
     if job is None:
         return None
+    settings = None
     try:
         settings = _export_window_manager.character_designer_animation
         result = animation_export.poll_export(job)
@@ -176,6 +202,16 @@ def _poll_action_export():
         if _export_window_manager:
             settings = _export_window_manager.character_designer_animation
             settings.status, settings.has_error = str(exc), True
+    scene = job.get('_worklist_scene') if isinstance(job, dict) else None
+    if scene is not None:
+        try:
+            worklist = scene.character_designer_animation_worklist
+            if settings is None:
+                worklist.status, worklist.has_error = 'Action export stopped; its owner is no longer available.', True
+            else:
+                worklist.status, worklist.has_error = settings.status, settings.has_error
+        except ReferenceError:
+            pass
     _export_window_manager = None
     _redraw()
     return None
@@ -355,12 +391,20 @@ class CHARACTERDESIGNER_OT_animation_export_cancel(Operator):
     def execute(self, context):
         global _export_window_manager
         from . import animation_export
+        job = animation_export.active_job()
         animation_export.cancel_export()
         if bpy.app.timers.is_registered(_poll_action_export):
             bpy.app.timers.unregister(_poll_action_export)
         _export_window_manager = None
         _settings(context).status = 'Action export cancelled. Existing files were preserved.'
         _settings(context).has_error = False
+        scene = job.get('_worklist_scene') if isinstance(job, dict) else None
+        if scene is not None:
+            try:
+                scene.character_designer_animation_worklist.status = _settings(context).status
+                scene.character_designer_animation_worklist.has_error = False
+            except ReferenceError:
+                pass
         _redraw()
         return {'FINISHED'}
 
@@ -646,9 +690,30 @@ class CHARACTERDESIGNER_PT_animation(Panel):
     def draw(self, context):
         layout = self.layout
         settings = _settings(context)
-        layout.prop(settings, "target")
-        if not settings.target and _target(context):
-            layout.label(text=f"Using: {_target(context).name}")
+        from .animation_worklist_ui import draw_worklist
+        draw_worklist(layout, context)
+        worklist = context.scene.character_designer_animation_worklist
+        if worklist.workspace_path:
+            if worklist.rig:
+                row = layout.row(align=True)
+                playing = context.screen and context.screen.is_animation_playing
+                row.operator('character_designer.animation_play_pause', text='Pause' if playing else 'Play',
+                             icon='PAUSE' if playing else 'PLAY')
+                row.prop(context.scene, 'frame_current', text='Frame')
+            from .animation_export import active_job
+            if active_job():
+                layout.operator('character_designer.animation_export_cancel', icon='CANCEL')
+            return
+        main_rig = _main_rig(context)
+        if main_rig is None:
+            layout.prop(settings, "target")
+            if not settings.target and _target(context):
+                layout.label(text=f"Using: {_target(context).name}")
+        else:
+            error = _main_rig_error(context, main_rig)
+            if error:
+                layout.label(text=error, icon='ERROR')
+                layout.label(text='Choose Main Rig in Rig > Character Setup.')
         from .unity_animation import active_preview, preview_time_seconds
         target = _target(context)
         preview = active_preview(target) if target else None

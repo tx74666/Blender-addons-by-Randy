@@ -89,7 +89,18 @@ def mirror_pairs(obj, armature, source, target, calculate):
     key = tuple(_identity(data) for data in (obj, mesh, armature, armature.data))
     cached = _MIRROR.get(key)
     if cached is not None and cached[0] == signature:
+        if cached[2] is not None:
+            error_type, arguments = cached[2]
+            raise error_type(*arguments)
         return list(cached[1])
-    result = calculate(obj, armature, source, target)
-    _remember(_MIRROR, key, (signature, tuple(result)))
+    try:
+        result = calculate(obj, armature, source, target)
+    except ValueError as exc:
+        # A deterministic failed geometry proof is also unchanged when every
+        # exact input is unchanged. Retain only the type/arguments, never an
+        # exception instance or traceback that could keep Blender data alive.
+        # Real edits change the full signature and immediately retry the proof.
+        _remember(_MIRROR, key, (signature, None, (type(exc), tuple(exc.args))))
+        raise
+    _remember(_MIRROR, key, (signature, tuple(result), None))
     return result

@@ -102,7 +102,7 @@ def test_contract(folder):
     # background process; the registered RNA is used for draw-property checks.
     operator = SimpleNamespace(report=lambda kind, message: reports.append((kind, message)), bl_rna=rna)
     wm_proxy = SimpleNamespace(character_designer_animation=settings, fileselect_add=chooser.append)
-    context_proxy = SimpleNamespace(window_manager=wm_proxy, object=rig)
+    context_proxy = SimpleNamespace(window_manager=wm_proxy, object=rig, scene=bpy.context.scene)
     original_result = settings.result_path
     before_data = rig.data
     with patch.object(backend, 'active_job', side_effect=lambda: state['job']), \

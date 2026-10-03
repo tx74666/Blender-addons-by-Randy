@@ -132,7 +132,9 @@ def _draw_lines():
         return
     import gpu
     from gpu_extras.batch import batch_for_shader
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    if 'gpu_shader' not in data:
+        data['gpu_shader'] = gpu.shader.from_builtin('UNIFORM_COLOR')
+    shader = data['gpu_shader']
     old_depth, old_width = gpu.state.depth_test_get(), gpu.state.line_width_get()
     try:
         gpu.state.depth_test_set('NONE')
@@ -144,6 +146,11 @@ def _draw_lines():
             shader.bind()
             shader.uniform_float('color', color)
             batch.draw(shader)
+    except Exception:
+        # A failed GPU resource must not survive into the next redraw.
+        data.pop('gpu_shader', None)
+        data.pop('gpu_batches', None)
+        raise
     finally:
         gpu.state.depth_test_set(old_depth)
         gpu.state.line_width_set(old_width)

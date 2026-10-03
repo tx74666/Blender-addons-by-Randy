@@ -249,14 +249,14 @@ def _full_auto_solver_bone_names(
 ):
     """Return Deform bones that own real vertices in the current Mesh domain.
 
-    A regular full Mesh uses every Deform bone.  A true one-sided Mirror source
+    A regular full Mesh uses its Deform bone domain. A true one-sided Mirror source
     excludes bones that live only on the generated side; otherwise Bone Heat can
     write right-side ownership onto left-side base vertices before the Mirror
     modifier has a chance to flip group names.
     """
 
     bones = _current_armature_bones(armature_obj)
-    deform_names = tuple(bone.name for bone in bones if bone.use_deform)
+    deform_names = _mesh_deform_bone_names(mesh_obj, armature_obj)
     source = _mirrored_half_mesh_source(mesh_obj, armature_modifier)
     if source is None:
         return deform_names
@@ -270,6 +270,22 @@ def _full_auto_solver_bone_names(
         if center.x * source_side >= -tolerance:
             result.append(name)
     return tuple(result)
+
+
+def _mesh_deform_bone_names(mesh_obj, armature_obj):
+    """Use a shared dress's exact source domain, retaining legacy full rigs."""
+    from . import skirt_rig
+    bones = _current_armature_bones(armature_obj)
+    deform = tuple(bone.name for bone in bones if bone.use_deform)
+    if armature_obj.get(skirt_rig.OWNER_KEY) or not any(b.get(skirt_rig.OWNER_KEY) for b in bones):
+        return deform
+    if mesh_obj.get(skirt_rig.RIG_KEY) == armature_obj:
+        record = skirt_rig.read_record(mesh_obj)
+        if record and skirt_rig.is_shared(record):
+            _controls, names, _mechanism = skirt_rig._bone_collection_layout(record)
+            names = names | {record['controls']['waist']}
+            return tuple(name for name in deform if name in names)
+    return tuple(name for name in deform if not bones[name].get(skirt_rig.OWNER_KEY))
 
 
 def _resolve_armature(context):
@@ -372,6 +388,8 @@ def _preflight(context):
     selected_names = _selected_deform_bone_names(context, armature_obj)
     if not selected_names:
         raise SelectedBoneWeightsError("Select at least one visible Deform bone.")
+    if not set(selected_names).issubset(_mesh_deform_bone_names(mesh_obj, armature_obj)):
+        raise SelectedBoneWeightsError('Select deform bones belonging to this mesh; shared Dress bones have a separate weight domain.')
     _validate_mirrored_half_mesh_side(
         mesh_obj,
         armature_obj,
@@ -1098,7 +1116,7 @@ class CHARACTERDESIGNER_OT_auto_weight_selected_bones(Operator):
     bl_label = "Auto Weight Selected Bones"
     bl_description = (
         "Recalculate Automatic Weights for selected Deform bones; optional Full "
-        "Auto Blend solves the current rig together and normalizes the affected "
+        "Auto Blend solves this mesh's bone group together and normalizes the affected "
         "region from the full solver's local proportions"
     )
     bl_options = {"REGISTER", "UNDO"}
@@ -1106,7 +1124,7 @@ class CHARACTERDESIGNER_OT_auto_weight_selected_bones(Operator):
     normalize_affected_deform_weights: BoolProperty(
         name="Full Auto Blend (Normalized)",
         description=(
-            "Solve all current-rig Deform bones together, give selected solver "
+            "Solve all Deform bones belonging to this mesh together, give selected solver "
             "weights first claim after locked weights, and normalize their old/new "
             "influence region from the full solver's local proportions; "
             "non-Deform and locked weights remain unchanged, and outside weights "
@@ -1162,6 +1180,7 @@ class CHARACTERDESIGNER_OT_auto_weight_selected_bones(Operator):
                 armature_obj,
             )
             structure_snapshot = _capture_structure(mesh_obj, armature_obj)
+            mesh_deform_names = set(_mesh_deform_bone_names(mesh_obj, armature_obj))
             if self.normalize_affected_deform_weights:
                 solver_names = _full_auto_solver_bone_names(
                     mesh_obj,
@@ -1172,6 +1191,7 @@ class CHARACTERDESIGNER_OT_auto_weight_selected_bones(Operator):
                     mesh_obj,
                     structure_snapshot,
                 )
+                deform_names = tuple(name for name in deform_names if name in mesh_deform_names)
                 solver_name_set = set(solver_names)
                 mirror_pair_names = tuple(
                     name for name in deform_names if name not in solver_name_set
@@ -1197,6 +1217,12 @@ class CHARACTERDESIGNER_OT_auto_weight_selected_bones(Operator):
             mesh_obj.data.use_mirror_x = False
             mesh_obj.data.use_paint_mask = False
             mesh_obj.data.use_paint_mask_vertex = False
+            # Native Bone Heat must not include another mesh's Dress/body bones
+            # merely because both now share one Armature. Existing transaction
+            # recovery restores these temporary flags on every failure path.
+            for bone in _current_armature_bones(armature_obj):
+                if bone.use_deform and bone.name not in mesh_deform_names:
+                    bone.use_deform = False
             vertex_count = len(mesh_obj.data.vertices)
             if self.normalize_affected_deform_weights:
                 if not set(selected_names).issubset(solver_names):
@@ -1296,6 +1322,7 @@ class CHARACTERDESIGNER_OT_auto_weight_selected_bones(Operator):
                     selected_names,
                     mirror_pair_names,
                 )
+            _restore_deform_flags(armature_obj, structure_snapshot)
             _verify_structure(mesh_obj, armature_obj, structure_snapshot)
             completed = True
         except SelectedBoneWeightsError as exc:

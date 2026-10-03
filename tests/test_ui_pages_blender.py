@@ -96,7 +96,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "shape_keys": modeling,
         "unity_export": expected_page == UI_PAGE_MISC,
         "quick_bind": weight,
-        "character_setup": expected_page in {UI_PAGE_WEIGHT, UI_PAGE_RIG},
+        "character_setup": expected_page == UI_PAGE_RIG,
         "animation": motion,
         "weight_tools": weight,
         "weight_symmetry": weight,

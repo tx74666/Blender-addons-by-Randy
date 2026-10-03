@@ -11,6 +11,7 @@ import math
 import traceback
 import copy
 from array import array
+from contextlib import contextmanager
 
 import bpy
 from bpy.app.handlers import persistent
@@ -477,6 +478,36 @@ def _calculate_records(obj, depsgraph):
         key.data.foreach_get("co", coordinates)
         _OUTPUT_CACHE[obj.as_pointer()].append(coordinates.tobytes())
     _ERRORS.pop(obj.name, None)
+
+
+@contextmanager
+def defer_runtime(context, *, flush_on_exit=True):
+    """Refresh corrective keys once after a synchronous pose transaction.
+
+    Intermediate dependency-graph callbacks must not validate or publish keys
+    for the temporary constraint/channel states of a pose transfer. Nesting
+    preserves the caller's guard. The yielded refresh callback lets a caller
+    with its own rollback transaction publish output inside that transaction;
+    otherwise the outermost scope refreshes its final pose on exit.
+    """
+    global _BUSY
+    previous_busy = _BUSY
+    _BUSY = True
+    def refresh():
+        global _BUSY
+        if previous_busy:
+            return
+        _BUSY = False
+        try:
+            update_runtime(context.scene)
+        finally:
+            _BUSY = True
+    try:
+        yield refresh
+    finally:
+        _BUSY = previous_busy
+        if flush_on_exit and not previous_busy:
+            update_runtime(context.scene)
 
 
 def update_runtime(scene, depsgraph=None):

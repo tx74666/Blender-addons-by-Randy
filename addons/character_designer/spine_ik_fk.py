@@ -12,7 +12,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import torso_controls as torso
+from . import generated_names, torso_controls as torso
 from .eye_controls import _controller_snapshot
 
 OWNER_KEY = 'character_designer_owner'
@@ -313,17 +313,18 @@ def _match_fk(context, armature, record, desired):
 
 def _add_widget(context, armature, record, role, width):
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection is None:
+    if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
         collection = bpy.data.collections.new(record['widget_collection'])
+        record['widget_collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
         from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'Spine IK')
+        widget_collections.ensure_container(context, collection, armature, 'Spine IK', allow_numbered=True)
         record['widget_collection'] = collection.name
     count = 48 if role == 'CHEST' else 4
     vertices = [(math.cos(i * math.tau / count) * width, 0.0,
                  math.sin(i * math.tau / count) * width * (0.62 if role == 'CHEST' else 0.75)) for i in range(count)]
-    name = 'WGT_CD_Spine_IK_' + role + '_' + record['id'][:10]
+    name = generated_names.widget_name(armature, 'Spine_IK_' + role)
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(vertices, [(i, (i + 1) % count) for i in range(count)], [])
     mesh.update()
@@ -360,7 +361,8 @@ def _delete_widgets(record):
             if not mesh.users:
                 bpy.data.meshes.remove(mesh)
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection and not collection.objects and not collection.children:
+    if (collection and _owned(collection, record, 'WIDGET_COLLECTION')
+            and not collection.objects and not collection.children):
         bpy.data.collections.remove(collection)
         from . import widget_collections
         widget_collections.prune_empty(bpy.context)
@@ -419,7 +421,7 @@ def build(context, armature):
               'source_states': {name: torso._state(armature.data.bones[name]) for name in (*sources, original['hips'])},
               'widgets': {}, 'drivers': []}
     record['constraints'] = _constraint_plan(record)
-    record['widget_collection'] = 'CD_Spine_IK_Widgets_' + record['id'][:10]
+    record['widget_collection'] = generated_names.collection_name(armature, 'Spine IK')
     layout, ctx = bone_collections.capture_managed_layout(armature), _limb()._capture_context(context, armature)
     mirror = armature.data.use_mirror_x
     length = sum(armature.data.bones[name].length for name in sources)

@@ -1848,12 +1848,19 @@ def test_direct_pole_guide_segments_and_dynamic_arrow_display():
     if bpy.ops.character_designer.limb_ik_build_all() != {"FINISHED"}:
         raise AssertionError(settings.last_message)
     inventory = limb_ik._validate_inventory(armature)
+    # Schema 5 keeps Target + Pole + Pole Display per limb. Target Rotation v1
+    # also owns one hidden PARENT_DELTA wrist helper for the single Arm here.
     if (
         inventory["schema"] != limb_ik.DIRECT_PREROLL_SCHEMA
-        or len(inventory["bones"]) != 6
+        or inventory["target_rotation_version"] != limb_ik.TARGET_ROTATION_VERSION
+        or len(inventory["bones"]) != 7
         or len(inventory["records"]) != 8
     ):
-        raise AssertionError("Two Direct limbs did not build the schema-5 three-bone contract")
+        raise AssertionError(
+            f"Two Direct limbs did not build the schema-5 Target Rotation contract: "
+            f"schema={inventory['schema']}, rotation={inventory['target_rotation_version']}, "
+            f"bones={len(inventory['bones'])}, records={len(inventory['records'])}"
+        )
     bone_count = len(armature.data.bones)
     constraint_count = len(inventory["records"])
 
@@ -1948,22 +1955,35 @@ def test_direct_pole_guide_segments_and_dynamic_arrow_display():
     pole_names = [rig["pole"].name for rig in inventory["rigs"].values()]
     for pose_bone in armature.pose.bones:
         pose_bone.select = False
-    segments = limb_ik._direct_pole_guide_segments(bpy.context)
-    if len(segments) != 2:
-        raise AssertionError(
-            f"Unselected Direct Poles did not keep both straight shafts visible: {len(segments)}"
+    # Newly generated controls already receive semantic PoseBone colors.
+    # Exercise the default-theme branch explicitly, then restore those colors
+    # so later visibility/motion checks keep the ordinary generated rig state.
+    palettes = [(armature.pose.bones[name], armature.data.bones[name].color.palette,
+                 armature.pose.bones[name].color.palette) for name in pole_names]
+    try:
+        for pole, _bone_palette, _pose_palette in palettes:
+            pole.bone.color.palette = 'DEFAULT'
+            pole.color.palette = 'DEFAULT'
+        segments = limb_ik._direct_pole_guide_segments(bpy.context)
+        if len(segments) != 2:
+            raise AssertionError(
+                f"Unselected Direct Poles did not keep both straight shafts visible: {len(segments)}"
+            )
+        theme_wire = limb_ik._theme_rgba(
+            bpy.context.preferences.themes[0].view_3d.wire,
+            (0.0, 0.0, 0.0, 1.0),
         )
-    theme_wire = limb_ik._theme_rgba(
-        bpy.context.preferences.themes[0].view_3d.wire,
-        (0.0, 0.0, 0.0, 1.0),
-    )
-    if any(
-        len(segment) != 3
-        or max(abs(float(actual) - float(expected)) for actual, expected in zip(segment[2], theme_wire))
-        > 2.0e-6
-        for segment in segments
-    ):
-        raise AssertionError("Unselected Direct Pole shafts did not use the theme wire color")
+        if any(
+            len(segment) != 3
+            or max(abs(float(actual) - float(expected)) for actual, expected in zip(segment[2], theme_wire))
+            > 2.0e-6
+            for segment in segments
+        ):
+            raise AssertionError("Unselected Direct Pole shafts did not use the theme wire color")
+    finally:
+        for pole, bone_palette, pose_palette in palettes:
+            pole.bone.color.palette = bone_palette
+            pole.color.palette = pose_palette
 
     # A hidden Pole must not leak its shaft, but restoring visibility must not
     # depend on selection state.

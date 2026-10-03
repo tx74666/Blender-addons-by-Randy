@@ -8,7 +8,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import character_setup, control_colors, limb_fk_visuals as visuals
+from . import character_setup, control_colors, generated_names, limb_fk_visuals as visuals
 from .torso_controls import _active, _same_rest, _state, _update
 
 OWNER_KEY = 'character_designer_owner'
@@ -280,14 +280,16 @@ def _geometry(role, fit, *, rounded=True):
 
 def _create_widget(context, armature, record, name, entry):
     collection = bpy.data.collections.get(record['collection'])
-    if collection is None:
+    if collection is None or not _owned(collection, record, 'COLLECTION'):
         collection = bpy.data.collections.new(record['collection'])
+        record['collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'COLLECTION')
         from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'Head & Neck')
+        widget_collections.ensure_container(context, collection, armature, 'Head & Neck', allow_numbered=True)
         record['collection'] = collection.name
     mesh = bpy.data.meshes.new(entry['mesh'])
+    entry['mesh'] = mesh.name
     _tag(mesh, record, entry['role'])
     vertices, edges = _geometry(entry['role'], record['fit'])
     frame = Matrix(record['fit']['head_frame' if entry['role'] == 'HEAD' else 'neck_frame'])
@@ -295,11 +297,11 @@ def _create_widget(context, armature, record, name, entry):
     mesh.from_pydata([local @ Vector(vertex) for vertex in vertices], edges, [])
     mesh.update()
     obj = bpy.data.objects.new(entry['object'], mesh)
+    entry['object'] = obj.name
     _tag(obj, record, entry['role'])
     collection.objects.link(obj)
     obj.hide_render, obj.hide_select = True, True
     obj.hide_set(True)
-    entry['object'], entry['mesh'] = obj.name, mesh.name
     state = {'custom_shape': obj, 'custom_shape_transform': None, 'use_bone_size': False,
              'scale': [1., 1., 1.], 'translation': [0., 0., 0.], 'rotation': [0., 0., 0.], 'wire_width': 2.0}
     _limb()._restore_pose_shape_state(armature, armature.pose.bones[name], state, runtime=True)
@@ -338,14 +340,14 @@ def build(context, armature, *, head_name=None, neck_name=None, body_source=None
     record = {'version': VERSION, 'id': uuid.uuid4().hex, 'head': head_name, 'neck': neck_name, 'bindings': {}, 'fit': fit}
     if neck_name is None:
         record['partial'] = True
-    record['collection'] = 'CD_Head_Neck_Widgets_' + record['id'][:10]
+    record['collection'] = generated_names.collection_name(armature, 'Head & Neck')
     before, refs = {}, {}
     for role, name in roles:
         pb = armature.pose.bones[name]
         before[name] = _limb()._pose_shape_runtime_state(pb)
         if pb.custom_shape:
             refs[role] = pb.custom_shape
-        widget = 'WGT_CD_' + role + '_' + record['id'][:10]
+        widget = generated_names.widget_name(armature, role)
         record['bindings'][name] = {'role': role, 'object': widget, 'mesh': widget,
             'original': _limb()._pose_shape_json_state(pb), 'original_color': control_colors.capture_bone(pb), 'rest': _state(pb.bone)}
     _update(context, armature)
@@ -404,7 +406,7 @@ def remove(context, armature):
         for name, entry in record['bindings'].items():
             pb = armature.pose.bones[name]
             _limb()._restore_pose_shape_state(armature, pb, _original_state(armature, entry), runtime=True)
-            control_colors.restore_bone_state(pb, entry['original_color'])
+            control_colors.restore_bone_state(pb, entry['original_color'], preserve_palette=True)
         _update(context, armature)
         visuals._verify_pose(armature, expected)
     except Exception:

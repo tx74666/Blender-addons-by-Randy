@@ -9,7 +9,7 @@ import json
 
 import bpy
 from bpy.app.handlers import persistent
-from bpy.props import BoolProperty
+from bpy.props import BoolProperty, StringProperty
 
 
 _KIND = "rr_shader_mixer_version"
@@ -17,6 +17,7 @@ _PAIRS = "rr_shader_mixer_pairs"
 _BASE = "rr_shader_mixer_base"
 _OUTPUT = "rr_shader_mixer_output"
 _SIGNATURE = "rr_shader_mixer_signature"
+_SIGNATURE_SCHEMA = "rr_shader_mixer_signature_schema"
 _INTERFACE_ORDER = "rr_shader_mixer_interface_order"
 _OWNER_TREES = {}
 _SYNCING = False
@@ -32,7 +33,8 @@ def _pairs(group):
         pairs = json.loads(group.get(_PAIRS, "[]"))
         if not isinstance(pairs, list) or not pairs:
             return []
-        if any(not isinstance(pair, list) or len(pair) != 3
+        size = 3 if group.get(_KIND) == 1 else 2
+        if any(not isinstance(pair, list) or len(pair) != size
                or any(not isinstance(item, str) for item in pair) for pair in pairs):
             return []
         return pairs
@@ -42,26 +44,67 @@ def _pairs(group):
 
 def is_mixer(node):
     try:
-        return (node.bl_idname == "ShaderNodeGroup" and node.node_tree is not None
+        return (node is not None and node.bl_idname == "ShaderNodeGroup" and node.node_tree is not None
                 and node.node_tree.bl_idname == "ShaderNodeTree"
-                and node.node_tree.get(_KIND) == 1)
+                and node.node_tree.get(_KIND) in {1, 2})
     except ReferenceError:
         return False
 
 
+def _legacy_mixer(node):
+    return is_mixer(node) and node.node_tree.get(_KIND) == 1
+
+
+def _socket_defaults(sockets):
+    values = []
+    for socket in sockets:
+        if hasattr(socket, "default_value"):
+            value = socket.default_value
+            if hasattr(value, "__len__"):
+                value = tuple(value)
+            values.append((socket.identifier, value))
+    return values
+
+
 def _graph_signature(group):
+    """Sign shader semantics, so arranging or relabelling nodes stays harmless."""
+    nodes = list(group.nodes)
+    indices = {node.as_pointer(): index for index, node in enumerate(nodes)}
     return json.dumps((
-        sorted((node.name, node.bl_idname,
+        [(node.bl_idname,
                 node.operation if node.bl_idname == "ShaderNodeMath" else "",
                 bool(node.use_clamp) if node.bl_idname == "ShaderNodeMath" else False,
                 bool(node.mute),
                 bool(node.is_active_output) if node.bl_idname == "NodeGroupOutput" else False,
-                tuple(node.location), node.label, node.width, bool(node.hide),
-                bool(node.use_custom_color), tuple(node.color))
-               for node in group.nodes),
-        sorted((link.from_node.name, link.from_socket.identifier,
-                link.to_node.name, link.to_socket.identifier) for link in group.links),
+                _socket_defaults(node.inputs), _socket_defaults(node.outputs))
+               for node in nodes],
+        sorted((indices[link.from_node.as_pointer()], link.from_socket.identifier,
+                indices[link.to_node.as_pointer()], link.to_socket.identifier) for link in group.links),
     ), separators=(",", ":"))
+
+
+def _matches_signature(group):
+    if group.get(_SIGNATURE_SCHEMA) == 2:
+        return _graph_signature(group) == group.get(_SIGNATURE)
+    # Saved v1 groups used visual fields and names in their signature. Ignore
+    # those visual fields when loading an old group, but retain its name-based
+    # topology contract. New and rebuilt groups use semantic signatures above.
+    if group.get(_KIND) != 1:
+        return False
+    try:
+        stored_nodes, stored_links = json.loads(group.get(_SIGNATURE, "null"))
+        stored = sorted(tuple(item[:6]) for item in stored_nodes)
+        current = sorted((node.name, node.bl_idname,
+                          node.operation if node.bl_idname == "ShaderNodeMath" else "",
+                          bool(node.use_clamp) if node.bl_idname == "ShaderNodeMath" else False,
+                          bool(node.mute),
+                          bool(node.is_active_output) if node.bl_idname == "NodeGroupOutput" else False)
+                         for node in group.nodes)
+        links = sorted((link.from_node.name, link.from_socket.identifier,
+                        link.to_node.name, link.to_socket.identifier) for link in group.links)
+        return current == stored and links == sorted(tuple(item) for item in stored_links)
+    except (TypeError, ValueError):
+        return False
 
 
 def _editable_tree(tree):
@@ -71,26 +114,32 @@ def _editable_tree(tree):
 
 
 def _validate_group(group):
-    _editable_tree(group)
-    if group.get(_KIND) != 1:
+    # A library-linked template is read-only, but can still be validated and
+    # copied. Only the staged local copy and editable material are changed.
+    if group is None or group.bl_idname != "ShaderNodeTree":
+        raise ValueError("Choose a Shader node tree.")
+    if group.get(_KIND) not in {1, 2}:
         raise ValueError("Select a Mix Shaders node added by RR Helper.")
     pairs = _pairs(group)
     if not pairs:
         raise ValueError("The Mix Shaders interface was changed.")
     expected = {group.get(_BASE): ("INPUT", "NodeSocketShader"),
                 group.get(_OUTPUT): ("OUTPUT", "NodeSocketShader")}
-    for mask, shader, gate in pairs:
+    for pair in pairs:
+        mask, shader = pair[:2]
         expected.update({mask: ("INPUT", "NodeSocketFloat"),
-                         shader: ("INPUT", "NodeSocketShader"),
-                         gate: ("INPUT", "NodeSocketFloat")})
+                         shader: ("INPUT", "NodeSocketShader")})
+        if len(pair) == 3:
+            expected[pair[2]] = ("INPUT", "NodeSocketFloat")
     actual = {item.identifier: (item.in_out, item.socket_type)
               for item in group.interface.items_tree if item.item_type == "SOCKET"}
-    if actual != expected or len(expected) != 2 + 3 * len(pairs):
+    size = 3 if group.get(_KIND) == 1 else 2
+    if actual != expected or len(expected) != 2 + size * len(pairs):
         raise ValueError("The Mix Shaders interface was changed.")
     order = [item.identifier for item in group.interface.items_tree if item.item_type == "SOCKET"]
     if json.dumps(order) != group.get(_INTERFACE_ORDER):
         raise ValueError("The Mix Shaders interface order was changed.")
-    if _graph_signature(group) != group.get(_SIGNATURE):
+    if not _matches_signature(group):
         raise ValueError("The Mix Shaders internals were edited. Keep that group, or add a new Mix Shaders node.")
     animation = group.animation_data
     if animation and (animation.action or animation.nla_tracks or animation.drivers):
@@ -107,7 +156,9 @@ def _new_pair(group, number):
     mask.description = "Mask for Shader {}; earlier slots cover later slots".format(number)
     shader = group.interface.new_socket(name="Shader {}".format(number), in_out="INPUT",
                                         socket_type="NodeSocketShader")
-    shader.description = "Shader to mix over the Base using Mask {}".format(number)
+    shader.description = "Connect a shader and its Mask {}; Mask 0 leaves lower shaders unchanged".format(number)
+    if group.get(_KIND) == 2:
+        return [mask.identifier, shader.identifier]
     gate = group.interface.new_socket(name="_Connected {}".format(number), in_out="INPUT",
                                       socket_type="NodeSocketFloat")
     gate.default_value = 0.0
@@ -130,14 +181,18 @@ def _build_chain(group):
     previous = _socket(input_node.outputs, group[_BASE])
     pairs = _pairs(group)
     for position, index in enumerate(reversed(range(len(pairs)))):
-        mask, shader, gate = pairs[index]
+        pair = pairs[index]
+        mask, shader = pair[:2]
         factor = group.nodes.new("ShaderNodeMath")
-        factor.name = "Mask Gate {}".format(index + 1)
+        factor.name = ("Mask Gate {}" if len(pair) == 3 else "Clamp Mask {}").format(index + 1)
         factor.operation = "MULTIPLY"
         factor.use_clamp = True
         factor.location = (-380 + position * 240, -240)
         group.links.new(_socket(input_node.outputs, mask), factor.inputs[0])
-        group.links.new(_socket(input_node.outputs, gate), factor.inputs[1])
+        if len(pair) == 3:
+            group.links.new(_socket(input_node.outputs, pair[2]), factor.inputs[1])
+        else:
+            factor.inputs[1].default_value = 1.0
         mix = group.nodes.new("ShaderNodeMixShader")
         mix.name = "Mix {}".format(index + 1)
         mix.location = (-300 + position * 240, 60)
@@ -148,6 +203,7 @@ def _build_chain(group):
     output_node.location = (-60 + len(pairs) * 240, 60)
     group.links.new(previous, _socket(output_node.inputs, group[_OUTPUT]))
     group[_SIGNATURE] = _graph_signature(group)
+    group[_SIGNATURE_SCHEMA] = 2
     group[_INTERFACE_ORDER] = json.dumps([item.identifier for item in group.interface.items_tree
                                         if item.item_type == "SOCKET"])
 
@@ -156,15 +212,15 @@ def _new_group():
     group = bpy.data.node_groups.new("Mix Shaders", "ShaderNodeTree")
     try:
         group.color_tag = "SHADER"
-        group.description = "Mix masked shaders over a Base. Earlier slots have priority. Add Shader Slot expands this node."
-        group[_KIND] = 1
+        group.description = "Mix Mask / Shader pairs over a Base. Earlier slots have priority. Unused masks stay at 0. Add Shader Slot expands this node."
+        group[_KIND] = 2
         base = group.interface.new_socket(name="Base Shader", in_out="INPUT",
                                           socket_type="NodeSocketShader")
         output = group.interface.new_socket(name="Shader", in_out="OUTPUT",
                                             socket_type="NodeSocketShader")
         group[_BASE] = base.identifier
         group[_OUTPUT] = output.identifier
-        group[_PAIRS] = json.dumps([_new_pair(group, 1)])
+        group[_PAIRS] = json.dumps([_new_pair(group, 1), _new_pair(group, 2)])
         _build_chain(group)
         return group
     except Exception:
@@ -173,14 +229,18 @@ def _new_group():
 
 
 def _remember_owner(tree):
-    _OWNER_TREES[tree.as_pointer()] = tree
+    key = tree.as_pointer()
+    if any(_legacy_mixer(node) for node in tree.nodes):
+        _OWNER_TREES[key] = tree
+    else:
+        _OWNER_TREES.pop(key, None)
 
 
 def sync_tree(tree):
     """Update only per-instance hidden gates; linked black shaders stay enabled."""
     changes = 0
     for node in tree.nodes:
-        if not is_mixer(node):
+        if not _legacy_mixer(node):
             continue
         for _mask, shader_id, gate_id in _pairs(node.node_tree):
             shader = _socket(node.inputs, shader_id)
@@ -273,6 +333,12 @@ def _restore_external_state(node, state):
             node.id_data.links.new(_socket(from_node.outputs, from_id), _socket(to_node.inputs, to_id))
 
 
+def _discardable_helper(group):
+    """Only remove an unreferenced local helper, never a reusable template."""
+    return (group.users == 0 and group.library is None and group.override_library is None
+            and group.is_editable and group.asset_data is None and not group.use_fake_user)
+
+
 def add_shader_slot(node):
     """Stage the expanded graph, then swap only this node's group reference.
 
@@ -286,11 +352,12 @@ def add_shader_slot(node):
     _editable_tree(owner)
     old_group = node.node_tree
     pairs = _validate_group(old_group)
-    if any(_socket(node.inputs, gate).is_linked for _mask, _shader, gate in pairs):
+    if old_group.get(_KIND) == 1 and any(_socket(node.inputs, pair[2]).is_linked for pair in pairs):
         raise ValueError("The managed connection inputs were rewired. Keep that node, or add a new Mix Shaders node.")
     state = _external_state(node)
     candidate = old_group.copy()
     try:
+        _editable_tree(candidate)
         # Library assets are reusable templates. Expanded per-node helpers must
         # not become new assets or survive solely through an inherited fake user.
         candidate.asset_clear()
@@ -309,11 +376,136 @@ def add_shader_slot(node):
         if candidate.users == 0:
             bpy.data.node_groups.remove(candidate)
         raise
-    if old_group.users == 0:
+    if _discardable_helper(old_group):
         name = old_group.name
         bpy.data.node_groups.remove(old_group)
         candidate.name = name
     return len(pairs) + 1
+
+
+def remove_shader_slot(node):
+    """Remove the last pair from this instance; keep its upstream shader nodes."""
+    if not is_mixer(node):
+        raise ValueError("Select a Mix Shaders node added by RR Helper.")
+    owner = node.id_data
+    _editable_tree(owner)
+    old_group = node.node_tree
+    pairs = _validate_group(old_group)
+    if len(pairs) <= 1:
+        raise ValueError("Keep at least one Mask / Shader pair and the Base Shader.")
+    animation = owner.animation_data
+    if animation and (animation.action or animation.nla_tracks or animation.drivers):
+        raise ValueError("An animated shader tree cannot remove shader inputs safely.")
+    if old_group.get(_KIND) == 1 and any(_socket(node.inputs, pair[2]).is_linked for pair in pairs):
+        raise ValueError("The managed connection inputs were rewired. Keep that node, or add a new Mix Shaders node.")
+    state = _external_state(node)
+    removed_ids = set(pairs[-1])
+    retained_state = (
+        {identifier: value for identifier, value in state[0].items() if identifier not in removed_ids},
+        [link for link in state[1] if not (link[2] == node and link[3] in removed_ids)],
+    )
+    candidate = old_group.copy()
+    try:
+        _editable_tree(candidate)
+        candidate.asset_clear()
+        candidate.use_fake_user = False
+        for item in tuple(candidate.interface.items_tree):
+            if item.item_type == "SOCKET" and item.identifier in removed_ids:
+                candidate.interface.remove(item)
+        candidate[_PAIRS] = json.dumps(pairs[:-1])
+        _build_chain(candidate)
+        _validate_group(candidate)
+        node.node_tree = candidate
+        _restore_external_state(node, retained_state)
+        sync_mixers([owner])
+        _remember_owner(owner)
+    except Exception:
+        if node.node_tree == candidate:
+            node.node_tree = old_group
+            _restore_external_state(node, state)
+        if candidate.users == 0:
+            bpy.data.node_groups.remove(candidate)
+        raise
+    if _discardable_helper(old_group):
+        name = old_group.name
+        bpy.data.node_groups.remove(old_group)
+        candidate.name = name
+    return len(pairs) - 1
+
+
+def _native_mix_links(node, replacement, links):
+    inputs = {
+        node.inputs[0].identifier: replacement.inputs["Mask 1"].identifier,
+        node.inputs[1].identifier: replacement.inputs["Base Shader"].identifier,
+        node.inputs[2].identifier: replacement.inputs["Shader 1"].identifier,
+    }
+    output = replacement.outputs["Shader"].identifier
+    return [(replacement if source == node else source,
+             output if source == node else source_id,
+             replacement if target == node else target,
+             inputs[target_id] if target == node else target_id)
+            for source, source_id, target, target_id in links]
+
+
+def _connect_native_mix_links(owner, links):
+    """Small staging boundary: partial link creation is rolled back by caller."""
+    for source, source_id, target, target_id in links:
+        owner.links.new(_socket(source.outputs, source_id), _socket(target.inputs, target_id))
+
+
+def expand_native_mix_shader(node):
+    """Replace an ordinary Mix Shader with two native Mask / Shader slots.
+
+    Its first Shader becomes Base, Factor becomes Mask 1, and its second Shader
+    becomes Shader 1. The second pair starts unused at Mask 0. Stage and verify
+    a separate node before deleting the old one; a failed stage restores all of
+    the ordinary Mix Shader's original external wires.
+    """
+    if node is None or node.bl_idname != "ShaderNodeMixShader":
+        raise ValueError("Select an ordinary Mix Shader node.")
+    owner = node.id_data
+    _editable_tree(owner)
+    animation = owner.animation_data
+    if animation and (animation.action or animation.nla_tracks or animation.drivers):
+        raise ValueError("An animated shader tree cannot convert Mix Shader safely. Add a new Mix Shaders node instead.")
+    state = _external_state(node)
+    name = node.name
+    replacement = None
+    group = None
+    try:
+        replacement = add_mix_shaders(owner, location=node.location)
+        group = replacement.node_tree
+        replacement.parent = node.parent
+        replacement.location = node.location
+        replacement.label = node.label
+        replacement.width = max(220, node.width)
+        replacement.hide = node.hide
+        replacement.mute = node.mute
+        replacement.use_custom_color = node.use_custom_color
+        replacement.color = node.color
+        replacement.inputs["Mask 1"].default_value = node.inputs[0].default_value
+        mapped = _native_mix_links(node, replacement, state[1])
+        _connect_native_mix_links(owner, mapped)
+        actual = {(link.from_node.as_pointer(), link.from_socket.identifier,
+                   link.to_node.as_pointer(), link.to_socket.identifier) for link in owner.links}
+        if any((source.as_pointer(), source_id, target.as_pointer(), target_id) not in actual
+               for source, source_id, target, target_id in mapped):
+            raise RuntimeError("Mix Shader conversion did not preserve its connections.")
+    except Exception:
+        if replacement is not None:
+            owner.nodes.remove(replacement)
+        _restore_external_state(node, state)
+        if group is not None and group.users == 0:
+            bpy.data.node_groups.remove(group)
+        raise
+    # This is the commit point. Only this ordinary node is removed; its upstream
+    # shaders, downstream nodes and every unrelated material connection remain.
+    owner.nodes.remove(node)
+    replacement.name = name
+    for item in owner.nodes:
+        item.select = item == replacement
+    owner.nodes.active = replacement
+    return replacement
 
 
 def _candidate_trees():
@@ -329,7 +521,7 @@ def _candidate_trees():
 def rebuild_index():
     _OWNER_TREES.clear()
     for tree in _candidate_trees():
-        if any(is_mixer(node) for node in tree.nodes):
+        if any(_legacy_mixer(node) for node in tree.nodes):
             _remember_owner(tree)
     sync_mixers()
 
@@ -346,7 +538,7 @@ def _on_graph_update(_scene, depsgraph):
         if tree is None or tree.bl_idname != "ShaderNodeTree":
             continue
         key = tree.as_pointer()
-        if key in _OWNER_TREES or any(is_mixer(node) for node in tree.nodes):
+        if key in _OWNER_TREES or any(_legacy_mixer(node) for node in tree.nodes):
             _remember_owner(tree)
             dirty[key] = tree
     if dirty:
@@ -375,7 +567,7 @@ def _editor_tree(context):
 class RR_OT_add_mix_shaders(bpy.types.Operator):
     bl_idname = "rr_builder.add_mix_shaders"
     bl_label = "Add Mix Shaders"
-    bl_description = "Add a shader group with a Base and expandable Mask / Shader slots"
+    bl_description = "Add a native shader group with two Mask / Shader pairs over a Base; keep unused masks at 0"
     bl_options = {"REGISTER", "UNDO"}
 
     use_transform: BoolProperty(default=True, options={"HIDDEN"})
@@ -411,17 +603,52 @@ class RR_OT_add_mix_shaders(bpy.types.Operator):
 class RR_OT_add_shader_slot(bpy.types.Operator):
     bl_idname = "rr_builder.add_shader_slot"
     bl_label = "Add Shader Slot"
-    bl_description = "Add a Mask / Shader input pair to the selected Mix Shaders node; earlier slots cover later slots"
+    bl_description = "Add a Mask / Shader pair, or expand an ordinary Mix Shader while keeping its connections; earlier slots cover later slots"
     bl_options = {"REGISTER", "UNDO"}
+
+    node_name: StringProperty(options={"HIDDEN"})
 
     @classmethod
     def poll(cls, context):
-        tree = _editor_tree(context)
-        return tree is not None and tree.nodes.active is not None and is_mixer(tree.nodes.active)
+        # Explicit node_name may target a different node than nodes.active.
+        return _editor_tree(context) is not None
 
     def execute(self, context):
         try:
-            add_shader_slot(_editor_tree(context).nodes.active)
+            tree = _editor_tree(context)
+            node = tree.nodes.get(self.node_name) if self.node_name else tree.nodes.active
+            if node is None:
+                raise ValueError("The chosen Mix Shaders node is no longer available.")
+            if node.bl_idname == "ShaderNodeMixShader":
+                expand_native_mix_shader(node)
+            else:
+                add_shader_slot(node)
+        except (ValueError, RuntimeError, ReferenceError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class RR_OT_remove_shader_slot(bpy.types.Operator):
+    bl_idname = "rr_builder.remove_shader_slot"
+    bl_label = "Remove Shader Slot"
+    bl_description = "Remove the last Mask / Shader pair and its input links; upstream shader nodes stay. Undo restores the pair"
+    bl_options = {"REGISTER", "UNDO"}
+
+    node_name: StringProperty(options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        # An inline button can target a named node rather than the active node.
+        return _editor_tree(context) is not None
+
+    def execute(self, context):
+        try:
+            tree = _editor_tree(context)
+            node = tree.nodes.get(self.node_name) if self.node_name else tree.nodes.active
+            if node is None:
+                raise ValueError("The chosen Mix Shaders node is no longer available.")
+            remove_shader_slot(node)
         except (ValueError, RuntimeError, ReferenceError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -429,12 +656,16 @@ class RR_OT_add_shader_slot(bpy.types.Operator):
 
 
 def draw_context_menu(self, context):
-    if RR_OT_add_shader_slot.poll(context):
+    tree = _editor_tree(context)
+    node = tree.nodes.active if tree is not None else None
+    if node is not None and (is_mixer(node) or node.bl_idname == "ShaderNodeMixShader"):
         self.layout.separator()
         self.layout.operator(RR_OT_add_shader_slot.bl_idname, icon="ADD")
+        if is_mixer(node) and len(_pairs(node.node_tree)) > 1:
+            self.layout.operator(RR_OT_remove_shader_slot.bl_idname, icon="REMOVE")
 
 
-CLASSES = (RR_OT_add_mix_shaders, RR_OT_add_shader_slot)
+CLASSES = (RR_OT_add_mix_shaders, RR_OT_add_shader_slot, RR_OT_remove_shader_slot)
 _HANDLERS = (("depsgraph_update_post", _on_graph_update),
              ("load_post", _on_reload), ("undo_post", _on_reload), ("redo_post", _on_reload),
              ("save_pre", _before_save_or_render), ("render_pre", _before_save_or_render))

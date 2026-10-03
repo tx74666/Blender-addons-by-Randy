@@ -17,6 +17,15 @@ import sys
 import uuid
 
 
+def fixture_path_ast_hash(source: str, old_path: str, new_path: str) -> str:
+    """Ignore only relocation of the unchanged, retired radial fixture."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value in (old_path, new_path):
+            node.value = "__unchanged_radial_fixture__"
+    return hashlib.sha256(ast.dump(tree, include_attributes=False).encode("utf-8")).hexdigest()
+
+
 class LibraryCheck:
     def __init__(self, repo_root: Path):
         self.root = repo_root.resolve()
@@ -209,6 +218,14 @@ class LibraryCheck:
                 self.error(
                     f"{label}.verification: catalog_id differs for {asset['name']!r}."
                 )
+        if "compatibility_baseline" in report:
+            baseline = report["compatibility_baseline"]
+            baseline_label = f"{label}.verification.compatibility_baseline"
+            if not isinstance(baseline, dict):
+                self.error(f"{baseline_label}: expected a file/hash object.")
+            else:
+                self.hash_file(self.path(baseline.get("path"), baseline_label),
+                               baseline.get("sha256"), baseline_label)
         if "baseline_verification" in report:
             baseline_label = f"{label}.verification.baseline"
             baseline_path = self.path(report["baseline_verification"], baseline_label)
@@ -231,6 +248,56 @@ class LibraryCheck:
                     if test.get("passed") is not True:
                         self.error(f"{baseline_label}: test {name!r} did not pass.")
 
+    def retirement(self, manifest: dict, dependencies: dict[str, dict]) -> None:
+        """Bind path-only source migration to unchanged historical shader evidence."""
+        reference = manifest.get("retirement_verification")
+        if reference is None:
+            return
+        proof = self.json_file(self.path(reference, "retirement_verification"), "retirement_verification")
+        if proof is None:
+            return
+        if proof.get("passed") is not True or proof.get("render_repeated") is not False:
+            self.error("retirement_verification: expected passed relocation proof without new render claims.")
+        replacement = proof.get("path_replacement", {})
+        old_path, new_path = replacement.get("from"), replacement.get("to")
+        if (old_path, new_path) != ("node_library/assets/Randy_Ring_Mask.blend", "node_library/dependencies/Randy_Ring_Mask.blend"):
+            self.error("retirement_verification: unexpected radial fixture relocation.")
+            return
+        dependency = dependencies.get("ring_mask_radial")
+        if dependency is None or dependency.get("path") != new_path or dependency.get("sha256") != proof.get("dependency_sha256"):
+            self.error("retirement_verification: relocated radial dependency differs from the inventory.")
+        if (self.root / old_path).exists():
+            # The retired three-control binary must stay hidden. The filename
+            # may be reused by the separately validated multifunction asset.
+            current = next((b for b in manifest.get("bundles", [])
+                            if b.get("id") == "ring_mask" and b.get("path") == old_path), None)
+            asset = next((a for a in manifest.get("assets", [])
+                          if a.get("id") == "ring_mask" and a.get("bundle_id") == "ring_mask"), None)
+            outputs = {s.get("name"): s.get("type") for s in (asset or {}).get("outputs", [])}
+            inputs = {s.get("name") for s in (asset or {}).get("inputs", [])}
+            if (current is None or asset is None
+                    or current.get("sha256") == proof.get("dependency_sha256")
+                    or asset.get("version") != "0.2.1"
+                    or not {"Start Angle", "Sweep Angle"}.issubset(inputs)
+                    or outputs.get("Ring Data") != "NodeSocketBundle"):
+                self.error("retirement_verification: the visible Ring Mask is not the validated multifunction replacement.")
+        changes = proof.get("source_path_only_changes")
+        if not isinstance(changes, list) or not changes:
+            self.error("retirement_verification: missing source path migration evidence.")
+            return
+        for change in changes:
+            if not isinstance(change, dict):
+                self.error("retirement_verification: invalid source path migration entry.")
+                continue
+            path = self.path(change.get("path"), "retirement_verification.source")
+            self.hash_file(path, change.get("after_sha256"), "retirement_verification.source", text_lf=True)
+            if path is not None:
+                actual = fixture_path_ast_hash(path.read_text(encoding="utf-8-sig"), old_path, new_path)
+                if actual != change.get("ast_sha256") or change.get("before_ast_sha256") != actual:
+                    self.error("retirement_verification: source changed beyond the default radial fixture path: " + change["path"])
+        for relative, expected in proof.get("unchanged_native_assets", {}).items():
+            self.hash_file(self.path(relative, "retirement_verification.asset"), expected, "retirement_verification.asset")
+
     def run(self) -> tuple[int, int]:
         manifest = self.json_file(
             self.path("node_library/manifest.json", "manifest"), "manifest"
@@ -245,6 +312,16 @@ class LibraryCheck:
             if not isinstance(manifest.get(key), str) or not manifest[key].strip():
                 self.error(f"manifest.{key}: expected a non-empty version string.")
         catalogs = self.catalogs(self.path(manifest.get("catalog_file"), "catalog_file"))
+        dependencies = self.unique(manifest["internal_dependencies"], "id", "internal_dependencies") if "internal_dependencies" in manifest else {}
+        for identifier, dependency in dependencies.items():
+            label = f"internal_dependencies[{identifier}]"
+            path = self.path(dependency.get("path"), label + ".path")
+            if path is not None and path.is_relative_to((self.root / "node_library/assets").resolve()):
+                self.error(label + ": internal dependency must stay outside the visible asset library.")
+            self.hash_file(path, dependency.get("sha256"), label)
+            self.source(dependency, label)
+            self.report(dependency, [{"name": dependency.get("name"), "catalog_id": dependency.get("catalog_id")}], label)
+        self.retirement(manifest, dependencies)
         bundles = self.unique(manifest.get("bundles"), "id", "bundles")
         assets = self.unique(manifest.get("assets"), "id", "assets")
         self.unique(manifest.get("assets"), "name", "assets")
@@ -284,6 +361,13 @@ class LibraryCheck:
             if not bundle_assets:
                 self.error(f"{label}: no assets refer to this bundle.")
             self.report(bundle, bundle_assets, label)
+            if "ring_mask_radial" in dependencies:
+                report_path = self.path(bundle.get("verification"), label + ".radial_reference")
+                report = self.json_file(report_path, label + ".radial_reference")
+                if report is not None:
+                    expected = report.get("ring_mask_sha256", report.get("ring_asset_sha256"))
+                    if expected is not None and expected != dependencies["ring_mask_radial"].get("sha256"):
+                        self.error(label + ": historical shader report refers to a different radial dependency.")
         actual_paths = {
             path.resolve()
             for path in (self.root / "node_library" / "assets").rglob("*")

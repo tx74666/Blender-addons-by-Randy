@@ -176,6 +176,7 @@ class PanelTests(unittest.TestCase):
         for attribute, value in {
             'export_running': lambda: self.running,
             'bound_meshes': lambda *_args: [self.body, self.dress, self.excluded],
+            '_bound_meshes': lambda *_args: [self.body, self.dress, self.excluded],
             'collect_character': self.collect,
             '_character_armatures': lambda *_args: {self.rig},
             '_helpers': lambda *_args: set(),
@@ -194,7 +195,7 @@ class PanelTests(unittest.TestCase):
         setattr(self.package, name, module)
         return module
 
-    def collect(self, *_args):
+    def collect(self, *_args, **_kwargs):
         if self.collect_error:
             raise ValueError(self.collect_error)
         return {'objects': self.objects, 'warnings': self.preflight}
@@ -237,7 +238,7 @@ class PanelTests(unittest.TestCase):
         self.assertTrue(header.startswith('Objects'))
         self.assertIn('2', header)
         self.assertIn('1', header)
-        self.prop(layout, 'show_warnings')
+        self.assertFalse([item for item in layout.events('prop') if item.name == 'show_warnings'])
         self.prop(layout, 'show_materials')
         self.assertFalse(self.buttons(layout, 'character_designer.unity_open_path'))
         self.assertFalse(self.buttons(layout, 'character_designer.unity_simple_material'))
@@ -251,6 +252,38 @@ class PanelTests(unittest.TestCase):
         self.context.page = 'RIG'
         self.assertFalse(self.ui.CHARACTERDESIGNER_PT_unity_export.poll(self.context))
 
+    def test_one_fresh_scope_per_draw_and_no_collapsed_material_scan(self):
+        with patch.object(self.exporter, '_helpers', wraps=self.exporter._helpers) as helpers, \
+                patch.object(self.exporter, '_character_armatures', wraps=self.exporter._character_armatures) as rigs, \
+                patch.object(self.ui, '_material_choices', side_effect=AssertionError('Collapsed material traversal')):
+            self.draw()
+            self.config.show_objects = True
+            self.draw()
+        self.assertEqual(helpers.call_count, 2)
+        self.assertEqual(rigs.call_count, 2)
+
+    def test_normal_notices_hide_warning_row_and_keep_full_report(self):
+        message = ('Dress: Blender Preserve Volume skinning is exported as standard FBX skin weights; '
+                   'review joint deformation in Unity.')
+        self.config.show_warnings = True
+        notices = [message, 'Old files retained for reference safety: old_texture.png',
+                   'Hair: skipped; no enabled Armature binding to this character.']
+        for messages in ([], notices, [message]):
+            report = self.report_file(messages)
+            layout = self.draw()
+            self.assertFalse([item for item in layout.events('prop') if item.name == 'show_warnings'])
+            self.assertFalse(self.buttons(layout, 'character_designer.unity_open_path'))
+            self.assertNotIn('Preserve Volume', ' '.join(self.labels(layout)))
+            self.assertEqual(json.loads(report.read_text(encoding='utf8'))['warnings'], messages)
+        warning = 'Body: 2 exported vertices have no weight.'
+        report = self.report_file(notices + [warning, 'Unknown diagnostic requiring review.'])
+        layout = self.draw()
+        self.assertEqual(self.prop(layout, 'show_warnings').kwargs['text'], 'Warnings · 2')
+        self.assertIn('Body: 2 vertices need skin weights.', self.labels(layout))
+        self.assertIn('Unknown diagnostic requiring review.', self.labels(layout))
+        self.assertEqual(json.loads(report.read_text(encoding='utf8'))['warnings'], notices +
+                         [warning, 'Unknown diagnostic requiring review.'])
+
     def test_objects_expand_with_safe_inclusion_arguments(self):
         self.config.show_objects = True
         layout = self.draw()
@@ -263,7 +296,25 @@ class PanelTests(unittest.TestCase):
         self.assertFalse(self.buttons(layout, 'character_designer.unity_add_selected'))
         self.assertFalse(self.buttons(layout, 'character_designer.unity_open_path'))
 
-    def test_warnings_are_unified_and_report_actions_stay_inside_expansion(self):
+    def test_export_feedback_uses_real_warnings_without_changing_result(self):
+        notice = ('Dress: Blender Preserve Volume skinning is exported as standard FBX skin weights; '
+                  'review joint deformation in Unity.')
+        result = {'filepath': 'Character.fbx', 'report_path': str(self.root / 'Character.cdesigner.json'),
+                  'warnings': [notice, 'Old files retained for reference safety: old.png']}
+        original = json.loads(json.dumps(result))
+        operator = self.ui.CHARACTERDESIGNER_OT_unity_export()
+        operator._result(self.config, result)
+        self.assertEqual(self.config.last_status, 'Exported successfully')
+        self.assertEqual(operator.reports[-1][0], {'INFO'})
+        self.assertNotIn('see Warnings', operator.reports[-1][1])
+        self.assertEqual(result, original)
+        result['warnings'].append('Body: 2 exported vertices have no weight.')
+        operator._result(self.config, result)
+        self.assertEqual(self.config.last_status, 'Exported · 1 warning(s)')
+        self.assertEqual(operator.reports[-1][0], {'WARNING'})
+        self.assertIn('1 warning(s); see Warnings', operator.reports[-1][1])
+
+    def test_real_warnings_keep_actions_without_path_buttons(self):
         warning = 'Body: 2 exported vertices have no weight.'
         self.preflight = [warning, 'Jacket: skipped; no enabled Armature binding to this character.']
         self.config.show_warnings = True
@@ -285,22 +336,7 @@ class PanelTests(unittest.TestCase):
         self.assertIn('Skin: set up its shader in Unity.', labels)
         self.assertNotIn('skipped', ' '.join(labels))
         paths = self.buttons(layout, 'character_designer.unity_open_path')
-        self.assertEqual({item.kwargs['text'] for item in paths}, {'Open Folder', 'Open Export Report'})
-        self.assertEqual(len(paths), 2)
-        report = next(item for item in paths if item.kwargs['text'] == 'Open Export Report')
-        folder = next(item for item in paths if item.kwargs['text'] == 'Open Folder')
-        self.assertIs(report.properties.open_report, True)
-        self.assertFalse(getattr(folder.properties, 'open_report', False))
-        def box(item):
-            cursor = item.layout
-            while cursor is not None and cursor.kind != 'box':
-                cursor = cursor.parent
-            return cursor
-        warning_label = next(item for item in layout.events('label')
-                             if item.kwargs.get('text') == 'Body: 2 vertices need skin weights.')
-        self.assertIsNotNone(box(report))
-        self.assertIs(box(report), box(folder))
-        self.assertIs(box(report), box(warning_label))
+        self.assertFalse(paths)
         locate = self.buttons(layout, 'character_designer.unity_locate_unweighted')
         self.assertEqual(len(locate), 1)
         self.assertEqual(locate[0].properties.object_name, 'Body')

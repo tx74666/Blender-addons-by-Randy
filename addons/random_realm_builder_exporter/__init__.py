@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 40),
+    "version": (0, 2, 46),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -33,6 +33,8 @@ try:
     from . import rr_ring_stack
     from . import rr_ring_stack_ui
     from . import rr_shader_mixer
+    from . import rr_shader_mixer_ui
+    from . import rr_ring_nodes
     from . import rr_standard_export_transaction
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
@@ -68,6 +70,8 @@ except ImportError:
     import rr_ring_stack
     import rr_ring_stack_ui
     import rr_shader_mixer
+    import rr_shader_mixer_ui
+    import rr_ring_nodes
     import rr_standard_export_transaction
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
@@ -13817,13 +13821,13 @@ class RR_OT_bake_selected_pbr(bpy.types.Operator):
 class RR_OT_apply_modeling_origin_point(bpy.types.Operator):
     bl_idname = "rr_builder.apply_modeling_origin_point"
     bl_label = "Apply Origin"
-    bl_description = "Select Empty objects, then a target object last to use its origin; select only Empties to use the 3D Cursor. Parts stay in place. In Edit Mode, use selected mesh elements or curve points"
+    bl_description = "Object Mode: mesh/curve origins go to the 3D Cursor; selected Empties use the active target's origin, or the cursor. Geometry and parts stay in place. Edit Mode: use selected mesh elements or curve points"
     bl_options = {"REGISTER", "UNDO"}
 
     mode: bpy.props.EnumProperty(
         name="Mode",
         items=(
-            ("SELECTION", "Selection", "Use the center of selected mesh elements or curve points in Edit Mode"),
+            ("SELECTION", "Selection", "Use selected elements in Edit Mode, or the 3D Cursor for mesh/curve objects in Object Mode"),
             ("BOTTOM", "Bottom", "Use the center of the lowest downward-facing face"),
         ),
         default="SELECTION",
@@ -14585,7 +14589,8 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         selection_label = modeling_origin_selection_label(context)
 
         selection_row = origin_box.row(align=True)
-        selection_row.enabled = bool(selection_label or modeling_empty_origin_selection(context)[0])
+        selection_row.enabled = bool(selection_label or modeling_empty_origin_selection(context)[0]
+                                     or modeling_object_origin_selection(context))
         selection_op = selection_row.operator(
             "rr_builder.apply_modeling_origin_point",
             text="Apply to Selection",
@@ -15329,6 +15334,8 @@ def register():
     rr_ring_stack.register()
     rr_ring_stack_ui.register()
     rr_shader_mixer.register()
+    rr_shader_mixer_ui.register()
+    rr_ring_nodes.register()
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     configure_object_manager_duplicate_macro()
@@ -15408,6 +15415,8 @@ def unregister():
             bpy.utils.unregister_class(cls)
         except Exception:
             pass
+    rr_ring_nodes.unregister()
+    rr_shader_mixer_ui.unregister()
     rr_shader_mixer.unregister()
     rr_ring_stack_ui.unregister()
     rr_ring_stack.unregister()

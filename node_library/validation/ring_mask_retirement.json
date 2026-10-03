@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "state": "complete",
+  "date": "2026-10-02",
+  "retired_visible_asset": "Ring Mask",
+  "replacement": "Arc Mask; Sweep Angle 360 gives the same radial mask",
+  "dependency_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+  "path_replacement": {
+    "from": "node_library/assets/Randy_Ring_Mask.blend",
+    "to": "node_library/dependencies/Randy_Ring_Mask.blend"
+  },
+  "render_repeated": false,
+  "native_graphs_rebuilt": false,
+  "source_path_only_changes": [
+    {
+      "path": "tools/randy_node_assets/verify_mix_shaders.py",
+      "before_sha256": "7bc93f5f911743e2a3494577556cbb0cfc87944e6754db1a17785d145ce8cc0d",
+      "after_sha256": "5514bdc4e077339e2aa9bf927a962388d70dcef661948696234f231a68bec4e3",
+      "before_ast_sha256": "9ba9bd3b05f60102749c56efbde5ca75f3ad3bb88934b8a9c76184bd7e002d88",
+      "ast_sha256": "9ba9bd3b05f60102749c56efbde5ca75f3ad3bb88934b8a9c76184bd7e002d88"
+    },
+    {
+      "path": "tools/randy_node_assets/verify_ring_group.py",
+      "before_sha256": "0c24fb9a877cac79253e9a79c88a76a0cf597e390fa7a52d114382b692378574",
+      "after_sha256": "fecfce2889e46d944f269ae9b6dae2c0b4b62e6439c3c097222b96471b4e9415",
+      "before_ast_sha256": "ff6ccb035bb015e627f5e5b583cdcfff78eb88c1769974815ca6525508365d93",
+      "ast_sha256": "ff6ccb035bb015e627f5e5b583cdcfff78eb88c1769974815ca6525508365d93"
+    }
+  ],
+  "unchanged_native_assets": {
+    "node_library/assets/Randy_Mix_Shaders.blend": "8fbe2fe8a026d697a3f7e4b5a46a54e5005f435796100ae1d8fa625f5869a295",
+    "node_library/assets/Randy_Ring_Group.blend": "d4c60147b30c2c693b2dbffc3a664ab293131bd3b4711eb0b747a445d24283d2"
+  },
+  "evidence_note": "The radial fixture is byte-identical. Mixer/Ring Group default fixture relocation is checked by AST equality. Arc build/verifier source and native metadata are now bound by the fresh recursive graph-equivalence report; historical samples were not rerendered.",
+  "source_path_migrations_superseded_by_metadata_update": [
+    {
+      "path": "tools/randy_node_assets/build_arc_mask.py",
+      "before_sha256": "da07840d869ddc1c0ac5da835bf175f8953db5462e364879bc1f48396cdaf723",
+      "after_sha256": "24f5a977286aa8fe201ef89569b482344f43ea306ddd2124eb8a170bd27ddaed",
+      "before_ast_sha256": "aa702bef28c1e58917523f7ce39edff63b9333f097f034faa9b7a588c3b3fabe",
+      "ast_sha256": "aa702bef28c1e58917523f7ce39edff63b9333f097f034faa9b7a588c3b3fabe"
+    },
+    {
+      "path": "tools/randy_node_assets/finalize_native_ring_nodes.py",
+      "before_sha256": "81f9229654035d80c8d7c0848ea6a6412fc669dea30f034017d7afaa9887bdb5",
+      "after_sha256": "f160d13da934ef76423fa414173fe34c1543e1ec4102f043228fbcc54478afe9",
+      "before_ast_sha256": "c52d90e85acdb57d518f32043e28b21698a8087458d246c26704e197d94a286e",
+      "ast_sha256": "c52d90e85acdb57d518f32043e28b21698a8087458d246c26704e197d94a286e"
+    },
+    {
+      "path": "tests/test_native_ring_finalization.py",
+      "before_sha256": "45f67b7902f95620631033f837502c6b1425520a6b06615c85705d1b2c30184b",
+      "after_sha256": "c97a2911d2109ff10180ceb04de1ac90da625dc706ef32c115c31617f0f27ee3",
+      "before_ast_sha256": "d807c20a88adf9a493d686c88fe925b2ab7fa054e6e99ae9f61f5947d823e892",
+      "ast_sha256": "d807c20a88adf9a493d686c88fe925b2ab7fa054e6e99ae9f61f5947d823e892"
+    }
+  ],
+  "superseding_arc_metadata_verification": "node_library/validation/arc_mask.json"
+}

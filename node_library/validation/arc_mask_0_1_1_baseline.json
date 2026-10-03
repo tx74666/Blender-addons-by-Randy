@@ -1,0 +1,63 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset": "D:\\Blender\\Projects\\Build\\Recovery\\ArcOnly_20261002\\Randy_Arc_Mask.blend",
+  "asset_sha256": "2688db8ad625ecee3d3c463e9be970a23ddac6752cdb1724f6b4cada2cddee6c",
+  "asset_metadata": {
+    "name": "Arc Mask",
+    "version": "0.1.1",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "inputs": [
+      "Inner Radius",
+      "Ring Width",
+      "Edge Softness",
+      "Start Angle",
+      "Sweep Angle"
+    ],
+    "outputs": [
+      "Mask"
+    ],
+    "color_tag": "TEXTURE",
+    "dependency": ".Arc Mask Radial"
+  },
+  "ring_asset_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+  "blender": "5.2.0 LTS",
+  "render_repeated": false,
+  "ui_search_tested": false,
+  "baseline_sha256": "1cfd04d1a8c7ca47444baddd58d697e82385d69959eaf64e95af9e2e02c476ee",
+  "baseline_verification_sha256": "327088e482e0d461075652af4ba0ffa91cc8a9d192d3fc40d557a58755f378a8",
+  "baseline_test_count": 43,
+  "baseline_shader_sample_count": 38,
+  "baseline_verification_hash_mode": "utf8-lf",
+  "baseline_verification_source": "D:\\MyRepository\\Blender-addons-by-Randy\\node_library\\validation\\arc_mask.json",
+  "functional_graph_sha256": "758c076a2f19e075725cebc9f92b57cd96ca9b34110240dd416fdfc6b119738e",
+  "source_dependencies_sha256": {
+    "tools/randy_node_assets/build_arc_mask.py": "4febdc4d73cc808726c064390ab717f32a448f990a7cf8d6dd7e47724ee7e457",
+    "tools/randy_node_assets/verify_arc_mask.py": "6c712cd8f8e3764a7321015c9d0b2fc9cd72a52ff56f8385370db3e9a85ccbaa",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+    "tools/randy_node_assets/verify_arc_mask_metadata.py": "d04f586d651828b7ace2e2a537adcce3a3a23cc49a58457e780a6ed28451794c"
+  },
+  "tests": [
+    {
+      "name": "functional_arc_and_nested_radial_graph_identical_to_render_verified_baseline",
+      "passed": true
+    },
+    {
+      "name": "single_texture_asset_and_hidden_native_radial_dependency",
+      "passed": true
+    },
+    {
+      "name": "save_reopen_preserves_graph_version_and_metadata",
+      "passed": true
+    },
+    {
+      "name": "baseline_asset_evidence_and_radial_fixture_unchanged",
+      "passed": true
+    }
+  ],
+  "evidence_note": "Four metadata/persistence checks on the exact new asset. Its complete recursive functional graph equals the previously rendered baseline; numerical rendering was not repeated.",
+  "baseline_verification": "node_library/validation/arc_mask_0_1_0_baseline.json",
+  "published_asset": "node_library/assets/Randy_Arc_Mask.blend",
+  "published_preview": "node_library/previews/arc_mask.png",
+  "preview_note": "Historical shader preview; calculation is unchanged, no new render."
+}

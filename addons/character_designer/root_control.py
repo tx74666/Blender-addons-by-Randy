@@ -8,6 +8,8 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
+from . import generated_names
+
 from .torso_controls import _active, _same_rest, _same_value, _state, _update
 
 OWNER_KEY = 'character_designer_owner'
@@ -194,21 +196,24 @@ def _verify_pose(armature, desired):
 
 def _add_widget(context, armature, record, *, snapshot=None):
     collection = bpy.data.collections.new(record['widget_collection'])
+    record['widget_collection'] = collection.name
     context.scene.collection.children.link(collection)
     _tag(collection, record, 'WIDGET_COLLECTION')
     from . import widget_collections
-    widget_collections.ensure_container(context, collection, armature, 'Root')
+    widget_collections.ensure_container(context, collection, armature, 'Root', allow_numbered=True)
     record['widget_collection'] = collection.name
     vertices, edges = (_limb()._widget_geometry('MASTER') if snapshot is None
                        else (snapshot['vertices'], snapshot['edges']))
     entry = record['widgets']['MASTER']
     mesh = bpy.data.meshes.new(entry['mesh'])
+    entry['mesh'] = mesh.name
+    _tag(mesh, record, 'WIDGET_MESH')
     mesh.from_pydata(vertices, edges, [])
     mesh.update()
     obj = bpy.data.objects.new(entry['object'], mesh)
-    collection.objects.link(obj)
+    entry['object'] = obj.name
     _tag(obj, record, 'WIDGET')
-    _tag(mesh, record, 'WIDGET_MESH')
+    collection.objects.link(obj)
     obj.hide_render = obj.hide_select = True
     obj.hide_set(True)
     pb = armature.pose.bones[record['master']]
@@ -289,6 +294,9 @@ def _delete_graph(context, armature, record):
             bpy.data.objects.remove(obj, do_unlink=True)
             if not mesh.users:
                 bpy.data.meshes.remove(mesh)
+        mesh = bpy.data.meshes.get(entry['mesh'])
+        if (mesh and _owned(mesh, record, 'WIDGET_MESH') and not mesh.users):
+            bpy.data.meshes.remove(mesh)
     collection = bpy.data.collections.get(record['widget_collection'])
     if collection and collection.get(ID_KEY) == record['id'] and not collection.objects and not collection.children:
         bpy.data.collections.remove(collection)
@@ -335,8 +343,8 @@ def build(context, armature):
                   'matrix': identity, 'parent': '', 'deform': False, 'connect': False,
                   'inherit_scale': 'FULL', 'inherit_rotation': True, 'local_location': True}},
               'control_collection': groups[0].name, 'constraints': [], 'widget_size': size * 2.8}
-    record['widget_collection'] = 'CD_Root_Widgets_' + record['id'][:10]
-    name = 'WGT_CD_Root_' + record['id'][:10]
+    record['widget_collection'] = generated_names.collection_name(armature, 'Root')
+    name = generated_names.widget_name(armature, 'Root')
     record['widgets'] = {'MASTER': {'object': name, 'mesh': name}}
     for source in sources:
         record['constraints'].append({'owner': source, 'name': 'CD Root Follow', 'type': 'COPY_TRANSFORMS',

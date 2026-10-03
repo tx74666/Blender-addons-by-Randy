@@ -27,8 +27,10 @@ _REPLACED = []
 
 
 def native_rest(rig):
+    from . import skirt_rig
     native = {b.name for b in rig.data.bones
-              if b.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS}
+              if b.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS
+              and not b.get(skirt_rig.OWNER_KEY)}
     return {b.name: {'matrix': [list(row) for row in b.matrix_local],
                      'length': b.length, 'parent': b.parent.name if b.parent and b.parent.name in native else None,
                      'connected': b.use_connect, 'inherit_scale': b.inherit_scale,
@@ -226,7 +228,7 @@ def _auto_key(context, rig, before, values):
             _insert_key(pb, path, frame)
 
 
-def _match(context, rig, desired, changed):
+def _match(context, rig, desired, changed, *, preserve_modes=False):
     from . import torso_controls, spine_ik_fk, eye_controls, bone_collections, root_control
     inventory = limb_ik._validate_inventory(rig)
     torso, spine, eyes = torso_controls.validate(rig), spine_ik_fk.validate(rig), eye_controls.validate(rig)
@@ -240,6 +242,10 @@ def _match(context, rig, desired, changed):
             match._set_matrix(context, rig, rig.pose.bones[torso['controls'][source]], desired[source])
         if spine:
             dormant = {name: rig.pose.bones[name].matrix_basis.copy() for name in spine['bones'].values()}
+            if preserve_modes and old_value <= 1e-6:
+                match._verify(rig, {n: desired[n] for n in spine['sources']})
+                modes['SPINE'] = 'FK'
+                return
             try:
                 spine_ik_fk._seed_ik(context, rig, spine, desired)
                 rig.pose.bones[spine['chest']][spine_ik_fk.PROPERTY] = old_value
@@ -248,6 +254,8 @@ def _match(context, rig, desired, changed):
                 if any(_difference(rig.pose.bones[n].matrix, desired[n]) > 1e-5 for n in spine['sources']):
                     raise limb_ik.LimbIKError('The saved spine pose needs exact FK matching.')
             except limb_ik.LimbIKError:
+                if preserve_modes:
+                    raise ValueError('This Original spine pose cannot return to the saved IK mode without a jump; keep Original or undo the last pose edit.')
                 for name, basis in dormant.items():
                     rig.pose.bones[name].matrix_basis = basis
                 spine_ik_fk._match_fk(context, rig, spine, desired)
@@ -270,6 +278,8 @@ def _match(context, rig, desired, changed):
                 if any(_difference(rig.pose.bones[n].matrix, wanted[n]) > 3e-4 for n in wanted):
                     raise limb_ik.LimbIKError('The saved limb pose needs exact FK matching.')
             except limb_ik.LimbIKError:
+                if preserve_modes:
+                    raise ValueError('This Original limb pose cannot return to the saved IK mode without a jump; keep Original or undo the last pose edit.')
                 # Some authored FK twist/stretch cannot be expressed by this IK
                 # solver. Keep an exact FK match and its visible FK controls.
                 # Position dormant IK controls too; no user mode switch needed.

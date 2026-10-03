@@ -37,14 +37,18 @@ def mesh(name):
 class Layout:
     def __init__(self):
         self.buttons, self.fields, self.labels = [], [], []
+        self.boxes = 0
     def row(self, **_kwargs): return self
-    def box(self): return self
+    def box(self):
+        self.boxes += 1
+        return self
     def separator(self): pass
     def label(self, **kwargs): self.labels.append(kwargs.get('text', ''))
     def prop(self, data, name, **_kwargs):
         assert name in data.bl_rna.properties, name
         self.fields.append(name)
     def operator(self, identifier, **kwargs):
+        assert identifier != 'character_designer.unity_open_path', 'Report/folder buttons must not appear in this panel'
         category, name = identifier.split('.')
         prop = getattr(getattr(bpy.ops, category), name).get_rna_type()
         self.buttons.append((identifier, kwargs, self.__dict__.get('operator_context')))
@@ -84,7 +88,9 @@ class FakeExport:
     def __getattr__(self, name): return getattr(unity_export, name)
     def export_running(self): return self.running
     def bound_meshes(self, *_args): return [body, bound]
-    def collect_character(self, *_args): return {'objects': self.objects, 'warnings': []}
+    def _collection_scope(self, *_args):
+        return {'rigs': {main}, 'helpers': set(), 'eligible': [body, bound]}
+    def collect_character(self, *_args, **_kwargs): return {'objects': self.objects, 'warnings': []}
     def begin_export(self, *_args):
         if self.running: raise ValueError('Already running')
         self.running = True
@@ -315,10 +321,12 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
     warnings = ['Cosha: 2 exported vertices have no weight.',
                 'Material "Skin" uses a custom shader; configure it in Unity.',
                 'Blender-only forearm calibration corrections are not exported.']
-    legacy = {'ok': True, 'warnings': skips + warnings}
+    notices = ['Body: Blender Preserve Volume skinning is exported as standard FBX skin weights; review joint deformation in Unity.',
+               'Old files retained for reference safety: OldBody.png, PreviousCloth.png']
+    legacy = {'ok': True, 'warnings': skips + notices + warnings}
     report_path.write_text(json.dumps(legacy), encoding='utf-8')
     config.last_report = str(report_path)
-    config.last_status = 'Exported with 7 warning(s)'
+    config.last_status = 'Exported with 9 warning(s)'
     config.show_objects = True
     config.show_warnings = True
     with patch.object(ui, '_exporter', return_value=fake):
@@ -329,33 +337,53 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
         assert 'Cosha: 2 vertices need skin weights.' in shown, shown
         assert 'Skin: set up its shader in Unity.' in shown, shown
         assert 'Forearm correction is Blender-only; not included in Unity.' in shown, shown
-        assert 'skipped' not in shown and '7 warning' not in shown, shown
+        assert 'skipped' not in shown and '9 warning' not in shown, shown
+        assert 'Preserve Volume' not in shown and 'Old files retained' not in shown, shown
+        assert 'show_warnings' in layout.fields
+        actions = {identifier for identifier, _kwargs, _context in layout.buttons}
+        assert 'character_designer.unity_locate_unweighted' in actions
+        assert 'character_designer.unity_simple_material' in actions
+        assert 'character_designer.unity_open_path' not in actions
+        assert json.loads(report_path.read_text(encoding='utf-8')) == legacy
         for status in ('Export cancelled', 'Export failed: Worker stopped', 'Preparing Unity export...'):
             config.last_status = status
             layout = Layout()
             ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
             assert status in layout.labels, layout.labels
-            assert 'show_warnings' in layout.fields, layout.fields
+            assert 'show_warnings' not in layout.fields, layout.fields
             assert 'Exported · 3 warning(s)' not in layout.labels
         operator = Modal()
         operator._result(config, {'filepath': 'Cosha.fbx', 'report_path': str(report_path),
-                                 'warnings': skips + warnings})
+                                 'warnings': skips + notices + warnings})
         assert config.last_status == 'Exported · 3 warning(s)'
         assert operator.reports[-1][0] == {'WARNING'}
-        operator._result(config, {'filepath': 'Cosha.fbx', 'report_path': str(report_path),
-                                 'warnings': skips})
-        assert config.last_status == 'Exported successfully'
-        assert operator.reports[-1][0] == {'INFO'}
-        report_path.write_text(json.dumps({'ok': True, 'warnings': skips}), encoding='utf-8')
-        layout = Layout()
-        ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
-        assert 'Exported successfully' not in layout.labels
-        assert 'show_warnings' in layout.fields
+        config.show_objects = config.show_materials = False
+        # A saved expanded flag must not create an empty disclosure or box.
+        assert config.show_warnings
+        for report_only in ([], skips, notices, skips + notices):
+            document = {'ok': True, 'warnings': report_only}
+            result = {'filepath': 'Cosha.fbx', 'report_path': str(report_path), 'warnings': report_only.copy()}
+            original = json.loads(json.dumps(result))
+            report_path.write_text(json.dumps(document), encoding='utf-8')
+            operator._result(config, result)
+            assert result == original, 'UI filtering changed the complete export result'
+            assert config.last_status == 'Exported successfully'
+            assert operator.reports[-1][0] == {'INFO'}
+            layout = Layout()
+            ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
+            assert 'Exported successfully' not in layout.labels
+            assert 'show_warnings' not in layout.fields
+            assert not any(label.startswith('Warnings') for label in layout.labels)
+            assert layout.boxes == 0, 'Notice-only report created an empty warning area'
+            assert not any(identifier == 'character_designer.unity_open_path'
+                           for identifier, _kwargs, _context in layout.buttons)
+            assert json.loads(report_path.read_text(encoding='utf-8')) == document
         report_path.write_text('broken JSON', encoding='utf-8')
         layout = Layout()
         ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
         assert 'Exported successfully' not in layout.labels
-print('PASS visible actionable warnings, legacy report counts, notices-only success and current failure/cancel precedence', flush=True)
+        assert 'show_warnings' not in layout.fields and layout.boxes == 0
+print('PASS actionable mixed warnings, unchanged full reports, hidden empty warnings, no path buttons and failure/cancel precedence', flush=True)
 
 with tempfile.TemporaryDirectory(prefix='cd-export-ui-') as temporary:
     path = str(Path(temporary) / 'profiles.blend')

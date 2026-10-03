@@ -109,20 +109,33 @@ def _restore_context(context, saved, *, playing):
         unity_animation._set_playing(context, saved['playing'])
 
 
-def import_source(context, manifest_path, model_file=None, start_frame=1):
-    """Import one exact Unity-source model into a new scene and bind its Action.
-
-    On success the new motion-edit scene is shown. On failure the original scene,
-    selection and mode return, and only IDs created by this synchronous operation
-    are removed. No .blend, FBX, character mesh or link manifest is saved here.
-    """
+def _validate_import_context(context):
     if context.window is None:
         raise _error('A Blender window is required to open a separate animation scene.')
     if context.object and context.object.mode == 'EDIT':
         raise _error('Leave Edit Mode before opening a linked animation character.')
+
+
+def import_source(context, manifest_path, model_file=None, start_frame=1):
+    """Validate and import one exact Unity-source model into a separate scene."""
+    _validate_import_context(context)
     link = animation_link.load_link(manifest_path)
     packet, export_name = _packet(link)
     path, digest = _source_model(link, model_file)
+    return _import_prepared_source(context, link, packet, export_name, path, digest,
+                                   start_frame=start_frame)
+
+
+def _import_prepared_source(context, link, packet, export_name, path, digest, *, start_frame=1):
+    """Use this operation's validated Link, packet and model without reparsing.
+
+    Callers must have completed load_link, _packet and _source_model. Fresh final
+    model/packet/Link checks still run after import and before binding the Action.
+    On failure only this operation's new IDs are removed, and the original scene,
+    selection and mode return. No user file or Link manifest is saved here.
+    """
+    _validate_import_context(context)
+    manifest_path = link['_manifest_path']
     saved = _context_state(context)
     existing = set(bpy.data.user_map())
     # FBX images can be reused by filepath. Keep pre-existing display settings

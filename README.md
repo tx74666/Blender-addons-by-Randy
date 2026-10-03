@@ -4,10 +4,60 @@
 
 RR Helper 和 Character Designer 的源码、安装包及插件测试集中维护在这里。
 
+RR Helper 0.2.46 uses the current multifunction **Ring Mask 0.2.1** for both
+full rings and arcs. New Ring nodes default to Sweep 360; Add Arc uses 180.
+Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
+[English release and validation record](docs/releases/RRHelper_0.2.46_current_ring_mask_20261002.md).
+
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
-| RR Helper | 0.2.19 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.19.zip](dist/rr_helper-0.2.19.zip) |
-| Character Designer | 0.68.2 | [character_designer](addons/character_designer) | [character_designer-0.68.2.zip](dist/character_designer-0.68.2.zip) |
+| RR Helper | 0.2.46 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.46.zip](dist/rr_helper-0.2.46.zip) |
+| Character Designer | 0.73.2 | [character_designer](addons/character_designer) | [character_designer-0.73.2.zip](dist/character_designer-0.73.2.zip) |
+
+Character Designer 0.73.2 adds a per-character **Bone Display > Color Palette**
+for Body, Arms, Legs, Hair and Dress. Native bones and controls share each group;
+the panel shows actual Normal, Selected and Active colors. Dress defaults to
+muted pink, and wrists/hands/fingers share the arm color. Explicit edits support
+Undo and exact restoration without changing poses, geometry or the global theme.
+[Usage and validation](docs/releases/CharacterDesigner_0.73.2_bone_color_palette_20261003.md).
+
+Character Designer 0.72.0 lets Dress originals rotate in Pose Mode. Their native
+curve and physics evaluation retains a persistent local pose correction when
+returning to Controls. Rest bones, geometry, weights and Shape Keys are retained.
+[Usage and validation](docs/releases/CharacterDesigner_0.72.0_dress_original_20261003.md).
+
+Character Designer 0.71.0 manages Dress bones inside the Main Rig. Body, Hair and
+Dress keep their native Bone Collections, while skirt ownership and cleanup
+apply only to the source's managed subset. Existing independent setups use
+**Rig > Skirt > Use Main Rig** after returning to Controls. Mesh topology,
+Shape Keys and painted weights are preserved by the migration.
+[Migration and validation record](docs/releases/CharacterDesigner_0.71.0_shared_dress_20261003.md).
+
+Character Designer 0.70.11 fixes Dress appearing enabled while its separate armature object is hidden. Original and Controls include effective object visibility; explicit display reveals only the owned rig, with persistent object flags and rollback. Thirty-five regressions and the real saved Cosha's 33 Dress targets pass. [Cause and validation](docs/releases/CharacterDesigner_0.70.11_dress_visibility_20261003.md).
+
+Character Designer 0.70.10 calculates forearm corrective output once per completed Original / Controls transfer and removes an extra synchronous display update after pose verification. Final output failures still roll back the complete mode, pose and attached displays. Four saved-Cosha switches reduce corrective calculations from 16 to 4 and full inventory checks from 22 to 10; measured background calls are 0.15–0.18 seconds, with GUI latency still to be verified. [Validation and timing limits](docs/releases/CharacterDesigner_0.70.10_switch_transaction_20261002.md).
+
+Character Designer 0.70.9 avoids repeating an identical failed forearm mirror proof on every switch update, while preserving its error and pausing invalid corrective output. Exact geometry changes retry immediately. Original panel redraws cache only immutable names, with live rig references and visibility; single-operation ownership and Rest reads are reused. The saved Cosha profile measured both switch directions around 0.2 seconds. [Validation and timing limits](docs/releases/CharacterDesigner_0.70.9_switch_followup_20261002.md).
+
+Character Designer 0.70.8 speeds up **Original / Controls** in **Bone Display** by batching native pose conversion instead of reevaluating the entire scene for every bone. The saved Cosha scene needs three Original pose updates instead of 163; pose validation and complete rollback remain. Existing Pose Mode is kept, display writes skip unchanged values, and returning updates only the current character's collection membership. [Performance validation](docs/releases/CharacterDesigner_0.70.8_original_switch_performance_20261002.md).
+
+Character Designer 0.70.7 unifies native Body/Hair/Dress display under **Original / Controls** in **Bone Display**. The groups share one text-only row with blue visibility highlights. Body Controls is now **Bone Setup**. Native Bone Collection eyes and solo stars keep their standard visibility behavior. [Usage and validation](docs/releases/CharacterDesigner_0.70.7_unified_bone_display_20261002.md).
+
+Character Designer 0.70.2 uses Blender's actual Topology Mirror correspondence for Refine Symmetry, with X/Y/Z axes and a compact direction-first panel. Analyze and tolerances are under Advanced. The 24 native repair regressions verify matching, Shape Key deltas, selected scope, same-Edit-Mode ordinary mirror transforms and rollback. [Workflow](docs/refine_symmetry.md).
+
+Character Designer 0.70.1 fixes Refresh when the Python module and registered UI disagree. Four native reload/rollback checks pass.
+
+Character Designer 0.70.0 adds **Refine Symmetry / Repair Mirror Symmetry** in Modeling and Weight. Analyze and Preview inspect topology-certified vertex pairs without writes; three coordinate repair modes preserve every Shape Key's original Basis-relative deformation. Selected Region Only defaults on, and validation checks ordinary X Mirror with full failure rollback and Undo. [Workflow](docs/refine_symmetry.md) · [Local validation](docs/releases/CharacterDesigner_0.70.0_refine_symmetry_20261002.md).
+
+Character Designer 0.69.4 waits until Blender's scene data is available before cleaning legacy generated names on registration or file load. Saved recovery records persist through disabling, saving and reopening; the current X scene's 117 legacy names have also been cleaned and saved. Four native lifecycle checks pass. [Local change and validation record](docs/releases/CharacterDesigner_0.69.4_load_cleanup_20261002.md).
+
+Character Designer 0.69.3 removes visible random IDs from generated controller meshes and skirt resources. Names use the character/source, function and sequence; validated legacy object/data/collection names are cleaned with their recovery records on registration and file load. Existing animation bone names are preserved. [Local change and validation record](docs/releases/CharacterDesigner_0.69.3_readable_names_20261002.md).
+
+Character Designer 0.69.2 keeps **Character Setup** only in **Rig**. Weight tools use the same saved setup; Quick Bind's missing-reference hints point to **Rig > Character Setup**.
+
+Character Designer 0.69.1 reduces repeated panel scans, matrix preparation, packet decoding and GPU resource construction. Animation inherits Main Rig and hides duplicate rig controls; empty Warnings sections, general compatibility notices and report/folder buttons no longer occupy the export panel. Actual diagnostics and complete reports are preserved. 98 pure checks and eight native checkpoints pass; the Blender 5.2 installation and X validation copy match canonical source. [English release and validation record](docs/releases/CharacterDesigner_0.69.1_performance_20261001.md).
+
+Character Designer 0.69.0 adds **Animation Worklist**: connect a RandomRealm2 character workspace, browse its Controller clips, and add prepared motions to a saved Source/Custom list. Entries share one editing rig, use independent Custom Actions, support selection and ordering, and return the current Custom through candidate Preview and explicit Apply. Real Walk_N/Idle import, editing, save/reopen, native mouse drag and private Unity Apply passed. [English workflow](docs/animation_worklist.md) · [Local release and validation record](docs/releases/CharacterDesigner_0.69.0_animation_worklist_20261001.md).
 
 Character Designer 0.68.2 simplifies **Misc > Unity Export** with one Folder picker, object counts in a collapsed Objects heading, compact per-material export choices, and one collapsed Warnings/report entry. Original shaders and export scope are preserved; Unity verification remains truthful in the report. [Local change and validation record](docs/releases/CharacterDesigner_0.68.2_unity_export_panel_20261001.md).
 

@@ -97,11 +97,13 @@ def _bone_name(rig, candidates):
 def _make_colliders(context, source, rig, record, collection):
     plan = record["fit"]
     scale = max(plan["height_world"], 1.0e-4)
-    waist_world = rig.matrix_world @ Vector(plan["waist_center"])
-    attach = rig.parent if rig.parent and rig.parent.type == "ARMATURE" else None
+    fit_world = skirt_rig.fit_world(source, record)
+    waist_world = fit_world @ Vector(plan["waist_center"])
+    attach = rig if skirt_rig.is_shared(record) else (rig.parent if rig.parent and rig.parent.type == "ARMATURE" else None)
     # Resolve source character from rig attachment, without relying on file-specific names.
     if attach:
-        pelvis = rig.parent_bone or _bone_name(attach, ("Hips", "pelvis", "DEF-spine", "hip"))
+        pelvis = (record['shared']['anchor'] if skirt_rig.is_shared(record)
+                  else rig.parent_bone or _bone_name(attach, ("Hips", "pelvis", "DEF-spine", "hip")))
     else:
         attach, pelvis = rig, record["controls"]["waist"]
     if not pelvis or pelvis not in attach.data.bones:
@@ -111,8 +113,8 @@ def _make_colliders(context, source, rig, record, collection):
     world_to_units = 1.0 / max(linear.col[0].length, linear.col[1].length, linear.col[2].length, 1.0e-8)
     specs = []
     fit = plan["fit_waist"]
-    rx = (rig.matrix_world.to_3x3() @ Vector(fit["cosine"])).length * 0.78
-    ry = (rig.matrix_world.to_3x3() @ Vector(fit["sine"])).length * 0.78
+    rx = (fit_world.to_3x3() @ Vector(fit["cosine"])).length * 0.78
+    ry = (fit_world.to_3x3() @ Vector(fit["sine"])).length * 0.78
     center = inverse @ (waist_world - Vector((0, 0, scale * 0.07)))
     specs.append(("Pelvis", pelvis, center, inverse.to_3x3() @ Vector((0, 0, 1)),
                   rx * world_to_units, ry * world_to_units, scale * 0.26 * world_to_units))
@@ -142,6 +144,7 @@ def _make_colliders(context, source, rig, record, collection):
 
 
 def add_physics(context, source):
+    skirt_rig._require_controls_for_setup(source)
     record, rig = _record(source)
     if record.get("physics"):
         _cloth(record)
@@ -151,7 +154,8 @@ def add_physics(context, source):
     context.scene.collection.children.link(collection)
     collection[skirt_rig.OWNER_KEY] = record["owner"]
     objects, constraints = [], []
-    old_influence = rig.get("physics_influence", 0.0)
+    influence, _driver_id, _path = skirt_rig.physics_control(source)
+    old_influence = influence.get("physics_influence", 0.0)
     try:
         plan = record["fit"]
         sides = record["chain_count"] * 4
@@ -164,7 +168,7 @@ def add_physics(context, source):
         # Use a sibling collection for the cloth; collision filtering includes only closed colliders.
         destination = rig.users_collection[0] if rig.users_collection else context.scene.collection
         proxy = _mesh(f"CD Cloth Cage · {source.name}", verts, faces, destination,
-                      rig.matrix_world.copy(), record)
+                      skirt_rig.fit_rest_world(source, record), record)
         objects.append(proxy)
         _bind_single(proxy, rig, record["controls"]["waist"])
         pin = proxy.vertex_groups.new(name="CD Waist Pin")
@@ -214,8 +218,8 @@ def add_physics(context, source):
                              "baked_range": None}
         record["owned_objects"].extend(o.name for o in objects)
         record.setdefault("owned_collections", []).append(collection.name)
-        rig["physics_influence"] = 1.0
-        rig.id_properties_ui("physics_influence").update(min=0.0, max=1.0, default=1.0,
+        influence["physics_influence"] = 1.0
+        influence.id_properties_ui("physics_influence").update(min=0.0, max=1.0, default=1.0,
                                                          description="Add simulated cloth sway to manual skirt shaping")
         proxy.hide_set(True)
         skirt_rig.write_record(source, record)
@@ -233,7 +237,7 @@ def add_physics(context, source):
                     bpy.data.meshes.remove(data)
         if collection.name in bpy.data.collections:
             bpy.data.collections.remove(collection)
-        rig["physics_influence"] = old_influence
+        influence["physics_influence"] = old_influence
         skirt_rig.write_record(source, original_record)
         if isinstance(error, (SkirtPhysicsError, ValueError)):
             raise
@@ -292,13 +296,36 @@ def _export_objects(context, source, rig, record):
             data.edit_bones.remove(bone)
     bpy.ops.object.mode_set(mode="OBJECT")
     for bone in output.pose.bones:
+        # A new armature Object creates fresh PoseBones even when its data was
+        # copied. Preserve artist metadata explicitly on the independent bake.
+        original = rig.pose.bones[bone.name]
+        for key, value in original.items():
+            if key in {skirt_rig.OWNER_KEY, skirt_rig.SOURCE_KEY}:
+                continue
+            bone[key] = value.to_dict() if hasattr(value, 'to_dict') else value
+            try:
+                ui = original.id_properties_ui(key).as_dict()
+            except TypeError:
+                # Nested ID-property groups have no UI-data manager.
+                continue
+            if ui:
+                bone.id_properties_ui(key).update(**ui)
         bone.rotation_mode = "QUATERNION"
         bone.custom_shape = None
         bone.bone.hide = False
         for constraint in list(bone.constraints):
             bone.constraints.remove(constraint)
+        # A baked output is an independent artist armature. It must not claim
+        # the live source's managed Dress subset after the editable rig is gone.
+        for item in (bone, bone.bone):
+            for key in (skirt_rig.OWNER_KEY, skirt_rig.SOURCE_KEY):
+                if key in item:
+                    del item[key]
     for bone_collection in data.collections_all:
         bone_collection.is_visible = True
+        for key in (skirt_rig.OWNER_KEY, skirt_rig.SOURCE_KEY):
+            if key in bone_collection:
+                del bone_collection[key]
     mesh = source.copy()
     mesh.data = source.data.copy()
     collection.objects.link(mesh)
@@ -338,6 +365,7 @@ def _finite_matrix(matrix):
 
 def bake_steps(context, source, start, end, kind="SIMULATION"):
     """Cancelable generator: always walk every frame; never sample skipped caches."""
+    skirt_rig._require_controls_for_setup(source)
     if kind not in {"SIMULATION", "ANIMATION"}:
         raise SkirtPhysicsError("Unknown skirt bake mode.")
     start, end = int(start), int(end)

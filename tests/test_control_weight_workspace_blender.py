@@ -119,7 +119,11 @@ class WeightWorkspaceTests(unittest.TestCase):
             weights.unregister()
             self.assertEqual(window.view_layer,other)
             self.assertFalse(scene.get(weights.SESSION))
-            self.assertEqual(display,bone_display._snapshot(self.rig))
+            # Display snapshots now include the owning ViewLayer's object eye.
+            # Compare the saved layer while keeping the artist's window on the
+            # alternate layer; the following checks protect that layer too.
+            with bpy.context.temp_override(view_layer=original):
+                self.assertEqual(display,bone_display._snapshot(self.rig))
             self.assertEqual(flags,(object_flags(self.rig,original),object_flags(self.mesh,original)))
             self.assertEqual(other_before,(other.objects.active,
                 tuple(obj for obj in other.objects if obj.select_get(view_layer=other)),

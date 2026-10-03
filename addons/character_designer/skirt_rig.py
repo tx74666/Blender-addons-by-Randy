@@ -1,7 +1,8 @@
 """Native, removable skirt controls fitted to an unbound quad skirt.
 
-Each skirt owns a separate armature, hooked wire curves, three control rings,
-and matched manual / physics / deform chains.  All evaluation is Blender-native;
+Each skirt owns a Dress bone subset, hooked wire curves, three control rings,
+and matched manual / physics / deform chains. New attached setups share the
+character armature; legacy separate armatures remain supported. All evaluation is Blender-native;
 no frame handler, embedded script, or dependency on a particular character name.
 """
 
@@ -14,6 +15,7 @@ import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
+from .generated_names import skirt_prefix
 from .skirt_topology import analyze_skirt, sample_fit
 
 
@@ -25,10 +27,69 @@ PARENT_KEY = "character_designer_skirt_original_parent"
 ATTACHMENT_BACKUP_KEY = "character_designer_skirt_attachment_before_update_v1"
 ATTACHMENT_PARENT_KEY = "character_designer_skirt_attachment_previous_parent"
 BONE_COLLECTION_NAME = "Dress"
+ORIGINAL_DISPLAY_OWNER_KEY = "character_designer_original_display_owner_v1"
+_ORIGINAL_SESSION_KEY = "character_designer_body_original_mode_v1"
+SHARED_SOURCES_KEY = "character_designer_shared_skirts_v1"
+
+
+def is_shared(record):
+    return bool(record and record.get("shared"))
+
+
+def shared_sources(armature):
+    return tuple(source for source in armature.get(SHARED_SOURCES_KEY, {}).values()
+                 if isinstance(source, bpy.types.Object) and source.get(RIG_KEY) == armature)
+
+
+def physics_control(source):
+    record = read_record(source)
+    rig = source[RIG_KEY]
+    if is_shared(record):
+        pose = rig.pose.bones[record["controls"]["waist"]]
+        return pose, rig, pose.path_from_id() + '["physics_influence"]'
+    return rig, rig, '["physics_influence"]'
+
+
+def fit_rest_world(source, record=None):
+    record = record or read_record(source)
+    rig = source[RIG_KEY]
+    return rig.matrix_world @ Matrix(record["shared"]["space_matrix"]) if is_shared(record) else rig.matrix_world.copy()
+
+
+def fit_world(source, record=None):
+    record = record or read_record(source)
+    rig = source[RIG_KEY]
+    if not is_shared(record):
+        return rig.matrix_world.copy()
+    anchor = record["shared"]["anchor"]
+    return (rig.matrix_world @ rig.pose.bones[anchor].matrix @ rig.data.bones[anchor].matrix_local.inverted()
+            @ Matrix(record["shared"]["space_matrix"]))
+
+
+def unify_skirt(context, source, armature=None, parent_bone=""):
+    from . import skirt_shared_rig
+    return skirt_shared_rig.unify(context, source, armature, parent_bone)
 
 
 class SkirtRigError(ValueError):
     """An artist-facing validation or rolled-back construction error."""
+
+
+def _require_controls_for_setup(obj, armature=None):
+    """Keep captured dress display references stable during Original mode."""
+    candidates = [obj, armature]
+    if isinstance(obj, bpy.types.Object):
+        candidates.append(obj.get(RIG_KEY))
+        source = obj.get(SOURCE_KEY)
+        if isinstance(source, bpy.types.Object):
+            candidates.append(source.get(RIG_KEY))
+    for candidate in candidates:
+        if not isinstance(candidate, bpy.types.Object):
+            continue
+        owner = candidate.get(ORIGINAL_DISPLAY_OWNER_KEY)
+        if (_ORIGINAL_SESSION_KEY in candidate
+                or isinstance(owner, bpy.types.Object) and _ORIGINAL_SESSION_KEY in owner):
+            raise SkirtRigError("Switch to Controls in Bone Display before changing the skirt setup.")
 
 
 def _matrix_values(matrix):
@@ -83,8 +144,23 @@ def read_record(obj):
         if record["version"] != 1 or not record["owner"] or not record["chains"]:
             raise ValueError()
         rig = obj.get(RIG_KEY)
-        if rig is None or rig.type != "ARMATURE" or rig.get(OWNER_KEY) != record["owner"]:
+        if rig is None or rig.type != "ARMATURE" or (not is_shared(record) and rig.get(OWNER_KEY) != record["owner"]):
             raise SkirtRigError("This skirt's generated rig is missing. Undo its removal before continuing.")
+        if is_shared(record):
+            names = set(record["shared"]["names"])
+            expected = set.union(*_bone_collection_layout(record))
+            actual = {bone.name for bone in rig.data.bones
+                      if bone.get(OWNER_KEY) == record['owner']}
+            collections = [group for group in rig.data.collections_all if group.get(OWNER_KEY) == record['owner']]
+            if (rig.get(SHARED_SOURCES_KEY, {}).get(record["owner"]) != obj
+                    or names != expected or names != actual or len(collections) != 1
+                    or set(collections[0].bones.keys()) != expected
+                    or any(set(rig.data.bones[name].collections) != {collections[0]}
+                           for name in names if name in rig.data.bones)
+                    or any(name not in rig.data.bones or rig.data.bones[name].get(OWNER_KEY) != record["owner"]
+                           or rig.data.bones[name].get(SOURCE_KEY) != obj for name in names)):
+                raise SkirtRigError("This shared skirt's bone ownership is incomplete. Undo that change first.")
+            record['shared']['collection'] = collections[0].name
         record["rig"] = rig.name
         record["source"] = obj.name
         for chain in record["chains"]:
@@ -115,6 +191,7 @@ def migrate_skirt_bone_collections(armature):
     """
     if armature is None or armature.type != "ARMATURE" or not armature.get(OWNER_KEY):
         return False
+    _require_controls_for_setup(armature)
     source = armature.get(SOURCE_KEY)
     if source is None or source.type != "MESH" or source.get(RIG_KEY) is not armature:
         raise SkirtRigError("The skirt rig's source ownership is incomplete.")
@@ -171,11 +248,19 @@ def find_source(context):
     if active and active.type == "MESH" and not active.get(SOURCE_KEY):
         return active
     if active:
+        if active.type == "ARMATURE" and active.data.bones.active:
+            source = active.data.bones.active.get(SOURCE_KEY)
+            if isinstance(source, bpy.types.Object) and source.type == "MESH":
+                return source
         source = active.get(SOURCE_KEY)
         if source and source.type == "MESH":
             return source
         if RECORD_KEY in active:
             return active
+        if active.type == "ARMATURE":
+            sources = shared_sources(active)
+            if len(sources) == 1:
+                return sources[0]
     candidates = [obj for obj in context.selected_objects if obj.type == "MESH" and not obj.get(SOURCE_KEY)]
     if len(candidates) == 1:
         return candidates[0]
@@ -235,6 +320,10 @@ def attachment_status(source):
     if not record:
         return None
     rig = source[RIG_KEY]
+    if is_shared(record):
+        anchor = record["shared"]["anchor"]
+        return {"rig": rig, "character": rig, "parent": rig, "parent_type": "BONE", "parent_bone": anchor,
+                "attached": anchor in rig.data.bones, "has_backup": False, "physics": bool(record.get("physics"))}
     parent = rig.parent
     character = parent if parent and parent.type == "ARMATURE" else None
     attached = bool(character and rig.parent_type == "BONE" and rig.parent_bone in character.data.bones)
@@ -256,6 +345,7 @@ def _valid_matrix(matrix):
 
 
 def _attachment_preflight(context, source, record, parent, parent_type, parent_bone):
+    _require_controls_for_setup(source, parent)
     rig = source[RIG_KEY]
     if (source.library or source.override_library or rig.library or rig.override_library
             or rig.data.library or rig.data.users != 1
@@ -331,9 +421,14 @@ def update_attachment(context, source, armature, parent_bone=""):
     Only the rig's parent and parent inverse change. The first successful update
     retains a blend-persistent original attachment until Restore is used.
     """
+    _require_controls_for_setup(source, armature)
     record = read_record(source)
     if not record:
         raise SkirtRigError("Create the skirt setup before updating its attachment.")
+    if is_shared(record):
+        if armature != source[RIG_KEY] or _anchor_bone(armature, parent_bone) != record["shared"]["anchor"]:
+            raise SkirtRigError("Shared Dress bones already use this Main Rig; keep their current attachment.")
+        return record
     if armature is None or armature.type != "ARMATURE" or armature.get(OWNER_KEY):
         raise SkirtRigError("Choose the Main Rig and one Attachment Bone, usually Hips.")
     bone = _anchor_bone(armature, parent_bone)
@@ -389,6 +484,8 @@ def restore_attachment(context, source):
     meanwhile, the skirt follows its current pose rather than keeping an offset.
     """
     record = read_record(source)
+    if is_shared(record):
+        raise SkirtRigError("Shared Dress bones have no separate rig attachment to restore.")
     if not record or not has_attachment_backup(source):
         raise SkirtRigError("This skirt has no previous attachment to restore.")
     try:
@@ -521,7 +618,9 @@ def _purge_owned(source, owner):
 
 
 def _clear_source_properties(source):
-    for key in (RECORD_KEY, RIG_KEY, OWNER_KEY, PARENT_KEY, ATTACHMENT_BACKUP_KEY, ATTACHMENT_PARENT_KEY):
+    from . import skirt_original_mode
+    for key in (RECORD_KEY, RIG_KEY, OWNER_KEY, PARENT_KEY, ATTACHMENT_BACKUP_KEY,
+                ATTACHMENT_PARENT_KEY, skirt_original_mode.CORRECTIONS):
         if key in source:
             del source[key]
 
@@ -531,6 +630,9 @@ def _validate_source(obj):
         raise SkirtRigError("Select the skirt mesh before building its controls.")
     if any(key in obj for key in (RIG_KEY, OWNER_KEY, PARENT_KEY)):
         raise SkirtRigError("The skirt has incomplete setup ownership. Undo the previous change before rebuilding.")
+    from . import skirt_original_mode
+    if skirt_original_mode.CORRECTIONS in obj:
+        raise SkirtRigError("The skirt has an orphaned pose correction. Restore its setup before rebuilding.")
     if obj.library or obj.override_library or obj.data.library or obj.data.users > 1:
         raise SkirtRigError("Make the skirt and its mesh local and single-user before setup.")
     if obj.constraints:
@@ -580,22 +682,25 @@ def _check_existing_geometry(obj, record):
             raise SkirtRigError("A generated skirt wire was renamed or removed. Undo that change first.")
 
 
-def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, parent_bone=""):
+def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, parent_bone="", *, shared=True):
+    _require_controls_for_setup(obj, armature)
     existing = read_record(obj)
     if existing:
         if existing["chain_count"] != chain_count or existing["segment_count"] != segment_count:
             raise SkirtRigError("Remove the existing setup before changing its chain or segment count.")
         _check_existing_geometry(obj, existing)
-        migrate_skirt_bone_collections(obj[RIG_KEY])
+        if not is_shared(existing):
+            migrate_skirt_bone_collections(obj[RIG_KEY])
         select_controls(context, obj)
         return existing
     _validate_source(obj)
     plan = analyze_skirt(obj, chain_count=chain_count, segment_count=segment_count)
     character, anchor = _find_character(context, obj, armature, parent_bone)
+    _require_controls_for_setup(obj, character)
     saved_context = _context_state(context)
     original_parent = obj.parent
     owner = uuid.uuid4().hex
-    prefix = "SK_" + obj.name[:16] + "_" + owner[:6]
+    prefix = skirt_prefix(obj)
     record = {
         "version": 1, "owner": owner, "source": obj.name, "rig": "",
         "chain_count": chain_count, "segment_count": segment_count,
@@ -616,7 +721,7 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
         world = obj.matrix_world.copy()
         host_collection = obj.users_collection[0] if obj.users_collection else context.scene.collection
         collection = _collection(host_collection, "Skirt | " + obj.name, owner)
-        helpers = _collection(collection, "Skirt wire and shapes | " + owner[:6], owner)
+        helpers = _collection(collection, "Skirt Wire and Shapes | " + prefix.removeprefix("SK_"), owner)
         record["owned_collections"] = [collection.name, helpers.name]
         data = bpy.data.armatures.new(prefix + "_Rig")
         rig = _owned(bpy.data.objects.new(prefix + "_Rig", data), obj, owner)
@@ -794,6 +899,10 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
         from . import control_colors
         for name in control_names:
             control_colors.style(rig.pose.bones[name])
+        from . import bone_color_palette
+        bone_color_palette.style_generated_dress(rig, obj)
+        if character and shared:
+            return unify_skirt(context, obj, character, anchor)
         return record
     except Exception as error:
         current = context.view_layer.objects.active
@@ -818,6 +927,7 @@ def select_controls(context, obj, level="ALL"):
     record = read_record(obj)
     if not record:
         raise SkirtRigError("Build the skirt controls first.")
+    _require_controls_for_setup(obj)
     rig = obj[RIG_KEY]
     _activate(context, rig, "POSE")
     wanted = record["controls"]["waist"]
@@ -829,13 +939,19 @@ def select_controls(context, obj, level="ALL"):
     for collection in rig.data.bones[wanted].collections:
         collection.is_visible = True
     rig.data.bones[wanted].hide = False
+    if hasattr(rig.pose.bones[wanted], "hide"):
+        rig.pose.bones[wanted].hide = False
     return rig
 
 
 def remove_skirt(context, obj, allow_animation=False):
+    _require_controls_for_setup(obj)
     record = read_record(obj)
     if not record:
         raise SkirtRigError("This mesh has no generated skirt setup.")
+    if is_shared(record):
+        from . import skirt_shared_rig
+        return skirt_shared_rig.remove(context, obj, allow_animation=allow_animation)
     rig = obj[RIG_KEY]
     owned = [candidate for candidate in bpy.data.objects if candidate is not obj and candidate.get(OWNER_KEY) == record["owner"]]
     if not allow_animation and any(candidate.animation_data and

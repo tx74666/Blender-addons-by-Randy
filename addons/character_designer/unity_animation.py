@@ -242,6 +242,21 @@ def expected_world_matrices(target, package, sample_index, *, unit_scale=1.0, ma
             for name, index in mapping.indices.items()}
 
 
+def _world_samples(data, mapping):
+    """Prepare only this import's constant transforms; validate every motion sample.
+
+    Keep the reference helper above independent and the product order identical.
+    Nothing is cached across imports, target Rest changes, or packet revisions.
+    """
+    c, ci = mapping.conversion, mapping.conversion.inverted()
+    bones = [(name, index, _matrix(data["bones"][index]["rest"], name).inverted(),
+              mapping.rest_world[name]) for name, index in mapping.indices.items()]
+    for frame in data["frames"]:
+        yield {name: c @ _matrix(frame["poses"][index]["matrix"], name)
+               @ rest_inverse @ ci @ rest_world
+               for name, index, rest_inverse, rest_world in bones}
+
+
 def _playing(context):
     return bool(context.screen and context.screen.is_animation_playing)
 
@@ -461,13 +476,11 @@ def _import_package_action(context, target, data, *, start_frame=1):
         from .unity_animation_controls import bake_channels
         desired_samples = (
             {name: world_inv @ matrix for name, matrix in
-             expected_world_matrices(target, data, index, mapping=mapping).items()}
-            for index in range(len(frames)))
+             desired_world.items()} for desired_world in _world_samples(data, mapping))
         baked = bake_channels(context, target, mapping.controls, desired_samples)
         channels, needs_joint_translation = baked.channels, baked.needs_joint_translation
     else:
-        for index in range(len(frames)):
-            desired_world = expected_world_matrices(target, data, index, mapping=mapping)
+        for index, desired_world in enumerate(_world_samples(data, mapping)):
             desired = {name: world_inv @ mat for name, mat in desired_world.items()}
             for name in names:
                 pb, bone = target.pose.bones[name], target.data.bones[name]

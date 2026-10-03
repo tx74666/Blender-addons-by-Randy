@@ -8,6 +8,8 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
+from . import generated_names
+
 OWNER_KEY = "character_designer_owner"
 OWNER_VALUE = "torso_controls"
 ROLE_KEY = "character_designer_torso_role"
@@ -191,12 +193,13 @@ def _add_constraint(record, owner, kind, name, armature, **fields):
 
 def _add_widget(context, armature, record, role, width):
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection is None:
+    if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
         collection = bpy.data.collections.new(record['widget_collection'])
+        record['widget_collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
         from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'Torso')
+        widget_collections.ensure_container(context, collection, armature, 'Torso', allow_numbered=True)
         record['widget_collection'] = collection.name
     # The broad waist contour follows Rain's torso widget silhouette. FK rings
     # stay in their local transverse plane and do not affect deformation.
@@ -206,7 +209,7 @@ def _add_widget(context, armature, record, role, width):
         x, z = math.cos(angle), math.sin(angle)
         y = 0.78 * abs(x) ** 1.8 if role == 'BEND' else 0.0
         vertices.append((x * 0.5, y, z * (0.32 if role == 'BEND' else 0.38)))
-    name = 'WGT_CD_Torso_' + role + '_' + record['id'][:10]
+    name = generated_names.widget_name(armature, 'Torso_' + role)
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(vertices, [(i, (i + 1) % 32) for i in range(32)], [])
     mesh.update()
@@ -251,7 +254,8 @@ def _delete_graph(context, armature, record):
             if not mesh.users:
                 bpy.data.meshes.remove(mesh)
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection and not collection.objects and not collection.children:
+    if (collection and _owned(collection, record, 'WIDGET_COLLECTION')
+            and not collection.objects and not collection.children):
         bpy.data.collections.remove(collection)
         from . import widget_collections
         widget_collections.prune_empty(context)
@@ -290,7 +294,7 @@ def build(context, armature, chain=None, hips_name=None):
               'controls': {name: names[f'FK_{i}'] for i, name in enumerate(sources)},
               'bend': names['BEND'], 'bones': names, 'bone_states': {}, 'source_states': rest,
               'constraints': [], 'widgets': {}}
-    record['widget_collection'] = 'CD_Torso_Widgets_' + record['id'][:10]
+    record['widget_collection'] = generated_names.collection_name(armature, 'Torso')
     layout = bone_collections.capture_managed_layout(armature)
     ctx = _limb()._capture_context(context, armature)
     mirror = armature.data.use_mirror_x

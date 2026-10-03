@@ -21,7 +21,8 @@ from build_mix_shaders import CATALOG_ID, DESCRIPTION, GENERATOR, NAME, ROOT, VE
 import verify_ring_mask as radial
 
 
-DEPENDENCIES = (GENERATOR, "tools/randy_node_assets/verify_ring_mask.py",
+DEPENDENCIES = (GENERATOR, "tools/randy_node_assets/build_mix_shaders.py",
+                "tools/randy_node_assets/verify_mix_shaders.py", "tools/randy_node_assets/verify_ring_mask.py",
                 "tools/randy_node_assets/deploy_ring_mask.py", "tools/randy_node_assets/deploy_assets.py")
 TOLERANCE = .002
 GRID = 3
@@ -51,10 +52,12 @@ def metadata(group, helper):
     assert group["randy_asset_generator_sha256"] == hashes()[GENERATOR]
     assert group.default_group_node_width == 220
     helper._validate_group(group)
-    assert len(helper._pairs(group)) == 1
+    assert group.get(helper._KIND) == 2
+    assert len(helper._pairs(group)) == 2
     items = [item for item in group.interface.items_tree if item.item_type == "SOCKET"]
     assert [item.name for item in items if item.in_out == "INPUT"] == [
-        "Base Shader", "Mask 1", "Shader 1", "_Connected 1"]
+        "Base Shader", "Mask 1", "Shader 1", "Mask 2", "Shader 2"]
+    assert not any(item.name.startswith("_Connected") for item in items)
     assert [item.name for item in items if item.in_out == "OUTPUT"] == ["Shader"]
     assert {node.bl_idname for node in group.nodes} == {
         "NodeGroupInput", "NodeGroupOutput", "ShaderNodeMath", "ShaderNodeMixShader"}
@@ -67,7 +70,7 @@ def metadata(group, helper):
             "color_tag": group.color_tag, "version": VERSION,
             "inputs": [item.name for item in items if item.in_out == "INPUT"],
             "outputs": [item.name for item in items if item.in_out == "OUTPUT"],
-            "hidden_runtime_inputs": ["_Connected 1"], "nodes": len(group.nodes),
+            "hidden_runtime_inputs": [], "nodes": len(group.nodes),
             "default_group_node_width": group.default_group_node_width,
             "tags": [tag.name for tag in group.asset_data.tags]}
 
@@ -107,18 +110,24 @@ def independent_expansion(group, helper):
     identifiers = [item.identifier for item in nodes[0].inputs]
     helper.add_shader_slot(nodes[0])
     assert nodes[0].node_tree != group and nodes[1].node_tree == group
-    assert len(helper._pairs(nodes[0].node_tree)) == 2
-    assert len(helper._pairs(nodes[1].node_tree)) == 1
+    assert len(helper._pairs(nodes[0].node_tree)) == 3
+    assert len(helper._pairs(nodes[1].node_tree)) == 2
     assert links(tree) == before
     assert [item.identifier for item in nodes[0].inputs][:len(identifiers)] == identifiers
     assert abs(nodes[0].inputs["Mask 1"].default_value - .37) < 1e-6
     assert abs(nodes[1].inputs["Mask 1"].default_value - .81) < 1e-6
-    gate = helper._pairs(group)[0][2]
-    assert helper._socket(nodes[0].inputs, gate).default_value == 1
-    assert helper._socket(nodes[1].inputs, gate).default_value == 0
-    assert all(helper._socket(node.inputs, pair[2]).hide for node in nodes
-               for pair in helper._pairs(node.node_tree))
-    return material.name, before
+    assert nodes[0].node_tree.asset_data is None and not nodes[0].node_tree.use_fake_user
+    assert group.asset_data is not None and group.use_fake_user
+    for count in range(4, 26):
+        assert helper.add_shader_slot(nodes[0]) == count
+    assert len(helper._pairs(nodes[0].node_tree)) == 25
+    assert len(nodes[0].inputs) == 51
+    assert nodes[1].node_tree == group and len(helper._pairs(group)) == 2
+    assert links(tree) == before
+    assert [item.identifier for item in nodes[0].inputs][:len(identifiers)] == identifiers
+    assert abs(nodes[0].inputs["Mask 1"].default_value - .37) < 1e-6
+    assert not any(item.name.startswith("_Connected") for node in nodes for item in node.inputs)
+    return material.name, before, 25
 
 
 def cases():
@@ -130,11 +139,13 @@ def cases():
         ("second_ring_over_third", .3, {}),
         ("third_ring_only", .15, {}),
         ("base_outside_all_rings", .95, {}),
-        ("empty_top_shader_keeps_second", .5, {"colors": (None, colors[1], colors[2])}),
+        ("unlinked_top_shader_with_white_mask_is_native_black", .5,
+         {"colors": (None, colors[1], colors[2])}),
         ("connected_black_top_shader_covers", .5, {"colors": ((0, 0, 0), colors[1], colors[2])}),
         ("soft_top_half_blends_second", .425, {"rings": ((.4, .4, .05), rings[1], rings[2])}),
         ("zero_width_top_keeps_second", .5, {"rings": ((.4, 0, 0), rings[1], rings[2])}),
-        ("all_empty_overlays_keep_base", .5, {"colors": (None, None, None)}),
+        ("all_unused_masks_zero_keep_base", .5,
+         {"rings": ((.4, 0, 0), (.25, 0, 0), (.1, 0, 0)), "colors": (None, None, None)}),
     ):
         params = overrides.get("rings", rings)
         shaders = overrides.get("colors", colors)
@@ -142,8 +153,10 @@ def cases():
         expected = (0, 0, 1)
         mask_values = [radial.oracle(uv, values) for values in params]
         for mask, color in reversed(list(zip(mask_values, shaders))):
-            if color is not None:
-                expected = tuple(lower*(1-mask) + top*mask for lower, top in zip(expected, color))
+            # A native unlinked shader socket evaluates to black. Bypass an
+            # unused pair with Mask 0, rather than a hidden Python-driven gate.
+            color = color if color is not None else (0, 0, 0)
+            expected = tuple(lower*(1-mask) + top*mask for lower, top in zip(expected, color))
         result.append({"name": name, "radius": radius, "uv": uv, "rings": params,
                        "colors": shaders, "masks": mask_values, "expected_rgb": expected})
     return result
@@ -156,10 +169,10 @@ def tile(scene, group, ring_mask, helper, case, index):
     tree.nodes.clear()
     node = tree.nodes.new("ShaderNodeGroup")
     node.node_tree = group
-    helper.sync_tree(tree)
-    helper.add_shader_slot(node)
+    node.name = "Mixed Rings"
     helper.add_shader_slot(node)
     tree.links.new(shader(tree, "Blue Base", (0, 0, 1)), node.inputs["Base Shader"])
+    temporary = shader(tree, "Temporary Shader", (1, 0, 1))
     for index_slot, (values, color) in enumerate(zip(case["rings"], case["colors"]), 1):
         mask = tree.nodes.new("ShaderNodeGroup")
         mask.node_tree = ring_mask
@@ -167,12 +180,13 @@ def tile(scene, group, ring_mask, helper, case, index):
         for name, value in zip(radial.INPUT_NAMES, values):
             mask.inputs[name].default_value = value
         tree.links.new(mask.outputs["Mask"], node.inputs["Mask {}".format(index_slot)])
+        # Save deliberately different shader links. After reopen, the native
+        # graph is edited with all RR Helper callbacks unregistered.
+        tree.links.new(temporary, node.inputs["Shader {}".format(index_slot)])
         if color is not None:
-            tree.links.new(shader(tree, "Shader {}".format(index_slot), color),
-                           node.inputs["Shader {}".format(index_slot)])
+            shader(tree, "Shader {}".format(index_slot), color)
     output = tree.nodes.new("ShaderNodeOutputMaterial")
     tree.links.new(node.outputs[0], output.inputs["Surface"])
-    helper.sync_tree(tree)
     x, y = index % GRID, index // GRID
     mesh = bpy.data.meshes.new(case["name"])
     mesh.from_pydata([(x-.46, y-.46, 0), (x+.46, y-.46, 0),
@@ -185,10 +199,25 @@ def tile(scene, group, ring_mask, helper, case, index):
     scene.collection.objects.link(obj)
 
 
+def edit_native_connections(all_cases, helper):
+    assert not any(callback in getattr(bpy.app.handlers, name) for name, callback in helper._HANDLERS)
+    for case in all_cases:
+        tree = bpy.data.materials["Atlas " + case["name"]].node_tree
+        node = tree.nodes["Mixed Rings"]
+        for number, color in enumerate(case["colors"], 1):
+            target = node.inputs["Shader {}".format(number)]
+            for link in list(target.links):
+                tree.links.remove(link)
+            if color is not None:
+                tree.links.new(tree.nodes["Shader {}".format(number)].outputs[0], target)
+        assert helper.sync_tree(tree) == 0
+        assert not any(item.name.startswith("_Connected") for item in node.inputs)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset", required=True)
-    parser.add_argument("--ring-mask", default=str(ROOT / "node_library/assets/Randy_Ring_Mask.blend"))
+    parser.add_argument("--ring-mask", default=str(ROOT / "node_library/dependencies/Randy_Ring_Mask.blend"))
     parser.add_argument("--report", required=True)
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
     if not bpy.app.background:
@@ -204,11 +233,14 @@ def main():
     try:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         helper = runtime()
+        helper.register()
         group = append_group(asset, NAME)
         report["asset_metadata"] = metadata(group, helper)
         report["tests"].append({"name": "append_asset_and_validate_canonical_graph_catalog_interface", "passed": True})
-        material_name, expected_links = independent_expansion(group, helper)
+        material_name, expected_links, expanded_slots = independent_expansion(group, helper)
         report["tests"].append({"name": "independent_instances_expand_only_one_keep_old_identifiers_links_values", "passed": True})
+        report["tests"].append({"name": "dynamic_expansion_to_twenty_five_pairs_without_hidden_gates",
+                                "passed": True, "pairs": expanded_slots})
         ring_mask = append_group(ring_path, "Ring Mask")
         radial.validate_interface(ring_mask)
         scene = bpy.context.scene
@@ -221,11 +253,13 @@ def main():
         scene.render.resolution_x = scene.render.resolution_y = GRID * TILE_PIXELS
         fixture = report_path.with_name("Randy_Mix_Shaders_validation.blend")
         bpy.ops.wm.save_as_mainfile(filepath=str(fixture), check_existing=False)
+        helper.unregister()
         bpy.ops.wm.open_mainfile(filepath=str(fixture), load_ui=False, use_scripts=False)
-        helper.rebuild_index()
         metadata(bpy.data.node_groups[NAME], helper)
         assert links(bpy.data.materials[material_name].node_tree) == expected_links
-        report["tests"].append({"name": "saved_native_asset_instances_reopen_with_links_intact", "passed": True,
+        edit_native_connections(all_cases, helper)
+        report["tests"].append({"name": "saved_native_groups_reopen_and_connections_edit_with_helper_unregistered",
+                                "passed": True,
                                 "fixture": str(fixture)})
         exr = report_path.with_name("Mix_Shaders_numeric_atlas.exr")
         scene = bpy.context.scene

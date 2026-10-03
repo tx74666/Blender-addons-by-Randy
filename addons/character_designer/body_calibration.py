@@ -145,9 +145,11 @@ def _hash(value):
 
 
 def native_rest(rig):
+    from . import skirt_rig
     bones = rig.data.edit_bones if rig.mode == 'EDIT' else rig.data.bones
     return {b.name: rest(rig, b.name) for b in bones
-            if b.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS}
+            if b.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS
+            and not b.get(skirt_rig.OWNER_KEY)}
 
 
 def verify_rest(rig, before, allowed=()):

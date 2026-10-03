@@ -1,25 +1,9 @@
 {
   "schema_version": 1,
-  "library_version": "0.1.2",
+  "library_version": "0.3.1",
   "blender_version": "5.2.0",
   "catalog_file": "node_library/assets/blender_assets.cats.txt",
   "bundles": [
-    {
-      "id": "ring_mask",
-      "path": "node_library/assets/Randy_Ring_Mask.blend",
-      "sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
-      "source": {
-        "build": "tools/randy_node_assets/build_ring_mask.py",
-        "verify": "tools/randy_node_assets/verify_ring_mask.py",
-        "deploy": "tools/randy_node_assets/deploy_ring_mask.py"
-      },
-      "source_sha256": {
-        "tools/randy_node_assets/build_ring_mask.py": "72ba91e194e572372de93ad22d0e8ef8bea5b3d49e70dd7fadda3a2c7faaf684",
-        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
-        "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067"
-      },
-      "verification": "node_library/validation/ring_mask.json"
-    },
     {
       "id": "geometry",
       "path": "node_library/assets/Randy_Toolkit.blend",
@@ -39,64 +23,108 @@
     {
       "id": "mix_shaders",
       "path": "node_library/assets/Randy_Mix_Shaders.blend",
-      "sha256": "eaf1730cd52f34cbe267f28c0add9015ba281ad62ce00f1ef03aec29ff1a921c",
+      "sha256": "8fbe2fe8a026d697a3f7e4b5a46a54e5005f435796100ae1d8fa625f5869a295",
       "source": {
         "build": "tools/randy_node_assets/build_mix_shaders.py",
         "verify": "tools/randy_node_assets/verify_mix_shaders.py",
         "deploy": "tools/randy_node_assets/deploy_mix_shaders.py"
       },
       "source_sha256": {
-        "tools/randy_node_assets/build_mix_shaders.py": "7e5e454bdf9e359ba483dcc86d86b6b60aeb8f01e4ea54eb63b038285253b27d",
-        "tools/randy_node_assets/verify_mix_shaders.py": "4943c06c7aa755104a97a01b10bd4b12dbacc6042bcc5793a9f13c7c9ac278ba",
+        "tools/randy_node_assets/build_mix_shaders.py": "231ffebc57303f6402c2bd0438276df5acecdb2ff79378d7105e2c3249d541df",
+        "tools/randy_node_assets/verify_mix_shaders.py": "5514bdc4e077339e2aa9bf927a962388d70dcef661948696234f231a68bec4e3",
         "tools/randy_node_assets/deploy_mix_shaders.py": "73f9a8d725afaff505f4efae66236a54ba01fa5b39c4326e2102593185635868"
       },
       "source_dependencies_sha256": {
-        "addons/random_realm_builder_exporter/rr_shader_mixer.py": "c368aa88052e576ec0ed56ccd65720115fca532bb3767ba2db4a3b25281e20e1",
+        "addons/random_realm_builder_exporter/rr_shader_mixer.py": "098dec6bf359cdd2a2b83492656883a0e15a573a0822cd017e8eb6d8ff6301c5",
+        "tools/randy_node_assets/build_mix_shaders.py": "231ffebc57303f6402c2bd0438276df5acecdb2ff79378d7105e2c3249d541df",
+        "tools/randy_node_assets/verify_mix_shaders.py": "5514bdc4e077339e2aa9bf927a962388d70dcef661948696234f231a68bec4e3",
         "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
         "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067",
         "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
       },
-      "verification": "node_library/validation/mix_shaders.json"
+      "verification": "node_library/validation/mix_shaders.json",
+      "editing_helper_version": "RR Helper 0.2.46"
+    },
+    {
+      "id": "ring_mask",
+      "path": "node_library/assets/Randy_Ring_Mask.blend",
+      "sha256": "485274c248c90b1529a584756810bce0c7f935aea7c1077fd0d6c687562a7de6",
+      "source": {
+        "build": "tools/randy_node_assets/build_ring_mask_current.py",
+        "verify": "tools/randy_node_assets/verify_ring_mask_current.py",
+        "deploy": "tools/randy_node_assets/deploy_ring_mask_current.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_ring_mask_current.py": "2284418981d5a2dafb2dabc2c44aacf147116de6846ce7bbeece86c87b3ed4bc",
+        "tools/randy_node_assets/verify_ring_mask_current.py": "d2f5ca723493da934862a529d56a7b785316bca06d96beeddd9d6386d66b387d",
+        "tools/randy_node_assets/deploy_ring_mask_current.py": "9b523b5674706e585969428fdd89a4aeb18c68b77b870948920cce5e28408668"
+      },
+      "source_dependencies_sha256": {
+        "tools/randy_node_assets/build_ring_mask_current.py": "2284418981d5a2dafb2dabc2c44aacf147116de6846ce7bbeece86c87b3ed4bc",
+        "tools/randy_node_assets/verify_ring_mask_current.py": "d2f5ca723493da934862a529d56a7b785316bca06d96beeddd9d6386d66b387d",
+        "tools/randy_node_assets/verify_arc_mask.py": "577708426f28c0dab5021db31ee3c02c31db4f6244d5f0392a9b73228a1cea87",
+        "tools/randy_node_assets/verify_extend_mask.py": "4dd15ee21ba9afb36c353e546bcd3d401973a4d376bc45a7475483355003539e",
+        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+        "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838"
+      },
+      "verification": "node_library/validation/ring_mask_current.json"
+    },
+    {
+      "id": "ring_group",
+      "path": "node_library/assets/Randy_Ring_Group.blend",
+      "sha256": "d4c60147b30c2c693b2dbffc3a664ab293131bd3b4711eb0b747a445d24283d2",
+      "source": {
+        "build": "tools/randy_node_assets/build_ring_group.py",
+        "verify": "tools/randy_node_assets/verify_ring_group_compatibility.py",
+        "deploy": "tools/randy_node_assets/deploy_ring_nodes.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_ring_group.py": "a1468d808636c882710ddfa7a5217a4d1ae2723da46522d056ea575b4b695d2d",
+        "tools/randy_node_assets/verify_ring_group_compatibility.py": "52863be015d67f8733ba1ed2e7d5487445b870ddb28d3250fec4009bdad2ef1c",
+        "tools/randy_node_assets/deploy_ring_nodes.py": "caf6625735fedae53154e4b670e221fbc12bce37671e57d8009b21364b560775"
+      },
+      "source_dependencies_sha256": {
+        "addons/random_realm_builder_exporter/rr_ring_nodes.py": "dda63a8eb69eb46df074a9628d7e5a8b4dbf855fa800607cfdb57a16a8115e7c",
+        "tools/randy_node_assets/build_ring_group.py": "a1468d808636c882710ddfa7a5217a4d1ae2723da46522d056ea575b4b695d2d",
+        "tools/randy_node_assets/verify_ring_group.py": "fecfce2889e46d944f269ae9b6dae2c0b4b62e6439c3c097222b96471b4e9415",
+        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+        "tools/randy_node_assets/verify_arc_mask.py": "577708426f28c0dab5021db31ee3c02c31db4f6244d5f0392a9b73228a1cea87",
+        "tools/randy_node_assets/build_arc_mask.py": "27f3bd2d13a51ea3999f34a4599d98832b76b15243b3719ad1cbff80dddb72fc",
+        "tools/randy_node_assets/verify_ring_group_compatibility.py": "52863be015d67f8733ba1ed2e7d5487445b870ddb28d3250fec4009bdad2ef1c",
+        "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838",
+        "node_library/validation/ring_group_editing_20261002.json": "5ca3228759fd9121754a02e24d99e02612d7608aa4168ebe2784c2767aec1c84"
+      },
+      "verification": "node_library/validation/ring_group.json",
+      "editing_helper_version": "RR Helper 0.2.46"
+    },
+    {
+      "id": "extend_mask",
+      "path": "node_library/assets/Randy_Extend_Mask.blend",
+      "sha256": "c7e749ac466dd2250f1e78944df4a5100dcc0fb2f0275e9ecd6c8b12b6a2078d",
+      "source": {
+        "build": "tools/randy_node_assets/build_extend_mask.py",
+        "verify": "tools/randy_node_assets/verify_extend_mask.py",
+        "deploy": "tools/randy_node_assets/deploy_extend_mask.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_extend_mask.py": "7b9c4243a4639191bfacf99c0455917d37886554c4c00277a31d2622f8ad1a9c",
+        "tools/randy_node_assets/verify_extend_mask.py": "4dd15ee21ba9afb36c353e546bcd3d401973a4d376bc45a7475483355003539e",
+        "tools/randy_node_assets/deploy_extend_mask.py": "b74b93ff7200106e368a4d218138b59f368b3d0e98c95fcc6723fbc85e34b8f1"
+      },
+      "source_dependencies_sha256": {
+        "tools/randy_node_assets/build_extend_mask.py": "7b9c4243a4639191bfacf99c0455917d37886554c4c00277a31d2622f8ad1a9c",
+        "tools/randy_node_assets/verify_extend_mask.py": "4dd15ee21ba9afb36c353e546bcd3d401973a4d376bc45a7475483355003539e",
+        "tools/randy_node_assets/build_arc_mask.py": "27f3bd2d13a51ea3999f34a4599d98832b76b15243b3719ad1cbff80dddb72fc",
+        "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838",
+        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805"
+      },
+      "verification": "node_library/validation/extend_mask.json"
     }
   ],
   "assets": [
     {
-      "id": "ring_mask",
-      "name": "Ring Mask",
-      "display_name": "Ring Mask",
-      "version": "0.1.1",
-      "node_tree_type": "ShaderNodeTree",
-      "bundle_id": "ring_mask",
-      "catalog_path": "Textures",
-      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
-      "description": "Normalized UV radial mask. UV center is (0.5, 0.5); the disk rim has radius 1.",
-      "inputs": [
-        {
-          "name": "Inner Radius",
-          "type": "NodeSocketFloat",
-          "default": 0.6
-        },
-        {
-          "name": "Ring Width",
-          "type": "NodeSocketFloat",
-          "default": 0.08
-        },
-        {
-          "name": "Edge Softness",
-          "type": "NodeSocketFloat",
-          "default": 0.0
-        }
-      ],
-      "outputs": [
-        {
-          "name": "Mask",
-          "type": "NodeSocketFloat"
-        }
-      ]
-    },
-    {
       "id": "circular_pattern",
-      "name": "Randy Circular Pattern 环形阵列",
+      "name": "Randy Circular Pattern \u73af\u5f62\u9635\u5217",
       "display_name": "Circular Pattern",
       "version": "0.1.0",
       "node_tree_type": "GeometryNodeTree",
@@ -107,48 +135,48 @@
       "interface_note": "Existing bilingual UI retained; this publication does not migrate installed geometry nodes.",
       "inputs": [
         {
-          "name": "Geometry 几何",
+          "name": "Geometry \u51e0\u4f55",
           "type": "NodeSocketGeometry"
         },
         {
-          "name": "Count 数量",
+          "name": "Count \u6570\u91cf",
           "type": "NodeSocketInt"
         },
         {
-          "name": "Radius 半径",
+          "name": "Radius \u534a\u5f84",
           "type": "NodeSocketFloat"
         },
         {
-          "name": "Angle Offset 起始角",
+          "name": "Angle Offset \u8d77\u59cb\u89d2",
           "type": "NodeSocketFloat"
         },
         {
-          "name": "Outward 朝外",
+          "name": "Outward \u671d\u5916",
           "type": "NodeSocketBool"
         },
         {
-          "name": "Rotation Offset 自转角",
+          "name": "Rotation Offset \u81ea\u8f6c\u89d2",
           "type": "NodeSocketFloat"
         },
         {
-          "name": "Scale 缩放",
+          "name": "Scale \u7f29\u653e",
           "type": "NodeSocketVector"
         },
         {
-          "name": "Realize 实体化",
+          "name": "Realize \u5b9e\u4f53\u5316",
           "type": "NodeSocketBool"
         }
       ],
       "outputs": [
         {
-          "name": "Geometry 几何",
+          "name": "Geometry \u51e0\u4f55",
           "type": "NodeSocketGeometry"
         }
       ]
     },
     {
       "id": "ring",
-      "name": "Randy Ring 圆环",
+      "name": "Randy Ring \u5706\u73af",
       "display_name": "Ring",
       "version": "0.1.0",
       "node_tree_type": "GeometryNodeTree",
@@ -159,33 +187,33 @@
       "interface_note": "Existing bilingual UI retained; this publication does not migrate installed geometry nodes.",
       "inputs": [
         {
-          "name": "Radius 半径",
+          "name": "Radius \u534a\u5f84",
           "type": "NodeSocketFloat"
         },
         {
-          "name": "Tube Radius 管半径",
+          "name": "Tube Radius \u7ba1\u534a\u5f84",
           "type": "NodeSocketFloat"
         },
         {
-          "name": "Segments 环分段",
+          "name": "Segments \u73af\u5206\u6bb5",
           "type": "NodeSocketInt"
         },
         {
-          "name": "Sides 截面分段",
+          "name": "Sides \u622a\u9762\u5206\u6bb5",
           "type": "NodeSocketInt"
         },
         {
-          "name": "Smooth 平滑",
+          "name": "Smooth \u5e73\u6ed1",
           "type": "NodeSocketBool"
         },
         {
-          "name": "Material 材质",
+          "name": "Material \u6750\u8d28",
           "type": "NodeSocketMaterial"
         }
       ],
       "outputs": [
         {
-          "name": "Geometry 几何",
+          "name": "Geometry \u51e0\u4f55",
           "type": "NodeSocketGeometry"
         }
       ]
@@ -194,14 +222,12 @@
       "id": "mix_shaders",
       "name": "Mix Shaders",
       "display_name": "Mix Shaders",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "node_tree_type": "ShaderNodeTree",
       "bundle_id": "mix_shaders",
       "catalog_path": "Textures",
       "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
-      "description": "Expandable Mask / Shader pairs over a Base Shader; earlier slots cover later slots.",
-      "interface_note": "_Connected 1 is a hidden per-instance RR Helper connection-state input.",
-      "runtime_note": "Keep RR Helper enabled for slot expansion and automatic empty-Shader detection. Saved graphs render natively.",
+      "description": "Native expandable Mask / Shader mixing over a Base. Earlier slots cover later slots; no runtime add-on required.",
       "inputs": [
         {
           "name": "Base Shader",
@@ -217,10 +243,13 @@
           "type": "NodeSocketShader"
         },
         {
-          "name": "_Connected 1",
+          "name": "Mask 2",
           "type": "NodeSocketFloat",
-          "default": 0.0,
-          "hidden": true
+          "default": 0.0
+        },
+        {
+          "name": "Shader 2",
+          "type": "NodeSocketShader"
         }
       ],
       "outputs": [
@@ -228,8 +257,179 @@
           "name": "Shader",
           "type": "NodeSocketShader"
         }
-      ]
+      ],
+      "runtime_note": "Computation and editing ordinary connections need no add-on. RR Helper provides optional edit-time shortcuts; native chaining has no fixed count."
+    },
+    {
+      "id": "ring_mask",
+      "name": "Ring Mask",
+      "display_name": "Ring Mask",
+      "version": "0.2.1",
+      "node_tree_type": "ShaderNodeTree",
+      "bundle_id": "ring_mask",
+      "catalog_path": "Textures",
+      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+      "inputs": [
+        {
+          "name": "Inner Radius",
+          "type": "NodeSocketFloat",
+          "default": 0.6000000238418579
+        },
+        {
+          "name": "Ring Width",
+          "type": "NodeSocketFloat",
+          "default": 0.07999999821186066
+        },
+        {
+          "name": "Edge Softness",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Start Angle",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Sweep Angle",
+          "type": "NodeSocketFloat",
+          "default": 360.0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Mask",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Ring Data",
+          "type": "NodeSocketBundle"
+        }
+      ],
+      "description": "A full ring by default, adjustable counterclockwise arcs, radial softness and reusable Ring Data for Extend Mask.",
+      "runtime_note": "Native Shader Node Group. Sweep Angle 360 is a full ring; no runtime add-on is required."
+    },
+    {
+      "id": "ring_group",
+      "name": "Ring Group",
+      "display_name": "Ring Group",
+      "version": "0.1.0",
+      "node_tree_type": "ShaderNodeTree",
+      "bundle_id": "ring_group",
+      "catalog_path": "Textures",
+      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+      "description": "Union multiple Ring and Arc masks using Maximum and share one Shader, without runtime add-on dependencies.",
+      "inputs": [
+        {
+          "name": "Shader",
+          "type": "NodeSocketShader"
+        },
+        {
+          "name": "Mask 1",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Mask 2",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Mask",
+          "type": "NodeSocketFloat"
+        },
+        {
+          "name": "Shader",
+          "type": "NodeSocketShader"
+        }
+      ],
+      "runtime_note": "Computation and editing ordinary connections need no add-on. RR Helper provides optional edit-time shortcuts; native chaining has no fixed count."
+    },
+    {
+      "id": "extend_mask",
+      "name": "Extend Mask",
+      "display_name": "Extend Mask",
+      "version": "0.1.0",
+      "node_tree_type": "ShaderNodeTree",
+      "bundle_id": "extend_mask",
+      "catalog_path": "Textures",
+      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+      "description": "Inner/Outer/Both create radial border bands from Arc Mask data while preserving its angular span; Outline extends the complete contour including arc ends. Radial outputs can chain into further bands; Outline exposes only its final Mask.",
+      "inputs": [
+        {
+          "name": "Source",
+          "type": "NodeSocketBundle"
+        },
+        {
+          "name": "Mode",
+          "type": "NodeSocketMenu",
+          "default": "Both",
+          "choices": [
+            "Inner",
+            "Outer",
+            "Both",
+            "Outline"
+          ]
+        },
+        {
+          "name": "Width",
+          "type": "NodeSocketFloat",
+          "default": 0.009999999776482582
+        },
+        {
+          "name": "Gap",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Softness",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Mask",
+          "type": "NodeSocketFloat",
+          "default": 0.0
+        },
+        {
+          "name": "Inner Data",
+          "type": "NodeSocketBundle"
+        },
+        {
+          "name": "Outer Data",
+          "type": "NodeSocketBundle"
+        }
+      ],
+      "runtime_note": "Native Shader Node Group computation and saved connections require no add-on. Boundary data is radial/angular data, not arbitrary black/white mask dilation."
     }
   ],
-  "source_hash_mode": "utf8-lf"
+  "source_hash_mode": "utf8-lf",
+  "internal_dependencies": [
+    {
+      "id": "ring_mask_radial",
+      "path": "node_library/dependencies/Randy_Ring_Mask.blend",
+      "sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+      "source": {
+        "build": "tools/randy_node_assets/build_ring_mask.py",
+        "verify": "tools/randy_node_assets/verify_ring_mask.py",
+        "deploy": "tools/randy_node_assets/deploy_ring_mask.py"
+      },
+      "source_sha256": {
+        "tools/randy_node_assets/build_ring_mask.py": "72ba91e194e572372de93ad22d0e8ef8bea5b3d49e70dd7fadda3a2c7faaf684",
+        "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+        "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067"
+      },
+      "verification": "node_library/validation/ring_mask.json",
+      "name": "Ring Mask",
+      "version": "0.1.1",
+      "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+      "purpose": "Retired standalone asset retained byte-for-byte as an internal radial build and validation fixture. Do not install this folder as an asset library."
+    }
+  ],
+  "retirement_verification": "node_library/validation/ring_mask_retirement.json"
 }

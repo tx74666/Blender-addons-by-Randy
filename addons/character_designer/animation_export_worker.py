@@ -35,6 +35,14 @@ class AnimationExportError(ValueError):
     pass
 
 
+def _sha256(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _number(value, name, minimum=None, maximum=None):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise AnimationExportError(f'{name} must be a finite number.')
@@ -456,7 +464,7 @@ def export_job(job):
         'origin': list(origin), 'unit_scale': unit_scale, 'maximum_bake_matrix_error': maximum_error,
         'source_curve_count': curve_count, 'unsupported_channels': omitted, 'warnings': warnings,
         'limitation': 'One selected Action, baked skeleton motion only. No meshes, shape animation, physics or events.',
-        'sha256': hashlib.sha256(destination.read_bytes()).hexdigest(),
+        'sha256': _sha256(destination),
     }
 
 

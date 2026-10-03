@@ -89,6 +89,16 @@ def _success_status(warnings):
     return f'Exported · {len(warnings)} warning(s)' if warnings else 'Exported successfully'
 
 
+def _panel_warnings(report):
+    """Show actionable diagnostics while preserving the complete export report."""
+    warnings, _notices = _exporter().report_messages(report)
+    return [message for message in warnings
+            if not message.startswith('Old files retained for reference safety: ')
+            and not re.fullmatch(
+                r'.+: Blender Preserve Volume skinning is exported as standard FBX skin weights; '
+                r'review joint deformation in Unity\.', message)]
+
+
 def _warning_summary(message):
     match = re.match(r'(.+): (\d+) exported vertices have no weight', message)
     if match:
@@ -136,11 +146,11 @@ def _warning_actions(layout, context, config, message):
             action.enabled = True
 
 
-def _invalid_overrides(context, rig, config):
+def _invalid_overrides(context, rig, config, *, _scope=None):
     """Expose cleanup for stale references without offering unbound inclusion."""
     exporter = _exporter()
-    rigs = exporter._character_armatures(context.scene, rig)
-    helpers = exporter._helpers(context.scene)
+    rigs = exporter._character_armatures(context.scene, rig) if _scope is None else _scope['rigs']
+    helpers = exporter._helpers(context.scene) if _scope is None else _scope['helpers']
     setup = character_setup.settings(context)
     invalid = []
     for index, entry in enumerate(config.extras):
@@ -211,7 +221,7 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
         report = result.get('report_path') or result.get('report')
         if isinstance(report, str):
             config.last_report = report
-        warnings, _notices = _exporter().report_messages(result)
+        warnings = _panel_warnings(result)
         config.last_status = _success_status(warnings)
         self.report({'WARNING'} if warnings else {'INFO'},
                     f"Exported {os.path.basename(result['filepath'])}."
@@ -565,15 +575,15 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             layout.label(text='Choose your character rig to begin.', icon='INFO')
             return
         config = rig.character_designer_unity_export
-        # DIR_PATH supplies its own directory picker. Opening the destination
-        # is a secondary action in the report disclosure below.
+        # DIR_PATH supplies the single directory picker.
         layout.prop(config, 'directory', text='Folder')
         layout.prop(config, 'filename', text='Name')
 
-        objects, eligible, warnings, error = [], [], [], ''
+        objects, eligible, warnings, error, scope = [], [], [], '', None
         try:
-            eligible = _exporter().bound_meshes(context, rig)
-            collected = _exporter().collect_character(context, rig, config)
+            scope = _exporter()._collection_scope(context, rig)
+            eligible = scope['eligible']
+            collected = _exporter().collect_character(context, rig, config, _scope=scope)
             objects = collected['objects']
             warnings = collected.get('warnings', [])
         except (ValueError, RuntimeError) as exc:
@@ -604,13 +614,14 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                  icon='TRIA_DOWN' if config.show_objects else 'TRIA_RIGHT')
         if config.show_objects:
             CHARACTERDESIGNER_PT_unity_export._draw_objects(
-                layout, context, rig, config, setup, objects, eligible, error)
+                layout, context, rig, config, setup, objects, eligible, error, scope)
 
-        materials, chosen = _material_choices(objects, config)
+        chosen = {entry.material for entry in _simple_material_entries(config)}
         row = layout.row()
         row.prop(config, 'show_materials', text=f'Use Simplified Materials · {len(chosen)}', emboss=False,
                  icon='TRIA_DOWN' if config.show_materials else 'TRIA_RIGHT')
         if config.show_materials:
+            materials, chosen = _material_choices(objects, config)
             box = layout.box()
             box.enabled = not running
             for material in materials:
@@ -630,11 +641,12 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                 box.label(text='No materials on included meshes.')
 
         report = _last_report(config)
-        reported_warnings = _exporter().report_messages(report or {'warnings': warnings})[0]
-        row = layout.row()
-        row.prop(config, 'show_warnings', text=f'Warnings · {len(reported_warnings)}', emboss=False,
-                 icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT')
-        if config.show_warnings:
+        reported_warnings = _panel_warnings(report or {'warnings': warnings})
+        if reported_warnings:
+            row = layout.row()
+            row.prop(config, 'show_warnings', text=f'Warnings · {len(reported_warnings)}', emboss=False,
+                     icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT')
+        if reported_warnings and config.show_warnings:
             box = layout.box()
             scale = context.preferences.system.ui_scale or 1.0
             width = max(24, int(getattr(context.region, 'width', 300) / (7 * scale)) - 6)
@@ -642,14 +654,9 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                 for index, line in enumerate(textwrap.wrap(_warning_summary(warning), width)):
                     box.label(text=line, icon='ERROR' if index == 0 else 'BLANK1')
                 _warning_actions(box, context, config, warning)
-            if config.last_report:
-                box.operator('character_designer.unity_open_path', text='Open Export Report',
-                             icon='TEXT').open_report = True
-            if config.directory:
-                box.operator('character_designer.unity_open_path', text='Open Folder', icon='FILE_FOLDER')
 
     @staticmethod
-    def _draw_objects(layout, context, rig, config, setup, objects, eligible, error):
+    def _draw_objects(layout, context, rig, config, setup, objects, eligible, error, scope=None):
         box = layout.box()
         for obj in sorted(objects, key=lambda obj: (obj.type != 'ARMATURE', obj != setup.body)):
             row = box.row(align=True)
@@ -673,7 +680,7 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                 action.include = True
                 row.label(text=obj.name, icon='MESH_DATA')
         try:
-            invalid = _invalid_overrides(context, rig, config)
+            invalid = _invalid_overrides(context, rig, config, _scope=scope)
         except (ValueError, RuntimeError):
             invalid = []
         if invalid:

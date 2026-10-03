@@ -16,6 +16,7 @@ ADDON_NAME = "random_realm_builder_exporter"
 ADDONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "addons")
 CANONICAL_INIT = os.path.realpath(os.path.join(ADDONS_DIR, ADDON_NAME, "__init__.py"))
 CHECKS = 0
+DRAW_HANDLES = {}
 HANDLER_NAMES = (
     "load_post", "save_pre", "undo_post", "redo_post", "blend_import_post",
     "depsgraph_update_post", "render_pre",
@@ -79,6 +80,16 @@ def assert_mixer_unregistered(module):
                   for name, callback in mixer._HANDLERS),
           "Disable leaked Mixer handlers")
     check(not mixer._OWNER_TREES, "Disable retained Mixer scene references")
+    ring = module.rr_ring_nodes
+    check(not any(getattr(cls, "is_registered", False) for cls in ring.CLASSES), "Disable leaked Ring Group operators")
+    check(ring.draw_context_menu not in menu_callbacks("NODE_MT_context_menu"), "Disable leaked Ring Group menu")
+    ui = module.rr_shader_mixer_ui
+    check(not any(getattr(cls, "is_registered", False) for cls in ui.CLASSES),
+          "Disable leaked Mixer button operator classes")
+    check(ui._DRAW_HANDLE is None, "Disable retained Mixer button draw handle")
+    check(not any(callback is ui.draw_overlay for _handle, callback in DRAW_HANDLES.values()),
+          "Disable left a real Mixer button draw handler installed")
+    check(not ui._KEYMAP_ITEMS, "Disable retained owned Mixer button keymap items")
 
 
 def legacy_ring_state(material):
@@ -99,8 +110,8 @@ def legacy_ring_state(material):
 def assert_mixer_index_restored(module, material):
     check(module.restore_shader_mixer_index_deferred() is None,
           "Normal deferred Mixer discovery did not finish")
-    check(module.rr_shader_mixer._OWNER_TREES.get(material.node_tree.as_pointer()) == material.node_tree,
-          "Deferred discovery did not restore a saved Mixer owner")
+    check(material.node_tree.as_pointer() not in module.rr_shader_mixer._OWNER_TREES,
+          "Native v2 Mixer unexpectedly requires a runtime index")
 
 
 def keymap_count():
@@ -112,6 +123,34 @@ def keymap_count():
         for keymap in keyconfig.keymaps
         for item in keymap.keymap_items
     )
+
+
+def mixer_button_keymaps():
+    config = bpy.context.window_manager.keyconfigs.addon
+    if config is None:
+        return ()
+    return tuple((keymap, item) for keymap in config.keymaps for item in keymap.keymap_items
+                 if item.idname == "rr_builder.click_shader_mixer_buttons")
+
+
+def assert_mixer_buttons_registered(module):
+    ui = module.rr_shader_mixer_ui
+    check(all(getattr(cls, "is_registered", False) for cls in ui.CLASSES),
+          "Mixer button operator classes missing")
+    check(ui._DRAW_HANDLE is not None, "Mixer button draw handle missing")
+    check(len(DRAW_HANDLES) == 1, "Mixer button draw handlers leaked or accumulated")
+    check(DRAW_HANDLES.get(id(ui._DRAW_HANDLE)) == (ui._DRAW_HANDLE, ui.draw_overlay),
+          "Registered Mixer draw handler belongs to a stale UI module")
+    actual = mixer_button_keymaps()
+    expected = 1 if bpy.context.window_manager.keyconfigs.addon is not None else 0
+    check(len(actual) == expected, "Mixer button click keymaps leaked or accumulated")
+    check({item.as_pointer() for _keymap, item in ui._KEYMAP_ITEMS}
+          == {item.as_pointer() for _keymap, item in actual},
+          "Registered Mixer button keymap items belong to a stale UI module")
+    check(all(keymap.name == "Node Editor" and keymap.space_type == "NODE_EDITOR"
+              and item.type == "LEFTMOUSE" and item.value == "PRESS" and item.any
+              for keymap, item in actual),
+          "Mixer button keymap captures the wrong editor or event")
 
 
 def assert_registered(module, counts, keys, menus):
@@ -132,6 +171,9 @@ def assert_registered(module, counts, keys, menus):
               for name, callback in mixer._HANDLERS),
           "Registered handlers belong to a stale Mixer module")
     check(hasattr(bpy.types.Material, "rr_ring_stack"), "Legacy Ring Stack data schema missing")
+    check(all(getattr(cls, "is_registered", False) for cls in module.rr_ring_nodes.CLASSES), "Ring Group operators missing")
+    check(module.rr_ring_nodes.draw_context_menu in menu_callbacks("NODE_MT_context_menu"), "Ring Group context menu missing")
+    assert_mixer_buttons_registered(module)
 
 
 def main():
@@ -158,8 +200,35 @@ def main():
     baseline_handlers = handler_counts()
     baseline_keys = keymap_count()
     baseline_menus = menu_counts()
+    baseline_button_keys = tuple(item.as_pointer() for _keymap, item in mixer_button_keymaps())
     material = None
     expected_legacy = None
+
+    # Blender has no public draw-handler inventory. Trace its real add/remove
+    # calls so a forgotten old-module handler cannot pass merely because that
+    # module cleared its own _DRAW_HANDLE field. Both wrappers still delegate
+    # registration and removal to Blender rather than replacing the UI API.
+    real_draw_add = bpy.types.SpaceNodeEditor.draw_handler_add
+    real_draw_remove = bpy.types.SpaceNodeEditor.draw_handler_remove
+
+    def track_draw_add(callback, *args, **kwargs):
+        handle = real_draw_add(callback, *args, **kwargs)
+        if getattr(callback, "__module__", "").startswith(ADDON_NAME):
+            DRAW_HANDLES[id(handle)] = (handle, callback)
+        return handle
+
+    def track_draw_remove(handle, *args, **kwargs):
+        result = real_draw_remove(handle, *args, **kwargs)
+        DRAW_HANDLES.pop(id(handle), None)
+        return result
+
+    draw_trace = contextlib.ExitStack()
+    try:
+        draw_trace.enter_context(mock.patch.object(bpy.types.SpaceNodeEditor, "draw_handler_add", side_effect=track_draw_add))
+        draw_trace.enter_context(mock.patch.object(bpy.types.SpaceNodeEditor, "draw_handler_remove", side_effect=track_draw_remove))
+    except Exception:
+        draw_trace.close()
+        raise
 
     try:
         # This is the real enable path; calling module.register() directly missed
@@ -189,8 +258,16 @@ def main():
             expected_handlers["blend_import_post"] = ("remember_object_manager_imported_objects",)
         expected_keys = baseline_keys + len(module.OBJECT_MANAGER_DUPLICATE_KEYMAPS)
         expected_menus = {"NODE_MT_add": (),
-                          "NODE_MT_context_menu": ("draw_context_menu",)}
+                          "NODE_MT_context_menu": ("draw_context_menu", "draw_context_menu")}
         assert_registered(module, expected_handlers, expected_keys, expected_menus)
+        initial_handle = module.rr_shader_mixer_ui._DRAW_HANDLE
+        initial_keys = tuple(item.as_pointer() for _keymap, item in mixer_button_keymaps())
+        module.rr_shader_mixer_ui.register()
+        module.rr_shader_mixer_ui.register()
+        check(module.rr_shader_mixer_ui._DRAW_HANDLE is initial_handle and len(DRAW_HANDLES) == 1,
+              "Repeated Mixer button registration duplicated its real draw handler")
+        check(tuple(item.as_pointer() for _keymap, item in mixer_button_keymaps()) == initial_keys,
+              "Repeated Mixer button registration duplicated its click keymap")
 
         with RestrictBlend():
             check(module.reset_object_manager_name_sync_state() is False, "Restricted reset must defer safely")
@@ -326,14 +403,55 @@ def main():
               "Partial Mixer failure leaked new timers")
         check(legacy_ring_state(material) == expected_legacy,
               "Partial Mixer failure altered hidden Ring Stack data or material graph")
+
+        # Fail only after the new overlay has allocated both its draw handle
+        # and keymap. The old module must be restored without those allocations
+        # remaining alongside its own controls.
+        old_module = module
+        partial_ui_modules = []
+
+        def fail_during_mixer_ui_registration(name, **kwargs):
+            fresh = importlib.import_module(name)
+            fresh.__time__ = os.path.getmtime(fresh.__file__)
+            partial_ui_modules.append(fresh)
+            actual_register = fresh.rr_shader_mixer_ui.register
+
+            def register_ui_then_fail():
+                actual_register()
+                raise RuntimeError("Intentional partial Mixer UI registration failure")
+
+            fresh.rr_shader_mixer_ui.register = register_ui_then_fail
+            return actual_enable(name, **kwargs)
+
+        output = io.StringIO()
+        with mock.patch.object(addon_utils, "enable", side_effect=fail_during_mixer_ui_registration):
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                old_module.rr_addon_reload_deferred()
+        module = sys.modules.get(ADDON_NAME)
+        check(module is old_module, "Partial Mixer UI failure did not restore previous module")
+        check("Intentional partial Mixer UI registration failure" in output.getvalue(),
+              "Partial Mixer UI failure injection did not execute")
+        assert_registered(module, expected_handlers, expected_keys, expected_menus)
+        assert_mixer_unregistered(partial_ui_modules[0])
+        assert_mixer_index_restored(module, material)
+        check(not any(bpy.app.timers.is_registered(callback) for callback in callbacks(partial_ui_modules[0])),
+              "Partial Mixer UI failure leaked new timers")
+        check(legacy_ring_state(material) == expected_legacy,
+              "Partial Mixer UI failure altered hidden Ring Stack data or material graph")
     finally:
-        addon_utils.disable(ADDON_NAME, default_set=False, refresh_handled=True)
+        try:
+            addon_utils.disable(ADDON_NAME, default_set=False, refresh_handled=True)
+        finally:
+            draw_trace.close()
 
     check(not hasattr(bpy.types.Scene, "rr_builder_export_settings"), "Final disable leaked Scene properties")
     check(handler_counts() == baseline_handlers, "Final disable leaked handlers")
     check(keymap_count() == baseline_keys, "Final disable leaked keymaps")
     check(menu_counts() == baseline_menus, "Final disable leaked Mixer menus")
     assert_mixer_unregistered(module)
+    check(not DRAW_HANDLES, "Final disable leaked a real Mixer button draw handler")
+    check(tuple(item.as_pointer() for _keymap, item in mixer_button_keymaps()) == baseline_button_keys,
+          "Final disable leaked Mixer button click keymaps")
     check(not hasattr(bpy.types.Material, "rr_ring_stack"), "Final disable leaked Ring Stack schema")
     print(f"RR_ADDON_REGISTRATION_LIFECYCLE_PASS checks={CHECKS}")
 

@@ -244,10 +244,12 @@ def test_shared_attachment_operator_workflow():
     profile.rig = original
     profile.hips_bone = "Artist Waist"
     assert character_setup.bone_mapping_status(bpy.context, "HIPS")["status"] == "CONFIRMED"
+    original_names = tuple(original.data.bones.keys())
     source = make_skirt("Shared Attachment Skirt")
     activate(source)
     assert bpy.ops.character_designer.create_skirt_setup() == {"FINISHED"}
     generated = source[skirt_rig.RIG_KEY]
+    assert generated is original and skirt_rig.is_shared(skirt_rig.read_record(source))
     status = skirt_rig.attachment_status(source)
     assert status["attached"] and status["character"] is original
     assert status["parent_bone"] == "Artist Waist" and not status["physics"]
@@ -273,9 +275,42 @@ def test_shared_attachment_operator_workflow():
     )
     layout.row = lambda **_kwargs: layout
     skirt.CHARACTERDESIGNER_PT_skirt_setup.draw(SimpleNamespace(layout=layout), bpy.context)
-    assert f"Following: {original.name} / Artist Waist" in labels
+    assert f"Rig: {original.name} / Dress" in labels
     assert f"New target: {replacement.name} / Travel Base" in labels
     assert "Connected" not in labels, "The UI confused the desired target with the actual attachment"
+
+    # The new default owns only Dress bones in the existing Main Rig. Choosing
+    # another target must never reparent or remove that shared character.
+    shared_names = tuple(original.data.bones.keys())
+    shared_record = source[skirt_rig.RECORD_KEY]
+    cancelled(lambda: bpy.ops.character_designer.skirt_update_attachment())
+    status = skirt_rig.attachment_status(source)
+    assert status["character"] is original and status["parent_bone"] == "Artist Waist"
+    assert not status["has_backup"] and not bpy.ops.character_designer.skirt_restore_attachment.poll()
+    assert source[skirt_rig.RIG_KEY] is original and set(bpy.data.objects) == objects_before
+    assert source[skirt_rig.RECORD_KEY] == shared_record
+    assert tuple(original.data.bones.keys()) == shared_names
+    assert max(abs(original.matrix_world[i][j] - world_before[i][j])
+               for i in range(4) for j in range(4)) < 1.0e-5
+    assert bpy.ops.character_designer.remove_skirt_setup() == {"FINISHED"}
+    assert original.name in bpy.data.objects and replacement.name in bpy.data.objects
+    assert tuple(original.data.bones.keys()) == original_names
+    assert skirt_rig.RIG_KEY not in source
+
+    # Attachment update/backup/restore remains supported for existing separate
+    # rigs. Explicit legacy construction keeps that original safety coverage.
+    activate(source)
+    skirt_rig.build_skirt(bpy.context, source, chain_count=settings.chain_count,
+                         segment_count=settings.segment_count, armature=original,
+                         parent_bone="Artist Waist", shared=False)
+    generated = source[skirt_rig.RIG_KEY]
+    assert generated is not original and not skirt_rig.is_shared(skirt_rig.read_record(source))
+    world_before = generated.matrix_world.copy()
+    objects_before = set(bpy.data.objects)
+    labels.clear()
+    skirt.CHARACTERDESIGNER_PT_skirt_setup.draw(SimpleNamespace(layout=layout), bpy.context)
+    assert f"Following: {original.name} / Artist Waist" in labels
+    assert f"New target: {replacement.name} / Travel Base" in labels
 
     assert bpy.ops.character_designer.skirt_update_attachment() == {"FINISHED"}
     status = skirt_rig.attachment_status(source)
@@ -297,7 +332,7 @@ def test_shared_attachment_operator_workflow():
                for i in range(4) for j in range(4)) < 1.0e-5
     assert bpy.ops.character_designer.remove_skirt_setup() == {"FINISHED"}
     profile.rig = None
-    print("PASS shared custom Hips / explicit update / actual UI state / restore")
+    print("PASS default shared custom Hips / rejected host change / legacy explicit update / actual UI state / restore")
 
 
 def main():

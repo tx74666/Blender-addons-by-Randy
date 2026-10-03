@@ -44,8 +44,8 @@ def test_switches_and_common_scope():
     for page in ('MODELING', 'WEIGHT', 'HAIR', 'ANIMATION', 'MISCELLANEOUS'):
         settings.ui_page = page
         assert not cd.CHARACTERDESIGNER_PT_rig_sections.poll(bpy.context)
-        for panel in (character_setup.CHARACTERDESIGNER_PT_character_setup, bone_display.CHARACTERDESIGNER_PT_bone_display):
-            assert panel.poll(bpy.context) == (page == 'WEIGHT')
+        assert not character_setup.CHARACTERDESIGNER_PT_character_setup.poll(bpy.context)
+        assert bone_display.CHARACTERDESIGNER_PT_bone_display.poll(bpy.context) == (page == 'WEIGHT')
     assert bpy.data.is_dirty == dirty
 
 

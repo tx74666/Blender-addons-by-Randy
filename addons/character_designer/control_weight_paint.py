@@ -27,6 +27,13 @@ def mesh_for(context, rig):
     current = context.object
     if current and _bound(current, rig):
         return current
+    # A single shared rig can pose several meshes. An explicitly selected Dress
+    # bone identifies its own source, rather than silently painting the Body.
+    from . import skirt_rig
+    bone = rig.data.bones.active
+    source = bone.get(skirt_rig.SOURCE_KEY) if bone and bone.get(skirt_rig.OWNER_KEY) else None
+    if source is not None and _bound(source, rig) and source.name in context.view_layer.objects:
+        return source
     setup = getattr(context.scene, 'character_designer_setup', None)
     body = getattr(setup, 'body', None)
     if body and _bound(body, rig) and body.name in context.view_layer.objects:
@@ -37,6 +44,18 @@ def mesh_for(context, rig):
     return candidates[0]
 
 
+def _paintable_names(rig, mesh):
+    from . import limb_ik, skirt_rig
+    record = skirt_rig.read_record(mesh) if mesh.get(skirt_rig.RIG_KEY) == rig else None
+    if record and skirt_rig.is_shared(record):
+        _controls, deform, _mechanism = skirt_rig._bone_collection_layout(record)
+        names = deform | {record['controls']['waist']}
+        return {name for name in names if rig.data.bones[name].use_deform}
+    return {b.name for b in rig.data.bones if b.use_deform
+            and b.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS
+            and not b.get(skirt_rig.OWNER_KEY)}
+
+
 def mapped_bone(rig):
     from . import limb_ik, torso_controls, eye_controls
     bone = rig.data.bones.active
@@ -44,6 +63,8 @@ def mapped_bone(rig):
         return ''
     if bone.use_deform and bone.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS:
         return bone.name
+    if 'character_designer_body_original_mode_v1' in rig:
+        return ''
     inventory = limb_ik._validate_inventory(rig)
     for entry in inventory['rigs'].values():
         if bone.name in {entry['target'].name, entry['solver_target'].name}:
@@ -108,8 +129,7 @@ def enter(context):
     if any(obj.library or obj.override_library or not obj.is_editable or obj.data.library
            for obj in (rig, mesh)) or rig.data.users != 1 or mesh.data.users != 1:
         raise ValueError('Edit Weights needs a local, single-user rig and mesh.')
-    names = {b.name for b in rig.data.bones if b.use_deform
-             and b.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS}
+    names = _paintable_names(rig, mesh)
     if not names:
         raise ValueError('This rig has no native deform bones to paint.')
     mapped = mapped_bone(rig)
@@ -199,8 +219,10 @@ class CHARACTERDESIGNER_OT_control_weights(bpy.types.Operator):
 
 
 def draw(layout, context):
+    saved = active(context)
+    back_label = 'Back to Original' if saved and saved.get('rig') and 'character_designer_body_original_mode_v1' in saved['rig'] else 'Back to Controls'
     layout.operator('character_designer.control_weights',
-                    text='Back to Controls' if active(context) else 'Edit Weights',
+                    text=back_label if active(context) else 'Edit Weights',
                     icon='LOOP_BACK' if active(context) else 'WPAINT_HLT')
 
 

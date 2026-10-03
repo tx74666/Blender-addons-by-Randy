@@ -109,12 +109,12 @@ def fixture():
         main.pose.bones['Hips'].location.x = x
         main.pose.bones['Hips'].keyframe_insert('location', frame=frame)
     dress_mesh = frustum('Character Dress', rows=6, sides=16)
-    dress_record = skirt_rig.build_skirt(bpy.context, dress_mesh, armature=main)
+    dress_record = skirt_rig.build_skirt(bpy.context, dress_mesh, armature=main, shared=False)
     dress = dress_mesh[skirt_rig.RIG_KEY]
     other = base.make_humanoid('Other Character')
     groups.simplify_body_collections(other)
     other_mesh = frustum('Other Dress', rows=6, sides=16)
-    skirt_rig.build_skirt(bpy.context, other_mesh, armature=other)
+    skirt_rig.build_skirt(bpy.context, other_mesh, armature=other, shared=False)
     other_dress = other_mesh[skirt_rig.RIG_KEY]
     activate(main, 'POSE')
     bpy.context.scene.frame_set(4)
@@ -368,6 +368,71 @@ class BoneDisplayTests(unittest.TestCase):
         self.assertFalse(main.data.collections_all['_Internal'].is_visible)
         self.assertEqual(content(rigs), before_content)
         self.assertEqual(sampled_poses(rigs), before_poses)
+
+    def test_controls_reveal_hidden_dress_without_revealing_helpers_or_foreign_rigs(self):
+        main, dress, other, other_dress, _hair, source, *_ = fixture()
+        rigs = (main, dress, other, other_dress)
+        protected = content(rigs)
+        poses = sampled_poses(rigs)
+        foreign = views((other, other_dress))
+        helpers = [obj for obj in bpy.context.scene.objects if obj.parent == dress and obj != source]
+        flags = {obj.name: (obj.hide_get(), obj.hide_viewport, obj.hide_render) for obj in helpers}
+        pairs = display._control_collections(bpy.context, main, 'DRESS')
+        for viewport in (False, True):
+            with self.subTest(disabled_viewport=viewport):
+                display.show_controls(bpy.context, main, 'ALL')
+                dress.hide_set(True)
+                dress.hide_viewport = viewport
+                self.assertTrue(all(c.is_visible for _rig, c in pairs))
+                self.assertFalse(display._controls_visible(pairs))
+                display.show_controls(bpy.context, main, 'DRESS', toggle=True)
+                self.assertTrue(display._controls_visible(pairs))
+                self.assertTrue(display._object_visible(dress))
+                display.show_controls(bpy.context, main, 'DRESS', toggle=True)
+                self.assertFalse(display._controls_visible(pairs))
+                self.assertTrue(display._object_visible(main))
+                self.assertEqual(views((other, other_dress)), foreign)
+                self.assertEqual({obj.name: (obj.hide_get(), obj.hide_viewport, obj.hide_render)
+                                  for obj in helpers}, flags)
+                self.assertEqual(content(rigs), protected)
+                self.assertEqual(sampled_poses(rigs), poses)
+
+    def test_blocked_dress_collections_keep_controls_and_native_views_unchanged(self):
+        main, dress, other, other_dress, *_ = fixture()
+        rigs = (main, dress, other, other_dress)
+        collection = dress.users_collection[0]
+        def layer_for(parent):
+            if parent.collection == collection:
+                return parent
+            return next((found for child in parent.children if (found := layer_for(child))), None)
+        layer = layer_for(bpy.context.view_layer.layer_collection)
+        protected = content(rigs)
+        for owner, attribute in ((collection, 'hide_viewport'), (layer, 'hide_viewport'), (layer, 'exclude')):
+            with self.subTest(blocking_flag=attribute, collection_type=type(owner).__name__):
+                setattr(owner, attribute, True)
+                before = views(rigs)
+                for operation in (lambda: display.show_controls(bpy.context, main, 'DRESS', toggle=True),
+                                  lambda: display.show_native(bpy.context, main, 'DRESS')):
+                    with self.assertRaisesRegex(ValueError, 'collection'):
+                        operation()
+                    self.assertEqual(views(rigs), before)
+                    self.assertIsNone(display.view_mode(main))
+                    self.assertEqual(content(rigs), protected)
+                    self.assertTrue(getattr(owner, attribute))
+                setattr(owner, attribute, False)
+
+    def test_legacy_display_snapshot_does_not_invent_object_restore_flags(self):
+        main, dress, *_ = fixture()
+        dress.hide_set(True)
+        display.show_native(bpy.context, main, 'DRESS')
+        saved = json.loads(main.data[display.VIEW_KEY])
+        for view in saved['rigs'].values():
+            view.pop('object_visibility')
+        raw = json.dumps(saved, separators=(',', ':'))
+        for target in main.data[display.REFS_KEY].values():
+            target.data[display.VIEW_KEY] = raw
+        self.assertTrue(display.restore_view(main))
+        self.assertTrue(display._object_visible(dress))
 
     def test_readonly_refusal_retains_active_view(self):
         main, dress, other, other_dress, *_ = fixture()

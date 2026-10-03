@@ -16,11 +16,13 @@ namespace CharacterDesigner.Unity.Editor
         readonly Camera camera;
         readonly GameObject[] lights;
         RenderTexture texture;
+        int renderedPoseVersion = -1;
+        bool viewChanged = true;
         float yaw=20, pitch=4, distance=1.8f;
         public void Orbit(Vector2 delta)
-        {yaw+=delta.x*.5f;pitch=Mathf.Clamp(pitch+delta.y*.5f,-80,80);}
+        {yaw+=delta.x*.5f;pitch=Mathf.Clamp(pitch+delta.y*.5f,-80,80);viewChanged=true;}
         public void Zoom(float delta)
-        {distance=Mathf.Clamp(distance*Mathf.Exp(delta*.07f),.45f,4f);}
+        {distance=Mathf.Clamp(distance*Mathf.Exp(delta*.07f),.45f,4f);viewChanged=true;}
         public CharacterAnimationPreviewRenderer(CharacterAnimationTransfer.Preview preview)
         {
             this.preview=preview;
@@ -39,14 +41,19 @@ namespace CharacterDesigner.Unity.Editor
                 var light=lightObject.AddComponent<Light>();light.type=LightType.Directional;light.intensity=i==0?1.3f:.6f;
                 lightObject.transform.rotation=Quaternion.Euler(35,i==0?-30:140,0);
             }
+            EditorApplication.projectChanged+=InvalidateView;
+            Undo.undoRedoPerformed+=InvalidateView;
         }
+        void InvalidateView(){viewChanged=true;}
         public RenderTexture Render(int width,int height)
         {
             width=Mathf.Clamp(width,64,2048);height=Mathf.Clamp(height,64,2048);
-            if(texture==null || texture.width!=width || texture.height!=height)
+            if(texture==null || !texture.IsCreated() || texture.width!=width || texture.height!=height)
             {
                 ReleaseTexture();texture=new RenderTexture(width,height,24){hideFlags=HideFlags.HideAndDontSave};texture.Create();
+                viewChanged=true;
             }
+            if(!viewChanged && renderedPoseVersion==preview.PoseVersion)return texture;
             var bounds=preview.Bounds;
             Vector3 direction=Quaternion.Euler(pitch,yaw,0)*Vector3.forward;
             camera.transform.position=bounds.center+direction*Mathf.Max(.5f,bounds.size.magnitude*distance);
@@ -59,6 +66,7 @@ namespace CharacterDesigner.Unity.Editor
                 RenderPipeline.SubmitRenderRequest(camera,request);
             }
             else camera.Render();
+            renderedPoseVersion=preview.PoseVersion;viewChanged=false;
             return texture;
         }
         public int CapturePng(string path)
@@ -78,6 +86,8 @@ namespace CharacterDesigner.Unity.Editor
         void ReleaseTexture(){if(texture!=null){texture.Release();Object.DestroyImmediate(texture);texture=null;}}
         public void Dispose()
         {
+            EditorApplication.projectChanged-=InvalidateView;
+            Undo.undoRedoPerformed-=InvalidateView;
             ReleaseTexture();if(camera!=null)Object.DestroyImmediate(camera.gameObject);
             foreach(var light in lights)if(light!=null)Object.DestroyImmediate(light);
         }

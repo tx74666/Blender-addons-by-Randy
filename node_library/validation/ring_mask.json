@@ -52,10 +52,12 @@
       "passed": true
     }
   ],
-  "asset": "node_library/assets/Randy_Ring_Mask.blend",
+  "asset": "node_library/dependencies/Randy_Ring_Mask.blend",
   "blender": "5.2.0 LTS",
   "baseline_verification": "node_library/validation/ring_mask_baseline.json",
   "original_report_sha256": "d00cab6cf22947156fa23d44af2091a00c8d6f5f508e7fc6b7aeb729ce17dc48",
   "evidence_note": "Five metadata/persistence checks on this exact asset, including unchanged functional graph versus the 63-check historical baseline; numerical rendering was not repeated.",
-  "baseline_verification_hash_mode": "utf8-lf"
+  "baseline_verification_hash_mode": "utf8-lf",
+  "original_published_asset_before_retirement": "node_library/assets/Randy_Ring_Mask.blend",
+  "retirement_verification": "node_library/validation/ring_mask_retirement.json"
 }

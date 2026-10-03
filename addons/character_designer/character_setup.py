@@ -397,7 +397,7 @@ class CHARACTERDESIGNER_PT_character_setup(Panel):
 
     @classmethod
     def poll(cls, context):
-        return active_ui_page(context) in {UI_PAGE_WEIGHT, UI_PAGE_RIG}
+        return active_ui_page(context) == UI_PAGE_RIG
 
     def draw(self, context):
         layout = self.layout
@@ -526,9 +526,9 @@ class CHARACTERDESIGNER_PT_quick_bind(Panel):
             if context.mode != 'OBJECT':
                 layout.label(text='Return to Object Mode to bind.', icon='INFO')
             elif state.rig is None:
-                layout.label(text='Set Main Rig in Character Setup.', icon='INFO')
+                layout.label(text='Set Main Rig in Rig > Character Setup.', icon='INFO')
             elif transfer and state.body is None:
-                layout.label(text='Set Body Weight Source above.', icon='INFO')
+                layout.label(text='Set Body Weight Source in Rig > Character Setup.', icon='INFO')
             row = layout.row()
             row.enabled = not transfer or state.body is not None
             row.operator('character_designer.quick_bind',

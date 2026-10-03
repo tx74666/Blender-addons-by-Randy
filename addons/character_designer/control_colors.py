@@ -45,6 +45,7 @@ def is_control(pb, *, owned_only=False):
     if not owned_only:
         return True
     return (pb.bone.get(OWNER_KEY) in OWNERS or shape.get(OWNER_KEY) in OWNERS
+            or bool(pb.bone.get('character_designer_skirt_owner'))
             or bool(pb.id_data.get('character_designer_skirt_owner')))
 
 
@@ -64,7 +65,7 @@ def palette_for(pb):
         return 'HONEY'
     if _hair(pb):
         return 'MAUVE'
-    if rig.get('character_designer_skirt_owner'):
+    if bone.get('character_designer_skirt_owner') or rig.get('character_designer_skirt_owner'):
         return 'LILAC' if 'waist' in pb.name.lower() else 'MAUVE'
     if bone.get(OWNER_KEY) == 'torso_controls':
         return 'LILAC' if torso_role == 'BEND' else 'IRIS'
@@ -97,16 +98,27 @@ def _set_color(pb, state):
 
 
 def capture_bone(pb):
-    return {'color': _color_state(pb), 'backup': pb.get(BACKUP_KEY)}
+    from . import bone_color_palette
+    state = {'color': _color_state(pb), 'backup': pb.get(BACKUP_KEY)}
+    if bone_color_palette.BACKUP_KEY in pb:
+        state['palette_backup'] = pb[bone_color_palette.BACKUP_KEY]
+    return state
 
 
-def restore_bone_state(pb, state):
+def restore_bone_state(pb, state, *, preserve_palette=False):
+    from . import bone_color_palette
+    if preserve_palette and bone_color_palette.preserve_restoration(pb, state):
+        return
     _set_color(pb, state['color'])
     if state.get('backup') is None:
         if BACKUP_KEY in pb:
             del pb[BACKUP_KEY]
     else:
         pb[BACKUP_KEY] = state['backup']
+    if 'palette_backup' in state:
+        pb[bone_color_palette.BACKUP_KEY] = state['palette_backup']
+    else:
+        pb.pop(bone_color_palette.BACKUP_KEY, None)
 
 
 def _saved_color(pb):
@@ -143,6 +155,13 @@ def style(pb, *, force=False):
     """Use on newly created controls; explicit Apply may replace artist colors."""
     if not hasattr(pb, 'color'):
         return False
+    from . import bone_color_palette
+    main = bone_color_palette.main_for(pb.id_data)
+    scheme = bone_color_palette._read(main)
+    if scheme and scheme['enabled']:
+        if not force and (bone_color_palette.palette_assigned(pb) or pb.color.palette != 'DEFAULT'):
+            return False
+        return bone_color_palette.style_control(pb)
     if not force and (pb.id_data.get(ENABLED_KEY) == 0
                       or BACKUP_KEY in pb or pb.color.palette != 'DEFAULT'):
         return False
@@ -163,8 +182,10 @@ def has_backup(rig):
 
 def _restore_display_if_unused(rig):
     # Armature data may be shared by several independently colored Pose objects.
+    from . import bone_color_palette
     if DISPLAY_KEY in rig.data and not any(
-        has_backup(obj) for obj in bpy.data.objects if obj.type == 'ARMATURE' and obj.data == rig.data
+        has_backup(obj) or any(bone_color_palette.palette_assigned(pb) for pb in obj.pose.bones)
+        for obj in bpy.data.objects if obj.type == 'ARMATURE' and obj.data == rig.data
     ):
         rig.data.show_bone_colors = bool(rig.data[DISPLAY_KEY])
         del rig.data[DISPLAY_KEY]
@@ -172,8 +193,9 @@ def _restore_display_if_unused(rig):
 
 def cleanup(rig):
     """Surviving source bones recover their old color when their shape is removed."""
+    from . import bone_color_palette
     for pb in rig.pose.bones:
-        if BACKUP_KEY in pb and not is_control(pb):
+        if BACKUP_KEY in pb and not is_control(pb) and not bone_color_palette.palette_assigned(pb):
             restore_bone(pb)
     _restore_display_if_unused(rig)
 
@@ -186,6 +208,10 @@ def sync(rig):
 
 
 def apply(rig):
+    from . import bone_color_palette
+    main = bone_color_palette.main_for(rig)
+    if bone_color_palette.CONFIG_KEY in main:
+        return bone_color_palette.apply_palette(main, bpy.context)
     targets = [pb for pb in rig.pose.bones if is_control(pb)]
     if not targets:
         raise ValueError('This armature has no bone controllers to color.')
@@ -199,6 +225,11 @@ def apply(rig):
 
 
 def restore(rig):
+    from . import bone_color_palette
+    main = bone_color_palette.main_for(rig)
+    scheme = bone_color_palette._read(main)
+    if scheme and scheme['enabled']:
+        return bone_color_palette.restore_palette(main, bpy.context)
     targets = [pb for pb in rig.pose.bones if BACKUP_KEY in pb]
     for pb in targets:
         _saved_color(pb)

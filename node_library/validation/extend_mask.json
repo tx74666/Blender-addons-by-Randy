@@ -1,0 +1,5231 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset": "D:\\MyRepository\\Blender-addons-by-Randy\\node_library\\assets\\Randy_Extend_Mask.blend",
+  "asset_sha256": "c7e749ac466dd2250f1e78944df4a5100dcc0fb2f0275e9ecd6c8b12b6a2078d",
+  "arc_mask_sha256": "7c2006b17e4e1dd1729353291f180a211fe15c296bafdc720ddc9a60b416e722",
+  "blender": "5.2.0 LTS",
+  "render_engine": "Cycles CPU",
+  "tolerance": 0.0003,
+  "ui_search_tested": false,
+  "tests": [
+    {
+      "name": "native_bundle_menu_interface_and_texture_metadata",
+      "passed": true
+    },
+    {
+      "name": "native_save_reopen_preserves_menu_and_bundle_links",
+      "passed": true
+    },
+    {
+      "name": "cycles: default_both_inner",
+      "point": [
+        0.395,
+        0.0
+      ],
+      "uv": [
+        0.6975,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.01,
+        0.0,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: default_both_outer",
+      "point": [
+        0.505,
+        0.0
+      ],
+      "uv": [
+        0.7525,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.01,
+        0.0,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: original_source_excluded",
+      "point": [
+        0.45,
+        0.0
+      ],
+      "uv": [
+        0.725,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: inner_band_white",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: inner_does_not_add_outer",
+      "point": [
+        0.54,
+        0.0
+      ],
+      "uv": [
+        0.77,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outer_band_white",
+      "point": [
+        0.54,
+        0.0
+      ],
+      "uv": [
+        0.77,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outer_does_not_add_inner",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: both_original_hole_empty",
+      "point": [
+        0.2,
+        0.0
+      ],
+      "uv": [
+        0.6,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: both_beyond_new_outer_empty",
+      "point": [
+        0.58,
+        0.0
+      ],
+      "uv": [
+        0.79,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: inner_gap_empty",
+      "point": [
+        0.39,
+        0.0
+      ],
+      "uv": [
+        0.6950000000000001,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outer_gap_empty",
+      "point": [
+        0.51,
+        0.0
+      ],
+      "uv": [
+        0.755,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: zero_extension_width",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: negative_linked_extension_width",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        -0.1,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: negative_linked_gap_clamps_zero",
+      "point": [
+        0.38,
+        0.0
+      ],
+      "uv": [
+        0.69,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        -0.1,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: negative_linked_softness_is_hard",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        -0.1
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: unconnected_source_black",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": null,
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: zero_source_width_black",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: zero_source_sweep_black",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        0
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: fully_cropped_source_black",
+      "point": [
+        0.95,
+        0.0
+      ],
+      "uv": [
+        0.975,
+        0.5
+      ],
+      "source": [
+        1,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: disk_has_no_inner_extension",
+      "point": [
+        0.02,
+        0.0
+      ],
+      "uv": [
+        0.51,
+        0.5
+      ],
+      "source": [
+        0,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: disk_outer_extension_white",
+      "point": [
+        0.54,
+        0.0
+      ],
+      "uv": [
+        0.77,
+        0.5
+      ],
+      "source": [
+        0,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: clipped_inner_disk_center_no_soft_pinhole",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.02,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0,
+        0.01
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outer_clipped_to_disk_white",
+      "point": [
+        0.995,
+        0.0
+      ],
+      "uv": [
+        0.9975,
+        0.5
+      ],
+      "source": [
+        0.94,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.08,
+        0,
+        0.005
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: softness_uses_clipped_band_width",
+      "point": [
+        0.985,
+        0.0
+      ],
+      "uv": [
+        0.9924999999999999,
+        0.5
+      ],
+      "source": [
+        0.94,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.08,
+        0,
+        0.1
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: result_outside_disk_black",
+      "point": [
+        1.01,
+        0.0
+      ],
+      "uv": [
+        1.005,
+        0.5
+      ],
+      "source": [
+        0.94,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.08,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: large_gap_collapsed_inner_no_phantom_center",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: large_gap_both_surviving_outer_white",
+      "point": [
+        0.65,
+        0.0
+      ],
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: large_gap_outline_no_phantom_center",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outline",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: inner_soft_half_fade",
+      "point": [
+        0.35,
+        0.0
+      ],
+      "uv": [
+        0.675,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0.02
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.4999999999999969,
+      "rgb": [
+        0.5000016689300537,
+        0.5000016689300537,
+        0.5000016689300537
+      ],
+      "max_error": 1.668930056819562e-06,
+      "pixel": [
+        72,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outer_soft_quarter_fade",
+      "point": [
+        0.525,
+        0.0
+      ],
+      "uv": [
+        0.7625,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0.02
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.15625000000000025,
+      "rgb": [
+        0.1562497317790985,
+        0.1562497317790985,
+        0.1562497317790985
+      ],
+      "max_error": 2.68220901739058e-07,
+      "pixel": [
+        88,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: large_softness_caps_to_half_width",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0.2
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: arc_outer_inherits_angle_white",
+      "point": [
+        0.2700000000000001,
+        0.4676537180435969
+      ],
+      "uv": [
+        0.635,
+        0.7338268590217984
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: arc_outer_outside_angle_black",
+      "point": [
+        -0.5074340152243906,
+        -0.1846908773958611
+      ],
+      "uv": [
+        0.2462829923878047,
+        0.40765456130206945
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: arc_inner_inherits_angle_white",
+      "point": [
+        0.18000000000000002,
+        0.31176914536239786
+      ],
+      "uv": [
+        0.59,
+        0.6558845726811989
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: arc_inner_does_not_wrap_ends",
+      "point": [
+        0.338289343482927,
+        0.12312725159724074
+      ],
+      "uv": [
+        0.6691446717414635,
+        0.5615636257986204
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: wrapped_arc_inside_white",
+      "point": [
+        0.5074340152243906,
+        0.18469087739586112
+      ],
+      "uv": [
+        0.7537170076121953,
+        0.5923454386979305
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        300,
+        100
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: wrapped_arc_outside_black",
+      "point": [
+        0.09377001594014243,
+        0.5317961866265923
+      ],
+      "uv": [
+        0.5468850079700712,
+        0.7658980933132962
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        300,
+        100
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: linked_multi_turn_start_wraps",
+      "point": [
+        0.2700000000000001,
+        0.4676537180435969
+      ],
+      "uv": [
+        0.635,
+        0.7338268590217984
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        1110,
+        120
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: linked_oversized_sweep_full_circle",
+      "point": [
+        -0.41366399928424813,
+        -0.34710530923073124
+      ],
+      "uv": [
+        0.29316800035787594,
+        0.3264473453846344
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        720
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: linked_negative_sweep_empty",
+      "point": [
+        0.2700000000000001,
+        0.4676537180435969
+      ],
+      "uv": [
+        0.635,
+        0.7338268590217984
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        -100
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: radial_softness_does_not_extend_arc_ends",
+      "point": [
+        0.5074340152243906,
+        0.18469087739586112
+      ],
+      "uv": [
+        0.7537170076121953,
+        0.5923454386979305
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0.02
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_outer_circular_band",
+      "point": [
+        0.3818376618407357,
+        0.3818376618407357
+      ],
+      "uv": [
+        0.6909188309203679,
+        0.6909188309203679
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_inner_circular_band",
+      "point": [
+        0.2545584412271571,
+        0.2545584412271571
+      ],
+      "uv": [
+        0.6272792206135785,
+        0.6272792206135785
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_start_cut_extends_outward",
+      "point": [
+        0.45,
+        -0.04
+      ],
+      "uv": [
+        0.725,
+        0.48
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_beyond_start_band_empty",
+      "point": [
+        0.45,
+        -0.07
+      ],
+      "uv": [
+        0.725,
+        0.46499999999999997
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: radial_both_leaves_start_cut_empty",
+      "point": [
+        0.45,
+        -0.04
+      ],
+      "uv": [
+        0.725,
+        0.48
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_round_outer_corner",
+      "point": [
+        0.525,
+        -0.025
+      ],
+      "uv": [
+        0.7625,
+        0.4875
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_beyond_round_corner_empty",
+      "point": [
+        0.555,
+        -0.055
+      ],
+      "uv": [
+        0.7775000000000001,
+        0.4725
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_original_sector_interior_empty",
+      "point": [
+        0.45,
+        0.05
+      ],
+      "uv": [
+        0.725,
+        0.525
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_end_cut_extends_outward",
+      "point": [
+        -0.04,
+        0.45
+      ],
+      "uv": [
+        0.48,
+        0.725
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_reflex_arc_cut",
+      "point": [
+        0.45,
+        -0.04
+      ],
+      "uv": [
+        0.725,
+        0.48
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        270
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_full_circle_has_no_fake_cut",
+      "point": [
+        0.3818376618407357,
+        0.3818376618407357
+      ],
+      "uv": [
+        0.6909188309203679,
+        0.6909188309203679
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_soft_cut_half_fade",
+      "point": [
+        0.45,
+        -0.025
+      ],
+      "uv": [
+        0.725,
+        0.4875
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0.01
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.5000000000000001,
+      "rgb": [
+        0.499996542930603,
+        0.499996542930603,
+        0.499996542930603
+      ],
+      "max_error": 3.4570693970836786e-06,
+      "pixel": [
+        72,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: outline_inner_data_cannot_feed_radial_chain",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: chain_inner_branch_new_inner",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: chain_inner_branch_new_outer",
+      "point": [
+        0.39,
+        0.0
+      ],
+      "uv": [
+        0.6950000000000001,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: chain_outer_branch_new_inner",
+      "point": [
+        0.51,
+        0.0
+      ],
+      "uv": [
+        0.755,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: chain_outer_branch_new_outer",
+      "point": [
+        0.57,
+        0.0
+      ],
+      "uv": [
+        0.7849999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: both_branch_chain_inner_component",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "both_branches": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: both_branch_chain_outer_component",
+      "point": [
+        0.57,
+        0.0
+      ],
+      "uv": [
+        0.7849999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "both_branches": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: unselected_inner_data_inactive",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: unselected_outer_data_inactive",
+      "point": [
+        0.57,
+        0.0
+      ],
+      "uv": [
+        0.7849999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: collapsed_inner_data_remains_empty_on_chain",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "cycles: arc_chain_retains_angular_limits",
+      "point": [
+        -0.5356247938479678,
+        -0.19495148169563112
+      ],
+      "uv": [
+        0.2321876030760161,
+        0.4025242591521844
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: default_both_inner",
+      "point": [
+        0.395,
+        0.0
+      ],
+      "uv": [
+        0.6975,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.01,
+        0.0,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: default_both_outer",
+      "point": [
+        0.505,
+        0.0
+      ],
+      "uv": [
+        0.7525,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.01,
+        0.0,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: original_source_excluded",
+      "point": [
+        0.45,
+        0.0
+      ],
+      "uv": [
+        0.725,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: inner_band_white",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: inner_does_not_add_outer",
+      "point": [
+        0.54,
+        0.0
+      ],
+      "uv": [
+        0.77,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outer_band_white",
+      "point": [
+        0.54,
+        0.0
+      ],
+      "uv": [
+        0.77,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outer_does_not_add_inner",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: both_original_hole_empty",
+      "point": [
+        0.2,
+        0.0
+      ],
+      "uv": [
+        0.6,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        8
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: both_beyond_new_outer_empty",
+      "point": [
+        0.58,
+        0.0
+      ],
+      "uv": [
+        0.79,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: inner_gap_empty",
+      "point": [
+        0.39,
+        0.0
+      ],
+      "uv": [
+        0.6950000000000001,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outer_gap_empty",
+      "point": [
+        0.51,
+        0.0
+      ],
+      "uv": [
+        0.755,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: zero_extension_width",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: negative_linked_extension_width",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        -0.1,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: negative_linked_gap_clamps_zero",
+      "point": [
+        0.38,
+        0.0
+      ],
+      "uv": [
+        0.69,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        -0.1,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: negative_linked_softness_is_hard",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        -0.1
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: unconnected_source_black",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": null,
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        24
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: zero_source_width_black",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: zero_source_sweep_black",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        0
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: fully_cropped_source_black",
+      "point": [
+        0.95,
+        0.0
+      ],
+      "uv": [
+        0.975,
+        0.5
+      ],
+      "source": [
+        1,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: disk_has_no_inner_extension",
+      "point": [
+        0.02,
+        0.0
+      ],
+      "uv": [
+        0.51,
+        0.5
+      ],
+      "source": [
+        0,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: disk_outer_extension_white",
+      "point": [
+        0.54,
+        0.0
+      ],
+      "uv": [
+        0.77,
+        0.5
+      ],
+      "source": [
+        0,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: clipped_inner_disk_center_no_soft_pinhole",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.02,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0,
+        0.01
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outer_clipped_to_disk_white",
+      "point": [
+        0.995,
+        0.0
+      ],
+      "uv": [
+        0.9975,
+        0.5
+      ],
+      "source": [
+        0.94,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.08,
+        0,
+        0.005
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: softness_uses_clipped_band_width",
+      "point": [
+        0.985,
+        0.0
+      ],
+      "uv": [
+        0.9924999999999999,
+        0.5
+      ],
+      "source": [
+        0.94,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.08,
+        0,
+        0.1
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.5,
+      "rgb": [
+        0.499755859375,
+        0.499755859375,
+        0.499755859375
+      ],
+      "max_error": 0.000244140625,
+      "pixel": [
+        120,
+        40
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: result_outside_disk_black",
+      "point": [
+        1.01,
+        0.0
+      ],
+      "uv": [
+        1.005,
+        0.5
+      ],
+      "source": [
+        0.94,
+        0.04,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.08,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: large_gap_collapsed_inner_no_phantom_center",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: large_gap_both_surviving_outer_white",
+      "point": [
+        0.65,
+        0.0
+      ],
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: large_gap_outline_no_phantom_center",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outline",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: inner_soft_half_fade",
+      "point": [
+        0.35,
+        0.0
+      ],
+      "uv": [
+        0.675,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0.02
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.4999999999999969,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 3.1086244689504383e-15,
+      "pixel": [
+        72,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outer_soft_quarter_fade",
+      "point": [
+        0.525,
+        0.0
+      ],
+      "uv": [
+        0.7625,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0.02
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.15625000000000025,
+      "rgb": [
+        0.1561279296875,
+        0.1561279296875,
+        0.1561279296875
+      ],
+      "max_error": 0.0001220703125002498,
+      "pixel": [
+        88,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: large_softness_caps_to_half_width",
+      "point": [
+        0.36,
+        0.0
+      ],
+      "uv": [
+        0.6799999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0.2
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: arc_outer_inherits_angle_white",
+      "point": [
+        0.2700000000000001,
+        0.4676537180435969
+      ],
+      "uv": [
+        0.635,
+        0.7338268590217984
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        56
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: arc_outer_outside_angle_black",
+      "point": [
+        -0.5074340152243906,
+        -0.1846908773958611
+      ],
+      "uv": [
+        0.2462829923878047,
+        0.40765456130206945
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: arc_inner_inherits_angle_white",
+      "point": [
+        0.18000000000000002,
+        0.31176914536239786
+      ],
+      "uv": [
+        0.59,
+        0.6558845726811989
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: arc_inner_does_not_wrap_ends",
+      "point": [
+        0.338289343482927,
+        0.12312725159724074
+      ],
+      "uv": [
+        0.6691446717414635,
+        0.5615636257986204
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: wrapped_arc_inside_white",
+      "point": [
+        0.5074340152243906,
+        0.18469087739586112
+      ],
+      "uv": [
+        0.7537170076121953,
+        0.5923454386979305
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        300,
+        100
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: wrapped_arc_outside_black",
+      "point": [
+        0.09377001594014243,
+        0.5317961866265923
+      ],
+      "uv": [
+        0.5468850079700712,
+        0.7658980933132962
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        300,
+        100
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: linked_multi_turn_start_wraps",
+      "point": [
+        0.2700000000000001,
+        0.4676537180435969
+      ],
+      "uv": [
+        0.635,
+        0.7338268590217984
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        1110,
+        120
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: linked_oversized_sweep_full_circle",
+      "point": [
+        -0.41366399928424813,
+        -0.34710530923073124
+      ],
+      "uv": [
+        0.29316800035787594,
+        0.3264473453846344
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        720
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: linked_negative_sweep_empty",
+      "point": [
+        0.2700000000000001,
+        0.4676537180435969
+      ],
+      "uv": [
+        0.635,
+        0.7338268590217984
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        -100
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": true,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        72
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: radial_softness_does_not_extend_arc_ends",
+      "point": [
+        0.5074340152243906,
+        0.18469087739586112
+      ],
+      "uv": [
+        0.7537170076121953,
+        0.5923454386979305
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0.02
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_outer_circular_band",
+      "point": [
+        0.3818376618407357,
+        0.3818376618407357
+      ],
+      "uv": [
+        0.6909188309203679,
+        0.6909188309203679
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_inner_circular_band",
+      "point": [
+        0.2545584412271571,
+        0.2545584412271571
+      ],
+      "uv": [
+        0.6272792206135785,
+        0.6272792206135785
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_start_cut_extends_outward",
+      "point": [
+        0.45,
+        -0.04
+      ],
+      "uv": [
+        0.725,
+        0.48
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_beyond_start_band_empty",
+      "point": [
+        0.45,
+        -0.07
+      ],
+      "uv": [
+        0.725,
+        0.46499999999999997
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: radial_both_leaves_start_cut_empty",
+      "point": [
+        0.45,
+        -0.04
+      ],
+      "uv": [
+        0.725,
+        0.48
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_round_outer_corner",
+      "point": [
+        0.525,
+        -0.025
+      ],
+      "uv": [
+        0.7625,
+        0.4875
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_beyond_round_corner_empty",
+      "point": [
+        0.555,
+        -0.055
+      ],
+      "uv": [
+        0.7775000000000001,
+        0.4725
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        88
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_original_sector_interior_empty",
+      "point": [
+        0.45,
+        0.05
+      ],
+      "uv": [
+        0.725,
+        0.525
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_end_cut_extends_outward",
+      "point": [
+        -0.04,
+        0.45
+      ],
+      "uv": [
+        0.48,
+        0.725
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_reflex_arc_cut",
+      "point": [
+        0.45,
+        -0.04
+      ],
+      "uv": [
+        0.725,
+        0.48
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        270
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_full_circle_has_no_fake_cut",
+      "point": [
+        0.3818376618407357,
+        0.3818376618407357
+      ],
+      "uv": [
+        0.6909188309203679,
+        0.6909188309203679
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_soft_cut_half_fade",
+      "point": [
+        0.45,
+        -0.025
+      ],
+      "uv": [
+        0.725,
+        0.4875
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        90
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0.01
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.5000000000000001,
+      "rgb": [
+        0.499755859375,
+        0.499755859375,
+        0.499755859375
+      ],
+      "max_error": 0.000244140625000111,
+      "pixel": [
+        72,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: outline_inner_data_cannot_feed_radial_chain",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outline",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: chain_inner_branch_new_inner",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: chain_inner_branch_new_outer",
+      "point": [
+        0.39,
+        0.0
+      ],
+      "uv": [
+        0.6950000000000001,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        104
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: chain_outer_branch_new_inner",
+      "point": [
+        0.51,
+        0.0
+      ],
+      "uv": [
+        0.755,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        8,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: chain_outer_branch_new_outer",
+      "point": [
+        0.57,
+        0.0
+      ],
+      "uv": [
+        0.7849999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        24,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: both_branch_chain_inner_component",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "both_branches": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        40,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: both_branch_chain_outer_component",
+      "point": [
+        0.57,
+        0.0
+      ],
+      "uv": [
+        0.7849999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "both_branches": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        56,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: unselected_inner_data_inactive",
+      "point": [
+        0.33,
+        0.0
+      ],
+      "uv": [
+        0.665,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        72,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: unselected_outer_data_inactive",
+      "point": [
+        0.57,
+        0.0
+      ],
+      "uv": [
+        0.7849999999999999,
+        0.5
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        88,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: collapsed_inner_data_remains_empty_on_chain",
+      "point": [
+        0.0,
+        0.0
+      ],
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "source": [
+        0.2,
+        0.1,
+        0,
+        0,
+        360
+      ],
+      "mode": "Inner",
+      "values": [
+        0.1,
+        0.3,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Inner Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        104,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "eevee: arc_chain_retains_angular_limits",
+      "point": [
+        -0.5356247938479678,
+        -0.19495148169563112
+      ],
+      "uv": [
+        0.2321876030760161,
+        0.4025242591521844
+      ],
+      "source": [
+        0.4,
+        0.1,
+        0,
+        30,
+        120
+      ],
+      "mode": "Both",
+      "values": [
+        0.04,
+        0.02,
+        0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "chain": [
+        {
+          "branch": "Outer Data",
+          "mode": "Both",
+          "values": [
+            0.01,
+            0.005,
+            0
+          ]
+        }
+      ],
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "pixel": [
+        120,
+        120
+      ],
+      "passed": true
+    },
+    {
+      "name": "both_input_assets_unchanged",
+      "passed": true
+    }
+  ],
+  "source_dependencies_sha256": {
+    "tools/randy_node_assets/build_extend_mask.py": "7b9c4243a4639191bfacf99c0455917d37886554c4c00277a31d2622f8ad1a9c",
+    "tools/randy_node_assets/verify_extend_mask.py": "4dd15ee21ba9afb36c353e546bcd3d401973a4d376bc45a7475483355003539e",
+    "tools/randy_node_assets/build_arc_mask.py": "27f3bd2d13a51ea3999f34a4599d98832b76b15243b3719ad1cbff80dddb72fc",
+    "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805"
+  },
+  "asset_metadata": {
+    "name": "Extend Mask",
+    "version": "0.1.0",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "color_tag": "TEXTURE",
+    "inputs": [
+      {
+        "name": "Source",
+        "type": "NodeSocketBundle"
+      },
+      {
+        "name": "Mode",
+        "type": "NodeSocketMenu",
+        "default": "Both",
+        "choices": [
+          "Inner",
+          "Outer",
+          "Both",
+          "Outline"
+        ]
+      },
+      {
+        "name": "Width",
+        "type": "NodeSocketFloat",
+        "default": 0.009999999776482582
+      },
+      {
+        "name": "Gap",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Softness",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      }
+    ],
+    "outputs": [
+      {
+        "name": "Mask",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Inner Data",
+        "type": "NodeSocketBundle"
+      },
+      {
+        "name": "Outer Data",
+        "type": "NodeSocketBundle"
+      }
+    ],
+    "nodes": 202
+  },
+  "cycles": {
+    "engine": "CYCLES",
+    "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Extend_Mask_cycles_numeric_atlas.exr",
+    "sample_count": 64,
+    "maximum_absolute_error": 3.4570693970836786e-06,
+    "passed": true,
+    "failures": []
+  },
+  "shader_sample_count": 128,
+  "maximum_absolute_error": 3.4570693970836786e-06,
+  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Extend_Mask_cycles_numeric_atlas.exr",
+  "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Randy_Extend_Mask_validation.blend",
+  "eevee": {
+    "engine": "BLENDER_EEVEE",
+    "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Extend_Mask_eevee_numeric_atlas.exr",
+    "sample_count": 64,
+    "maximum_absolute_error": 0.000244140625000111,
+    "passed": true,
+    "failures": []
+  },
+  "examples": {
+    "image": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Extend_Mask_examples.png",
+    "left_to_right": [
+      {
+        "name": "Full ring inner and outer bands",
+        "source": [
+          0.48,
+          0.08,
+          0,
+          0,
+          360
+        ],
+        "mode": "Both",
+        "values": [
+          0.04,
+          0.02,
+          0.008
+        ]
+      },
+      {
+        "name": "Arc radial bands retain its angles",
+        "source": [
+          0.48,
+          0.08,
+          0,
+          20,
+          250
+        ],
+        "mode": "Both",
+        "values": [
+          0.04,
+          0.02,
+          0.008
+        ]
+      },
+      {
+        "name": "Arc complete contour outline",
+        "source": [
+          0.48,
+          0.08,
+          0,
+          20,
+          250
+        ],
+        "mode": "Outline",
+        "values": [
+          0.04,
+          0.02,
+          0.008
+        ]
+      },
+      {
+        "name": "Both radial branches reused",
+        "source": [
+          0.48,
+          0.08,
+          0,
+          0,
+          360
+        ],
+        "mode": "Both",
+        "values": [
+          0.04,
+          0.02,
+          0
+        ],
+        "both_branches": true
+      }
+    ]
+  },
+  "render_preview": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Extend_Mask_examples.png"
+}

@@ -2,7 +2,7 @@ import bmesh
 import bpy
 import math
 from array import array
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 
 def selected_mesh_objects_for_modeling_origin(context):
@@ -50,6 +50,19 @@ def modeling_empty_origin_selection(context):
     if active is not None and active in objects and active.type != "EMPTY" and len(objects) == len(empties) + 1:
         return empties, active
     return [], None
+
+
+def modeling_object_origin_selection(context):
+    """Ordinary Object Mode geometry uses the 3D Cursor, without an active target."""
+    if context is None or getattr(context, "mode", "") != "OBJECT":
+        return []
+    objects = list(getattr(context, "selected_objects", []) or [])
+    if not objects or any(
+        obj is None or obj.type not in {"MESH", "CURVE"} or obj.data is None
+        for obj in objects
+    ):
+        return []
+    return objects
 
 
 def _origin_matrix_is_finite(matrix):
@@ -455,6 +468,215 @@ def apply_empty_origins_to_point(context, objects, target, *, protected_objects=
     return len(objects)
 
 
+def _origin_evaluated_world_geometry(obj, depsgraph):
+    geometry = _origin_evaluated_geometry(obj, depsgraph)
+    if geometry is None:
+        return None
+    coordinates, edges, loops, faces = geometry
+    world = obj.evaluated_get(depsgraph).matrix_world
+    # Compare the visible geometry in world space: moving the origin necessarily
+    # changes local coordinates, including the output of safe ordinary modifiers.
+    world_coordinates = array("f", [0.0]) * len(coordinates)
+    for offset in range(0, len(coordinates), 3):
+        x, y, z = coordinates[offset:offset + 3]
+        for axis in range(3):
+            row = world[axis]
+            world_coordinates[offset + axis] = row[0] * x + row[1] * y + row[2] * z + row[3]
+    return world_coordinates, edges, loops, faces
+
+
+def _origin_data_coordinates(data):
+    """Exact coordinate backup for a checked single-user commit and rollback."""
+    mesh_coordinates = None
+    point_coordinates = []
+    if isinstance(data, bpy.types.Mesh):
+        mesh_coordinates = array("f", [0.0]) * (3 * len(data.vertices))
+        data.vertices.foreach_get("co", mesh_coordinates)
+    else:
+        for spline in data.splines:
+            for point in spline.bezier_points:
+                for attribute in ("co", "handle_left", "handle_right"):
+                    point_coordinates.append((point, attribute, tuple(getattr(point, attribute))))
+            for point in spline.points:
+                point_coordinates.append((point, "co", tuple(point.co)))
+    keys = getattr(data, "shape_keys", None)
+    if keys is not None:
+        for block in keys.key_blocks:
+            for point in block.data:
+                for attribute in ("co", "handle_left", "handle_right"):
+                    if hasattr(point, attribute):
+                        point_coordinates.append((point, attribute, tuple(getattr(point, attribute))))
+    return mesh_coordinates, point_coordinates
+
+
+def _origin_update_data(data):
+    if isinstance(data, bpy.types.Mesh):
+        data.update()
+    else:
+        data.update_tag()
+
+
+def _origin_restore_data_coordinates(data, backup):
+    mesh_coordinates, point_coordinates = backup
+    if mesh_coordinates is not None:
+        data.vertices.foreach_set("co", mesh_coordinates)
+    for point, attribute, coordinates in point_coordinates:
+        setattr(point, attribute, coordinates)
+    _origin_update_data(data)
+
+
+def _origin_commit_object_data(obj, original_data, staged_data, transform):
+    """Keep an editable single-user datablock's identity after staging succeeds."""
+    obj.data = original_data
+    original_data.transform(transform, shape_keys=True)
+    _origin_update_data(original_data)
+
+
+def _origin_remove_staged_data(data):
+    if data.users == 0:
+        collection = bpy.data.meshes if isinstance(data, bpy.types.Mesh) else bpy.data.curves
+        collection.remove(data)
+
+
+def _origin_check_dependent_drivers(objects):
+    selected_ids = set(objects)
+    for obj in objects:
+        selected_ids.add(obj.data)
+        if getattr(obj.data, "shape_keys", None) is not None:
+            selected_ids.add(obj.data.shape_keys)
+    # Object/data/socket drivers can read a moved origin or translated mesh.
+    # Check explicit driver references, without blocking unrelated rig drivers.
+    for collection in (bpy.data.objects, bpy.data.meshes, bpy.data.curves,
+                       bpy.data.shape_keys, bpy.data.node_groups, bpy.data.materials):
+        for block in collection:
+            for owner in (block, getattr(block, "node_tree", None)):
+                animation = getattr(owner, "animation_data", None)
+                if animation is None:
+                    continue
+                for curve in animation.drivers:
+                    if any(getattr(target, "id", None) in selected_ids
+                           for variable in curve.driver.variables for target in variable.targets):
+                        raise RuntimeError(f"{block.name}: a driver depends on the origin or geometry being changed.")
+
+
+def apply_object_origins_to_cursor(context, objects):
+    """Move ordinary geometry origins while preserving visible parts atomically."""
+    objects = list(objects)
+    if (getattr(context, "mode", "") != "OBJECT" or not objects or any(
+        obj is None or obj.type not in {"MESH", "CURVE"} or obj.data is None for obj in objects
+    )):
+        raise RuntimeError("Select mesh or curve objects in Object Mode to use the 3D Cursor.")
+    target = context.scene.cursor.location.copy()
+    if not all(math.isfinite(value) for value in target):
+        raise RuntimeError("The 3D Cursor position is not finite.")
+    context.view_layer.update()
+    objects.sort(key=_origin_parent_depth)
+    selected = set(objects)
+    inverse_owners = {child for obj in objects for child in obj.children}
+    watched = _origin_channel_normalization_watch_objects(objects)
+
+    for obj in watched:
+        if obj.parent is not None and obj.parent_type != "OBJECT":
+            raise RuntimeError(f"{obj.name}: only ordinary object parenting is supported.")
+        if obj.parent is not None and obj.parent.type == "CURVE" and obj.parent.data.use_path:
+            raise RuntimeError(f"{obj.name}: curve path parenting is not supported.")
+        animation = obj.animation_data
+        if obj in selected:
+            if obj.constraints or (animation and (animation.action or animation.nla_tracks or animation.drivers)):
+                raise RuntimeError(f"{obj.name}: constraints or animation prevent moving only its origin.")
+            if (not obj.is_editable or obj.is_property_readonly("location")
+                    or obj.is_property_readonly("data")):
+                raise RuntimeError(f"{obj.name}: the object is read-only.")
+            if obj.instance_type != "NONE" or obj.instance_collection is not None:
+                raise RuntimeError(f"{obj.name}: instances cannot move independently of their contents.")
+            try:
+                obj.matrix_world.inverted()
+                if obj.parent is not None:
+                    (obj.parent.matrix_world @ obj.matrix_parent_inverse).inverted()
+            except ValueError as exc:
+                raise RuntimeError(f"{obj.name}: zero scale or a singular transform prevents repositioning.") from exc
+        elif _origin_constraint_dependency_is_unsafe(obj, selected, inverse_owners, set()):
+            raise RuntimeError(f"{obj.name}: a constraint or driver depends on a moving origin, or uses an unsupported constraint.")
+        if obj in inverse_owners and (not obj.is_editable or obj.is_property_readonly("matrix_parent_inverse")):
+            raise RuntimeError(f"{obj.name}: the child object is read-only.")
+        for modifier in obj.modifiers:
+            if _origin_modifier_references_selected_object(modifier, selected):
+                raise RuntimeError(f"{obj.name}: modifier '{modifier.name}' depends on a moving origin.")
+        if not all(_origin_matrix_is_finite(matrix) for matrix in (
+            obj.matrix_world, obj.matrix_basis, obj.matrix_parent_inverse,
+        )):
+            raise RuntimeError(f"{obj.name}: invalid transform.")
+    _origin_check_dependent_drivers(objects)
+    depsgraph = context.evaluated_depsgraph_get()
+    for instance in depsgraph.object_instances:
+        if instance.is_instance and instance.parent is not None:
+            instancer = instance.parent.original
+            if instancer in selected:
+                # to_mesh() alone cannot prove that generated instances remain
+                # fixed. Reject them before staging instead of losing geometry.
+                raise RuntimeError(f"{instancer.name}: generated instances prevent moving only its origin.")
+
+    original_world = {obj: obj.matrix_world.copy() for obj in watched | set(context.scene.objects)}
+    original_locations = {obj: obj.location.copy() for obj in objects}
+    original_inverses = {obj: obj.matrix_parent_inverse.copy() for obj in inverse_owners}
+    original_data = {obj: obj.data for obj in objects}
+    reusable_data = {obj for obj in objects if obj.data.users == 1 and obj.data.is_editable}
+    transforms = {
+        obj: Matrix.Translation(obj.matrix_world.to_3x3().inverted() @ (obj.matrix_world.translation - target))
+        for obj in objects
+    }
+    backups = {obj: _origin_data_coordinates(obj.data) for obj in reusable_data}
+    original_geometry = {obj: _origin_evaluated_world_geometry(obj, depsgraph) for obj in watched}
+    staged_data = {}
+    committed = set()
+
+    def check_result():
+        context.view_layer.update()
+        for obj, matrix in original_world.items():
+            expected = matrix.copy()
+            if obj in selected:
+                expected.translation = target
+            if not _origin_matrix_matches(obj.matrix_world, expected):
+                raise RuntimeError(f"{obj.name}: unable to preserve object and child transforms.")
+        graph = context.evaluated_depsgraph_get()
+        for obj, expected in original_geometry.items():
+            if not _origin_geometry_matches(_origin_evaluated_world_geometry(obj, graph), expected):
+                raise RuntimeError(f"{obj.name}: moving its origin changes evaluated geometry; check origin-dependent modifiers.")
+
+    try:
+        # Copies prove the complete evaluated result before touching any original
+        # single-user coordinates. Shared/linked data remains untouched throughout.
+        for obj in objects:
+            staged_data[obj] = obj.data.copy()
+            staged_data[obj].use_fake_user = False
+            staged_data[obj].transform(transforms[obj], shape_keys=True)
+            _origin_update_data(staged_data[obj])
+            obj.data = staged_data[obj]
+        for obj in objects:
+            _apply_empty_origin(context, obj, target)
+        check_result()
+        for obj in objects:
+            if obj in reusable_data:
+                committed.add(obj)  # Include a partially failed transform in rollback.
+                _origin_commit_object_data(obj, original_data[obj], staged_data[obj], transforms[obj])
+        check_result()
+    except Exception:
+        for obj in objects:
+            obj.data = original_data[obj]
+            obj.location = original_locations[obj]
+        for obj, inverse in original_inverses.items():
+            obj.matrix_parent_inverse = inverse
+        for obj in committed:
+            _origin_restore_data_coordinates(original_data[obj], backups[obj])
+        context.view_layer.update()
+        for data in staged_data.values():
+            _origin_remove_staged_data(data)
+        raise
+    for data in staged_data.values():
+        _origin_remove_staged_data(data)
+    return len(objects)
+
+
 def mesh_selection_origin_point(obj):
     if obj is None or obj.type != "MESH" or obj.data is None or obj.mode != "EDIT":
         return None
@@ -692,6 +914,9 @@ def apply_modeling_origin(context, settings, mode=None):
                 return apply_empty_origins_to_point(
                     context, empty_objects, target, protected_objects=(target_object,))
             return apply_empty_origins_to_cursor(context, empty_objects)
+        object_objects = modeling_object_origin_selection(context)
+        if object_objects:
+            return apply_object_origins_to_cursor(context, object_objects)
     objects = (
         selected_edit_objects_for_modeling_origin(context)
         if mode == "SELECTION"

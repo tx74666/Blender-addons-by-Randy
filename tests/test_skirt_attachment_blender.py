@@ -57,7 +57,7 @@ def fixture():
     source.vertex_groups.new(name="Artist pin").add([1, 3], 0.42, "REPLACE")
     first = rig_fixture("First", (0.2, -0.4, 0.05))
     second = rig_fixture("Second", (1.2, 0.5, -0.25))
-    record = service.build_skirt(bpy.context, source, armature=first)
+    record = service.build_skirt(bpy.context, source, armature=first, shared=False)
     return source, source[service.RIG_KEY], first, second, record
 
 

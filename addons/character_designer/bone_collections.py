@@ -32,14 +32,22 @@ def body_collection(armature):
 
 
 def public_collections(armature):
-    """Existing daily body groups only; independent dresses use their own rig."""
+    """Existing daily character groups, including an integrated Dress subset."""
     if armature is None or armature.type != "ARMATURE":
         return ()
     return tuple(c for c in (body_collection(armature), armature.data.collections_all.get("Hair"),
-                             armature.data.collections_all.get("Original")) if c is not None)
+                             *_dress_collections(armature), armature.data.collections_all.get("Original"))
+                 if c is not None)
+
+
+def _dress_collections(armature):
+    from . import skirt_rig
+    return tuple(c for c in armature.data.collections_all if c.get(skirt_rig.OWNER_KEY))
 
 
 def _structural_edit_guard(armature):
+    if 'character_designer_body_original_mode_v1' in armature:
+        raise ValueError('Choose Controls in Bone Display before changing Bone Collections or rebuilding controls.')
     if bpy.context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
         raise ValueError('Use Back to Controls before changing Bone Collections or rebuilding controls.')
     if VIEW_KEY in armature.data:
@@ -48,9 +56,11 @@ def _structural_edit_guard(armature):
 
 def _native_body_names(armature, generated, hair_names):
     """Exclude identifiable machinery without guessing that ordinary bones are controls."""
+    from . import skirt_rig
     return {b.name for b in armature.data.bones
             if b.name not in generated and b.name not in hair_names
             and not b.get("character_designer_owner")
+            and not b.get(skirt_rig.OWNER_KEY)
             and not (not b.use_deform and b.name.rsplit(":", 1)[-1].upper().startswith(("MCH-", "MCH_", "ORG-", "ORG_")))}
 
 
@@ -488,7 +498,15 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
         if hair_groups and named_hair is not None and named_hair != hair_group:
             raise ValueError("Bone Collection 'Hair' belongs to another group.")
     native = _native_body_names(armature, generated, hair_names)
-    remaining = {b.name for b in data.bones} - generated - hair_names - native
+    dress_groups = _dress_collections(armature)
+    dress_names = {b.name for c in dress_groups for b in c.bones}
+    dress_tree = set(dress_groups)
+    stack = list(dress_groups)
+    while stack:
+        current = stack.pop()
+        dress_tree.update(current.children)
+        stack.extend(current.children)
+    remaining = {b.name for b in data.bones} - generated - hair_names - native - dress_names
     desired = {"Body": _animation_names(armature, inventory, native, foot, torso, eyes, spine),
                INTERNAL_NAME: generated, OTHER_NAME: remaining, "Original": native}
     before = snapshot_layout(armature)
@@ -497,7 +515,12 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
         # updates retain later artist groups and the generated ownership object.
         keep = {c.as_pointer() for c in (controls, hair_group, body, original, other) if c is not None}
         for c in reversed(tuple(data.collections_all)):
-            if c.as_pointer() in keep:
+            if c in dress_tree:
+                # Preserve the dress-owned hierarchy and artist children through
+                # Body rebuilds; only detach from a subdivision being removed.
+                if c.parent is not None and c.parent not in dress_tree and c.parent.as_pointer() not in keep:
+                    c.parent = None
+            elif c.as_pointer() in keep:
                 c.parent = None
             elif compact or c.get(GROUP_KEY) in {"Controls", "Animation", INTERNAL_NAME, OTHER_NAME}:
                 data.collections.remove(c)
@@ -543,7 +566,7 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
             _assign_exact(hair_group, data, hair_names)
             if compact:
                 hair_group.is_visible, hair_group.is_solo = True, False
-        front = [body] + ([hair_group] if hair_group is not None else [])
+        front = [body] + ([hair_group] if hair_group is not None else []) + [c for c in dress_groups if c.parent is None]
         for index, collection in enumerate(front):
             data.collections.move(list(data.collections).index(collection), index)
         # Original stays last, including when later artist groups are retained.
@@ -594,10 +617,12 @@ def finish_rig_edit(armature, previous, *, failed=False):
 
 
 @bpy.app.handlers.persistent
-def _frame_visibility(scene, _depsgraph=None):
+def _frame_visibility(scene, _depsgraph=None, *, objects=None):
     """Follow keyed modes without changing the artist's visible/solo switches."""
     from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls, spine_ik_fk, root_control
-    for armature in scene.objects:
+    for armature in scene.objects if objects is None else objects:
+        if 'character_designer_body_original_mode_v1' in armature:
+            continue
         if scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
             continue
         if (armature.type != "ARMATURE" or armature.mode == "EDIT"

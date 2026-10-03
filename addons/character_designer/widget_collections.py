@@ -80,11 +80,11 @@ def _leaf(context, collection):
         raise ValueError('Only registered Character Designer widget collections can be organized.')
 
 
-def _name(collection, name):
+def _name(collection, name, *, allow_numbered=False):
     occupied = bpy.data.collections.get(name)
     if occupied is not None and occupied != collection:
         owner = next((m for m in _modules() if collection.get(OWNER_KEY) == m.OWNER_VALUE), None)
-        if owner is None or occupied.get(OWNER_KEY) != owner.OWNER_VALUE or occupied.get(owner.ROLE_KEY) != collection.get(owner.ROLE_KEY):
+        if not allow_numbered and (owner is None or occupied.get(OWNER_KEY) != owner.OWNER_VALUE or occupied.get(owner.ROLE_KEY) != collection.get(owner.ROLE_KEY)):
             raise ValueError(f"Collection '{name}' already belongs to another resource.")
         name = _available_name(name, collection)
     collection.name = name
@@ -110,10 +110,10 @@ def _reparent(collection, parent):
     _restore_layers(collection, layer_states)
 
 
-def _new(name, role, parent, created, armature=None):
+def _new(name, role, parent, created, armature=None, *, allow_numbered=False):
     occupied = bpy.data.collections.get(name)
     if occupied is not None:
-        if not _owned(occupied, role):
+        if not allow_numbered and not _owned(occupied, role):
             raise ValueError(f"Collection '{name}' is occupied; keep or rename that artist collection first.")
         name = _available_name(name)
     collection = bpy.data.collections.new(name)
@@ -125,17 +125,17 @@ def _new(name, role, parent, created, armature=None):
     return collection
 
 
-def _containers(context, armature, created):
+def _containers(context, armature, created, *, allow_numbered=False):
     roots = [c for c in bpy.data.collections if _owned(c, 'ROOT') and context.scene in _scenes(c)]
     if len(roots) > 1:
         raise ValueError('Multiple CDesigner widget folders exist in this scene; keep their contents intact.')
-    root = roots[0] if roots else _new(ROOT_NAME, 'ROOT', context.scene.collection, created)
+    root = roots[0] if roots else _new(ROOT_NAME, 'ROOT', context.scene.collection, created, allow_numbered=allow_numbered)
     if root.objects or root.users != 1 or _parents(root) != (context.scene.collection,):
         raise ValueError('The CDesigner widget folder contains artist objects or external links.')
     rigs = [c for c in root.children if _owned(c, 'RIG') and c.get(RIG_KEY) == armature]
     if len(rigs) > 1:
         raise ValueError('This character has duplicate widget folders.')
-    folder = rigs[0] if rigs else _new(armature.name + ' · Widgets', 'RIG', root, created, armature)
+    folder = rigs[0] if rigs else _new(armature.name + ' · Widgets', 'RIG', root, created, armature, allow_numbered=allow_numbered)
     if folder.objects or folder.users != 1 or _parents(folder) != (root,):
         raise ValueError('The character widget folder contains artist objects or external links.')
     return root, folder
@@ -166,14 +166,14 @@ def _discard_created(created):
         pending = [collection for collection in pending if collection not in removed]
 
 
-def ensure_container(context, leaf, armature, label):
+def ensure_container(context, leaf, armature, label, *, allow_numbered=False):
     """Group one newly tagged leaf; its caller updates the record with leaf.name."""
     _editable(context, armature)
     _leaf(context, leaf)
     name, parents, layers, created = leaf.name, _parents(leaf), _layer_states(leaf), []
     try:
-        _root, folder = _containers(context, armature, created)
-        _name(leaf, armature.name + ' · ' + label)
+        _root, folder = _containers(context, armature, created, allow_numbered=allow_numbered)
+        _name(leaf, armature.name + ' · ' + label, allow_numbered=allow_numbered)
         _reparent(leaf, folder)
     except Exception:
         _restore_leaf(leaf, name, parents)

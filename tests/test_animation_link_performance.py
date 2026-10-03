@@ -1,6 +1,7 @@
 """Bounded packet-reuse/publication checks; no Blender or child process runs."""
 
 import hashlib
+from collections import Counter
 import importlib.util
 import json
 from pathlib import Path
@@ -237,6 +238,195 @@ class ImportBoundaryTests(IsolatedModules):
                         self.unity._import_package_action(self.context, self.target, {}, start_frame=3)
                 load.assert_not_called()
                 mapping.assert_not_called()
+
+
+class PreparedSourceTests(IsolatedModules):
+    def setUp(self):
+        super().setUp()
+        self.unity = self.load('unity_animation')
+        self.source = self.load('animation_link_source')
+        temporary = tempfile.TemporaryDirectory(prefix='prepared-animation-source-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.model = self.root / 'Model.fbx'
+        self.model.write_bytes(b'unchanged model fixture')
+        self.model_hash = self.source._sha256(self.model)
+        self.packet_path = self.root / 'Walk.cdanim.json'
+        self.packet_path.write_bytes(b'original packet fixture')
+        self.packet_hash = self.source._sha256(self.packet_path)
+        self.manifest_path = self.root / 'character_animation_link.json'
+        self.manifest = {'schema': 'randomrealm.animation-link/1', 'linkId': str(uuid.uuid4()),
+            'targetGuid': 'a' * 32, 'clipGuid': 'b' * 32, 'clipLocalId': 1657602633327794031,
+            'sourcePackage': str(self.packet_path), 'sourcePackageSha256': self.packet_hash,
+            'modelFile': str(self.model), 'modelSha256': self.model_hash}
+        self.manifest_path.write_text(json.dumps(self.manifest), encoding='utf-8')
+        self.link = self.source.animation_link.load_link(self.manifest_path)
+        self.packet = {'_path': str(self.packet_path), '_sha256': self.packet_hash,
+                       'bones': [{'name': 'CoshaRig'}, {'name': 'Hips'}]}
+        self.action = FakeAction()
+        self.action[self.unity.PACKAGE_HASH_KEY] = self.packet_hash
+        self.rig = Item(name='CoshaRig', type='ARMATURE', parent=None, mode='OBJECT',
+            data=SimpleNamespace(bones={'Hips': object()}, pose_position='REST'), select_set=lambda _value: None)
+        self.scene = SimpleNamespace(objects=[self.rig], render=SimpleNamespace(),
+            unit_settings=SimpleNamespace(), collection=SimpleNamespace(children=SimpleNamespace(link=lambda _value: None)))
+        self.context = SimpleNamespace(window=SimpleNamespace(scene=None), object=None,
+            preferences=SimpleNamespace(addons={'io_scene_fbx': object()}), selected_objects=[],
+            view_layer=SimpleNamespace(objects=SimpleNamespace(active=None), update=lambda: None,
+                layer_collection=SimpleNamespace(children={'Fixture Collection': object()})))
+        bpy = sys.modules['bpy']
+        bpy.data = SimpleNamespace(user_map=lambda: {}, images=[],
+            scenes=SimpleNamespace(new=lambda _name: self.scene),
+            collections=SimpleNamespace(new=lambda _name: SimpleNamespace(name='Fixture Collection')))
+        bpy.ops = SimpleNamespace(import_scene=SimpleNamespace(fbx=lambda **_options: {'FINISHED'}))
+        saved = {'scene': SimpleNamespace(render=SimpleNamespace(fps=24, fps_base=1.001))}
+        for name, value in (('_context_state', saved), ('_restore_context', None)):
+            mock = patch.object(self.source, name, return_value=value)
+            setattr(self, name, mock.start())
+            self.addCleanup(mock.stop)
+        for module, name in ((self.unity, '_set_playing'), (self.source.animation_link, 'bind_action')):
+            mock = patch.object(module, name)
+            setattr(self, name, mock.start())
+            self.addCleanup(mock.stop)
+
+    def prepared(self):
+        return self.source._import_prepared_source(self.context, self.link, self.packet,
+            'CoshaRig', self.model, self.model_hash, start_frame=7)
+
+    def test_public_source_prepares_once_and_passes_identical_packet(self):
+        expected = object()
+        with patch.object(self.source, '_packet', return_value=(self.packet, 'CoshaRig')) as packet, \
+                patch.object(self.source, '_source_model', return_value=(self.model, self.model_hash)) as model, \
+                patch.object(self.source, '_import_prepared_source', return_value=expected) as prepared:
+            self.assertIs(self.source.import_source(self.context, self.manifest_path, str(self.model), 7), expected)
+        packet.assert_called_once()
+        model.assert_called_once()
+        self.assertIs(prepared.call_args.args[2], self.packet)
+        self.assertEqual(prepared.call_args.kwargs, {'start_frame': 7})
+
+    def test_prepared_source_does_not_load_another_decoded_packet(self):
+        result = SimpleNamespace(action=self.action, first_frame=7, last_frame=31)
+        with patch.object(self.unity, 'load_package', side_effect=AssertionError('Second packet parse')), \
+                patch.object(self.source, '_packet', side_effect=AssertionError('Repeated preparation')), \
+                patch.object(self.source, '_source_model', side_effect=AssertionError('Repeated model preflight')), \
+                patch.object(self.source, '_import_action', return_value=result) as convert:
+            imported = self.prepared()
+        self.assertIs(convert.call_args.args[2], self.packet)
+        self.assertIs(imported.action, self.action)
+        self.bind_action.assert_called_once()
+
+    def test_worklist_passes_its_decoded_packet_and_supports_a_cached_old_source_module(self):
+        worklist = self.load('animation_worklist')
+        self.context.window_manager = SimpleNamespace(character_designer_animation=SimpleNamespace(target=None))
+        saved = SimpleNamespace(items=[], rig=None, active_index=-1, model_sha256=self.model_hash)
+        prepared = ({}, {}, self.link, self.packet, 'CoshaRig', self.model)
+        for current_module in (True, False):
+            with self.subTest(current_module=current_module):
+                with patch.object(worklist, '_idle'), patch.object(worklist, 'state', return_value=saved), \
+                        patch.object(worklist, '_prepared', return_value=prepared), \
+                        patch.object(worklist, '_find_owned_rig', return_value=None), \
+                        patch.object(self.source, '_import_prepared_source') as internal, \
+                        patch.object(self.source, 'import_source') as public:
+                    if not current_module:
+                        del self.source._import_prepared_source
+                    selected = internal if current_module else public
+                    selected.side_effect = RuntimeError('Reached selected import boundary')
+                    with self.assertRaisesRegex(RuntimeError, 'selected import boundary'):
+                        worklist.add(self.context, 'requested-clip')
+                    selected.assert_called_once()
+                    if current_module:
+                        self.assertIs(internal.call_args.args[2], self.packet)
+                        public.assert_not_called()
+                    else:
+                        internal.assert_not_called()
+                        public.assert_called_once_with(self.context, self.link['_manifest_path'],
+                                                       str(self.model), start_frame=1)
+
+    def test_late_packet_model_and_link_mutations_reject_before_bind_and_restore_context(self):
+        for changed in ('packet', 'model', 'link'):
+            with self.subTest(changed=changed):
+                self.packet_path.write_bytes(b'original packet fixture')
+                self.model.write_bytes(b'unchanged model fixture')
+                self.manifest_path.write_text(json.dumps(self.manifest), encoding='utf-8')
+                self.bind_action.reset_mock()
+                self._restore_context.reset_mock()
+
+                def change_during_bake(*_args):
+                    if changed == 'link':
+                        replacement = {**self.manifest, 'clipGuid': 'c' * 32}
+                        self.manifest_path.write_text(json.dumps(replacement), encoding='utf-8')
+                    else:
+                        (self.packet_path if changed == 'packet' else self.model).write_bytes(b'changed during bake')
+                    return SimpleNamespace(action=self.action, first_frame=7, last_frame=31)
+
+                with patch.object(self.source, '_import_action', side_effect=change_during_bake):
+                    with self.assertRaisesRegex(ValueError, 'changed|identity'):
+                        self.prepared()
+                self.bind_action.assert_not_called()
+                self.assertTrue(self._restore_context.call_args.kwargs['playing'])
+
+
+class SamplePreparationTests(IsolatedModules):
+    def test_static_inversions_are_per_bone_and_dynamic_samples_keep_product_order(self):
+        unity = self.load('unity_animation')
+        inversions, reads = Counter(), Counter()
+
+        class Expression:
+            def __init__(self, value):
+                self.value = value
+
+            def inverted(self):
+                inversions[self.value] += 1
+                return Expression(('inverse', self.value))
+
+            def __matmul__(self, other):
+                return Expression(('@', self.value, other.value))
+
+        mapping = SimpleNamespace(indices={'Hips': 0, 'Hand': 1}, conversion=Expression('conversion'),
+            rest_world={'Hips': Expression('world0'), 'Hand': Expression('world1')})
+        packet = {'bones': [{'rest': 'rest0'}, {'rest': 'rest1'}],
+            'frames': [{'poses': [{'matrix': 'pose' + str(i) + '-0'}, {'matrix': 'pose' + str(i) + '-1'}]}
+                       for i in range(7)]}
+
+        def matrix(value, _label):
+            reads[value] += 1
+            if value == 'bad':
+                raise unity.UnityAnimationError('Invalid dynamic matrix')
+            return Expression(value)
+
+        with patch.object(unity, '_matrix', side_effect=matrix):
+            optimized = list(unity._world_samples(packet, mapping))
+            self.assertEqual(inversions, {'conversion': 1, 'rest0': 1, 'rest1': 1})
+            self.assertEqual(reads['rest0'], 1)
+            self.assertEqual(reads['rest1'], 1)
+            self.assertEqual(sum(reads.values()), 2 + 2 * 7)
+            for index, actual in enumerate(optimized):
+                expected = unity.expected_world_matrices(None, packet, index, mapping=mapping)
+                self.assertEqual({name: value.value for name, value in actual.items()},
+                                 {name: value.value for name, value in expected.items()})
+            packet['frames'][-1]['poses'][0]['matrix'] = 'bad'
+            with self.assertRaisesRegex(unity.UnityAnimationError, 'dynamic'):
+                list(unity._world_samples(packet, mapping))
+
+
+class WorkerHashTests(IsolatedModules):
+    def test_worker_hash_uses_bounded_reads_and_matches_sha256(self):
+        worker = self.load('animation_export_worker')
+        payload = bytes(range(256)) * 8192 + b'partial block'
+        reads = []
+        import io
+
+        class Reader(io.BytesIO):
+            def read(self, size=-1):
+                self_test.assertGreater(size, 0)
+                self_test.assertLessEqual(size, BLOCK_SIZE)
+                reads.append(size)
+                return super().read(size)
+
+        self_test = self
+        path = SimpleNamespace(open=lambda mode: Reader(payload),
+                               read_bytes=lambda: self.fail('Unbounded worker FBX allocation'))
+        self.assertEqual(worker._sha256(path), hashlib.sha256(payload).hexdigest())
+        self.assertGreaterEqual(len(reads), 4)
 
 
 if __name__ == '__main__':

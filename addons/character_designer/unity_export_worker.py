@@ -243,6 +243,11 @@ def _bake_mesh(context, obj, owned_names, warnings, forearm=None):
 def _is_control(bone):
     if bone.get('character_designer_owner') in CONTROL_OWNERS:
         return True
+    # A shared character armature contains the skirt's owned controls and
+    # mechanisms too. Retain its weighted waist/deform bones, just as the
+    # independent accessory skeleton did, without relying on their names.
+    if bone.get('character_designer_skirt_owner') and not bone.use_deform:
+        return True
     if bone.use_deform:
         return False
     name = bone.name.rsplit(':', 1)[-1].upper()

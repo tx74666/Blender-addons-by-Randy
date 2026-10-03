@@ -1,0 +1,1048 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset": "D:\\MyRepository\\Blender-addons-by-Randy\\node_library\\assets\\Randy_Ring_Group.blend",
+  "asset_sha256": "d4c60147b30c2c693b2dbffc3a664ab293131bd3b4711eb0b747a445d24283d2",
+  "ring_mask_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+  "arc_mask_sha256": "7c2006b17e4e1dd1729353291f180a211fe15c296bafdc720ddc9a60b416e722",
+  "source_dependencies_sha256": {
+    "addons/random_realm_builder_exporter/rr_ring_nodes.py": "dda63a8eb69eb46df074a9628d7e5a8b4dbf855fa800607cfdb57a16a8115e7c",
+    "tools/randy_node_assets/build_ring_group.py": "a1468d808636c882710ddfa7a5217a4d1ae2723da46522d056ea575b4b695d2d",
+    "tools/randy_node_assets/verify_ring_group.py": "fecfce2889e46d944f269ae9b6dae2c0b4b62e6439c3c097222b96471b4e9415",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+    "tools/randy_node_assets/verify_arc_mask.py": "577708426f28c0dab5021db31ee3c02c31db4f6244d5f0392a9b73228a1cea87",
+    "tools/randy_node_assets/build_arc_mask.py": "27f3bd2d13a51ea3999f34a4599d98832b76b15243b3719ad1cbff80dddb72fc",
+    "tools/randy_node_assets/verify_ring_group_compatibility.py": "52863be015d67f8733ba1ed2e7d5487445b870ddb28d3250fec4009bdad2ef1c",
+    "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838",
+    "node_library/validation/ring_group_editing_20261002.json": "5ca3228759fd9121754a02e24d99e02612d7608aa4168ebe2784c2767aec1c84"
+  },
+  "blender": "5.2.0 LTS",
+  "ui_search_tested": false,
+  "render_engine": "Cycles CPU",
+  "tests": [
+    {
+      "name": "appended_native_asset_matches_canonical_union_shader_passthrough",
+      "passed": true
+    },
+    {
+      "name": "expand_one_instance_to_24_preserving_old_shader_values_identifiers_links",
+      "passed": true
+    },
+    {
+      "name": "three_actual_shared_ring_arc_masks_use_one_external_overlay_shader",
+      "passed": true
+    },
+    {
+      "name": "native_saved_expanded_groups_reopen_with_existing_links_intact",
+      "passed": true,
+      "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Randy_Ring_Group_validation.blend"
+    },
+    {
+      "name": "first_ring_only",
+      "uv": [
+        0.625,
+        0.5
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        8
+      ]
+    },
+    {
+      "name": "second_ring_only",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        8
+      ]
+    },
+    {
+      "name": "arc_only",
+      "uv": [
+        0.5,
+        0.875
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        8
+      ]
+    },
+    {
+      "name": "arc_cut_exposes_base",
+      "uv": [
+        0.49999999999999994,
+        0.125
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coverage": 0.0,
+      "expected_rgb": [
+        0.0,
+        0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        8
+      ]
+    },
+    {
+      "name": "outside_all_masks",
+      "uv": [
+        0.5,
+        0.975
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coverage": 0.0,
+      "expected_rgb": [
+        0.0,
+        0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        8
+      ]
+    },
+    {
+      "name": "radial_hole_base",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coverage": 0.0,
+      "expected_rgb": [
+        0.0,
+        0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        24
+      ]
+    },
+    {
+      "name": "three_half_soft_masks_union_is_half_not_sum_or_repeated_mix",
+      "uv": [
+        0.5,
+        0.65625
+      ],
+      "rings": [
+        [
+          0.25,
+          0.5,
+          0.125
+        ],
+        [
+          0.25,
+          0.5,
+          0.125
+        ]
+      ],
+      "arc": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "coverage": 0.5,
+      "expected_rgb": [
+        0.5,
+        0,
+        0.5
+      ],
+      "rgb": [
+        0.5,
+        0.0,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        24
+      ]
+    },
+    {
+      "name": "three_quarter_edge_masks_union_is_015625",
+      "uv": [
+        0.5,
+        0.640625
+      ],
+      "rings": [
+        [
+          0.25,
+          0.5,
+          0.125
+        ],
+        [
+          0.25,
+          0.5,
+          0.125
+        ]
+      ],
+      "arc": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.15625,
+        0.15625,
+        0.15625
+      ],
+      "coverage": 0.15625,
+      "expected_rgb": [
+        0.15625,
+        0,
+        0.84375
+      ],
+      "rgb": [
+        0.15625,
+        0.0,
+        0.84375
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        24
+      ]
+    },
+    {
+      "name": "soft_arc_outside_angle_keeps_ring_half",
+      "uv": [
+        0.49999999999999994,
+        0.34375
+      ],
+      "rings": [
+        [
+          0.25,
+          0.5,
+          0.125
+        ],
+        [
+          0.7,
+          0.1,
+          0
+        ]
+      ],
+      "arc": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.5,
+        0.0,
+        0.0
+      ],
+      "coverage": 0.5,
+      "expected_rgb": [
+        0.5,
+        0,
+        0.5
+      ],
+      "rgb": [
+        0.5,
+        0.0,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        24
+      ]
+    },
+    {
+      "name": "arc_wrap_before_seam",
+      "uv": [
+        0.8247595264191644,
+        0.31249999999999983
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        300,
+        120
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        24
+      ]
+    },
+    {
+      "name": "arc_wrap_after_seam",
+      "uv": [
+        0.8247595264191645,
+        0.6875
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        300,
+        120
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        40
+      ]
+    },
+    {
+      "name": "zero_arc_keeps_base",
+      "uv": [
+        0.5,
+        0.875
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        0,
+        0
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coverage": 0.0,
+      "expected_rgb": [
+        0.0,
+        0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        40
+      ]
+    },
+    {
+      "name": "full_arc_covers_bottom",
+      "uv": [
+        0.49999999999999994,
+        0.125
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        40,
+        360
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        40
+      ]
+    },
+    {
+      "name": "zero_width_all_masks_keeps_base",
+      "uv": [
+        0.5,
+        0.75
+      ],
+      "rings": [
+        [
+          0.2,
+          0,
+          0
+        ],
+        [
+          0.45,
+          0,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0,
+        0,
+        0,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coverage": 0.0,
+      "expected_rgb": [
+        0.0,
+        0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        40
+      ]
+    },
+    {
+      "name": "high_external_mask_clamped_to_one",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": [
+        -0.8,
+        1.4,
+        0.4
+      ],
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        -0.8,
+        1.4,
+        0.4
+      ],
+      "coverage": 1.0,
+      "expected_rgb": [
+        1.0,
+        0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        40
+      ]
+    },
+    {
+      "name": "negative_external_masks_clamped_to_zero",
+      "uv": [
+        0.75,
+        0.5
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": [
+        -0.8,
+        -0.4,
+        -0.2
+      ],
+      "slot_count": 3,
+      "extra_mask": 0,
+      "masks": [
+        -0.8,
+        -0.4,
+        -0.2
+      ],
+      "coverage": 0.0,
+      "expected_rgb": [
+        0.0,
+        0,
+        1.0
+      ],
+      "rgb": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        56
+      ]
+    },
+    {
+      "name": "24_mask_slots_include_last_input",
+      "uv": [
+        0.975,
+        0.5
+      ],
+      "rings": [
+        [
+          0.2,
+          0.15,
+          0
+        ],
+        [
+          0.45,
+          0.15,
+          0
+        ]
+      ],
+      "arc": [
+        0.7,
+        0.1,
+        0,
+        20,
+        180
+      ],
+      "overrides": null,
+      "slot_count": 24,
+      "extra_mask": 0.8,
+      "masks": [
+        0.0,
+        0.0,
+        0.0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0.8
+      ],
+      "coverage": 0.8,
+      "expected_rgb": [
+        0.8,
+        0,
+        0.19999999999999996
+      ],
+      "rgb": [
+        0.800000011920929,
+        0.0,
+        0.19999998807907104
+      ],
+      "max_error": 1.1920928910669204e-08,
+      "passed": true,
+      "pixel": [
+        24,
+        56
+      ]
+    },
+    {
+      "name": "all_source_assets_and_dependencies_unchanged",
+      "passed": true
+    },
+    {
+      "name": "exact_archived_birth_generator_factory_ast_matches_current",
+      "passed": true
+    },
+    {
+      "name": "birth_source_archive_preserved_during_fresh_native_validation",
+      "passed": true
+    }
+  ],
+  "helper_state": {
+    "addon_enabled": false,
+    "operators_registered": false,
+    "rr_helper_handlers": []
+  },
+  "asset_metadata": {
+    "name": "Ring Group",
+    "version": "0.1.0",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "color_tag": "SHADER",
+    "inputs": [
+      "Shader",
+      "Mask 1",
+      "Mask 2"
+    ],
+    "outputs": [
+      "Mask",
+      "Shader"
+    ],
+    "nodes": 4,
+    "mask_operation": "clamped Maximum",
+    "shader_count": 1,
+    "original_embedded_generator_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+    "birth_factory_equivalence": {
+      "passed": true,
+      "original_embedded_generator_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+      "current_generator_sha256": "dda63a8eb69eb46df074a9628d7e5a8b4dbf855fa800607cfdb57a16a8115e7c",
+      "matching_archive": "dist/rr_helper-0.2.44.zip",
+      "matching_archive_sha256": "d0bd4bbc4e50ad132b173a8c8903854d03166fa2d86b3d7d79b10147aa89a380",
+      "archive_generator_path": "random_realm_builder_exporter/rr_ring_nodes.py",
+      "archived_generator_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+      "factory_functions_ast_equivalent": [
+        "_socket",
+        "_mask_ids",
+        "_graph_signature",
+        "_new_mask",
+        "_build_union",
+        "new_group"
+      ],
+      "factory_contract_constants_equivalent": [
+        "_KIND",
+        "_MASKS",
+        "_SHADER",
+        "_MASK_OUTPUT",
+        "_SHADER_OUTPUT",
+        "_SIGNATURE",
+        "_ORDER"
+      ],
+      "factory_ast_sha256": "e3995fbf2a1af02d69af752179ba0f5840b628f87abc2713292e7e5c995c6b51",
+      "previous_editing_proof": "node_library/validation/ring_group_editing_20261002.json",
+      "previous_editing_proof_sha256": "5ca3228759fd9121754a02e24d99e02612d7608aa4168ebe2784c2767aec1c84",
+      "metadata_properties_modified": false,
+      "native_asset_rebuilt": false
+    }
+  },
+  "helper_state_before_render": {
+    "addon_enabled": false,
+    "operators_registered": false,
+    "rr_helper_handlers": []
+  },
+  "shader_sample_count": 17,
+  "maximum_absolute_error": 1.1920928910669204e-08,
+  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Ring_Group_numeric_atlas.exr",
+  "render_preview": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Ring_Group_numeric_atlas.png",
+  "tolerance": 0.002,
+  "birth_factory_equivalence": {
+    "passed": true,
+    "original_embedded_generator_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+    "current_generator_sha256": "dda63a8eb69eb46df074a9628d7e5a8b4dbf855fa800607cfdb57a16a8115e7c",
+    "matching_archive": "dist/rr_helper-0.2.44.zip",
+    "matching_archive_sha256": "d0bd4bbc4e50ad132b173a8c8903854d03166fa2d86b3d7d79b10147aa89a380",
+    "archive_generator_path": "random_realm_builder_exporter/rr_ring_nodes.py",
+    "archived_generator_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+    "factory_functions_ast_equivalent": [
+      "_socket",
+      "_mask_ids",
+      "_graph_signature",
+      "_new_mask",
+      "_build_union",
+      "new_group"
+    ],
+    "factory_contract_constants_equivalent": [
+      "_KIND",
+      "_MASKS",
+      "_SHADER",
+      "_MASK_OUTPUT",
+      "_SHADER_OUTPUT",
+      "_SIGNATURE",
+      "_ORDER"
+    ],
+    "factory_ast_sha256": "e3995fbf2a1af02d69af752179ba0f5840b628f87abc2713292e7e5c995c6b51",
+    "previous_editing_proof": "node_library/validation/ring_group_editing_20261002.json",
+    "previous_editing_proof_sha256": "5ca3228759fd9121754a02e24d99e02612d7608aa4168ebe2784c2767aec1c84",
+    "metadata_properties_modified": false,
+    "native_asset_rebuilt": false
+  },
+  "compatibility_verifier": "tools/randy_node_assets/verify_ring_group_compatibility.py",
+  "asset_metadata_rewritten": false,
+  "asset_binary_rebuilt": false
+}

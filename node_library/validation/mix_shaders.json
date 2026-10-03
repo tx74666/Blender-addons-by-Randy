@@ -1,11 +1,13 @@
 {
   "passed": true,
   "state": "complete",
-  "asset": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Randy_Mix_Shaders.blend",
-  "asset_sha256": "eaf1730cd52f34cbe267f28c0add9015ba281ad62ce00f1ef03aec29ff1a921c",
+  "asset": "D:\\Blender\\Projects\\Build\\Recovery\\NativeRingGroups_20261001\\validation2\\Randy_Mix_Shaders.blend",
+  "asset_sha256": "8fbe2fe8a026d697a3f7e4b5a46a54e5005f435796100ae1d8fa625f5869a295",
   "ring_mask_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
   "source_dependencies_sha256": {
-    "addons/random_realm_builder_exporter/rr_shader_mixer.py": "c368aa88052e576ec0ed56ccd65720115fca532bb3767ba2db4a3b25281e20e1",
+    "addons/random_realm_builder_exporter/rr_shader_mixer.py": "098dec6bf359cdd2a2b83492656883a0e15a573a0822cd017e8eb6d8ff6301c5",
+    "tools/randy_node_assets/build_mix_shaders.py": "231ffebc57303f6402c2bd0438276df5acecdb2ff79378d7105e2c3249d541df",
+    "tools/randy_node_assets/verify_mix_shaders.py": "5514bdc4e077339e2aa9bf927a962388d70dcef661948696234f231a68bec4e3",
     "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
     "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067",
     "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
@@ -23,9 +25,14 @@
       "passed": true
     },
     {
-      "name": "saved_native_asset_instances_reopen_with_links_intact",
+      "name": "dynamic_expansion_to_twenty_five_pairs_without_hidden_gates",
       "passed": true,
-      "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Randy_Mix_Shaders_validation.blend"
+      "pairs": 25
+    },
+    {
+      "name": "saved_native_groups_reopen_and_connections_edit_with_helper_unregistered",
+      "passed": true,
+      "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\NativeRingGroups_20261001\\validation2\\Randy_Mix_Shaders_validation.blend"
     },
     {
       "name": "top_ring_covers_both_lower_rings",
@@ -280,7 +287,7 @@
       ]
     },
     {
-      "name": "empty_top_shader_keeps_second",
+      "name": "unlinked_top_shader_with_white_mask_is_native_black",
       "radius": 0.5,
       "uv": [
         0.75,
@@ -322,12 +329,12 @@
         1.0
       ],
       "expected_rgb": [
-        1.0,
+        0.0,
         0.0,
         0.0
       ],
       "rgb": [
-        1.0,
+        0.0,
         0.0,
         0.0
       ],
@@ -528,7 +535,7 @@
       ]
     },
     {
-      "name": "all_empty_overlays_keep_base",
+      "name": "all_unused_masks_zero_keep_base",
       "radius": 0.5,
       "uv": [
         0.75,
@@ -537,17 +544,17 @@
       "rings": [
         [
           0.4,
-          0.4,
+          0,
           0
         ],
         [
           0.25,
-          0.6,
+          0,
           0
         ],
         [
           0.1,
-          0.8,
+          0,
           0
         ]
       ],
@@ -557,14 +564,14 @@
         null
       ],
       "masks": [
-        1.0,
-        1.0,
-        1.0
+        0.0,
+        0.0,
+        0.0
       ],
       "expected_rgb": [
-        0,
-        0,
-        1
+        0.0,
+        0.0,
+        1.0
       ],
       "rgb": [
         0.0,
@@ -581,26 +588,54 @@
     {
       "name": "source_asset_ring_mask_and_generator_dependencies_unchanged",
       "passed": true
+    },
+    {
+      "name": "asset_constructor_ast_equivalence_rr_helper_0_2_43",
+      "passed": true,
+      "scope": "Metadata-only helper source update; original asset render evidence retained.",
+      "baseline_archive": "dist/rr_helper-0.2.42.zip",
+      "baseline_archive_sha256": "54d67cef14d33c93dc4ae592ba0341fb16480b1a4b9ae1b77f8f4aeb12a109c6",
+      "baseline_source_sha256": "3201622886a77dc117d2106c5419f746875de51787c2b4c279562ab8301d7ffe",
+      "current_source_sha256": "098dec6bf359cdd2a2b83492656883a0e15a573a0822cd017e8eb6d8ff6301c5",
+      "unchanged_functions": [
+        "_new_group",
+        "_new_pair",
+        "_build_chain",
+        "_pairs",
+        "_socket",
+        "_socket_defaults",
+        "_graph_signature"
+      ],
+      "unchanged_constants": [
+        "_KIND",
+        "_PAIRS",
+        "_BASE",
+        "_OUTPUT",
+        "_SIGNATURE",
+        "_SIGNATURE_SCHEMA",
+        "_INTERFACE_ORDER"
+      ],
+      "asset_binary_sha256_unchanged": "8fbe2fe8a026d697a3f7e4b5a46a54e5005f435796100ae1d8fa625f5869a295",
+      "asset_rebuilt": false
     }
   ],
   "asset_metadata": {
     "name": "Mix Shaders",
     "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
     "color_tag": "SHADER",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "inputs": [
       "Base Shader",
       "Mask 1",
       "Shader 1",
-      "_Connected 1"
+      "Mask 2",
+      "Shader 2"
     ],
     "outputs": [
       "Shader"
     ],
-    "hidden_runtime_inputs": [
-      "_Connected 1"
-    ],
-    "nodes": 4,
+    "hidden_runtime_inputs": [],
+    "nodes": 6,
     "default_group_node_width": 220,
     "tags": [
       "Randy",
@@ -613,9 +648,95 @@
   },
   "shader_sample_count": 9,
   "maximum_absolute_error": 5.185604096125118e-06,
-  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Mix_Shaders_numeric_atlas.exr",
-  "render_preview": "D:\\Blender\\Projects\\Build\\Recovery\\RingMixerLibrary_20261001\\Mix_Shaders_numeric_atlas.png",
+  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\NativeRingGroups_20261001\\validation2\\Mix_Shaders_numeric_atlas.exr",
+  "render_preview": "D:\\Blender\\Projects\\Build\\Recovery\\NativeRingGroups_20261001\\validation2\\Mix_Shaders_numeric_atlas.png",
   "tolerance": 0.002,
   "published_asset": "node_library/assets/Randy_Mix_Shaders.blend",
-  "published_preview": "node_library/previews/mix_shaders.png"
+  "published_preview": "node_library/previews/mix_shaders.png",
+  "editing_helper_update": {
+    "name": "asset_constructor_ast_equivalence_rr_helper_0_2_43",
+    "passed": true,
+    "scope": "Metadata-only helper source update; original asset render evidence retained.",
+    "baseline_archive": "dist/rr_helper-0.2.42.zip",
+    "baseline_archive_sha256": "54d67cef14d33c93dc4ae592ba0341fb16480b1a4b9ae1b77f8f4aeb12a109c6",
+    "baseline_source_sha256": "3201622886a77dc117d2106c5419f746875de51787c2b4c279562ab8301d7ffe",
+    "current_source_sha256": "098dec6bf359cdd2a2b83492656883a0e15a573a0822cd017e8eb6d8ff6301c5",
+    "unchanged_functions": [
+      "_new_group",
+      "_new_pair",
+      "_build_chain",
+      "_pairs",
+      "_socket",
+      "_socket_defaults",
+      "_graph_signature"
+    ],
+    "unchanged_constants": [
+      "_KIND",
+      "_PAIRS",
+      "_BASE",
+      "_OUTPUT",
+      "_SIGNATURE",
+      "_SIGNATURE_SCHEMA",
+      "_INTERFACE_ORDER"
+    ],
+    "asset_binary_sha256_unchanged": "8fbe2fe8a026d697a3f7e4b5a46a54e5005f435796100ae1d8fa625f5869a295",
+    "asset_rebuilt": false
+  },
+  "editing_helper_ui_update": {
+    "passed": true,
+    "version": "RR Helper 0.2.45",
+    "scope": "Ring Group mask-slot editing, full-ring Arc shortcut, explicit legacy migration guards",
+    "baseline_archive": "dist/rr_helper-0.2.44.zip",
+    "baseline_archive_sha256": "d0bd4bbc4e50ad132b173a8c8903854d03166fa2d86b3d7d79b10147aa89a380",
+    "source": "addons/random_realm_builder_exporter/rr_ring_nodes.py",
+    "prior_source_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+    "source_sha256": "a7c5798944b49cda9abbb7e703b3014e32f1e7038a7a7b34da2588e953131690",
+    "factory_functions_ast_equivalent": [
+      "_socket",
+      "_mask_ids",
+      "_graph_signature",
+      "_new_mask",
+      "_build_union",
+      "new_group"
+    ],
+    "factory_contract_constants_equivalent": [
+      "_KIND",
+      "_MASKS",
+      "_SHADER",
+      "_MASK_OUTPUT",
+      "_SHADER_OUTPUT",
+      "_SIGNATURE",
+      "_ORDER"
+    ],
+    "source_ui": "addons/random_realm_builder_exporter/rr_shader_mixer_ui.py",
+    "source_ui_sha256": "142cbefd01c23c240ca512e2df1bc8c531df403ec0d841d681bc49943696803f",
+    "mixer_calculation_byte_equivalent_lf": true,
+    "ring_group_asset_sha256_unchanged": "d4c60147b30c2c693b2dbffc3a664ab293131bd3b4711eb0b747a445d24283d2",
+    "asset_rebuilt": false,
+    "new_asset_render_performed": false,
+    "mask_slot_regressions_passed": 13,
+    "overlay_regressions_passed": 16,
+    "ring_workflow_regressions_passed": 34,
+    "legacy_migration_regressions_passed": 9,
+    "registration_lifecycle_checks_passed": 276,
+    "live_builder6_migration_performed": false,
+    "live_ring_group_plus_click_performed": false,
+    "live_limitation": "User stopped Computer Use with Escape before refresh/migration/GUI checks."
+  },
+  "prior_source_dependencies_before_fixture_relocation": {
+    "addons/random_realm_builder_exporter/rr_shader_mixer.py": "098dec6bf359cdd2a2b83492656883a0e15a573a0822cd017e8eb6d8ff6301c5",
+    "tools/randy_node_assets/build_mix_shaders.py": "231ffebc57303f6402c2bd0438276df5acecdb2ff79378d7105e2c3249d541df",
+    "tools/randy_node_assets/verify_mix_shaders.py": "7bc93f5f911743e2a3494577556cbb0cfc87944e6754db1a17785d145ce8cc0d",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+    "tools/randy_node_assets/deploy_ring_mask.py": "3633e6e60bfa65c98d1ba581ab2277cb506c4ff012cf45f86e27d7c4a7f4d067",
+    "tools/randy_node_assets/deploy_assets.py": "3af5da3c88d26105fb475fdc5d3cfad4f0d8834d5d751677ed88a787bd8659de"
+  },
+  "default_fixture_relocation": {
+    "verification": "node_library/validation/ring_mask_retirement.json",
+    "source_paths": [
+      "tools/randy_node_assets/verify_mix_shaders.py"
+    ],
+    "render_repeated": false,
+    "note": "Historical shader samples unchanged. Default radial fixture paths relocated with checked AST equality."
+  }
 }

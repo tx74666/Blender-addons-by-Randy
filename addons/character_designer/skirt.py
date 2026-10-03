@@ -151,6 +151,14 @@ def _restore_preview(context, source):
         return
     try:
         snapshot = json.loads(raw)
+        rig = source.get(_rig().RIG_KEY) if snapshot.get('dress_bones') else None
+        if snapshot.get('dress_bones'):
+            if rig is None:
+                raise ValueError('The shared dress rig was removed during its preview.')
+            for name in snapshot['dress_bones']:
+                bone = rig.data.bones.get(name)
+                if bone is None or bone.get(_rig().OWNER_KEY) != snapshot['dress_owner']:
+                    raise ValueError('The shared dress bones changed during their preview.')
         view_layer = context.scene.view_layers.get(snapshot["view_layer"])
         if view_layer is not None:
             for name, hidden in snapshot["objects"].items():
@@ -160,6 +168,12 @@ def _restore_preview(context, source):
         collection = bpy.data.collections.get(snapshot["collection"])
         if collection is not None:
             collection.hide_viewport = snapshot["collection_hidden"]
+        if snapshot.get('dress_bones'):
+            for name, flags in snapshot['dress_bones'].items():
+                rig.data.bones[name].hide = flags[0]
+                pb = rig.pose.bones[name]
+                if hasattr(pb, 'hide'):
+                    pb.hide = flags[1]
         del source[PREVIEW_KEY]
     except (TypeError, ValueError, KeyError) as exc:
         raise ValueError("The saved skirt preview state cannot be read.") from exc
@@ -187,6 +201,12 @@ def _show_baked(context, source):
         "collection": collection.name,
         "collection_hidden": collection.hide_viewport,
     }
+    if record and _rig().is_shared(record):
+        rig = source[_rig().RIG_KEY]
+        snapshot['dress_owner'] = record['owner']
+        snapshot['dress_bones'] = {name: [rig.data.bones[name].hide,
+                                          getattr(rig.pose.bones[name], 'hide', rig.data.bones[name].hide)]
+                                   for name in record['shared']['names']}
     source[PREVIEW_KEY] = json.dumps(snapshot, ensure_ascii=False)
     try:
         if context.mode != "OBJECT":
@@ -195,6 +215,10 @@ def _show_baked(context, source):
             obj.select_set(False)
         for obj in visible_objects:
             obj.hide_set(True, view_layer=context.view_layer)
+        if snapshot.get('dress_bones'):
+            from . import bone_display
+            for name in snapshot['dress_bones']:
+                bone_display._set_hidden(rig, rig.data.bones[name], True)
         collection.hide_viewport = False
         context.view_layer.update()
         for obj in baked_objects:
@@ -303,6 +327,36 @@ class CHARACTERDESIGNER_OT_skirt_update_attachment(Operator):
             _rig().update_attachment(context, source, armature, bone)
             _report(self, context, f'Following {armature.name} / {bone}.')
         except (ValueError, RuntimeError) as exc:
+            _report(self, context, str(exc), error=True)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_skirt_unify_rig(Operator):
+    bl_idname = 'character_designer.skirt_unify_rig'
+    bl_label = 'Use Main Rig'
+    bl_description = 'Move this dress skeleton into the Main Rig while preserving its bindings, controls and pose'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            record = _record(context)
+            return _idle(context) and bool(record) and not _rig().is_shared(record)
+        except (ValueError, RuntimeError, ReferenceError):
+            return False
+
+    def execute(self, context):
+        try:
+            source = _source(context)
+            armature, bone = _desired_attachment(context, source)
+            if armature is None:
+                raise ValueError('Set Main Rig and its Hips bone in Character Setup first.')
+            _restore_preview(context, source)
+            record = _rig().unify_skirt(context, source, armature, bone)
+            _settings(context).source = source
+            _report(self, context, f'Dress is part of {armature.name}. Body, Hair and Dress now share Pose Mode.')
+        except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
             _report(self, context, str(exc), error=True)
             return {'CANCELLED'}
         return {'FINISHED'}
@@ -651,6 +705,10 @@ class CHARACTERDESIGNER_OT_remove_skirt_setup(Operator):
                 and (obj.animation_data.action or obj.animation_data.nla_tracks)
                 for obj in bpy.data.objects
             )
+            if record and _rig().is_shared(record):
+                rig = _source(context)[_rig().RIG_KEY]
+                self.authorize_animated_removal |= bool(rig.animation_data
+                    and (rig.animation_data.action or rig.animation_data.nla_tracks))
         except (ValueError, RuntimeError) as exc:
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
@@ -716,7 +774,9 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             except (ValueError, RuntimeError) as exc:
                 layout.label(text=str(exc), icon='ERROR')
                 return
-            if actual['attached']:
+            if _rig().is_shared(record):
+                layout.label(text=f"Rig: {actual['character'].name} / Dress", icon='OUTLINER_OB_ARMATURE')
+            elif actual['attached']:
                 layout.label(text=f"Following: {actual['character'].name} / {actual['parent_bone']}",
                              icon='CONSTRAINT_BONE')
             else:
@@ -746,6 +806,10 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
                 col.prop(settings, 'parent_bone')
             col.label(text='Blank fields use Character Setup.')
         if record:
+            if not _rig().is_shared(record):
+                row = layout.row()
+                row.enabled = not attachment_error and desired is not None
+                row.operator('character_designer.skirt_unify_rig', text='Use Main Rig')
             row = layout.row()
             row.enabled = not attachment_error and desired is not None and not (actual['physics'] and different)
             row.operator('character_designer.skirt_update_attachment', icon='CONSTRAINT_BONE')
@@ -773,6 +837,19 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
 
         layout.label(text=f'{record.get("chain_count", "?")} chains × '
                           f'{record.get("segment_count", "?")} bones', icon="BONE_DATA")
+        from . import body_original_mode, skirt_original_mode
+        dress_rig = source.get(_rig().RIG_KEY)
+        original_edit = body_original_mode.active(dress_rig)
+        if dress_rig is not None:
+            original_edit |= body_original_mode.active(
+                dress_rig.get(_rig().ORIGINAL_DISPLAY_OWNER_KEY))
+        if skirt_original_mode.CORRECTIONS in source:
+            row = layout.row(align=True)
+            row.enabled = not original_edit
+            row.operator('character_designer.clear_dress_corrections',
+                         text='Clear Dress Pose').scope = 'ALL'
+            row.operator('character_designer.clear_dress_corrections',
+                         text='Selected').scope = 'SELECTED'
         layout.operator("character_designer.skirt_select_controls", icon="POSE_HLT",
                         text="Return to Controls" if PREVIEW_KEY in source else "Select Skirt Controls")
         layout.label(text="Rings: G / R / S to move, rotate, and scale.")
@@ -792,11 +869,11 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             layout.operator("character_designer.skirt_add_physics", icon="PHYSICS")
 
         if physics:
-            rig = bpy.data.objects.get(record.get("rig", ""))
-            if rig is not None and "physics_influence" in rig:
+            holder, _rig_object, _path = _rig().physics_control(source)
+            if holder is not None and "physics_influence" in holder:
                 row = layout.row(align=True)
                 row.use_property_decorate = True
-                row.prop(rig, '["physics_influence"]', text="Physics", slider=True)
+                row.prop(holder, '["physics_influence"]', text="Physics", slider=True)
             layout.prop(settings, "use_scene_range")
             if settings.use_scene_range:
                 layout.label(text=f"Frames {context.scene.frame_start}–{context.scene.frame_end}")
@@ -831,6 +908,7 @@ SKIRT_CLASSES = (
     CharacterDesignerSkirtState,
     CHARACTERDESIGNER_OT_create_skirt_setup,
     CHARACTERDESIGNER_OT_skirt_update_attachment,
+    CHARACTERDESIGNER_OT_skirt_unify_rig,
     CHARACTERDESIGNER_OT_skirt_restore_attachment,
     CHARACTERDESIGNER_OT_skirt_select_controls,
     CHARACTERDESIGNER_OT_skirt_add_physics,

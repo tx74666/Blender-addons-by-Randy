@@ -1,0 +1,2742 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Randy_Ring_Mask.blend",
+  "asset_sha256": "485274c248c90b1529a584756810bce0c7f935aea7c1077fd0d6c687562a7de6",
+  "source_arc_asset": "D:\\MyRepository\\Blender-addons-by-Randy\\node_library\\assets\\Randy_Arc_Mask.blend",
+  "source_arc_sha256": "7c2006b17e4e1dd1729353291f180a211fe15c296bafdc720ddc9a60b416e722",
+  "extend_asset_sha256": "c7e749ac466dd2250f1e78944df4a5100dcc0fb2f0275e9ecd6c8b12b6a2078d",
+  "blender": "5.2.0 LTS",
+  "ui_search_tested": false,
+  "tests": [
+    {
+      "name": "recursive_native_graph_and_all_socket_identifiers_equal_arc_020",
+      "passed": true
+    },
+    {
+      "name": "current_texture_asset_and_full_ring_default_interface",
+      "passed": true
+    },
+    {
+      "name": "native_save_reopen_without_addon",
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_right_start_inclusive",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        8,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_upper_right",
+      "uv": [
+        0.7298097038856279,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_top",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_upper_left",
+      "uv": [
+        0.27019029611437206,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        56,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_left_end_inclusive",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        72,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_lower_left_empty",
+      "uv": [
+        0.270190296114372,
+        0.27019029611437206
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_bottom_empty",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: default_lower_right_empty",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        120,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: zero_sweep_empty_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        8,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: full_sweep_white_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: zero_sweep_empty_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        40,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: full_sweep_white_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        56,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: zero_sweep_empty_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: full_sweep_white_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        88,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: zero_sweep_empty_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: full_sweep_white_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: wrapped_arc_before_seam",
+      "uv": [
+        0.7814582562299425,
+        0.33749999999999986
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        8,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: wrapped_arc_at_seam",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: wrapped_arc_after_seam",
+      "uv": [
+        0.7814582562299426,
+        0.6625
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: wrapped_arc_beyond_end",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        56,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: wrapped_arc_before_start",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: negative_start_wraps",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        -90,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        88,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: negative_start_exterior",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        -90,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: linked_start_multi_turn_wraps",
+      "uv": [
+        0.27019029611437206,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        1170,
+        90
+      ],
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: linked_start_multi_turn_exterior",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        1170,
+        90
+      ],
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        8,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: negative_sweep_clamped_empty",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        -120
+      ],
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        24,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: large_sweep_clamped_full",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        720
+      ],
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: zero_width_empty",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0,
+        0,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        56,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: inside_radial_hole",
+      "uv": [
+        0.5,
+        0.75
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: beyond_radial_outer",
+      "uv": [
+        0.5,
+        0.9
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: outside_normalized_disk",
+      "uv": [
+        0.8570889244992066,
+        0.8570889244992066
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: disk_center_has_no_radial_hole",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: soft_radial_half",
+      "uv": [
+        0.5,
+        0.65625
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "pixel": [
+        8,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: soft_radial_outer_half",
+      "uv": [
+        0.5,
+        0.84375
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.4999985694885254,
+        0.4999985694885254,
+        0.4999985694885254
+      ],
+      "pixel": [
+        24,
+        72
+      ],
+      "max_error": 1.430511474609375e-06,
+      "passed": true
+    },
+    {
+      "name": "Cycles: soft_radial_same_point_outside_arc",
+      "uv": [
+        0.49999999999999994,
+        0.34375
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        40,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: soft_radial_full_matches_ring",
+      "uv": [
+        0.49999999999999994,
+        0.15625
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        40,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "pixel": [
+        56,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: independent_arc_a_red",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "second_values": [
+        0.6,
+        0.08,
+        0,
+        180,
+        180
+      ],
+      "expected_rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: independent_arc_b_green",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "second_values": [
+        0.6,
+        0.08,
+        0,
+        180,
+        180
+      ],
+      "expected_rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: new_instance_default_full_ring_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        104,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: new_instance_default_full_ring_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: new_instance_default_full_ring_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        8,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: new_instance_default_full_ring_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: ring_data_extend_outer_270",
+      "uv": [
+        0.49999999999999994,
+        0.14500000000000002
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: ring_data_extend_inner_270",
+      "uv": [
+        0.49999999999999994,
+        0.21500000000000002
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        56,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: ring_data_extend_outer_330",
+      "uv": [
+        0.8074390183434756,
+        0.32249999999999984
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        72,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "Cycles: ring_data_extend_outer_90",
+      "uv": [
+        0.5,
+        0.855
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_right_start_inclusive",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        8,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_upper_right",
+      "uv": [
+        0.7298097038856279,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_top",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_upper_left",
+      "uv": [
+        0.27019029611437206,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        56,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_left_end_inclusive",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        72,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_lower_left_empty",
+      "uv": [
+        0.270190296114372,
+        0.27019029611437206
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_bottom_empty",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: default_lower_right_empty",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        120,
+        8
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: zero_sweep_empty_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        8,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: full_sweep_white_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: zero_sweep_empty_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        40,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: full_sweep_white_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        56,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: zero_sweep_empty_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: full_sweep_white_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        88,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: zero_sweep_empty_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: full_sweep_white_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        24
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: wrapped_arc_before_seam",
+      "uv": [
+        0.7814582562299425,
+        0.33749999999999986
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        8,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: wrapped_arc_at_seam",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: wrapped_arc_after_seam",
+      "uv": [
+        0.7814582562299426,
+        0.6625
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: wrapped_arc_beyond_end",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        56,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: wrapped_arc_before_start",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: negative_start_wraps",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        -90,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        88,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: negative_start_exterior",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        -90,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: linked_start_multi_turn_wraps",
+      "uv": [
+        0.27019029611437206,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        1170,
+        90
+      ],
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        40
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: linked_start_multi_turn_exterior",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        1170,
+        90
+      ],
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        8,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: negative_sweep_clamped_empty",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        -120
+      ],
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        24,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: large_sweep_clamped_full",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        720
+      ],
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: zero_width_empty",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0,
+        0,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        56,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: inside_radial_hole",
+      "uv": [
+        0.5,
+        0.75
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: beyond_radial_outer",
+      "uv": [
+        0.5,
+        0.9
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: outside_normalized_disk",
+      "uv": [
+        0.8570889244992066,
+        0.8570889244992066
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        104,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: disk_center_has_no_radial_hole",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        56
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: soft_radial_half",
+      "uv": [
+        0.5,
+        0.65625
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "pixel": [
+        8,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: soft_radial_outer_half",
+      "uv": [
+        0.5,
+        0.84375
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "pixel": [
+        24,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: soft_radial_same_point_outside_arc",
+      "uv": [
+        0.49999999999999994,
+        0.34375
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        40,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: soft_radial_full_matches_ring",
+      "uv": [
+        0.49999999999999994,
+        0.15625
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        40,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "pixel": [
+        56,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: independent_arc_a_red",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "second_values": [
+        0.6,
+        0.08,
+        0,
+        180,
+        180
+      ],
+      "expected_rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        72,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: independent_arc_b_green",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "second_values": [
+        0.6,
+        0.08,
+        0,
+        180,
+        180
+      ],
+      "expected_rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: new_instance_default_full_ring_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        104,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: new_instance_default_full_ring_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        120,
+        72
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: new_instance_default_full_ring_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        8,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: new_instance_default_full_ring_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        24,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: ring_data_extend_outer_270",
+      "uv": [
+        0.49999999999999994,
+        0.14500000000000002
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        40,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: ring_data_extend_inner_270",
+      "uv": [
+        0.49999999999999994,
+        0.21500000000000002
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        360.0
+      ],
+      "mode": "Inner",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        56,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: ring_data_extend_outer_330",
+      "uv": [
+        0.8074390183434756,
+        0.32249999999999984
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "pixel": [
+        72,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "EEVEE: ring_data_extend_outer_90",
+      "uv": [
+        0.5,
+        0.855
+      ],
+      "source": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "mode": "Outer",
+      "values": [
+        0.04,
+        0.01,
+        0.0
+      ],
+      "linked_parameters": false,
+      "use_defaults": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pixel": [
+        88,
+        88
+      ],
+      "max_error": 0.0,
+      "passed": true
+    },
+    {
+      "name": "all_source_assets_unchanged",
+      "passed": true
+    }
+  ],
+  "source_dependencies_sha256": {
+    "tools/randy_node_assets/build_ring_mask_current.py": "2284418981d5a2dafb2dabc2c44aacf147116de6846ce7bbeece86c87b3ed4bc",
+    "tools/randy_node_assets/verify_ring_mask_current.py": "d2f5ca723493da934862a529d56a7b785316bca06d96beeddd9d6386d66b387d",
+    "tools/randy_node_assets/verify_arc_mask.py": "577708426f28c0dab5021db31ee3c02c31db4f6244d5f0392a9b73228a1cea87",
+    "tools/randy_node_assets/verify_extend_mask.py": "4dd15ee21ba9afb36c353e546bcd3d401973a4d376bc45a7475483355003539e",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+    "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838"
+  },
+  "asset_metadata": {
+    "name": "Ring Mask",
+    "version": "0.2.1",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "color_tag": "TEXTURE",
+    "inputs": [
+      {
+        "name": "Inner Radius",
+        "type": "NodeSocketFloat",
+        "default": 0.6000000238418579
+      },
+      {
+        "name": "Ring Width",
+        "type": "NodeSocketFloat",
+        "default": 0.07999999821186066
+      },
+      {
+        "name": "Edge Softness",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Start Angle",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Sweep Angle",
+        "type": "NodeSocketFloat",
+        "default": 360.0
+      }
+    ],
+    "outputs": [
+      {
+        "name": "Mask",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Ring Data",
+        "type": "NodeSocketBundle"
+      }
+    ],
+    "nodes": 37,
+    "dependency": ".Arc Mask Radial"
+  },
+  "compatibility_baseline": {
+    "path": "node_library/validation/fixtures/Randy_Arc_Mask_0_2_0.blend",
+    "sha256": "7c2006b17e4e1dd1729353291f180a211fe15c296bafdc720ddc9a60b416e722"
+  },
+  "recursive_graph_matches_arc_0_2_0": true,
+  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Ring_Mask_current_Cycles_atlas.exr",
+  "shader_sample_count": 92,
+  "cycles_shader_sample_count": 46,
+  "eevee_render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Ring_Mask_current_EEVEE_atlas.exr",
+  "eevee_shader_sample_count": 46,
+  "examples": {
+    "image": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Arc_Mask_examples.png",
+    "left_to_right": [
+      {
+        "name": "Full ring",
+        "instances": [
+          [
+            0.6,
+            0.08,
+            0,
+            0,
+            360
+          ]
+        ]
+      },
+      {
+        "name": "Semicircle",
+        "instances": [
+          [
+            0.6,
+            0.08,
+            0,
+            0,
+            180
+          ]
+        ]
+      },
+      {
+        "name": "Three shared-shader arcs",
+        "instances": [
+          [
+            0.32,
+            0.07,
+            0,
+            300,
+            120
+          ],
+          [
+            0.54,
+            0.07,
+            0,
+            20,
+            220
+          ],
+          [
+            0.76,
+            0.07,
+            0,
+            100,
+            220
+          ]
+        ]
+      }
+    ]
+  },
+  "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\RingMaskCurrent_20261002\\Randy_Ring_Mask_current_validation.blend",
+  "published_asset": "node_library/assets/Randy_Ring_Mask.blend",
+  "published_preview": "node_library/previews/ring_mask_current.png",
+  "previous_verification": "node_library/validation/arc_mask_0_2_0_baseline.json",
+  "previous_verification_sha256": "729cc42073b9bd3f3f1ab7ea91e3b54ae90afa13d5849c1b04eea1550bff7154",
+  "previous_verification_hash_mode": "utf8-lf"
+}

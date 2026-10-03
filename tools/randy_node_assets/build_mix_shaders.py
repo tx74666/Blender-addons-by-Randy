@@ -2,7 +2,7 @@
 
 Run only in an isolated factory Blender process. This never opens a working
 scene or replaces an existing build. The asset shares Ring Mask's Textures
-catalog; RR Helper supplies expansion and automatic empty-Shader detection.
+catalog. Expansion helpers are optional; mixing and connection edits are native.
 """
 
 import argparse
@@ -21,11 +21,12 @@ GENERATOR = "addons/random_realm_builder_exporter/rr_shader_mixer.py"
 NAME = "Mix Shaders"
 CATALOG = "Textures"
 CATALOG_ID = "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DESCRIPTION = (
     "Mix masked shaders over a Base Shader. Earlier slots cover later slots. "
-    "Use RR Helper's Add Shader Slot to expand; keep RR Helper enabled for "
-    "automatic empty-Shader passthrough. Saved graphs render natively."
+    "Connect both a Mask and a Shader for each used slot. "
+    "Unused masks default to zero. Editing and rendering need no add-on; "
+    "Add Shader Slot is an optional construction shortcut."
 )
 
 

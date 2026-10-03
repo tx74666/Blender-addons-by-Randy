@@ -107,7 +107,8 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
 
     @classmethod
     def poll(cls, context):
-        return rig_page_active(context, 'BODY')
+        from . import body_original_mode, bone_display
+        return rig_page_active(context, 'BODY') and not body_original_mode.active(bone_display.character_rig(context))
 
     def draw(self, context):
         layout = self.layout

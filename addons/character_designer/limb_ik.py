@@ -101,6 +101,7 @@ CONTROL_SHAPE_STYLE_LABELS = {
 
 _POLE_GUIDE_DRAW_HANDLE = None
 _POLE_GUIDE_SHADER = None
+_POLE_GUIDE_BATCH_CACHE = None
 
 SIDES = ("L", "R")
 KINDS = ("ARM", "LEG")
@@ -1956,10 +1957,38 @@ def _pole_guide_line_batches(segments):
     return tuple((color, tuple(grouped[color])) for color in order)
 
 
+def _clear_pole_guide_cache():
+    global _POLE_GUIDE_SHADER, _POLE_GUIDE_BATCH_CACHE
+    _POLE_GUIDE_SHADER = None
+    _POLE_GUIDE_BATCH_CACHE = None
+
+
+def _pole_guide_gpu_batches(shader, line_batches, batch_factory):
+    """Retain only the last numeric drawing content, never evaluated RNA."""
+
+    global _POLE_GUIDE_BATCH_CACHE
+    content = tuple(
+        (tuple(float(value) for value in color),
+         tuple(tuple(float(value) for value in point) for point in vertices))
+        for color, vertices in line_batches
+    )
+    cached = _POLE_GUIDE_BATCH_CACHE
+    if cached is not None and cached[0] is shader and cached[1] == content:
+        return cached[2]
+    # A failed construction must not leave the previous frame available.
+    _POLE_GUIDE_BATCH_CACHE = None
+    batches = tuple((color, batch_factory(shader, "LINES", {"pos": vertices}))
+                    for color, vertices in content)
+    if batches:
+        _POLE_GUIDE_BATCH_CACHE = (shader, content, batches)
+    return batches
+
+
 def _draw_direct_pole_guides():
     global _POLE_GUIDE_SHADER
 
     if bpy.app.background:
+        _clear_pole_guide_cache()
         return
     try:
         context = bpy.context
@@ -1971,9 +2000,11 @@ def _draw_direct_pole_guides():
             or (overlay is not None and not overlay.show_overlays)
             or (overlay is not None and hasattr(overlay, "show_bones") and not overlay.show_bones)
         ):
+            _clear_pole_guide_cache()
             return
         segments = _direct_pole_guide_segments(context)
         if not segments:
+            _clear_pole_guide_cache()
             return
 
         import gpu
@@ -1983,7 +2014,9 @@ def _draw_direct_pole_guides():
             _POLE_GUIDE_SHADER = gpu.shader.from_builtin("UNIFORM_COLOR")
         batches = _pole_guide_line_batches(segments)
         if not batches:
+            _clear_pole_guide_cache()
             return
+        batches = _pole_guide_gpu_batches(_POLE_GUIDE_SHADER, batches, batch_for_shader)
         previous_depth = gpu.state.depth_test_get()
         previous_depth_mask = gpu.state.depth_mask_get()
         previous_blend = gpu.state.blend_get()
@@ -1993,12 +2026,7 @@ def _draw_direct_pole_guides():
             gpu.state.depth_mask_set(False)
             gpu.state.blend_set("ALPHA")
             gpu.state.line_width_set(2.0)
-            for color, vertices in batches:
-                batch = batch_for_shader(
-                    _POLE_GUIDE_SHADER,
-                    "LINES",
-                    {"pos": vertices},
-                )
+            for color, batch in batches:
                 _POLE_GUIDE_SHADER.bind()
                 _POLE_GUIDE_SHADER.uniform_float("color", color)
                 batch.draw(_POLE_GUIDE_SHADER)
@@ -2016,13 +2044,14 @@ def _draw_direct_pole_guides():
     except Exception:
         # Viewport drawing is advisory.  A transient GPU/context failure must
         # never interfere with rig editing or leave scene data behind.
-        _POLE_GUIDE_SHADER = None
+        _clear_pole_guide_cache()
 
 
 def register_limb_ik_viewport_handler():
     """Install exactly one hot-reload-safe Direct Pole guide handler."""
 
     global _POLE_GUIDE_DRAW_HANDLE
+    _clear_pole_guide_cache()
     if bpy.app.background:
         return
     namespace = bpy.app.driver_namespace
@@ -2049,7 +2078,8 @@ def register_limb_ik_viewport_handler():
 def unregister_limb_ik_viewport_handler():
     """Remove the Direct Pole guide handler without touching any rig data."""
 
-    global _POLE_GUIDE_DRAW_HANDLE, _POLE_GUIDE_SHADER
+    global _POLE_GUIDE_DRAW_HANDLE
+    _clear_pole_guide_cache()
     namespace = bpy.app.driver_namespace
     namespaced_handle = namespace.pop(POLE_GUIDE_HANDLER_KEY, None)
     handles = []
@@ -2057,7 +2087,6 @@ def unregister_limb_ik_viewport_handler():
         if handle is not None and all(handle is not existing for existing in handles):
             handles.append(handle)
     _POLE_GUIDE_DRAW_HANDLE = None
-    _POLE_GUIDE_SHADER = None
     for handle in handles:
         try:
             bpy.types.SpaceView3D.draw_handler_remove(handle, "WINDOW")
@@ -8552,6 +8581,18 @@ def _active_control_visual(context, *, strict=False):
         return None
 
 
+def _has_active_limb_target(context):
+    """Cheap UI availability; drawing and operators still audit the rig."""
+
+    resolved = _active_control_visual(context)
+    if resolved is None:
+        return False
+    try:
+        return resolved[1].bone.get(ROLE_KEY) in {"HAND_IK", "FOOT_IK"}
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _active_limb_target(context, *, strict=False):
     """Resolve the selected visible Hand/Foot Target and its owned rig."""
 
@@ -8607,7 +8648,7 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation(Operator):
 
     @classmethod
     def poll(cls, context):
-        return _active_limb_target(context) is not None
+        return _has_active_limb_target(context)
 
     def execute(self, context):
         settings = _settings(context)
@@ -8836,7 +8877,7 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_control_visual(Operator):
 
 
 class CHARACTERDESIGNER_PT_limb_ik(Panel):
-    bl_label = "Body Controls"
+    bl_label = "Bone Setup"
     bl_idname = "CHARACTERDESIGNER_PT_limb_ik"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -8844,7 +8885,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
 
     @classmethod
     def poll(cls, context):
-        return rig_page_active(context, "BODY")
+        from . import body_original_mode, bone_display
+        return rig_page_active(context, "BODY") and not body_original_mode.active(bone_display.character_rig(context))
 
     def draw(self, context):
         layout = self.layout
@@ -8852,7 +8894,9 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if settings is None:
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
-        from . import body_setup_ui, body_calibration_ui
+        from . import body_setup_ui, body_calibration_ui, body_original_mode
+        if body_original_mode.active(body_original_mode.display.character_rig(context)):
+            return
         if body_calibration_ui.draw(layout, context):
             # Native mapping remains reachable before Generate. The stored old
             # Setup/Controls choice no longer gates this workflow.
@@ -9002,7 +9046,7 @@ class CHARACTERDESIGNER_PT_limb_ik_target_rotation(Panel):
     def poll(cls, context):
         return (
             rig_page_active(context, "BODY")
-            and _active_limb_target(context) is not None
+            and _has_active_limb_target(context)
         )
 
     def draw(self, context):

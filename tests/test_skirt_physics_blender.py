@@ -167,7 +167,7 @@ def main():
     source_before = evaluated_vertices(source)
     activate(source)
     record = skirt_rig.build_skirt(bpy.context, source, chain_count=4, segment_count=3,
-                                   armature=target, parent_bone="Hips")
+                                   armature=target, parent_bone="Hips", shared=False)
     rig = bpy.data.objects[record["rig"]]
     rig_rest = evaluated_vertices(source)
     rig_rest_error = maximum_distance(rig_rest, source_before)

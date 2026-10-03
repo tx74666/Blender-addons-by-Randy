@@ -1,4 +1,175 @@
-# Character Designer 0.68.2
+# Character Designer 0.73.2
+
+## Bone Display Color Palette (0.73.2)
+
+Open **Rig / Weight > Bone Display > Color Palette** and choose **Apply Palette**
+to use the current character's saved scheme. The five groups are **Body, Arms,
+Legs, Hair and Dress**. Arms includes forearms, wrists, hands and fingers; Legs
+includes feet and toes. Native bones and their controls use the same group.
+
+Each row shows actual **Normal / Selected / Active** colors. Click the group
+name to edit these three colors. **Mixed** identifies differing current colors,
+including manual native edits; drawing the panel does not overwrite them.
+Dress defaults to muted pink in all three states. Changes support **Ctrl+Z**.
+**Restore** restores colors from before palette application while retaining the
+edited scheme for later reuse. Save the `.blend` to retain the character's scheme.
+
+Colors belong to this character, including its owned Hair/Dress rigs. They do
+not change Blender's global theme, other characters, mesh data, weights, Shape
+Keys, Rest bones, constraints or posing. The closed panel performs no palette
+inventory scan; changes are applied only by explicit operations or new owned
+controller creation.
+
+## Pose Dress originals (0.72.0)
+
+Choose **Rig / Weight > Bone Display > Original**, select a Dress bone in
+Pose Mode, and rotate with **R**. The generated curve and physics constraints
+retain their native evaluation, while the bone's own pose becomes an additional
+local correction. Returning to **Controls** keeps that correction; controls and
+physics continue to move the skirt. The correction survives saving and reopening.
+An older saved Original session upgrades when Original is explicitly clicked.
+
+To remove these manual corrections, return to Controls and use **Rig > Skirt >
+Clear Dress Pose**, or **Selected** for only the selected Dress originals.
+Both switching and clearing support Undo. No Rest bones, painted weights,
+mesh topology, Shape Keys or character colors are rewritten. Existing animation
+or custom drivers on Dress original channels must be preserved before direct
+posing; rebuilding, adding physics and baking animation require Controls.
+
+## Dress in the Main Rig (0.71.0)
+
+New attached skirt setups use the character's Main Rig. Body, Hair and Dress
+remain separate native Bone Collections inside one armature, with one Pose Mode
+for their controls. Only the Dress bones, its collection and source-owned helpers
+belong to the skirt; removing a Dress setup keeps the character armature.
+
+For an existing independent skirt, return to **Controls**, choose the source in
+**Rig > Skirt**, and click **Use Main Rig**. Migration retains bone names,
+mesh topology, Shape Keys, UVs and painted weights, and retargets the native
+skin, hooks, constraints and generated drivers. Validation compares evaluated
+geometry and sampled bone poses before committing. A failed migration restores
+the previous rig and references; a completed operator supports **Ctrl+Z**.
+
+Separate Dress actions, active legacy physics, custom dependencies, conflicting
+bone names, linked/shared data and unsupported transform spaces keep their
+existing separate setup and report the reason. New shared setups can add physics
+and bake through the existing workflow. Version 0.72.0 also supports direct
+Dress original posing through persistent native local corrections.
+
+Weight tools restrict Dress to its own skinning bones and keep Body/Hair in their
+existing domain. The export worker removes skirt mechanisms by ownership rather
+than their names. Unity model exports must retain their matching sidecars;
+existing Unity assets are not overwritten merely by migrating the Blender rig.
+
+See the repository release record for actual validation and save state.
+
+Dress visibility now includes its independent armature object's actual viewport
+visibility. Clicking Dress reveals that owned rig when its object eye/viewport
+switch hid it; the blue button reflects effective visibility. Original snapshots
+retain object flags for restoration, including older saved sessions extended on
+their first explicit reveal. Hidden or excluded collections report a reason and
+roll back. Helper shape objects remain hidden and pose/binding data is retained.
+
+Original / Controls now publishes forearm corrective output once for the final
+pose, instead of recalculating intermediate transfer states. Nested calls retain
+the existing runtime guard. Final output refresh stays inside the full rollback
+transaction, including errors after the output was calculated. A verified pose
+transfer ends with redraw only, avoiding another synchronous scene evaluation.
+Native Original posing, complete rig checks, Shape Keys and saved recovery remain.
+
+Identical failed forearm mirror proofs now reuse their exact input fingerprint,
+retain the same error, and retry immediately after a geometry/frame/record edit.
+Original redraws reuse one saved-text projection of bone names; rig references
+and visibility are read live. Validation records and Rest data are reused only
+inside a single switch operation. Existing corrective and pose checks remain.
+
+Original / Controls now batches native pose conversion and changes only display
+values that differ. Switching no longer evaluates the complete scene once per
+native bone. Existing Pose Mode and bone selection are retained; return updates
+only the current character's control collection membership. Final pose validation,
+Shape Keys, weights, recovery snapshots and full failure rollback are preserved.
+
+In **Rig / Weight > Bone Display**, choose **Original** to show native Body,
+Hair and Dress bones together; choose **Controls** to keep the pose and restore
+the saved control modes and display. The three text-only group buttons share
+one row; blue indicates that the group's bones are visible. Body Controls is
+now named **Bone Setup**, with the switch centralized in Bone Display.
+Inside Original, **Edit Weights** opens Weight Paint; **Back to Original**
+finishes painting before choosing Controls. The session survives saving and
+reopening the scene. Native Bone Collection eyes and solo stars only control
+visibility; they no longer trigger add-on display presets.
+
+Only validated Body source constraints and temporary rotation locks are
+suspended. Dress retains native curve/physics evaluation and uses the local
+corrections described above. Original rig relationships, Rest bones, weights, Shape
+Keys and animation data are retained. If the saved IK/BLEND mode cannot express
+an edited native pose, return rolls back and keeps Original available without
+silently changing modes. Finish Original before rebuilding the generated rig.
+
+Refine Symmetry now reads Blender's actual Topology Mirror table. Select X,
+Y or Z, choose Left to Right or Right to Left, and click Refine Symmetry.
+Selected Region Only starts enabled. Analyze and tolerance controls are in
+the collapsed Advanced section; Average and read-only Preview remain available.
+The tool retains every Shape Key's original deformation delta and validates
+ordinary mirror matching in the chosen axis after repair.
+
+Refresh now tears down the actual registered UI runtime even if Blender’s module enabled flag is stale. Enable errors are displayed in the panel; failed refreshes retain a retry action and restore the previous runtime.
+
+## Refine Symmetry / Repair Mirror Symmetry (0.70.0)
+
+Open **Modeling or Weight → Refine Symmetry**. Analyze reports Matched,
+Misaligned, Unmatched and maximum Basis mirror error. Select Misaligned
+changes only selection. Preview displays current coordinates in orange and
+proposed coordinates in green without changing geometry or Shape Keys.
+
+Choose Average, Left to Right or Right to Left. Left is Mesh-local +X;
+Right is -X. Selected Region Only defaults on: Average requires both vertices
+of each affected pair selected, and directional modes write only selected
+destination vertices. Hidden vertices are excluded from the selected scope.
+
+Refine changes coordinates only. Reliable topology defines the pairs;
+ambiguous vertices remain unmatched without a nearest-vertex fallback.
+Centerline candidates within the tiny configured tolerance are restored to
+X=0. Every Shape Key retains its old delta from Basis, including independent
+left/right expressions. Ordinary mirror lookup and protected data are
+validated after writing; failure restores all coordinates and keys.
+Ctrl+Z undoes a completed repair. No topology replacement is performed.
+
+See the repository's `docs/refine_symmetry.md` for the complete workflow.
+
+## Reliable cleanup after startup and file load (0.69.4)
+
+Legacy name cleanup waits until Blender's scene data is available. Registration
+and file load queue one deferred cleanup, including add-on enabling during
+Blender's restricted registration context. Disabling cancels the pending task.
+
+Widget and skirt recovery records stay in the blend file through disabling,
+saving and reopening. The current X scene's 117 legacy object/data/collection
+names have been cleaned and saved, with no skipped resources. Four native
+lifecycle checks cover restricted registration, cancellation, retained records
+and legacy/cleaned save-reopen behavior.
+
+## Readable generated names (0.69.3)
+
+Controller meshes use the character and function, for example
+`WGT_CoshaRig_Foot_Roll.L`, `WGT_CoshaRig_Torso_FK_01` and
+`WGT_CoshaRig_Eyes_Left`. Skirt resources use the source and sequence, such as
+`SK_Dress_Rig`, `SK_Dress_Wire_01` and `SK_Dress_Hem_01_Shape`.
+The helper collection is `Skirt Wire and Shapes | Dress`. Ownership UUIDs stay
+in internal properties. Ordinary Blender numeric suffixes resolve name collisions.
+
+On add-on registration and file load, validated local legacy widget and skirt
+object/data/collection names are cleaned with their exact recovery references.
+Artist names, shared/linked data and edited ownership are preserved. Existing
+bone names and constraint names are retained to protect animation paths;
+new skirt bones and weight groups use the readable source prefix. Cleanup does
+not change geometry, weights, Shape Keys, poses or animation.
+
+## Character Setup in Rig (0.69.2)
+
+**Character Setup** appears only in **Rig**, above Body / Hair / Skirt navigation.
+Weight tools keep using its saved Main Rig, Body Weight Source and bone mappings.
+Quick Bind's missing-reference hints point to **Rig > Character Setup**.
 
 ## Compact Unity Export (0.68.2)
 
@@ -849,13 +1020,15 @@ as a hidden internal child of Body, so validation, rebuild and removal still wor
 Body follows the current IK/FK mode, including keyed switches. Hair appears when
 present; an independent skirt keeps its own Dress group and armature.
 
-**Rig / Weight > Bone Display** provides **Show All Controls** and independent
-Body, Hair and Dress visibility buttons. **Original · Native Bones** temporarily
-isolates the real body skeleton as ordinary bones. Hair / Dress **Bones** isolates
-their actual weighting bones; Dress includes the deforming waist and DEF chains.
-**Restore Display** recovers the preceding visibility and display type, including
+**Rig / Weight > Bone Display** provides text-only **Original / Controls** choices
+and independent Body, Hair and Dress visibility buttons in one compact row.
+Blue indicates the current mode and visible groups. Original shows the real body skeleton and Hair / Dress
+weighting bones together; Dress includes the deforming waist and DEF chains.
+Controls recovers the preceding visibility and display type, including
 after saving/reopening. Custom shape assignments, rest bones, hierarchy, weights,
-constraints, actions and pose channels are not changed. Weight/pose edits made
+constraint configuration and actions are retained. Native body constraints are
+temporarily suspended for direct posing, while Hair/Dress keep their current
+constraints. Weight/pose edits made
 while viewing the native bones survive restoration. Exit the temporary view before
 reorganizing collections or rebuilding controls. **Organize Bone Collections**
 explicitly migrates existing layouts and retains their original layout backup.
@@ -1060,7 +1233,7 @@ Version 0.44.0 groups rigging in **Rig > Body / Hair / Skirt**, with one level o
 navigation. The top-level Hair page keeps modeling and centerline tools; Weight
 keeps common weight operations. The former Clothing shortcut opens Rig > Skirt.
 
-**Character Setup**, shared by Weight and Rig, stores Main Rig, Body Weight Source,
+**Rig > Character Setup** stores Main Rig, Body Weight Source,
 and Hips / Head mappings. Bone mappings belong to the chosen armature and survive
 saving/reopening. A search field or its **Use Selected Bone** button sets a mapping;
 the button also remembers the selected bone's armature. Unique central Hips/Head

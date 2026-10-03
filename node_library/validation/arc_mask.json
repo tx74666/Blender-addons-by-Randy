@@ -1,0 +1,1206 @@
+{
+  "passed": true,
+  "state": "complete",
+  "asset": "D:\\Blender\\Projects\\Build\\Recovery\\ExtendMask_20261002\\Arc_0_2_0.blend",
+  "asset_sha256": "7c2006b17e4e1dd1729353291f180a211fe15c296bafdc720ddc9a60b416e722",
+  "ring_asset_sha256": "8740134297372a5cad2f16f330db5e20d2324922ab5ad4d04920aee7ffdd9cc5",
+  "blender": "5.2.0 LTS",
+  "ui_search_tested": false,
+  "render_engine": "Cycles CPU",
+  "tolerance": 0.0002,
+  "tests": [
+    {
+      "name": "native_asset_interface_and_single_unadvertised_ring_dependency",
+      "passed": true
+    },
+    {
+      "name": "old_mask_graph_and_original_socket_identifiers_unchanged",
+      "passed": true
+    },
+    {
+      "name": "nested_radial_graph_equals_original_ring_mask",
+      "passed": true
+    },
+    {
+      "name": "independent_parameters_and_one_shared_native_dependency",
+      "passed": true
+    },
+    {
+      "name": "native_save_reopen_without_addon",
+      "passed": true
+    },
+    {
+      "name": "default_right_start_inclusive",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        8
+      ]
+    },
+    {
+      "name": "default_upper_right",
+      "uv": [
+        0.7298097038856279,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        8
+      ]
+    },
+    {
+      "name": "default_top",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        8
+      ]
+    },
+    {
+      "name": "default_upper_left",
+      "uv": [
+        0.27019029611437206,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        8
+      ]
+    },
+    {
+      "name": "default_left_end_inclusive",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        8
+      ]
+    },
+    {
+      "name": "default_lower_left_empty",
+      "uv": [
+        0.270190296114372,
+        0.27019029611437206
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        8
+      ]
+    },
+    {
+      "name": "default_bottom_empty",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        8
+      ]
+    },
+    {
+      "name": "default_lower_right_empty",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        8
+      ]
+    },
+    {
+      "name": "zero_sweep_empty_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        24
+      ]
+    },
+    {
+      "name": "full_sweep_white_0",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        24
+      ]
+    },
+    {
+      "name": "zero_sweep_empty_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        24
+      ]
+    },
+    {
+      "name": "full_sweep_white_90",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        24
+      ]
+    },
+    {
+      "name": "zero_sweep_empty_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        24
+      ]
+    },
+    {
+      "name": "full_sweep_white_180",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        24
+      ]
+    },
+    {
+      "name": "zero_sweep_empty_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        24
+      ]
+    },
+    {
+      "name": "full_sweep_white_270",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        247,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        24
+      ]
+    },
+    {
+      "name": "wrapped_arc_before_seam",
+      "uv": [
+        0.7814582562299425,
+        0.33749999999999986
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        40
+      ]
+    },
+    {
+      "name": "wrapped_arc_at_seam",
+      "uv": [
+        0.825,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        40
+      ]
+    },
+    {
+      "name": "wrapped_arc_after_seam",
+      "uv": [
+        0.7814582562299426,
+        0.6625
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        40
+      ]
+    },
+    {
+      "name": "wrapped_arc_beyond_end",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        40
+      ]
+    },
+    {
+      "name": "wrapped_arc_before_start",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        300,
+        120
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        40
+      ]
+    },
+    {
+      "name": "negative_start_wraps",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        -90,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        40
+      ]
+    },
+    {
+      "name": "negative_start_exterior",
+      "uv": [
+        0.175,
+        0.5
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        -90,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        40
+      ]
+    },
+    {
+      "name": "linked_start_multi_turn_wraps",
+      "uv": [
+        0.27019029611437206,
+        0.7298097038856279
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        1170,
+        90
+      ],
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        40
+      ]
+    },
+    {
+      "name": "linked_start_multi_turn_exterior",
+      "uv": [
+        0.7298097038856279,
+        0.270190296114372
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        1170,
+        90
+      ],
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        56
+      ]
+    },
+    {
+      "name": "negative_sweep_clamped_empty",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        -120
+      ],
+      "linked_parameters": true,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        24,
+        56
+      ]
+    },
+    {
+      "name": "large_sweep_clamped_full",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0,
+        0,
+        720
+      ],
+      "linked_parameters": true,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        56
+      ]
+    },
+    {
+      "name": "zero_width_empty",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0,
+        0,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        56
+      ]
+    },
+    {
+      "name": "inside_radial_hole",
+      "uv": [
+        0.5,
+        0.75
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        56
+      ]
+    },
+    {
+      "name": "beyond_radial_outer",
+      "uv": [
+        0.5,
+        0.9
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        56
+      ]
+    },
+    {
+      "name": "outside_normalized_disk",
+      "uv": [
+        0.8570889244992066,
+        0.8570889244992066
+      ],
+      "values": [
+        0.75,
+        0.5,
+        0,
+        0,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        104,
+        56
+      ]
+    },
+    {
+      "name": "disk_center_has_no_radial_hole",
+      "uv": [
+        0.5,
+        0.5
+      ],
+      "values": [
+        0,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "rgb": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        120,
+        56
+      ]
+    },
+    {
+      "name": "soft_radial_half",
+      "uv": [
+        0.5,
+        0.65625
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        8,
+        72
+      ]
+    },
+    {
+      "name": "soft_radial_outer_half",
+      "uv": [
+        0.5,
+        0.84375
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.4999985694885254,
+        0.4999985694885254,
+        0.4999985694885254
+      ],
+      "max_error": 1.430511474609375e-06,
+      "passed": true,
+      "pixel": [
+        24,
+        72
+      ]
+    },
+    {
+      "name": "soft_radial_same_point_outside_arc",
+      "uv": [
+        0.49999999999999994,
+        0.34375
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        0,
+        180
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        40,
+        72
+      ]
+    },
+    {
+      "name": "soft_radial_full_matches_ring",
+      "uv": [
+        0.49999999999999994,
+        0.15625
+      ],
+      "values": [
+        0.25,
+        0.5,
+        0.125,
+        40,
+        360
+      ],
+      "linked_parameters": false,
+      "expected": 0.5,
+      "rgb": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        56,
+        72
+      ]
+    },
+    {
+      "name": "independent_arc_a_red",
+      "uv": [
+        0.5,
+        0.825
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 1.0,
+      "second_values": [
+        0.6,
+        0.08,
+        0,
+        180,
+        180
+      ],
+      "expected_rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        72,
+        72
+      ]
+    },
+    {
+      "name": "independent_arc_b_green",
+      "uv": [
+        0.49999999999999994,
+        0.175
+      ],
+      "values": [
+        0.6,
+        0.08,
+        0.0,
+        0.0,
+        180.0
+      ],
+      "linked_parameters": false,
+      "expected": 0.0,
+      "second_values": [
+        0.6,
+        0.08,
+        0,
+        180,
+        180
+      ],
+      "expected_rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rgb": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "max_error": 0.0,
+      "passed": true,
+      "pixel": [
+        88,
+        72
+      ]
+    },
+    {
+      "name": "both_source_assets_unchanged",
+      "passed": true
+    }
+  ],
+  "source_dependencies_sha256": {
+    "tools/randy_node_assets/build_arc_mask.py": "27f3bd2d13a51ea3999f34a4599d98832b76b15243b3719ad1cbff80dddb72fc",
+    "tools/randy_node_assets/verify_arc_mask.py": "577708426f28c0dab5021db31ee3c02c31db4f6244d5f0392a9b73228a1cea87",
+    "tools/randy_node_assets/verify_ring_mask.py": "02e57252f216a34afeb71f71dedc245243ad0eb376ca72cbb27b62abe478c805",
+    "tools/randy_node_assets/ring_boundary.py": "fd1248470163e063977737d0dbc1ee15b2d574d03b64247fe94ba20f70b93838"
+  },
+  "asset_metadata": {
+    "name": "Arc Mask",
+    "version": "0.2.0",
+    "catalog_id": "cc7f1f5b-84b2-4f62-93e3-d05ed982a2c2",
+    "color_tag": "TEXTURE",
+    "inputs": [
+      {
+        "name": "Inner Radius",
+        "type": "NodeSocketFloat",
+        "default": 0.6000000238418579
+      },
+      {
+        "name": "Ring Width",
+        "type": "NodeSocketFloat",
+        "default": 0.07999999821186066
+      },
+      {
+        "name": "Edge Softness",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Start Angle",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Sweep Angle",
+        "type": "NodeSocketFloat",
+        "default": 180.0
+      }
+    ],
+    "outputs": [
+      {
+        "name": "Mask",
+        "type": "NodeSocketFloat",
+        "default": 0.0
+      },
+      {
+        "name": "Ring Data",
+        "type": "NodeSocketBundle"
+      }
+    ],
+    "nodes": 37,
+    "dependency": ".Arc Mask Radial"
+  },
+  "baseline_asset_sha256": "2688db8ad625ecee3d3c463e9be970a23ddac6752cdb1724f6b4cada2cddee6c",
+  "compatibility_baseline": {
+    "path": "node_library/validation/fixtures/Randy_Arc_Mask_0_1_1.blend",
+    "sha256": "2688db8ad625ecee3d3c463e9be970a23ddac6752cdb1724f6b4cada2cddee6c"
+  },
+  "mask_channel_compatible_with_arc_0_1_1": true,
+  "shader_sample_count": 38,
+  "maximum_absolute_error": 1.430511474609375e-06,
+  "render_exr": "D:\\Blender\\Projects\\Build\\Recovery\\ExtendMask_20261002\\Arc_Mask_numeric_atlas.exr",
+  "fixture": "D:\\Blender\\Projects\\Build\\Recovery\\ExtendMask_20261002\\Randy_Arc_Mask_validation.blend",
+  "examples": {
+    "image": "D:\\Blender\\Projects\\Build\\Recovery\\ExtendMask_20261002\\Arc_Mask_examples.png",
+    "left_to_right": [
+      {
+        "name": "Full ring",
+        "instances": [
+          [
+            0.6,
+            0.08,
+            0,
+            0,
+            360
+          ]
+        ]
+      },
+      {
+        "name": "Semicircle",
+        "instances": [
+          [
+            0.6,
+            0.08,
+            0,
+            0,
+            180
+          ]
+        ]
+      },
+      {
+        "name": "Three shared-shader arcs",
+        "instances": [
+          [
+            0.32,
+            0.07,
+            0,
+            300,
+            120
+          ],
+          [
+            0.54,
+            0.07,
+            0,
+            20,
+            220
+          ],
+          [
+            0.76,
+            0.07,
+            0,
+            100,
+            220
+          ]
+        ]
+      }
+    ]
+  },
+  "published_asset": "node_library/assets/Randy_Arc_Mask.blend",
+  "published_preview": "node_library/previews/arc_mask.png"
+}

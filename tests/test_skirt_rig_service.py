@@ -158,7 +158,7 @@ bone.head, bone.tail = (0, 0, 1), (0, 0, 1.2)
 bpy.ops.object.mode_set(mode="OBJECT")
 character.location = (0.2, 0.3, -0.1)
 bpy.context.view_layer.update()
-record = service.build_skirt(bpy.context, source, armature=character)
+record = service.build_skirt(bpy.context, source, armature=character, shared=False)
 rig = source[service.RIG_KEY]
 assert max(abs(source.matrix_world[i][j] - matrix[i][j]) for i in range(4) for j in range(4)) < 1e-6
 start_world = source.matrix_world.translation.copy()

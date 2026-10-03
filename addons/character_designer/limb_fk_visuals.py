@@ -7,6 +7,8 @@ import uuid
 
 import bpy
 
+from . import generated_names
+
 OWNER_KEY = 'character_designer_owner'
 OWNER_VALUE = 'limb_fk_visuals'
 ID_KEY = 'character_designer_fk_visual_id'
@@ -135,12 +137,13 @@ def _geometry():
 
 def _create_widget(context, armature, record, name, entry):
     collection = bpy.data.collections.get(record['collection'])
-    if collection is None:
+    if collection is None or not _owned(collection, record, 'COLLECTION'):
         collection = bpy.data.collections.new(record['collection'])
+        record['collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'COLLECTION')
         from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'FK Rings')
+        widget_collections.ensure_container(context, collection, armature, 'FK Rings', allow_numbered=True)
         record['collection'] = collection.name
     mesh = bpy.data.meshes.new(entry['mesh'])
     entry['mesh'] = mesh.name
@@ -171,7 +174,8 @@ def _delete_resources(record, names):
         if _owned(mesh, record, name) and mesh.users == 0:
             bpy.data.meshes.remove(mesh)
     collection = bpy.data.collections.get(record['collection'])
-    if collection is not None and not collection.objects and not collection.children:
+    if (_owned(collection, record, 'COLLECTION')
+            and not collection.objects and not collection.children):
         bpy.data.collections.remove(collection)
         from . import widget_collections
         widget_collections.prune_empty(bpy.context)
@@ -196,7 +200,7 @@ def build(context, armature):
         'version': VERSION, 'id': uuid.uuid4().hex, 'armature_id': inventory['armature_id'],
         'bindings': {}, 'skipped': {},
     }
-    record.setdefault('collection', 'CD_FK_Ring_Widgets_' + record['id'][:10])
+    record.setdefault('collection', generated_names.collection_name(armature, 'FK Rings'))
     pending = []
     originals = {}
     for (kind, side), rig in inventory['rigs'].items():
@@ -217,7 +221,7 @@ def build(context, armature):
             generated = {'custom_shape': '', 'custom_shape_transform': '', 'use_bone_size': False,
                          'scale': [radius] * 3, 'translation': [0.0] * 3, 'rotation': [0.0] * 3,
                          'wire_width': 2.0 if hasattr(pb, 'custom_shape_wire_width') else None}
-            widget_name = 'WGT_CD_FK_' + name + '_' + record['id'][:10]
+            widget_name = generated_names.widget_name(armature, 'FK_' + name)
             record['bindings'][name] = {'kind': kind, 'side': side, 'chain': list(rig['chain']),
                                          'object': widget_name, 'mesh': widget_name,
                                          'original': original, 'generated': generated}

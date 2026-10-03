@@ -37,6 +37,8 @@ def _runtime_paused():
 
 
 def _require_rig(context, rig):
+    if 'character_designer_body_original_mode_v1' in rig:
+        raise ValueError('Choose Controls in Bone Display before changing the generated rig.')
     if context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
         raise ValueError('Use Back to Controls before changing the generated rig.')
     if context.mode not in {'OBJECT', 'POSE'}:
@@ -47,8 +49,10 @@ def _require_rig(context, rig):
 
 
 def _native_skin(rig):
+    from . import skirt_rig
     return {bone.name: rig.pose.bones[bone.name].matrix @ bone.matrix_local.inverted()
-            for bone in rig.data.bones if bone.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS}
+            for bone in rig.data.bones if bone.get(limb_ik.OWNER_KEY) not in limb_ik.GENERATED_CONTROL_OWNERS
+            and not bone.get(skirt_rig.OWNER_KEY)}
 
 
 def _verify_skin(rig, before, tolerance=1e-4):

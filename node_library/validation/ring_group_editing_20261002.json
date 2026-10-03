@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "version": "RR Helper 0.2.45",
+  "scope": "Ring Group mask-slot editing, full-ring Arc shortcut, explicit legacy migration guards",
+  "baseline_archive": "dist/rr_helper-0.2.44.zip",
+  "baseline_archive_sha256": "d0bd4bbc4e50ad132b173a8c8903854d03166fa2d86b3d7d79b10147aa89a380",
+  "source": "addons/random_realm_builder_exporter/rr_ring_nodes.py",
+  "prior_source_sha256": "c207ed10c59dfeeeaa8b54e5a64ef040a11f9a332ecad5d7a04b8514cbdecf3a",
+  "source_sha256": "a7c5798944b49cda9abbb7e703b3014e32f1e7038a7a7b34da2588e953131690",
+  "factory_functions_ast_equivalent": [
+    "_socket",
+    "_mask_ids",
+    "_graph_signature",
+    "_new_mask",
+    "_build_union",
+    "new_group"
+  ],
+  "factory_contract_constants_equivalent": [
+    "_KIND",
+    "_MASKS",
+    "_SHADER",
+    "_MASK_OUTPUT",
+    "_SHADER_OUTPUT",
+    "_SIGNATURE",
+    "_ORDER"
+  ],
+  "source_ui": "addons/random_realm_builder_exporter/rr_shader_mixer_ui.py",
+  "source_ui_sha256": "142cbefd01c23c240ca512e2df1bc8c531df403ec0d841d681bc49943696803f",
+  "mixer_calculation_byte_equivalent_lf": true,
+  "ring_group_asset_sha256_unchanged": "d4c60147b30c2c693b2dbffc3a664ab293131bd3b4711eb0b747a445d24283d2",
+  "asset_rebuilt": false,
+  "new_asset_render_performed": false,
+  "mask_slot_regressions_passed": 13,
+  "overlay_regressions_passed": 16,
+  "ring_workflow_regressions_passed": 34,
+  "legacy_migration_regressions_passed": 9,
+  "registration_lifecycle_checks_passed": 276,
+  "live_builder6_migration_performed": false,
+  "live_ring_group_plus_click_performed": false,
+  "live_limitation": "User stopped Computer Use with Escape before refresh/migration/GUI checks."
+}

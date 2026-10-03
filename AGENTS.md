@@ -9,6 +9,11 @@
 - Deploy validated sources with `python tools/deploy_local.py`. When X's
   validation copy is needed, pass `--project-addons D:\Blender\Projects\Character\X\addons`.
   Finish with the same command plus `--check`; report any mismatch.
+- Before deploying, confirm the Blender executable/version actually in use.
+  The default 5.2 target does not update a separately installed 5.1 add-on.
+  Also deploy to the verified active version with --blender-version and
+  verify that same target with --check. For apparent regressions after
+  reboot, check the .blend opening association before assuming data loss.
 - A local deployment is not a GitHub upload. Report whether changes are local,
   committed, or pushed; follow the user's authorization for Git operations.
 - Blender installation directories remain deployment copies. Do not describe
@@ -41,3 +46,17 @@
 - The user handles GitHub Desktop Commit and Push. Prepare local changes and
   report them; do not commit, push, create a PR, or publish a release unless the
   user explicitly requests that action later. Local deployment is not an upload.
+
+# Performance records and component ownership
+
+- X owns Character Designer scene integration and performance records;
+  Builder6 / Build WIP owns RR Helper. Code for both remains in this repository.
+- Before further optimization, read the existing central entry
+  `D:\Codex\資料庫\电脑与工作环境\Blender性能優化台帳.md` and the component's
+  linked evidence. Reuse verified conclusions and investigate changed code or
+  new symptoms; do not repeat a full old investigation by default.
+- Record date, source/runtime versions, actual model and reasoning effort when
+  verifiable (otherwise unrecorded), comparable measurements, validation limits,
+  deployment/refresh/save state and next triggers. Keep raw project evidence and
+  release notes in their owning locations; Codex Console indexes them in the
+  existing database rather than creating a duplicate database.

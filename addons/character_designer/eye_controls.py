@@ -8,6 +8,8 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
+from . import generated_names
+
 from .torso_controls import _active, _animated, _same_rest, _same_value, _state, _update
 
 OWNER_KEY = 'character_designer_owner'
@@ -219,12 +221,13 @@ def set_display_spacing(context, armature, distance):
 
 def _add_widget(context, armature, record, role, width, height):
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection is None:
+    if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
         collection = bpy.data.collections.new(record['widget_collection'])
+        record['widget_collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
         from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'Eyes')
+        widget_collections.ensure_container(context, collection, armature, 'Eyes', allow_numbered=True)
         record['widget_collection'] = collection.name
     # Original analytic geometry: a pinched goggles contour and two clean rings.
     vertices = []
@@ -234,7 +237,7 @@ def _add_widget(context, armature, record, role, width, height):
         if role == 'MASTER':
             z *= 0.48 + 0.52 * abs(x) ** 0.55
         vertices.append((width * x, 0.0, height * z))
-    name = 'WGT_CD_Eyes_' + role + '_' + record['id'][:10]
+    name = generated_names.widget_name(armature, 'Eyes_' + role)
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(vertices, [(i, (i + 1) % 64) for i in range(64)], [])
     mesh.update()
@@ -287,7 +290,8 @@ def _delete_widgets(record):
             if not mesh.users:
                 bpy.data.meshes.remove(mesh)
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection and not collection.objects and not collection.children:
+    if (collection and _owned(collection, record, 'WIDGET_COLLECTION')
+            and not collection.objects and not collection.children):
         bpy.data.collections.remove(collection)
         from . import widget_collections
         widget_collections.prune_empty(bpy.context)
@@ -343,7 +347,7 @@ def build(context, armature, head_name=None, left_name=None, right_name=None):
               'bones': names, 'bone_states': {}, 'source_states': {
                   name: _state(armature.data.bones[name]) for name in (head_name, *sources)},
               'constraints': [], 'widgets': {}, 'distance': distance}
-    record['widget_collection'] = 'CD_Eye_Widgets_' + record['id'][:10]
+    record['widget_collection'] = generated_names.collection_name(armature, 'Eyes')
     layout = bone_collections.capture_managed_layout(armature)
     ctx = _limb()._capture_context(context, armature)
     mirror = armature.data.use_mirror_x

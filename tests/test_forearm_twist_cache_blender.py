@@ -108,6 +108,132 @@ def test_basis_record_and_frame_changes_recheck_symmetry():
         assert obj.name not in runtime._ERRORS
 
 
+def test_repeated_invalid_basis_stays_paused_and_direct_repair_recovers():
+    f, graph = ready()
+    obj = f['mesh']
+    basis = obj.data.shape_keys.reference_key
+    index = f['rings'][3][0]
+    old = basis.data[index].co.copy()
+    artist_keys = fixtures.key_snapshot(obj, names=('ExistingFace', 'ExistingForearm'))
+    unrelated = bpy.data.objects.new('Unrelated failed-proof probe', None)
+    bpy.context.collection.objects.link(unrelated)
+    bpy.context.view_layer.update()
+    with patch.object(runtime, 'mirror_ring_pairs', wraps=runtime.mirror_ring_pairs) as pairs, \
+         patch.object(runtime.limb_ik, '_validate_inventory', wraps=runtime.limb_ik._validate_inventory) as inventory:
+        basis.data[index].co.x += .002
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 1 and obj.name in runtime._ERRORS
+        failure = runtime._ERRORS[obj.name]
+        assert all(key.mute for key in managed(obj))
+        before_inventory = inventory.call_count
+        for _ in range(3):
+            runtime.update_runtime(bpy.context.scene, graph)
+        assert inventory.call_count == before_inventory + 3, 'A cached failure must retain rig safety validation'
+        unrelated.location.x += 1
+        bpy.context.view_layer.update()
+        fixtures.pose_target(f, 35.)
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 1, 'An unchanged failed Basis proof must not rescan the Mesh'
+        assert runtime._ERRORS[obj.name] == failure
+        assert all(key.mute for key in managed(obj))
+        assert fixtures.key_snapshot(obj, names=('ExistingFace', 'ExistingForearm')) == artist_keys
+        # Direct same-count repairs have no notification requirement: the exact
+        # Basis fingerprint must replace the failed proof and resume correction.
+        basis.data[index].co = old
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 2 and obj.name not in runtime._ERRORS
+        assert all(not key.mute for key in managed(obj))
+    fixtures.assert_runtime_geometry(f, 'Direct Basis repair after a cached failed proof')
+
+
+def test_failed_proof_rechecks_changed_frames_rings_and_chain_rest():
+    f, _graph = ready()
+    obj, arm = f['mesh'], f['armature']
+    records = runtime._records(obj)
+    source, target = records['L'], records['R']
+    basis = obj.data.shape_keys.reference_key
+    index = f['rings'][3][0]
+    old = basis.data[index].co.copy()
+    matrix = arm.matrix_world.copy()
+    head = arm.data.bones[source['chain'][0]].head_local.copy()
+    busy = runtime._BUSY
+    runtime._BUSY = True
+    try:
+        basis.data[index].co.x += .002
+        with patch.object(runtime, 'mirror_ring_pairs', wraps=runtime.mirror_ring_pairs) as pairs:
+            def refused():
+                try:
+                    cache.mirror_pairs(obj, arm, source, target, runtime.mirror_ring_pairs)
+                except ValueError as exc:
+                    return exc
+                raise AssertionError('The invalid mirror proof was accepted')
+
+            first = refused()
+            repeated = refused()
+            assert pairs.call_count == 1 and type(repeated) is type(first) and repeated.args == first.args
+            assert repeated is not first, 'Repeat a failed proof with a fresh exception'
+            arm.location.x += .1
+            bpy.context.view_layer.update()
+            refused()
+            assert pairs.call_count == 2, 'A changed armature frame must recheck a failed proof'
+            arm.matrix_world = matrix
+            bpy.context.view_layer.update()
+            position = source['rings'][3]['position']
+            source['rings'][3]['position'] += .01
+            refused()
+            assert pairs.call_count == 3, 'Changed captured ring positions must recheck a failed proof'
+            source['rings'][3]['position'] = position
+            fixtures.activate_mesh(arm)
+            bpy.ops.object.mode_set(mode='EDIT')
+            arm.data.edit_bones[source['chain'][0]].head.x += .001
+            bpy.ops.object.mode_set(mode='OBJECT')
+            refused()
+            assert pairs.call_count == 4, 'Changed chain Rest endpoints must recheck a failed proof'
+            bpy.ops.object.mode_set(mode='EDIT')
+            arm.data.edit_bones[source['chain'][0]].head = head
+            bpy.ops.object.mode_set(mode='OBJECT')
+            fixtures.activate_mesh(obj)
+            basis.data[index].co = old
+            result = cache.mirror_pairs(obj, arm, source, target, runtime.mirror_ring_pairs)
+            assert pairs.call_count == 5 and len(result) == len(source['rings'])
+            assert cache.mirror_pairs(obj, arm, source, target, runtime.mirror_ring_pairs) == result
+            assert pairs.call_count == 5, 'A repaired proof must resume ordinary success caching'
+    finally:
+        if arm.mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        arm.matrix_world = matrix
+        basis.data[index].co = old
+        fixtures.activate_mesh(obj)
+        runtime._BUSY = busy
+
+
+def test_failed_proof_is_rechecked_after_undo_and_unload():
+    f, graph = ready()
+    obj = f['mesh']
+    basis = obj.data.shape_keys.reference_key
+    index = f['rings'][3][0]
+    old = basis.data[index].co.copy()
+    with patch.object(runtime, 'mirror_ring_pairs', wraps=runtime.mirror_ring_pairs) as pairs:
+        basis.data[index].co.x += .002
+        runtime.update_runtime(bpy.context.scene, graph)
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 1 and all(key.mute for key in managed(obj))
+        runtime._undo_post(None)
+        assert pairs.call_count == 2, 'Undo must discard the old failed proof and validate again'
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 2 and obj.name in runtime._ERRORS
+        runtime.unregister_forearm_twist_runtime()
+        assert not cache._TOPOLOGY and not cache._MIRROR
+        runtime.register_forearm_twist_runtime()
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 3 and obj.name in runtime._ERRORS
+        basis.data[index].co = old
+        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 4 and obj.name not in runtime._ERRORS
+        assert all(not key.mute for key in managed(obj))
+    fixtures.assert_runtime_geometry(f, 'Repair after failed-proof Undo and runtime reload')
+
+
 def test_weights_artist_keys_output_and_disable_remain_live():
     f, graph = ready()
     obj = f['mesh']

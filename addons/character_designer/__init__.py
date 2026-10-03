@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 68, 2),
+    "version": (0, 73, 2),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -76,6 +76,7 @@ from .torso_ui import TORSO_UI_CLASSES
 from .eye_ui import EYE_UI_CLASSES
 from .body_controls_ui import BODY_CONTROL_UI_CLASSES
 from .control_colors import CONTROL_COLOR_CLASSES
+from .bone_color_palette import BONE_COLOR_PALETTE_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
 from .animation import (
@@ -83,6 +84,11 @@ from .animation import (
     CharacterDesignerAnimationState,
     register_animation_runtime,
     unregister_animation_runtime,
+)
+from .animation_worklist_ui import (
+    WORKLIST_CLASSES,
+    CharacterDesignerAnimationWorklistState,
+    stop_worklist_ui,
 )
 from .ui_constants import (
     SIDEBAR_CATEGORY,
@@ -105,6 +111,9 @@ from . import curve_tools
 from .topology_symmetry import TOPOLOGY_SYMMETRY_CLASSES
 from .mesh_mirror_ui import (
     MESH_MIRROR_CLASSES, register_mesh_mirror_runtime, unregister_mesh_mirror_runtime,
+)
+from .refine_symmetry_ui import (
+    REFINE_SYMMETRY_CLASSES, register_refine_symmetry_runtime, unregister_refine_symmetry_runtime,
 )
 from .forearm_twist import (
     FOREARM_TWIST_CLASSES,
@@ -426,41 +435,64 @@ def _reload_addon_deferred():
         if name == module_name or name.startswith(f"{module_name}.")
     }
     old_main = old_modules.get(module_name)
+    # RNA can outlive a replaced Python module (for example after a failed
+    # external reload). Its callbacks still identify the actual runtime owner.
+    registered_panel = bpy.types.Panel.bl_rna_get_subclass_py("CHARACTERDESIGNER_PT_main")
+    runtime = getattr(getattr(registered_panel, "draw", None), "__globals__", None)
+    if runtime and runtime.get("__name__") == module_name and old_main is not None:
+        if runtime is not old_main.__dict__:
+            import types
+            old_main = types.ModuleType(module_name)
+            old_main.__dict__.update(runtime)
+            old_modules[module_name] = old_main
     persistent = bool(getattr(old_main, "__addon_persistent__", False)) if old_main else False
 
     try:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
         stop_delta_symmetry_runtime(clear_capture=True)
-        try:
-            addon_utils.disable(module_name, default_set=False, refresh_handled=True)
-        except TypeError:
-            addon_utils.disable(module_name, default_set=False)
+        # disable() silently skips unregister when __addon_enabled__ is stale.
+        # Call the registered runtime's teardown and let failures propagate.
+        if registered_panel is not None and old_main is not None:
+            old_main.unregister()
+            old_main.__addon_enabled__ = False
 
         for name in old_modules:
             sys.modules.pop(name, None)
         importlib.invalidate_caches()
 
+        enable_errors = []
         try:
             reloaded = addon_utils.enable(
                 module_name,
                 default_set=False,
                 persistent=persistent,
                 refresh_handled=True,
+                handle_error=enable_errors.append,
             )
         except TypeError:
             reloaded = addon_utils.enable(
                 module_name,
                 default_set=False,
                 persistent=persistent,
+                handle_error=enable_errors.append,
             )
         if reloaded is None:
-            raise RuntimeError("Blender could not enable the refreshed add-on.")
+            details = "; ".join(str(error) for error in enable_errors)
+            raise RuntimeError(details or "Blender could not enable the refreshed add-on.")
         from . import finger_loop_marks_ui, finger_definition_ui
         finger_definition_ui._resume()
         finger_loop_marks_ui.refresh(bpy.context)
         print("[Character Designer] Add-on refreshed successfully.")
     except Exception as exc:
         traceback.print_exc()
+        failed_main = sys.modules.get(module_name)
+        if failed_main is not None and failed_main is not old_main:
+            panel = bpy.types.Panel.bl_rna_get_subclass_py("CHARACTERDESIGNER_PT_main")
+            if panel is not None and getattr(panel.draw, "__globals__", None) is failed_main.__dict__:
+                try:
+                    failed_main.unregister()
+                except Exception:
+                    traceback.print_exc()
         for name in list(sys.modules):
             if name == module_name or name.startswith(f"{module_name}."):
                 sys.modules.pop(name, None)
@@ -8316,7 +8348,7 @@ class CHARACTERDESIGNER_OT_refresh_addon(Operator):
     def execute(self, _context):
         global ADDON_REFRESH_PENDING, ADDON_REFRESH_LAST_ERROR, ADDON_REFRESH_LAST_STATE
 
-        if not _source_changed():
+        if not _source_changed() and not ADDON_REFRESH_LAST_ERROR:
             ADDON_REFRESH_LAST_STATE = False
             if not bpy.app.timers.is_registered(_source_watch_deferred):
                 if not _register_source_watch():
@@ -8450,6 +8482,8 @@ def _draw_refresh_action(layout):
         ),
         icon="ERROR" if ADDON_REFRESH_LAST_ERROR else "FILE_REFRESH",
     )
+    if ADDON_REFRESH_LAST_ERROR:
+        _draw_message(layout, "ERROR", ADDON_REFRESH_LAST_ERROR)
 
 
 class CHARACTERDESIGNER_PT_main(Panel):
@@ -8651,6 +8685,7 @@ CLASSES = (
     *UNITY_EXPORT_CLASSES,
     *HAIR_BONES_CLASSES,
     *SKIRT_CLASSES,
+    *WORKLIST_CLASSES,
     *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
     *BONE_COLLECTION_CLASSES,
@@ -8660,6 +8695,7 @@ CLASSES = (
     *WEIGHT_SYMMETRY_CLASSES,
     *TOPOLOGY_SYMMETRY_CLASSES,
     *MESH_MIRROR_CLASSES,
+    *REFINE_SYMMETRY_CLASSES,
     *SHAPE_KEY_CLASSES,
     *DELTA_SYMMETRY_CLASSES,
     *LIMB_IK_CLASSES,
@@ -8667,6 +8703,7 @@ CLASSES = (
     *EYE_UI_CLASSES,
     *BODY_CONTROL_UI_CLASSES,
     *CONTROL_COLOR_CLASSES,
+    *BONE_COLOR_PALETTE_CLASSES,
     *FOREARM_TWIST_CLASSES,
     *SPLINE_IK_SETUP_CLASSES,
     *REFERENCE_VIEW_CLASSES,
@@ -8697,6 +8734,8 @@ def _expected_rna_identifier(cls):
         return f"{namespace.upper()}_OT_{name}"
     if issubclass(cls, bpy.types.Panel):
         return cls.bl_idname or cls.__name__
+    if issubclass(cls, bpy.types.UIList):
+        return cls.__name__
     if issubclass(cls, bpy.types.PropertyGroup):
         return cls.__name__
     raise RuntimeError(f"Unsupported Character Designer RNA class: {cls.__name__}.")
@@ -8706,7 +8745,7 @@ def _registered_rna_class(cls):
     """Resolve the live Python class behind an expected Blender RNA identifier."""
 
     identifier = _expected_rna_identifier(cls)
-    for base in (bpy.types.Operator, bpy.types.Panel, bpy.types.PropertyGroup):
+    for base in (bpy.types.Operator, bpy.types.Panel, bpy.types.PropertyGroup, bpy.types.UIList):
         if issubclass(cls, base):
             return base.bl_rna_get_subclass_py(identifier)
     return None
@@ -8742,6 +8781,11 @@ def _validate_registration_integrity():
             or setup_property.fixed_type != CharacterDesignerSetup.bl_rna):
         errors.append("missing or stale Scene character setup")
 
+    worklist_property = bpy.types.Scene.bl_rna.properties.get("character_designer_animation_worklist")
+    if (worklist_property is None or worklist_property.type != "POINTER"
+            or worklist_property.fixed_type != CharacterDesignerAnimationWorklistState.bl_rna):
+        errors.append("missing or stale Scene animation worklist")
+
     export_property = bpy.types.Object.bl_rna.properties.get("character_designer_unity_export")
     if (export_property is None or export_property.type != "POINTER"
             or export_property.fixed_type != CharacterDesignerUnityExport.bl_rna):
@@ -8753,7 +8797,7 @@ def _validate_registration_integrity():
 
 
 def register():
-    from . import body_calibration_ui, control_pose_assets, control_weight_paint
+    from . import body_calibration_ui, control_pose_assets, control_weight_paint, generated_names
     centerline_registered = hasattr(bpy.types.WindowManager, "character_designer")
     delta_registered = hasattr(
         bpy.types.WindowManager,
@@ -8777,6 +8821,7 @@ def register():
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
     animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
     setup_registered = hasattr(bpy.types.Scene, "character_designer_setup")
+    worklist_registered = hasattr(bpy.types.Scene, "character_designer_animation_worklist")
     unity_export_registered = hasattr(bpy.types.Object, "character_designer_unity_export")
     registration_state = (
         centerline_registered,
@@ -8790,11 +8835,13 @@ def register():
         skirt_registered,
         animation_registered,
         setup_registered,
+        worklist_registered,
         unity_export_registered,
     )
     if all(registration_state):
         _validate_registration_integrity()
         register_mesh_mirror_runtime()
+        register_refine_symmetry_runtime()
         register_finger_bones_runtime()
         register_finger_root_runtime()
         register_animation_runtime()
@@ -8808,6 +8855,7 @@ def register():
         register_forearm_twist_runtime()
         _register_workspace_filter_guard()
         _register_source_watch()
+        generated_names.register_handlers()
         return
     if any(registration_state):
         raise RuntimeError("Character Designer is only partially registered.")
@@ -8815,6 +8863,7 @@ def register():
     registered = []
     added_properties = []
     added_setup = False
+    added_worklist = False
     added_export = False
     try:
         for cls in CLASSES:
@@ -8822,6 +8871,8 @@ def register():
             registered.append(cls)
         bpy.types.Scene.character_designer_setup = PointerProperty(type=CharacterDesignerSetup)
         added_setup = True
+        bpy.types.Scene.character_designer_animation_worklist = PointerProperty(type=CharacterDesignerAnimationWorklistState)
+        added_worklist = True
         bpy.types.Object.character_designer_unity_export = PointerProperty(type=CharacterDesignerUnityExport)
         added_export = True
         bpy.types.WindowManager.character_designer = PointerProperty(
@@ -8875,6 +8926,7 @@ def register():
         )
         added_properties.append("character_designer_references")
         register_mesh_mirror_runtime()
+        register_refine_symmetry_runtime()
         register_finger_bones_runtime()
         register_finger_root_runtime()
         register_animation_runtime()
@@ -8888,9 +8940,13 @@ def register():
         register_forearm_twist_runtime()
         _register_workspace_filter_guard()
         _register_source_watch()
+        generated_names.register_handlers()
     except Exception:
+        generated_names.unregister_handlers()
+        stop_worklist_ui()
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
         unregister_mesh_mirror_runtime()
+        unregister_refine_symmetry_runtime()
         unregister_finger_bones_runtime()
         unregister_finger_root_runtime()
         unregister_animation_runtime()
@@ -8906,6 +8962,8 @@ def register():
         _unregister_source_watch()
         if added_setup and hasattr(bpy.types.Scene, "character_designer_setup"):
             del bpy.types.Scene.character_designer_setup
+        if added_worklist and hasattr(bpy.types.Scene, "character_designer_animation_worklist"):
+            del bpy.types.Scene.character_designer_animation_worklist
         if added_export and hasattr(bpy.types.Object, "character_designer_unity_export"):
             del bpy.types.Object.character_designer_unity_export
         for property_name in reversed(added_properties):
@@ -8920,12 +8978,15 @@ def register():
 
 
 def unregister():
-    from . import body_calibration_ui, control_pose_assets, control_weight_paint
+    from . import body_calibration_ui, control_pose_assets, control_weight_paint, generated_names
+    generated_names.unregister_handlers()
     control_pose_assets.unregister()
     control_weight_paint.unregister()
     body_calibration_ui.unregister()
     stop_export_ui()
+    stop_worklist_ui()
     unregister_mesh_mirror_runtime()
+    unregister_refine_symmetry_runtime()
     unregister_finger_bones_runtime()
     unregister_finger_root_runtime()
     unregister_animation_runtime()
@@ -8941,6 +9002,8 @@ def unregister():
     _unregister_source_watch()
     if hasattr(bpy.types.Scene, "character_designer_setup"):
         del bpy.types.Scene.character_designer_setup
+    if hasattr(bpy.types.Scene, "character_designer_animation_worklist"):
+        del bpy.types.Scene.character_designer_animation_worklist
     if hasattr(bpy.types.Object, "character_designer_unity_export"):
         del bpy.types.Object.character_designer_unity_export
     if hasattr(bpy.types.WindowManager, "character_designer_skirt"):

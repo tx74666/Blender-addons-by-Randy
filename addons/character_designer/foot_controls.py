@@ -8,6 +8,8 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
+from . import generated_names
+
 OWNER_KEY = 'character_designer_owner'
 OWNER_VALUE = 'foot_controls'
 ROLE_KEY = 'character_designer_foot_role'
@@ -502,14 +504,17 @@ def _add_constraint(record, owner, kind, name, armature, **fields):
 
 def _add_widget(context, armature, record, role, kind, scale):
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection is None:
+    if (collection is None or collection.get(OWNER_KEY) != OWNER_VALUE
+            or collection.get(ID_KEY) != record['id']
+            or collection.get(ROLE_KEY) != 'WIDGET_COLLECTION'):
         collection = bpy.data.collections.new(record['widget_collection'])
+        record['widget_collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'WIDGET_COLLECTION')
         from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'Foot.' + record['side'])
+        widget_collections.ensure_container(context, collection, armature, 'Foot.' + record['side'], allow_numbered=True)
         record['widget_collection'] = collection.name
-    name = 'WGT_CD_' + role + '_' + record['id'][:10]
+    name = generated_names.widget_name(armature, role + '.' + record['side'])
     vertices, edges = _limb()._widget_geometry(kind)
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(vertices, edges, [])
@@ -572,7 +577,10 @@ def _delete_graph(context, armature, record):
             if not mesh.users:
                 bpy.data.meshes.remove(mesh)
     collection = bpy.data.collections.get(record['widget_collection'])
-    if collection and not collection.objects and not collection.children:
+    if (collection and collection.get(OWNER_KEY) == OWNER_VALUE
+            and collection.get(ID_KEY) == record['id']
+            and collection.get(ROLE_KEY) == 'WIDGET_COLLECTION'
+            and not collection.objects and not collection.children):
         bpy.data.collections.remove(collection)
         from . import widget_collections
         widget_collections.prune_empty(context)
@@ -640,7 +648,7 @@ def build(context, armature, key, toe_name=None, shoe=None):
               'bones': names, 'bone_states': {}, 'widgets': {}, 'drivers': [], 'constraints': [],
               'original_constraints': [_constraint_state(owner, con) for owner, con, entry in rig['entries']
                                        if entry['role'] in {'IK', 'END_ROTATION', 'AUTO_OFFSET_ROTATION'}]}
-    record['widget_collection'] = 'CD Foot Widgets ' + record['id'][:10]
+    record['widget_collection'] = generated_names.collection_name(armature, 'Foot.' + side)
     previous_records = _all_records(armature)
     layout_before = bone_collections.capture_managed_layout(armature)
     context_before = _limb()._capture_context(context, armature)

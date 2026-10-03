@@ -386,9 +386,10 @@ def draw_body_detail_visuals(layout, context):
 
 
 from .body_setup_ui import BODY_SETUP_UI_CLASSES
+from .body_original_mode import BODY_ORIGINAL_CLASSES
 
 
 BODY_CONTROL_UI_CLASSES = (CHARACTERDESIGNER_OT_root_control, CHARACTERDESIGNER_OT_limb_fk_visuals,
                            CHARACTERDESIGNER_OT_head_neck_visuals, CHARACTERDESIGNER_OT_body_detail_visuals,
                            CHARACTERDESIGNER_OT_upgrade_wrist_rotation,
-                           CHARACTERDESIGNER_OT_upgrade_foot_auto_align, *BODY_SETUP_UI_CLASSES)
+                           CHARACTERDESIGNER_OT_upgrade_foot_auto_align, *BODY_SETUP_UI_CLASSES, *BODY_ORIGINAL_CLASSES)

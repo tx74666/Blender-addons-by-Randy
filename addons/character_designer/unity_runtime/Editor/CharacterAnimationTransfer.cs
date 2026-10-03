@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -25,6 +27,7 @@ namespace CharacterDesigner.Unity.Editor
         {
             public string schema = Schema, units = "metres", coordinate = "unity-lh-y-up", matrixLayout = "row-major";
             public string targetName, targetAssetPath, targetGuid, clipName, clipAssetPath, clipGuid, exportedUtc;
+            public string projectId, sourceGuid, sourceName;
             public long clipLocalId;
             public float duration, sampleRate = 60;
             public bool loopTime, humanoid, applyFootIK = true;
@@ -34,7 +37,8 @@ namespace CharacterDesigner.Unity.Editor
         }
         [Serializable] public sealed class Bone
         {
-            public string name, path, restSource;
+            public string name, path, restSource, humanRole;
+            public bool weighted;
             public int parent;
             public float[] rest;
         }
@@ -63,6 +67,74 @@ namespace CharacterDesigner.Unity.Editor
             public string schema = "cdesigner.animation-latest/1";
             public string file, targetName, clipName, exportedUtc;
         }
+        [Serializable] public sealed class CollectionManifest
+        {
+            public string schema="cdesigner.animation-collection/1", id, name, sourceGuid, sourceName;
+            public CollectionEntry[] clips;
+        }
+        [Serializable] public sealed class CollectionEntry { public string file, sha256, name; }
+
+        public static AnimationClip[] Collect(GameObject source, RuntimeAnimatorController controller=null, Object scope=null)
+        {
+            var clips=new List<AnimationClip>(Clips(source));
+            if(controller!=null)clips.AddRange(controller.animationClips);
+            if(scope!=null)
+            {
+                string path=AssetDatabase.GetAssetPath(scope);
+                Require(!string.IsNullOrEmpty(path),"Choose an animation resource or an asset folder.");
+                var paths=AssetDatabase.IsValidFolder(path)
+                    ? AssetDatabase.FindAssets("t:AnimationClip",new[]{path}).Select(AssetDatabase.GUIDToAssetPath).Distinct()
+                    : new[]{path};
+                foreach(string p in paths)clips.AddRange(AssetDatabase.LoadAllAssetsAtPath(p).OfType<AnimationClip>());
+            }
+            return clips.Where(c=>c!=null && EditorUtility.IsPersistent(c) && !c.name.StartsWith("__preview__",StringComparison.Ordinal))
+                .Distinct().OrderBy(c=>c.name,StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+
+        static string Hash(string value)
+        { using var sha=SHA256.Create();return string.Concat(sha.ComputeHash(Encoding.UTF8.GetBytes(value)).Select(b=>b.ToString("x2"))); }
+
+        public static string ExportCollection(GameObject source, IEnumerable<AnimationClip> selected, string folder, string name)
+        {
+            Require(source!=null && EditorUtility.IsPersistent(source),"Choose a source character prefab with its Avatar.");
+            var clips=selected.Where(c=>c!=null).Distinct().ToArray();
+            Require(clips.Length>0,"Select one or more source actions.");
+            Require(!string.IsNullOrWhiteSpace(folder),"Choose an exchange folder outside Unity Assets.");
+            folder=Path.GetFullPath(folder);
+            Require(!(folder+Path.DirectorySeparatorChar).StartsWith(Path.GetFullPath(Application.dataPath)+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase),
+                "Use an exchange folder outside Unity Assets; source resources are never overwritten.");
+            string sourceGuid=AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(source));
+            name=string.IsNullOrWhiteSpace(name)?source.name+" Motions":name.Trim();
+            string id=Hash(PlayerSettings.productGUID+":"+sourceGuid+":"+name);
+            var entries=new List<CollectionEntry>();var created=new List<string>();
+            Directory.CreateDirectory(folder);
+            try
+            {
+                foreach(var clip in clips)
+                {
+                    Document document;
+                    using(var preview=new Preview(source,clip))document=preview.Capture(false);
+                    // Content-addressed packets remain stable on repeated export.
+                    document.exportedUtc="";
+                    string json=JsonUtility.ToJson(document,false), hash=Hash(json);
+                    string filename=hash+".cdanim.json", path=Path.Combine(folder,filename);
+                    if(!File.Exists(path)){AtomicWrite(path,json);created.Add(path);}
+                    else Require(Hash(File.ReadAllText(path))==hash,"An existing exchange packet was changed; choose another output folder.");
+                    entries.Add(new CollectionEntry{file=filename,sha256=hash,name=clip.name});
+                }
+                string manifestPath=Path.Combine(folder,id+".cdcollection.json");
+                AtomicWrite(manifestPath,JsonUtility.ToJson(new CollectionManifest{id=id,name=name,sourceGuid=sourceGuid,sourceName=source.name,clips=entries.ToArray()},true));
+                EditorPrefs.SetString(FolderPreference,folder);
+                return manifestPath;
+            }
+            catch
+            {
+                // Only exact files created by this unpublished transaction are removed.
+                foreach(string path in created)if(File.Exists(path))File.Delete(path);
+                throw;
+            }
+            finally { EditorUtility.ClearProgressBar(); }
+        }
 
         public static AnimationClip[] Clips(GameObject target)
         {
@@ -75,10 +147,19 @@ namespace CharacterDesigner.Unity.Editor
         }
 
         public static string Export(GameObject target, AnimationClip clip, string folder, bool meshEvidence = true)
+            => ExportCore(target, clip, folder, meshEvidence, skeletalOnly: false);
+
+        // Motion editing needs the evaluated skeleton even when a mesh correction cannot
+        // represent that pose. This explicit route never claims deformation evidence.
+        public static string ExportSkeletal(GameObject target, AnimationClip clip, string folder)
+            => ExportCore(target, clip, folder, meshEvidence: false, skeletalOnly: true);
+
+        static string ExportCore(GameObject target, AnimationClip clip, string folder, bool meshEvidence, bool skeletalOnly)
         {
             Require(!string.IsNullOrWhiteSpace(folder), "Choose the Blender handoff folder.");
             Document document;
-            using (var preview = new Preview(target, clip)) document = preview.Capture(meshEvidence);
+            using (var preview = skeletalOnly ? Preview.CreateSkeletal(target, clip) : new Preview(target, clip))
+                document = preview.Capture(meshEvidence);
             string targetLabel = target.name.Replace(".Player", "").Replace(".Runtime", "");
             string path = Path.Combine(Path.GetFullPath(folder), SafeName(targetLabel + "_" + clip.name) + ".cdanim.json");
             // Finish and validate all sampling before publishing either file.
@@ -123,8 +204,12 @@ namespace CharacterDesigner.Unity.Editor
             public Bone[] Bones { get; private set; }
             public float Time { get; private set; }
             public Bounds Bounds { get; private set; }
+            public string CorrectionWarning { get; private set; }
+            internal int PoseVersion { get; private set; }
             readonly GameObject source;
             readonly AnimationClip sourceClip;
+            readonly bool allowForearmFallback;
+            readonly bool skeletalOnly;
             readonly Scene scene;
             readonly Dictionary<Transform, Transform> clones = new();
             readonly List<RestTransform> rest = new();
@@ -133,6 +218,7 @@ namespace CharacterDesigner.Unity.Editor
             readonly List<Mesh> baked = new();
             readonly List<Transform> bones = new();
             readonly Dictionary<Transform, Matrix4x4> bindRest = new();
+            readonly HashSet<Transform> weightedBones = new();
             readonly Dictionary<SkinnedMeshRenderer, float[]> shapeRest = new();
             Matrix4x4 initialRootInverse;
             PlayableGraph graph;
@@ -147,12 +233,22 @@ namespace CharacterDesigner.Unity.Editor
                 public void Restore() { transform.localPosition = position; transform.localRotation = rotation; transform.localScale = scale; }
             }
 
-            public Preview(GameObject target, AnimationClip clip)
+            public Preview(GameObject target, AnimationClip clip) : this(target, clip, false) { }
+
+            public Preview(GameObject target, AnimationClip clip, bool allowForearmFallback)
+                : this(target, clip, allowForearmFallback, skeletalOnly: false) { }
+
+            internal static Preview CreateSkeletal(GameObject target, AnimationClip clip)
+                => new Preview(target, clip, allowForearmFallback: false, skeletalOnly: true);
+
+            private Preview(GameObject target, AnimationClip clip, bool allowForearmFallback, bool skeletalOnly)
             {
                 Require(!EditorApplication.isPlayingOrWillChangePlaymode, "Stop Play Mode before previewing an animation.");
                 Require(target != null && EditorUtility.IsPersistent(target), "Choose a character prefab asset.");
                 Require(clip != null && EditorUtility.IsPersistent(clip), "Choose an existing animation clip asset.");
                 source = target; sourceClip = clip;
+                this.allowForearmFallback = allowForearmFallback;
+                this.skeletalOnly = skeletalOnly;
                 var sourceAnimator = target.GetComponentsInChildren<Animator>(true)
                     .FirstOrDefault(a => a.avatar != null && (!clip.humanMotion || a.avatar.isHuman));
                 Require(sourceAnimator != null, "The target needs an Animator with an existing Avatar. Select its configured player prefab.");
@@ -180,10 +276,9 @@ namespace CharacterDesigner.Unity.Editor
                     AnimationUtility.SetAnimationEvents(Clip, Array.Empty<AnimationEvent>());
                     foreach (var t in Root.GetComponentsInChildren<Transform>(true))
                         rest.Add(new RestTransform { transform=t, position=t.localPosition, rotation=t.localRotation, scale=t.localScale });
-                    CloneCorrections();
+                    if (!skeletalOnly) CloneCorrections();
                     BuildBoneDefinitions();
-                    meshDefinitions = BuildMeshDefinitions();
-                    Sample(0);
+                    SamplePose(0);
                 }
                 catch { Dispose(); throw; }
             }
@@ -226,6 +321,9 @@ namespace CharacterDesigner.Unity.Editor
                 foreach (var smr in renderers)
                 {
                     var bindposes = smr.sharedMesh.bindposes;
+                    // Borrowed read-only view; include influences beyond the old four-weight API.
+                    foreach(var weight in smr.sharedMesh.GetAllBoneWeights())
+                        if(weight.weight>0)weightedBones.Add(smr.bones[weight.boneIndex]);
                     Require(bindposes.Length == smr.bones.Length, smr.name + ": skin bindpose count is inconsistent.");
                     Matrix4x4 rendererRest = initialRootInverse * smr.transform.localToWorldMatrix;
                     for (int i=0;i<bindposes.Length;i++)
@@ -261,8 +359,13 @@ namespace CharacterDesigner.Unity.Editor
                     for (var t=bone;t!=null && t!=Root.transform;t=t.parent) set.Add(t);
                 bones.AddRange(set.OrderBy(t=>Depth(t)).ThenBy(t=>PathOf(Root.transform,t),StringComparer.Ordinal));
                 Require(bones.Select(b=>PathOf(Root.transform,b)).Distinct().Count()==bones.Count, "Duplicate bone paths cannot be transferred safely.");
+                var humanRoles=new Dictionary<Transform,string>();
+                if(Animator.isHuman)
+                    for(int i=0;i<(int)HumanBodyBones.LastBone;i++)
+                    {var t=Animator.GetBoneTransform((HumanBodyBones)i);if(t!=null)humanRoles[t]=((HumanBodyBones)i).ToString();}
                 Bones = bones.Select(t=>new Bone { name=t.name, path=PathOf(Root.transform,t), parent=bones.IndexOf(t.parent),
                     rest=Rows(bindRest.TryGetValue(t,out var bind)?bind:initialRootInverse*t.localToWorldMatrix),
+                    humanRole=humanRoles.TryGetValue(t,out var role)?role:"",weighted=weightedBones.Contains(t),
                     restSource=bindRest.ContainsKey(t)?"bindpose":"hierarchy" }).ToArray();
             }
 
@@ -287,6 +390,26 @@ namespace CharacterDesigner.Unity.Editor
 
             public Frame Sample(float time, bool meshEvidence=false)
             {
+                Require(!skeletalOnly || !meshEvidence, "Skeletal-only sampling cannot produce mesh evidence.");
+                // Transfer/evidence sampling remains strict, including on an interactive instance.
+                EvaluatePose(time, false);
+                var frame=new Frame {time=Time,root=Rows(initialRootInverse*Root.transform.localToWorldMatrix),
+                    poses=bones.Select(t=>new Pose {matrix=Rows(initialRootInverse*t.localToWorldMatrix)}).ToArray(),
+                    meshes=meshEvidence?SampleMeshes():Array.Empty<MeshPose>()};
+                UpdateBounds();
+                return frame;
+            }
+
+            // Interactive viewers need the pose, without allocating an export frame for every tick.
+            public void SamplePose(float time)
+            {
+                EvaluatePose(time, allowForearmFallback);
+                UpdateBounds();
+            }
+
+            void EvaluatePose(float time, bool allowFallback)
+            {
+                CorrectionWarning = null;
                 Require(!disposed && Root!=null, "The animation preview is closed.");
                 Require(IsFinite(time) && time>=0 && time<=Clip.length+.00001f, "Preview time is outside the clip.");
                 if(graph.IsValid()) graph.Destroy();
@@ -305,14 +428,20 @@ namespace CharacterDesigner.Unity.Editor
                 graph.Play(); graph.Evaluate(0);
                 if(time>0) graph.Evaluate(time);
                 foreach(var correction in corrections)
-                    if(correction.enabled) Require(correction.ApplyNow(out string error),error);
+                {
+                    if(!correction.enabled || correction.ApplyNow(out string error)) continue;
+                    // ApplyNow has already restored ordinary skinning on failure.
+                    if(!allowFallback) Require(false,error);
+                    CorrectionWarning ??= error;
+                }
                 Time=Mathf.Min(time,Clip.length);
-                var frame=new Frame {time=Time,root=Rows(initialRootInverse*Root.transform.localToWorldMatrix),
-                    poses=bones.Select(t=>new Pose {matrix=Rows(initialRootInverse*t.localToWorldMatrix)}).ToArray(),
-                    meshes=meshEvidence?SampleMeshes():Array.Empty<MeshPose>()};
+            }
+
+            void UpdateBounds()
+            {
                 bool first=true;
                 foreach(var renderer in renderers) {if(first) {Bounds=renderer.bounds;first=false;} else {var b=Bounds;b.Encapsulate(renderer.bounds);Bounds=b;}}
-                return frame;
+                unchecked { PoseVersion++; }
             }
 
             MeshPose[] SampleMeshes()
@@ -355,6 +484,8 @@ namespace CharacterDesigner.Unity.Editor
 
             public Document Capture(bool meshEvidence=true)
             {
+                Require(!skeletalOnly || !meshEvidence, "Skeletal-only sampling cannot produce mesh evidence.");
+                if(meshEvidence && meshDefinitions==null)meshDefinitions=BuildMeshDefinitions();
                 var times=new List<float>();
                 for(int i=0;i/60f<Clip.length-.000001f;i++)times.Add(i/60f);
                 times.Add(Clip.length);
@@ -370,10 +501,11 @@ namespace CharacterDesigner.Unity.Editor
                 EditorUtility.ClearProgressBar();
                 AssetDatabase.TryGetGUIDAndLocalFileIdentifier(sourceClip,out string clipGuid,out long clipId);
                 return new Document { targetName=source.name,targetAssetPath=AssetDatabase.GetAssetPath(source),
+                    projectId=PlayerSettings.productGUID.ToString(),sourceGuid=AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(source)),sourceName=source.name,
                     targetGuid=AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(source)),clipName=sourceClip.name,
                     clipAssetPath=AssetDatabase.GetAssetPath(sourceClip),clipGuid=clipGuid,clipLocalId=clipId,
                     exportedUtc=DateTime.UtcNow.ToString("O"),duration=Clip.length,loopTime=AnimationUtility.GetAnimationClipSettings(Clip).loopTime,
-                    humanoid=Clip.humanMotion,bones=Bones,frames=frames,meshes=meshDefinitions };
+                    humanoid=Clip.humanMotion,bones=Bones,frames=frames,meshes=meshEvidence?meshDefinitions:Array.Empty<MeshDefinition>() };
             }
 
             public void Dispose()

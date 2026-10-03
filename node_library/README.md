@@ -1,13 +1,15 @@
 # Randy Node Library
 
-Reusable native Blender node groups, their build scripts, and their change history live in this repository. This directory contains four original assets; third-party libraries such as Higgsas and Node Tools are not bundled.
+Reusable native Blender node groups, their build scripts, and their change history live in this repository. The 0.3.1 library exposes six original assets; third-party libraries such as Higgsas and Node Tools are not bundled.
 
-**Library version: 0.1.2.** Built and checked with Blender 5.2. Other Blender versions have not been verified.
+**Library version: 0.3.1.** Multifunction **Ring Mask 0.2.1** is the visible node for full rings and partial arcs. It defaults to Sweep Angle 360 and supplies Extend Mask through Ring Data. The former Arc Mask 0.2.0 and original three-input radial Ring Mask remain historical fixtures outside the visible asset directory.
 
 | Asset | Editor | Asset catalog | Version | Purpose |
 | --- | --- | --- | --- | --- |
-| Ring Mask | Shader Editor | `Textures` | 0.1.1 | A normalized UV mask for adjustable concentric rings. English interface. |
-| Mix Shaders | Shader Editor | `Textures` | 0.1.0 | Expandable Mask / Shader slots over a Base Shader. RR Helper updates empty-input state. |
+| Mix Shaders | Shader Editor | `Textures` | 0.2.0 | Native Mask / Shader slots over a Base Shader; no runtime connection-state helper. |
+| Ring Mask | Shader Editor | `Textures` | 0.2.1 | Full rings or adjustable arcs, with reusable Ring Data. Default sweep 360 and the normal brown Texture color tag. |
+| Extend Mask | Shader Editor | `Textures` | 0.1.0 | New inner/outer bands or complete contour outlines; radial branches can be extended again. |
+| Ring Group | Shader Editor | `Textures` | 0.1.0 | Combine many Ring / Arc masks with Maximum and one shared Shader. |
 | Randy Ring | Geometry Nodes | `Randy/Primitives` | 0.1.0 | A parametric torus with radius, tube radius, resolution, shading, and material controls. Legacy bilingual interface preserved. |
 | Randy Circular Pattern | Geometry Nodes | `Randy/Patterns` | 0.1.0 | Instances input geometry around a circle, with count, radius, orientation, scale, and optional realization. Legacy bilingual interface preserved. |
 
@@ -23,8 +25,16 @@ The ready-to-use files are in [assets](assets). They are asset-library files, no
 2. Keep the `assets` directory intact: both `.blend` files and `blender_assets.cats.txt` belong together.
 3. In Blender, open **Edit > Preferences > File Paths > Asset Libraries**, add the repository's `node_library/assets` directory, and name the library **Randy Nodes**.
 4. In an Asset Browser, choose that library and use **Library > Refresh** after an update.
-5. In the Shader Editor, use **Shift+A > Textures > Ring Mask**, or search for **Ring Mask**. You can also drag the asset from the Asset Browser into the Shader Editor.
-6. Add **Mix Shaders** from that same **Textures** catalog. There is no separate Mix Shaders entry at the root of the Add menu.
+5. In the Shader Editor, use **Shift+A > Textures > Ring Mask**, or search for **Ring Mask**. The current node defaults to a full ring; reduce Sweep Angle for an arc.
+6. Add **Ring Mask**, **Extend Mask**, **Ring Group**, and **Mix Shaders** from that same **Textures** catalog. There is no separate Rings panel or root-level Mix Shaders entry.
+
+The existing local Windows library is
+`D:\Blender\Helper\Asset-Libraries\Costom\Nodes`. Keep using this library and
+refresh its Asset Browser with **Library > Refresh**. Select Ring Group to show
+its optional header **+ / −** controls; refresh RR Helper with **F3 > Refresh
+Add-on** when its editing helpers have also been updated. Current-file migration
+is a separate, explicit operation after a backup. Installing a library does not
+establish that live Builder6 nodes or menus have been upgraded.
 
 Geometry assets belong in the Geometry Node Editor. Blender filters node assets by editor type.
 
@@ -32,7 +42,13 @@ If these same assets are already installed in an existing **Nodes** library, kee
 
 For an existing library, use the deployment scripts below rather than replacing its entire catalog file. A catalog can also describe unrelated assets, which must be preserved. Existing node groups already appended into a scene remain local copies; updating a library does not automatically replace them.
 
-## Ring Mask
+## Original radial implementation (historical three-input Ring Mask)
+
+The original three-input standalone Ring Mask is retired. Its unchanged 0.1.1
+binary is retained in `dependencies/`, outside `assets/`, as a reproducible
+build/test fixture. Use the current five-input Ring Mask 0.2.1 for new materials;
+the following radial contract still describes its embedded computation. The
+matching public name does not make an old scene or linked group current.
 
 ![Ring Mask examples: a thin ring, a soft ring, and two independent rings](previews/ring_mask.png)
 
@@ -64,23 +80,117 @@ Add multiple group instances to make independently adjustable concentric rings. 
 
 Use **Shift+A > Textures > Mix Shaders** beside Ring Mask. It is a normal Shader
 Node Group with the **Shader** color tag, one **Shader** output, and these visible
-inputs: **Base Shader**, **Mask 1**, **Shader 1**. Connect an ordinary Ring Mask to
+inputs: **Base Shader**, **Mask 1 / Shader 1**, **Mask 2 / Shader 2**. Connect an ordinary Ring Mask to
 Mask 1 and any BSDF or imported material shader to Shader 1. The node does not
 automatically connect to Material Output.
 
-With **RR Helper 0.2.40 or later** enabled, select this node and use **right-click
+With **RR Helper 0.2.41 or later** enabled, select this node and use **right-click
 > Add Shader Slot**, or **F3 > Add Shader Slot**, to add another Mask / Shader
 pair. Existing links and values stay attached; expanding one instance leaves
 other instances unchanged. Connect multiple Ring Mask nodes independently. Earlier
 slots cover later slots, with Base Shader at the bottom.
 
-Keep RR Helper enabled while editing connections: it hides and maintains a
-per-instance `_Connected` input so an empty Shader slot passes through to the
-lower shaders. A connected black shader still covers normally. Saved graphs
-render natively without RR Helper; the add-on is needed to update empty-input
-state after further connection edits and to expand the sockets. Ring Mask itself
-needs no RR Helper and is reused without changes. See [the full
-workflow](../docs/shader_mixer.md).
+**RR Helper 0.2.44** also draws **+ / −** on the selected mixer header. Each plus
+adds two input sockets, one Mask and one Shader. Minus removes the final pair
+and its input cables while preserving the upstream nodes; Undo restores the
+edit. One pair and Base Shader always remain. These are optional editor controls,
+not new saved node types; the 0.2.0 asset graph and binary are unchanged.
+The buttons remain visible with **Show Options** disabled; hiding the normal
+node settings does not disable input-slot editing.
+
+The 0.2.0 asset has no hidden `_Connected` inputs or Python-driven connection
+state. Editing and rendering its shader connections works natively without
+RR Helper. Keep unused Mask inputs at **0**. As with Blender's ordinary Mix
+Shader, a white Mask with an unconnected Shader socket mixes in black. The
+optional helper only saves editing steps when expanding a node; ordinary Mix
+Shader nodes can extend the material chain without it. Previously appended
+0.1.0 mixers keep their legacy connection-state behavior and are not silently
+replaced. See [the full workflow](../docs/shader_mixer.md).
+
+The same **Add Shader Slot** context action works on an ordinary **Mix
+Shader** node: it converts that node into the expandable native mixer while
+preserving the Factor, both shader cables, output cables and presentation.
+Its first shader becomes Base Shader, Factor becomes Mask 1 and the second
+shader becomes Shader 1; the new second pair starts unused at Mask 0.
+Expansion preserves even an unused local asset template instead of removing
+it after the final current-file node reference is replaced.
+
+## Ring Mask
+
+Multifunction Ring Mask 0.2.1 exposes the unchanged **Inner Radius**, **Ring Width**, and
+**Edge Softness**, plus **Start Angle** and **Sweep Angle** in degrees. It reads
+the same normalized UV map. Sweep 180 makes a semicircle, 360 a full ring, and
+0 an empty mask; arcs can cross the 0/360 seam. The existing Ring Mask radial
+graph is one shared native dependency, with only the angular gate added.
+Angular ends are hard; Edge Softness controls the radial edges.
+
+Map the circular surface once, without overlapping mirrored UV halves. Such a
+fold can leave full rings looking correct while repeating an arc; see the
+[UV troubleshooting notes](../docs/arc_mask.md#if-one-arc-appears-twice).
+
+Ring Mask retains Arc Mask 0.2.0's **Ring Data**, native Mask calculation and
+socket identifiers. The public name is now Ring Mask and Sweep Angle defaults
+to 360. Connect Ring Data to Extend Mask's Source to reuse the boundaries and
+angles. Its native Texture color tag uses Blender's normal brown header.
+
+Add it through **Shift+A > Textures > Ring Mask** and connect its scalar **Mask**
+to a material mixer or Ring Group. It needs no add-on. See
+[Ring Mask](../docs/ring_mask.md) for controls, old search entries and migration.
+The historical [Arc Mask guide](../docs/arc_mask.md) remains intact.
+
+An old **Group > Linked > Ring Mask** entry can refer to a previously loaded
+linked node group. Library refresh does not replace such current-file groups.
+Explicit migration preserves validated old parameters and links; customized,
+animated or read-only owners are refused. Only superseded groups with no actual
+users can be removed afterward. No global purge or source-library edit runs.
+
+## Extend Mask
+
+Connect **Ring Mask > Ring Data** to **Extend Mask > Source**. One native menu
+offers **Inner**, **Outer**, **Both**, and **Outline**; Width, Gap and Softness
+control only the new bands. Radial modes retain the original arc angles, while
+Outline surrounds the whole contour, including an arc's two cut ends. Both is
+the default, and full rings use Ring Mask's default Sweep Angle 360.
+
+The original source is excluded from the new Mask. Continue radial bands by
+connecting Inner Data or Outer Data to another Extend's Source; each side can
+have its own next node. Combine the resulting masks in Ring Group for one shared
+shader, or use separate Mix Shaders slots for different shaders. Outline outputs
+only a usable final Mask in this first version; its radial data outputs are inactive.
+
+No boundary list, extra mode panel or add-on is required. Distances use Ring Mask's
+normalized UV space. See [Extend Mask](../docs/extend_mask.md) for the workflow.
+
+![Extend Mask: full-ring bands, arc radial bands, contour outline and chained bands](previews/extend_mask.png)
+
+## Ring Group
+
+Ring Group accepts one **Shader** and initially two scalar **Mask** inputs.
+Connect any independently configured Ring Mask nodes, including full rings at
+Sweep 360. Their masks
+are combined with **Maximum**, clamped to 0–1; the Shader passes through once.
+Overlapping half-strength masks stay half strength instead of adding together
+or applying the same shader repeatedly.
+
+Connect its **Mask** and **Shader** outputs to one Mix Shaders material slot.
+Use another Ring Group for another material. To add more masks without an
+add-on, connect a Ring Group's Mask output to another Ring Group's Mask input,
+put the additional Ring / Arc masks into the remaining inputs, and connect the
+Shader only to the final Ring Group. Native Math nodes set to Maximum work too.
+
+RR Helper 0.2.41 offers optional node-context **Add Ring**, **Add Arc**, and
+**Add Mask Slot** shortcuts. It keeps the Ring Group active for repeated adds,
+creates another input when necessary, and spaces a new ring when constant
+radial controls leave room. Existing parameters stay unchanged. The native
+Ring Group requires no update, save or render handler. See
+[Ring Groups](../docs/ring_groups.md) for the workflow and warnings.
+
+RR Helper **0.2.45** adds **+ / −** on the selected Ring Group header to add or
+remove one Mask input. Five masks need three plus clicks from a new group;
+existing values and retained connections survive, and Undo restores removal.
+The current **Add Ring** helper creates multifunction Ring Mask at Sweep 360;
+**Add Arc** uses the same node with a partial span. Earlier helpers may still
+create a historical Arc Mask until the add-on is refreshed.
 
 ## Verification and its limits
 
@@ -89,13 +199,53 @@ The [validation](validation) directory records the evidence and its scope:
 - Ring Mask's original numerical implementation passed 59 actual shader samples plus 4 structure, instance, persistence, and source-preservation checks: 63 checks in total.
 - The 0.1.1 English naming and `Textures` catalog update passed 5 metadata and graph-equivalence checks. Those checks establish that its computation matches the previously tested graph; they are not a new render run.
 - The two geometry assets passed 9 evaluated-geometry and persistence checks.
-- Mix Shaders verification appends the saved asset, checks its canonical
-  generated graph and Textures catalog, expands one of two shared instances,
-  saves and reopens the native graph, and samples three external Ring Masks in
-  a tiny CPU-rendered atlas. All 13 checks passed, including nine rendered
-  samples. See `validation/mix_shaders.json` for its exact
-  source hashes, sample values and result; a background run does not establish
-  that a particular live Shader Editor menu has refreshed.
+- Mix Shaders 0.1.0 previously passed 13 checks, including nine rendered
+  samples. That evidence describes its legacy connection-state implementation.
+- Mix Shaders 0.2.0 passed **14 saved-asset checks**, including **9 real shader
+  samples**, independent expansion to 25 Mask / Shader pairs and connection
+  editing after native save/reopen with RR Helper unregistered. See
+  [mix_shaders.json](validation/mix_shaders.json).
+- Arc Mask 0.1.0 passed **43 checks**, including **38 real shader samples**, exact
+  comparison with the original Ring Mask radial graph, independent shared
+  dependencies and native save/reopen. See
+  [the preserved baseline](validation/arc_mask_0_1_0_baseline.json).
+  Arc Mask 0.1.1 passed **4 metadata and recursive graph-equivalence checks**,
+  including native save/reopen, bound to that baseline. The computation is
+  unchanged; those checks are not another render run. See
+  [the archived 0.1.1 report](validation/arc_mask_0_1_1_baseline.json).
+  Arc Mask **0.2.0** passed **44 checks**, including 38 fresh rendered samples,
+  native save/reopen and exact compatibility of the old Mask graph and socket
+  identifiers. Its preserved binary baseline is outside the public asset directory.
+  Its original report is preserved as
+  [arc_mask_0_2_0_baseline.json](validation/arc_mask_0_2_0_baseline.json), with
+  `validation/fixtures/Randy_Arc_Mask_0_2_0.blend` outside the visible library.
+- Current multifunction Ring Mask **0.2.1** passed **96 checks**: 46 real shader
+  samples in Cycles, the same 46 in EEVEE, and four structure, persistence and
+  source/asset-preservation checks. See
+  [ring_mask_current.json](validation/ring_mask_current.json). These cover the
+  unchanged native graph and socket identifiers against Arc 0.2.0, full-ring
+  defaults, arcs, Ring Data/Extend connections and native save/reopen. Old radial
+  evidence remains historical. The isolated migration fixture passed ten checks,
+  including exact link preservation, customized-source refusal and rollback;
+  it did not operate live Builder6 or verify its menus.
+- Extend Mask passed **131 checks**, including **64 real shader samples in
+  Cycles and 64 in EEVEE**, native Bundle/Menu save/reopen, missing-source and
+  invalid-data guards, radial branch chaining and exact arc end-contour cases.
+  See [extend_mask.json](validation/extend_mask.json).
+- Ring Group passed **24 fresh compatibility checks**, including **17 real shader samples**, three
+  overlapping soft masks sharing one shader, independent expansion to 24 mask
+  inputs and native save/reopen/rendering with RR Helper unregistered. See
+  [ring_group.json](validation/ring_group.json).
+- The 0.3.0 lightweight library check passed for **6 assets / 5 bundles**. Extend
+  publication and deployment passed 9 and 4 pure regression tests; Ring Group's
+  original factory archive proof passed 6. Publication
+  rollback passed 6 tests, Ring / Arc deployment 2 tests, and mixer deployment
+  3 tests. Updated native assets passed their final read-only
+  deployment checks; the original radial binary is preserved as an internal
+  fixture outside the visible asset directory.
+
+Runtime tests, release package checksum and the limits of live verification
+are recorded in [the 0.2.41 release notes](../docs/releases/RRHelper_0.2.41_native_ring_groups_20261001.md).
 
 The preview above comes from the earlier actual shader render. It illustrates the unchanged computation, not a new render of the 0.1.1 asset. Automated asset checks do not establish that a particular running Blender window has refreshed its menus.
 
@@ -121,12 +271,11 @@ blender --background --factory-startup --disable-autoexec --threads 2 --python-e
 
 The full Ring Mask verifier renders shader samples and example images. Run full validation when the computation changes; a documentation-only change does not need another render. Keep heavy Blender jobs serial when memory is limited. These commands use independent background sessions and do not open a working scene.
 
-To install a verified Ring Mask build into an existing asset library, substitute your paths for the placeholders below. The destination must already have a valid `blender_assets.cats.txt`. Keep backups and deployment reports outside the asset library so Blender does not discover duplicate assets.
-
-```sh
-python tools/randy_node_assets/deploy_ring_mask.py --asset node_library/_build/Randy_Ring_Mask.blend --verification node_library/_build/ring-mask-verification.json --library "<existing asset library>" --backups "<backup directory>" --report "<deployment report.json>"
-python tools/randy_node_assets/deploy_ring_mask.py --asset node_library/_build/Randy_Ring_Mask.blend --verification node_library/_build/ring-mask-verification.json --library "<existing asset library>" --backups "<backup directory>" --check
-```
+The Ring Mask commands above rebuild the internal historical radial fixture
+only. Do not install that fixture in a visible asset library; use the current
+`build_ring_mask_current.py` commands below for full rings and arcs. Keep all
+backups and deployment reports outside the
+asset library so Blender does not discover duplicate assets.
 
 For the geometry pair, use `deploy_assets.py` with the `Randy_Toolkit.blend` build and `geometry-verification.json` report. Both deployment tools check the verified source, preserve unrelated catalog entries, back up replaced files, and support a final read-only `--check`.
 
@@ -138,19 +287,38 @@ dependencies by source hash.
 ```sh
 blender --background --factory-startup --disable-autoexec --threads 2 --python-exit-code 1 --python tools/randy_node_assets/build_mix_shaders.py -- --output node_library/_build/Randy_Mix_Shaders.blend
 blender --background --factory-startup --disable-autoexec --threads 2 --python-exit-code 1 --python tools/randy_node_assets/verify_mix_shaders.py -- --asset node_library/_build/Randy_Mix_Shaders.blend --report node_library/_build/mix-shaders-verification.json
-python tools/randy_node_assets/finalize_mix_shaders.py --asset node_library/_build/Randy_Mix_Shaders.blend --verification node_library/_build/mix-shaders-verification.json
+python tools/randy_node_assets/finalize_native_ring_nodes.py --kind mix_shaders --asset node_library/_build/Randy_Mix_Shaders.blend --verification node_library/_build/mix-shaders-verification.json --backups "<publication backup directory>"
 python tools/randy_node_assets/verify_library.py
 python tools/randy_node_assets/deploy_mix_shaders.py --asset node_library/assets/Randy_Mix_Shaders.blend --verification node_library/validation/mix_shaders.json --library "<existing asset library>" --backups "<backup directory>" --report "<deployment report.json>"
 python tools/randy_node_assets/deploy_mix_shaders.py --asset node_library/assets/Randy_Mix_Shaders.blend --verification node_library/validation/mix_shaders.json --library "<existing asset library>" --backups "<backup directory>" --check
 ```
 
-The finalizer accepts only passed evidence bound to the exact unchanged build,
-Ring Mask and source dependencies. It refuses to overwrite an existing different
-published Mix Shaders file or preview; preserve the old publication before
-finalizing a subsequent version. The deployment wrapper reuses Ring Mask's
-guarded catalog merge, backup and rollback implementation in an isolated module;
-it changes only `Randy_Mix_Shaders.blend` and a missing Textures catalog entry.
-Existing Ring Mask, geometry assets and unrelated library contents are preserved.
+Build the current Ring Mask from the preserved Arc 0.2.0 fixture, validate its
+full-ring default and Ring Data workflow, then publish and deploy that same
+verified binary. The older Arc builder remains a historical source; it is not
+the current visible asset's build or publication command.
+
+```sh
+blender --background --factory-startup --disable-autoexec --threads 2 --python-exit-code 1 --python tools/randy_node_assets/build_ring_mask_current.py -- --output node_library/_build/Randy_Ring_Mask.blend --source node_library/validation/fixtures/Randy_Arc_Mask_0_2_0.blend
+blender --background --factory-startup --disable-autoexec --threads 2 --python-exit-code 1 --python tools/randy_node_assets/verify_ring_mask_current.py -- --asset node_library/_build/Randy_Ring_Mask.blend --source node_library/validation/fixtures/Randy_Arc_Mask_0_2_0.blend --extend-asset node_library/assets/Randy_Extend_Mask.blend --report node_library/_build/ring-mask-current-verification.json --eevee
+python tools/randy_node_assets/finalize_ring_mask_current.py --asset node_library/_build/Randy_Ring_Mask.blend --verification node_library/_build/ring-mask-current-verification.json --backups "<publication backup directory>"
+python tools/randy_node_assets/verify_library.py
+
+python tools/randy_node_assets/deploy_ring_mask_current.py --asset node_library/assets/Randy_Ring_Mask.blend --verification node_library/validation/ring_mask_current.json --library "<existing asset library>" --backups "<backup directory>" --report "<ring-mask deployment report.json>"
+python tools/randy_node_assets/deploy_ring_mask_current.py --asset node_library/assets/Randy_Ring_Mask.blend --verification node_library/validation/ring_mask_current.json --library "<existing asset library>" --backups "<backup directory>" --check
+python tools/randy_node_assets/deploy_ring_nodes.py --kind ring_group --asset node_library/assets/Randy_Ring_Group.blend --verification node_library/validation/ring_group.json --library "<existing asset library>" --backups "<backup directory>" --report "<ring-group deployment report.json>"
+python tools/randy_node_assets/deploy_ring_nodes.py --kind ring_group --asset node_library/assets/Randy_Ring_Group.blend --verification node_library/validation/ring_group.json --library "<existing asset library>" --backups "<backup directory>" --check
+```
+
+The current Ring Mask finalizer accepts only passed evidence bound to the exact
+unchanged build, preserved Arc baseline, and source dependencies. It backs up
+replaced publication files outside the asset directory before updating the
+manifest, saved asset and evidence. The deployment wrappers reuse Ring Mask's
+guarded catalog merge, backup and rollback implementation in isolated modules;
+each changes only its selected asset and a missing Textures catalog entry.
+The internal radial graph, geometry assets and unrelated library contents are
+preserved. Retiring the former visible Arc file is a separate backed-up action;
+deployment does not remove current-file node groups or migrate scene nodes.
 
 ## Keep every change visible
 

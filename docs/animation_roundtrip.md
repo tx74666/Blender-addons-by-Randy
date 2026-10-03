@@ -6,6 +6,10 @@ Apply/Restore acceptance. Production Cosha remains on Default; the demonstration
 candidate is unapplied. Local deployment verification is recorded separately
 after the release tools run. This is separate from the older animation-library draft.
 
+For the current per-character workspace and Source/Custom worklist implementation,
+see [Animation Worklist](animation_worklist.md). Its release and multi-clip
+acceptance scope are separate from the single-Action evidence recorded here.
+
 The reference-first-frame correction passed the three-case Blender regression
 for native FK, controls and a reloaded rig/Action-only library snapshot. The
 corrected revision 4 also passed actual Unity acceptance.
