@@ -175,7 +175,7 @@ def _valid_driver(armature, path, chest):
             and variable.targets[0].id == armature and variable.targets[0].data_path == property_path(chest))
 
 
-def validate(armature, inventory=None):
+def validate(armature, inventory=None, *, original_mutes=None):
     record = get_record(armature)
     actual = {bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE}
     if record is None:
@@ -214,7 +214,8 @@ def validate(armature, inventory=None):
         for entry in record['constraints']:
             pb = armature.pose.bones[entry['owner']]
             con = pb.constraints.get(entry['name'])
-            if (con is None or con.type != entry['type'] or con.target != armature or con.mute
+            if (con is None or con.type != entry['type'] or con.target != armature
+                    or _limb()._validation_mute(pb, con, original_mutes)
                     or any(not torso._same_value(getattr(con, key), value) for key, value in entry['fields'].items())):
                 raise _error(f"Spine IK/FK constraint '{entry['name']}' was edited.")
             if con.type == 'IK' and (con.pole_target is not None or con.pole_subtarget):

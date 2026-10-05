@@ -22,6 +22,15 @@
   Preserve Shape Keys and existing weights, keep topology validation
   conservative, and do not add runtime AI dependencies.
 
+# Generated display names
+
+- Keep generated names that artists see readable. Use a purpose/source label
+  and a short sequence number when names collide; store hashes and UUIDs in
+  internal metadata instead of persistent object, mesh, or bone display names.
+- Preserve valid Unicode without splitting UTF-8 characters. When renaming old
+  generated data, keep internal identities stable and synchronize native and
+  saved string references. Preserve names chosen by the user.
+
 # Personal node library
 
 - Maintain personal reusable node assets in this repository. Read

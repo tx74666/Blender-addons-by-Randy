@@ -15,6 +15,7 @@ ID_KEY = 'character_designer_fk_visual_id'
 ROLE_KEY = 'character_designer_fk_visual_role'
 RIG_KEY = 'character_designer_fk_visual_armature_id'
 RECORD_KEY = 'character_designer_limb_fk_visuals_v1'
+NATIVE_DISPLAY_KEY = 'character_designer_limb_fk_native_display_v1'
 IK_SIZE_RECORD_KEY = 'character_designer_limb_ik_size_fit_v1'
 VERSION = 1
 RING_SEGMENTS = 32
@@ -86,9 +87,112 @@ def _same_display(pb, expected):
             and (expected['wire_width'] is None or abs(actual['wire_width'] - expected['wire_width']) < 1e-6))
 
 
+def _native_display(armature, record):
+    """Exact, saved authorization for temporarily detached owned ring shapes.
+
+    The marker describes a display override, not an IK/FK evaluation value.
+    A no-pop matcher changes that value before the display handoff, so strict
+    inventory must also accept this exact state during that transaction.
+    """
+    raw = armature.data.get(NATIVE_DISPLAY_KEY)
+    if raw is None:
+        return {}
+    try:
+        saved = json.loads(raw)
+        if (not isinstance(saved, dict) or not saved or record is None
+                or any(name not in record['bindings']
+                       or widget != record['bindings'][name]['object']
+                       for name, widget in saved.items())):
+            raise ValueError('invalid native ring display')
+        return saved
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _error('The native FK display authorization no longer matches its owned rings.') from exc
+
+
+def native_display_snapshot(armature):
+    """Primitive display checkpoint; no additional widget ID users are added."""
+    record = get_record(armature)
+    _native_display(armature, record)
+    return {'marker': armature.data.get(NATIVE_DISPLAY_KEY),
+            'shapes': {name: (armature.pose.bones[name].custom_shape.name
+                             if armature.pose.bones[name].custom_shape else '')
+                       for name in (record or {}).get('bindings', {})}}
+
+
+def restore_native_display(armature, saved):
+    shapes = {}
+    for name, widget in saved.get('shapes', {}).items():
+        pb = armature.pose.bones.get(name)
+        shape = bpy.data.objects.get(widget) if widget else None
+        if pb is None or (widget and shape is None):
+            raise _error('The saved native FK display cannot restore a missing bone or widget.')
+        shapes[name] = shape
+    for name, shape in shapes.items():
+        if armature.pose.bones[name].custom_shape != shape:
+            armature.pose.bones[name].custom_shape = shape
+    raw = saved.get('marker')
+    if raw is None:
+        armature.data.pop(NATIVE_DISPLAY_KEY, None)
+    else:
+        armature.data[NATIVE_DISPLAY_KEY] = raw
+
+
+def sync_native_display(armature, inventory, *, keys=None):
+    """Display native FK sections while preserving strictly owned ring assets.
+
+    ``inventory`` must already have passed the operator's strict preflight.
+    The handoff audits only these bindings, never rescans scene objects.
+    Artist shapes and animated display channels are not overridden.
+    """
+    from . import limb_ik_fk
+    record = get_record(armature)
+    before = _native_display(armature, record)
+    if record is None:
+        return 0
+    selected = set(inventory['rigs']) if keys is None else set(keys)
+    desired = dict(before)
+    pending = {}
+    for name, entry in record['bindings'].items():
+        key = (entry['kind'], entry['side'])
+        if key not in selected:
+            continue
+        rig = inventory['rigs'].get(key)
+        pb = armature.pose.bones.get(name)
+        widget = bpy.data.objects.get(entry['object'])
+        if (rig is None or list(rig['chain']) != entry['chain'] or pb is None
+                or not _owned(widget, record, name)
+                or pb.custom_shape != (None if name in before else widget)
+                or not _same_display(pb, entry['generated'])):
+            raise _error(f"The owned FK display on '{name}' changed; preserve that setup first.")
+        native = limb_ik_fk.mode_for_rig(armature, rig) == 'FK'
+        shape = None if native else widget
+        if pb.custom_shape != shape:
+            if _animated_display(armature, pb):
+                raise _error(f"The FK display on '{name}' is animated; preserve those channels before changing its display.")
+            pending[name] = shape
+        if native:
+            desired[name] = entry['object']
+        else:
+            desired.pop(name, None)
+    snapshot = native_display_snapshot(armature)
+    try:
+        for name, shape in pending.items():
+            armature.pose.bones[name].custom_shape = shape
+        if desired != before:
+            if desired:
+                armature.data[NATIVE_DISPLAY_KEY] = json.dumps(desired, sort_keys=True, separators=(',', ':'))
+            else:
+                armature.data.pop(NATIVE_DISPLAY_KEY, None)
+    except Exception:
+        restore_native_display(armature, snapshot)
+        raise
+    return len(pending)
+
+
 def validate(armature, inventory=None):
     """Validate this visual registry without recursively entering limb inventory."""
     record = get_record(armature)
+    native_display = _native_display(armature, record)
     rig_id = armature.data.get(_limb().ARMATURE_ID_KEY)
     owned_objects = {obj.name for obj in bpy.data.objects
                      if obj.get(OWNER_KEY) == OWNER_VALUE and obj.get(RIG_KEY) == rig_id}
@@ -108,7 +212,8 @@ def validate(armature, inventory=None):
             if (pb is None or pb.bone.get(OWNER_KEY) in _limb().GENERATED_CONTROL_OWNERS
                     or not _owned(obj, record, name) or obj.type != 'MESH'
                     or obj.data.name != entry['mesh'] or not _owned(obj.data, record, name)
-                    or pb.custom_shape != obj or not _same_display(pb, entry['generated'])):
+                    or pb.custom_shape != (None if name in native_display else obj)
+                    or not _same_display(pb, entry['generated'])):
                 raise _error(f"FK ring assignment or display on '{name}' was edited; preserve that setup first.")
             if inventory is not None:
                 rig = inventory['rigs'].get((entry['kind'], entry['side']))
@@ -301,6 +406,7 @@ def remove(context, armature):
         raise
     _delete_resources(record, record['bindings'])
     del armature.data[RECORD_KEY]
+    armature.data.pop(NATIVE_DISPLAY_KEY, None)
     control_colors.cleanup(armature)
     return {'removed': len(record['bindings'])}
 

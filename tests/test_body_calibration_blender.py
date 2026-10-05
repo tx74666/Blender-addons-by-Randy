@@ -320,7 +320,7 @@ class CalibrationBlender(unittest.TestCase):
         palms(rig);prepare(rig)
         before=c.native_rest(rig)
         result=body_setup.generate(bpy.context,rig)
-        self.assertEqual(set(result['created']),set(planning.planner.COMPONENT_KEYS))
+        self.assertEqual(set(result['created']),set(planning.planner.COMPONENT_KEYS)-{'SPINE'})
         c.verify_rest(rig,before)
         body_setup.generate(bpy.context,rig)
         body_setup.remove(bpy.context,rig)

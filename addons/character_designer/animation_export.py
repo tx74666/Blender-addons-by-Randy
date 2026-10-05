@@ -96,6 +96,9 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
            'source_package_sha256': source_hash,
            'source_blend': bpy.data.filepath, 'action': action.name, 'process': None, 'log': None}
     try:
+        from . import hair_wiggle_adapter
+        if hair_wiggle_adapter.status(context).get('active'):
+            hair_wiggle_adapter.stop_preview(context, reason='Animation export ends transient Hair preview.')
         snapshot = root / 'animation.blend'
         bpy.data.libraries.write(str(snapshot), {rig, action}, path_remap='ABSOLUTE', compress=True)
         (root / 'job.json').write_text(json.dumps(spec), encoding='utf-8')

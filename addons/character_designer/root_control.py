@@ -134,7 +134,7 @@ def _validate_scale_drivers(armature, pb):
         raise _error('Another driver controls Root uniform scale; preserve that setup first.')
 
 
-def validate(armature, inventory=None):
+def validate(armature, inventory=None, *, original_mutes=None):
     """Validate this extension without entering the limb inventory recursively."""
     record = get_record(armature)
     actual = {b.name for b in armature.data.bones if b.get(OWNER_KEY) == OWNER_VALUE}
@@ -172,7 +172,8 @@ def validate(armature, inventory=None):
                 raise _error(f"Root source '{name}' has additional constraints; preserve that setup first.")
         for entry in record['constraints']:
             con = armature.pose.bones[entry['owner']].constraints.get(entry['name'])
-            if (con is None or con.type != entry['type'] or con.target != armature or con.mute
+            if (con is None or con.type != entry['type'] or con.target != armature
+                    or _limb()._validation_mute(armature.pose.bones[entry['owner']], con, original_mutes)
                     or any(not _same_value(getattr(con, key), value) for key, value in entry['fields'].items())):
                 raise _error('A Root follow constraint was edited.')
         collection = bpy.data.collections.get(record['widget_collection'])

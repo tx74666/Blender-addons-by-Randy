@@ -96,6 +96,8 @@ def _poll_job():
 def stop_animation_runtime():
     global _job, _job_window_manager, _export_window_manager
     from . import animation_export
+    from .animation_worklist_collection import stop as stop_collection
+    stop_collection()
     if bpy.app.timers.is_registered(_poll_action_export):
         bpy.app.timers.unregister(_poll_action_export)
     animation_export.cancel_export()
@@ -182,32 +184,50 @@ def _poll_action_export():
     job = animation_export.active_job()
     if job is None:
         return None
-    settings = None
+    settings, result, error = None, None, ''
     try:
         settings = _export_window_manager.character_designer_animation
+    except (AttributeError, ReferenceError):
+        pass
+    try:
         result = animation_export.poll_export(job)
         if result is None:
             return 0.25
-        settings.export_result_path = result['filepath']
-        if result.get('link_manifest'):
-            settings.status = 'Synced ' + result['filepath'] + '. Preview and Apply the candidate in Unity.'
-        else:
-            settings.status = 'Exported skeletal Action: ' + result['filepath'] + '. Shape Keys and events are not included.'
-        if result.get('unsupported_channels'):
-            settings.status += ' Omitted: ' + '; '.join(result['unsupported_channels'])
-        settings.has_error = False
     except Exception as exc:
         if animation_export.active_job() is job:
             animation_export.cancel_export(job)
-        if _export_window_manager:
-            settings = _export_window_manager.character_designer_animation
-            settings.status, settings.has_error = str(exc), True
+        error = str(exc)
+    # Native completion has already published/disposed. A lost UI owner must
+    # not cancel a real publication or prevent the serial queue from advancing.
+    try:
+        if settings is not None and result is not None:
+            settings.export_result_path = result['filepath']
+            if result.get('link_manifest'):
+                settings.status = 'Synced ' + result['filepath'] + '. Preview and Apply the candidate in Unity.'
+            else:
+                settings.status = 'Exported skeletal Action: ' + result['filepath'] + '. Shape Keys and events are not included.'
+            if result.get('unsupported_channels'):
+                settings.status += ' Omitted: ' + '; '.join(result['unsupported_channels'])
+            settings.has_error = False
+        elif settings is not None:
+            settings.status, settings.has_error = error, True
+    except ReferenceError:
+        settings = None
+    from .animation_worklist_collection import export_finished
+    receipt_error = export_finished(job, result, error)
+    if receipt_error and settings is not None:
+        settings.status, settings.has_error = receipt_error, True
     scene = job.get('_worklist_scene') if isinstance(job, dict) else None
     if scene is not None:
         try:
             worklist = scene.character_designer_animation_worklist
             if settings is None:
-                worklist.status, worklist.has_error = 'Action export stopped; its owner is no longer available.', True
+                if result is not None:
+                    worklist.status = receipt_error or ('Synced ' + result['filepath'] + '. Preview and Apply the candidate in Unity.')
+                    worklist.has_error = bool(receipt_error)
+                else:
+                    worklist.status = error or 'Action export stopped; its owner is no longer available.'
+                    worklist.has_error = True
             else:
                 worklist.status, worklist.has_error = settings.status, settings.has_error
         except ReferenceError:
@@ -236,9 +256,13 @@ def _link_import(context, manifest_path, model_file):
     return result
 
 
-def _link_idle():
+def _link_idle(*, include_collection=True):
     from . import animation_export, unity_export
-    return _job is None and animation_export.active_job() is None and not unity_export.export_running()
+    from .animation_worklist_collection import running as collection_running
+    from .animation_worklist_ui import scan_pending
+    return (_job is None and animation_export.active_job() is None
+            and not unity_export.export_running() and not scan_pending()
+            and (not include_collection or not collection_running()))
 
 
 class CHARACTERDESIGNER_OT_animation_link_import(Operator):
@@ -391,8 +415,15 @@ class CHARACTERDESIGNER_OT_animation_export_cancel(Operator):
     def execute(self, context):
         global _export_window_manager
         from . import animation_export
+        from . import animation_worklist_collection as collection
+        if collection.running():
+            collection.cancel(context)
+            _redraw()
+            return {'FINISHED'}
         job = animation_export.active_job()
         animation_export.cancel_export()
+        if isinstance(job, dict):
+            collection.export_finished(job, error='Action export cancelled.')
         if bpy.app.timers.is_registered(_poll_action_export):
             bpy.app.timers.unregister(_poll_action_export)
         _export_window_manager = None

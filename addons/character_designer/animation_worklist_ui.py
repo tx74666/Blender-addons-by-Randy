@@ -10,15 +10,29 @@ from bpy.types import Operator, PropertyGroup, UIList
 
 
 _DRAGS = []
+_SCAN_PENDING = None
 _SIDES = (
     ('SOURCE', 'Source', 'View the linked source Action'),
     ('CUSTOM', 'Custom', 'Edit the local custom Action'),
 )
+_SCAN_STATES = (
+    ('NOT_SCANNED', 'Not Scanned', 'Scan this Custom Action before choosing a batch sync'),
+    ('CHANGED', 'Changed', 'The Custom Action differs from its last successful sync'),
+    ('UNCHANGED', 'Unchanged', 'The Custom Action matches its last successful sync'),
+    ('UNKNOWN', 'Unknown', 'The change proof is incomplete; select explicitly to sync'),
+    ('BLOCKED', 'Blocked', 'This entry cannot safely sync until its reported issue is resolved'),
+)
+_SCAN_LABELS = {state: label for state, label, _description in _SCAN_STATES}
 
 
 def _backend():
     from . import animation_worklist
     return animation_worklist
+
+
+def _collection():
+    from . import animation_worklist_collection as collection
+    return collection
 
 
 def _state(context):
@@ -28,7 +42,97 @@ def _state(context):
 
 def _idle(_context):
     from .animation import _link_idle
-    return _link_idle()
+    return not scan_pending() and _link_idle()
+
+
+def scan_pending():
+    """A pending UI scan also blocks native Link/Export entry points."""
+    global _SCAN_PENDING
+    if (_SCAN_PENDING is not None and _SCAN_PENDING['armed']
+            and not bpy.app.timers.is_registered(_SCAN_PENDING['callback'])):
+        # Nonpersistent timers disappear on file load. Release the Python lock
+        # without touching either the removed scene or the newly loaded scene.
+        _SCAN_PENDING = None
+    return _SCAN_PENDING is not None
+
+
+def _scan_feedback(pending, message, error=False):
+    try:
+        settings = getattr(pending['scene'], 'character_designer_animation_worklist', None)
+        if settings is not None:
+            settings.status = settings.collection_status = message
+            settings.has_error = error
+        _redraw(pending['window'])
+    except (ReferenceError, AttributeError):
+        pass  # The old scene/window may already have been removed.
+
+
+def _clear_pending_scan(*, unregister=True):
+    global _SCAN_PENDING
+    pending, _SCAN_PENDING = _SCAN_PENDING, None
+    if pending is not None and unregister and pending['armed']:
+        callback = pending['callback']
+        if bpy.app.timers.is_registered(callback):
+            bpy.app.timers.unregister(callback)
+    return pending
+
+
+def _cancel_pending_scan(message='Scan cancelled before it started.'):
+    pending = _clear_pending_scan()
+    if pending is not None:
+        _scan_feedback(pending, message)
+    return pending is not None
+
+
+def _poll_scan():
+    pending = _clear_pending_scan(unregister=False)
+    if pending is None:
+        return None
+    try:
+        window, scene = pending['window'], pending['scene']
+        if (window not in tuple(bpy.context.window_manager.windows) or window.scene != scene
+                or scene not in tuple(bpy.data.scenes)):
+            _scan_feedback(pending, 'Scan cancelled: its owning window or scene changed.')
+            return None
+        with bpy.context.temp_override(window=window, scene=scene):
+            if not _idle(bpy.context):
+                raise RuntimeError('Another animation operation started before the scan.')
+            collection = _collection()
+            collection.scan_changes(bpy.context)
+            if pending['sync_after']:
+                collection.begin_sync_changed(bpy.context)
+            _redraw(bpy.context)
+    except Exception as exc:
+        _scan_feedback(pending, str(exc), error=True)
+    return None
+
+
+def _defer_scan(operator, context, *, sync_after=False):
+    """Give Scanning feedback one redraw before the same synchronous backend.
+
+    This does not reduce scan CPU cost. Cancel works while pending; once the
+    synchronous scan starts Blender cannot process Cancel until it returns.
+    No Operator or transient Context is retained by the timer.
+    """
+    global _SCAN_PENDING
+    if scan_pending():
+        operator.report({'WARNING'}, 'A scan is already waiting to start.')
+        return {'CANCELLED'}
+    pending = dict(window=getattr(context, 'window', None), scene=context.scene,
+                   callback=_poll_scan, armed=False, sync_after=sync_after)
+    try:
+        if pending['window'] is None or _state(context) is None or not _idle(context):
+            raise RuntimeError('Run the scan in an idle owning Blender window.')
+        _SCAN_PENDING = pending
+        _scan_feedback(pending, 'Scanning animations... Blender responds when this check finishes.')
+        bpy.app.timers.register(pending['callback'], first_interval=.05)
+        pending['armed'] = True
+    except Exception as exc:
+        _clear_pending_scan()
+        _scan_feedback(pending, str(exc), error=True)
+        operator.report({'ERROR'}, str(exc))
+        return {'CANCELLED'}
+    return {'FINISHED'}
 
 
 def _armature(_self, obj):
@@ -84,6 +188,23 @@ def _run(operator, context, name, *args, **kwargs):
     return {'FINISHED'}
 
 
+def _run_collection(operator, context, *names):
+    try:
+        collection = _collection()
+        for name in names:
+            getattr(collection, name)(context)
+    except Exception as exc:
+        settings = _state(context)
+        if settings is not None:
+            settings.status = settings.collection_status = str(exc)
+            settings.has_error = True
+        operator.report({'ERROR'}, str(exc))
+        _redraw(context)
+        return {'CANCELLED'}
+    _redraw(context)
+    return {'FINISHED'}
+
+
 class CharacterDesignerAnimationWorklistCatalog(PropertyGroup):
     clip_key: StringProperty(options={'HIDDEN'})
     name: StringProperty(name='Clip')
@@ -112,6 +233,12 @@ class CharacterDesignerAnimationWorklistItem(PropertyGroup):
     custom_slot: IntProperty(default=0, options={'HIDDEN'})
     source_data: PointerProperty(type=bpy.types.Armature)
     custom_data: PointerProperty(type=bpy.types.Armature)
+    last_synced_receipt: StringProperty(options={'HIDDEN'})
+    scan_state: EnumProperty(name='Changes', items=_SCAN_STATES, default='NOT_SCANNED',
+                             options={'SKIP_SAVE'})
+    scan_reason: StringProperty(options={'SKIP_SAVE'})
+    sync_selected: BoolProperty(name='Sync', default=False, options={'SKIP_SAVE'},
+                                description='Include this entry in the next collection sync')
 
 
 class CharacterDesignerAnimationWorklistState(PropertyGroup):
@@ -132,6 +259,8 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     show_catalog: BoolProperty(name='Clip Browser', default=True)
     status: StringProperty(options={'SKIP_SAVE'})
     has_error: BoolProperty(options={'SKIP_SAVE'})
+    collection_status: StringProperty(options={'SKIP_SAVE'})
+    scan_completed: BoolProperty(default=False, options={'SKIP_SAVE'})
 
 
 class CHARACTERDESIGNER_OT_worklist_connect(Operator):
@@ -188,6 +317,65 @@ class CHARACTERDESIGNER_OT_worklist_add(Operator):
 
     def execute(self, context):
         return _run(self, context, 'add', self.clip_key)
+
+
+class CHARACTERDESIGNER_OT_worklist_add_ready(Operator):
+    bl_idname = 'character_designer.worklist_add_ready'
+    bl_label = 'Add Ready'
+    bl_description = 'Add missing ready clips serially; keep existing edits and the active Action'
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and bool(settings.workspace_path) and _idle(context)
+
+    def execute(self, context):
+        return _run_collection(self, context, 'begin_add_ready')
+
+
+class CHARACTERDESIGNER_OT_worklist_scan_changes(Operator):
+    bl_idname = 'character_designer.worklist_scan_changes'
+    bl_label = 'Scan Changes'
+    bl_description = 'Check full Custom key data after redraw; scanning is synchronous and Cancel works before it starts'
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and bool(settings.items) and _idle(context)
+
+    def execute(self, context):
+        return _defer_scan(self, context)
+
+
+class CHARACTERDESIGNER_OT_worklist_sync_changed(Operator):
+    bl_idname = 'character_designer.worklist_sync_changed'
+    bl_label = 'Sync Changed'
+    bl_description = 'Rescan and serially publish selected Custom Actions as Unity candidates'
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and bool(settings.items) and _idle(context)
+
+    def execute(self, context):
+        # A button press is an explicit fresh scan. The backend keeps subsequent
+        # user selections and requires an explicit selection for Unknown rows.
+        return _defer_scan(self, context, sync_after=True)
+
+
+class CHARACTERDESIGNER_OT_worklist_cancel_collection(Operator):
+    bl_idname = 'character_designer.worklist_cancel_collection'
+    bl_label = 'Cancel Collection'
+    bl_description = 'Stop the collection batch; keep completed updates. A running scan must finish first.'
+
+    @classmethod
+    def poll(cls, context):
+        return scan_pending() or _collection().running()
+
+    def execute(self, context):
+        if _cancel_pending_scan():
+            return {'FINISHED'}
+        return _run_collection(self, context, 'cancel')
 
 
 class CHARACTERDESIGNER_OT_worklist_activate(Operator):
@@ -273,7 +461,9 @@ class CHARACTERDESIGNER_OT_worklist_drag_handle(Operator):
 
 
 def stop_worklist_ui():
-    """Cancel pointer moves during add-on refresh; no stored order was changed."""
+    """Stop owned collection work and pointer moves during add-on refresh."""
+    _cancel_pending_scan('Scan stopped before reload or file load.')
+    _collection().stop()
     for operator in tuple(_DRAGS):
         operator._cancelled = True
         operator._finish()
@@ -407,7 +597,11 @@ class CHARACTERDESIGNER_UL_animation_worklist(UIList):
                   _active_propname, _index=0, _flt_flag=0):
         row = layout.row(align=True)
         row.enabled = _idle(context)
+        select = row.row(align=True)
+        select.enabled = item.scan_state not in {'NOT_SCANNED', 'BLOCKED'}
+        select.prop(item, 'sync_selected', text='')
         row.label(text=item.name)
+        row.label(text=_SCAN_LABELS.get(item.scan_state, 'Unknown'))
         for side, label, action in (('SOURCE', 'Source', item.source_action), ('CUSTOM', 'Custom', item.custom_action)):
             cell = row.row(align=True)
             cell.enabled = action is not None
@@ -435,6 +629,12 @@ def draw_worklist(layout, context):
                        if selected is not None and entry.clip_key == selected.clip_key), '')
         if source:
             box.label(text='Source: ' + source)
+        batch = box.row(align=True)
+        batch.operator('character_designer.worklist_add_ready', text='Add Ready', icon='ADD')
+        batch.operator('character_designer.worklist_scan_changes', text='Scan Changes', icon='VIEWZOOM')
+        batch = box.row(align=True)
+        batch.operator('character_designer.worklist_sync_changed', text='Sync Changed', icon='EXPORT')
+        batch.operator('character_designer.worklist_cancel_collection', text='Cancel Collection', icon='CANCEL')
         catalog = box.row()
         catalog.prop(settings, 'show_catalog', text=f'Clip Browser ({len(settings.catalog)})', emboss=False,
                      icon='TRIA_DOWN' if settings.show_catalog else 'TRIA_RIGHT')
@@ -470,11 +670,22 @@ def draw_worklist(layout, context):
             handle.operator('character_designer.worklist_drag_handle', text='', icon='GRIP').item_id = (
                 selected.item_id if selected is not None else '')
             box.operator('character_designer.worklist_sync', text='Sync Current to Unity', icon='EXPORT')
+            if selected is not None and selected.scan_reason:
+                width = max(24, int(getattr(context.region, 'width', 300) / (
+                    7 * (context.preferences.system.ui_scale or 1.0))) - 6)
+                for index, line in enumerate(textwrap.wrap(selected.scan_reason, width=width)):
+                    box.label(text=line, icon='INFO' if index == 0 else 'BLANK1')
+            if any(item.scan_state == 'UNKNOWN' for item in settings.items):
+                box.label(text='Unknown: select explicitly to sync.', icon='INFO')
         else:
             box.label(text='Add a prepared clip to start your worklist.', icon='INFO')
     if settings.status:
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.status, width=width)):
+            box.label(text=line, icon=('ERROR' if settings.has_error else 'INFO') if index == 0 else 'BLANK1')
+    if settings.collection_status and settings.collection_status != settings.status:
+        width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
+        for index, line in enumerate(textwrap.wrap(settings.collection_status, width=width)):
             box.label(text=line, icon=('ERROR' if settings.has_error else 'INFO') if index == 0 else 'BLANK1')
 
 
@@ -485,6 +696,10 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_connect,
     CHARACTERDESIGNER_OT_worklist_refresh,
     CHARACTERDESIGNER_OT_worklist_add,
+    CHARACTERDESIGNER_OT_worklist_add_ready,
+    CHARACTERDESIGNER_OT_worklist_scan_changes,
+    CHARACTERDESIGNER_OT_worklist_sync_changed,
+    CHARACTERDESIGNER_OT_worklist_cancel_collection,
     CHARACTERDESIGNER_OT_worklist_activate,
     CHARACTERDESIGNER_OT_worklist_remove,
     CHARACTERDESIGNER_OT_worklist_move,

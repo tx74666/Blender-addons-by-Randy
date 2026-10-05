@@ -82,7 +82,7 @@ def collection_members(armature):
     return result
 
 
-def validate(armature, inventory=None):
+def validate(armature, inventory=None, *, original_mutes=None):
     """Validate the optional extension, without recursing into Limb IK inventory."""
     values = records(armature)
     expected = set()
@@ -119,7 +119,7 @@ def validate(armature, inventory=None):
             con = pb.constraints.get(entry['name']) if pb else None
             if con is None or con.type != entry['type']:
                 raise _error(f"Foot Controls constraint '{entry['name']}' is missing.")
-            if con.mute:
+            if _limb()._validation_mute(pb, con, original_mutes):
                 raise _error(f"Foot Controls constraint '{con.name}' was disabled.")
             if con.name not in {'CD Foot IK Toe Space', 'CD Foot Auto Toe Space'} and abs(con.influence - 1.0) > 1e-6:
                 raise _error(f"Foot Controls constraint '{con.name}' influence was edited.")

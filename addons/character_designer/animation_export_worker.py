@@ -222,6 +222,16 @@ def _write_curve(bag, path, component, frames, values):
 
 
 def export_job(job):
+    # This disposable worker samples the explicit Action. Transient Wiggle
+    # motion must never become animation keys through background frame events.
+    for scene in bpy.data.scenes:
+        settings = getattr(scene, 'wiggle', None)
+        if settings is not None:
+            settings.enable = False
+    for obj in bpy.data.objects:
+        settings = getattr(obj, 'wiggle', None)
+        if obj.type == 'ARMATURE' and settings is not None:
+            settings.freeze = True
     """Mutate only this disposable worker session and publish one staged FBX."""
     source_scene = bpy.context.scene
     rig = bpy.data.objects.get(job.get('rig', ''))

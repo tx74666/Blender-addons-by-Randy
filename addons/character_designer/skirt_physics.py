@@ -7,6 +7,7 @@ replaces the artist's editable setup or animation.
 
 import json
 import math
+from collections import Counter
 
 import bpy
 from mathutils import Matrix, Vector
@@ -14,9 +15,40 @@ from mathutils import Matrix, Vector
 from . import skirt_rig
 from .skirt_topology import sample_fit
 
+LEGACY_BACKEND = "LEGACY_CAGE"
+ACTUAL_SURFACE_BACKEND = "ACTUAL_SURFACE_DELTA_V1"
+
 
 class SkirtPhysicsError(ValueError):
     pass
+
+
+def _record_backend(record):
+    """Read an explicit backend; old records remain legacy without migration."""
+    physics = record.get("physics")
+    if physics is None:
+        return LEGACY_BACKEND
+    if not isinstance(physics, dict):
+        raise SkirtPhysicsError("The saved Dress physics backend is unreadable.")
+    value = physics.get("backend", LEGACY_BACKEND)
+    if type(value) is not str or value not in {LEGACY_BACKEND, ACTUAL_SURFACE_BACKEND}:
+        raise SkirtPhysicsError("Unknown Dress physics backend; preserve its saved setup.")
+    return value
+
+
+def backend(record):
+    return _record_backend(record)
+
+
+def _surface_module():
+    # Legacy load, drawing and physics operations do not import the new service.
+    try:
+        from . import skirt_surface
+    except ImportError as error:
+        raise SkirtPhysicsError("The installed Dress surface service is unavailable; restore the validated add-on.") from error
+    if getattr(skirt_surface, "BACKEND", None) != ACTUAL_SURFACE_BACKEND:
+        raise SkirtPhysicsError("The installed Dress surface service has a different backend contract.")
+    return skirt_surface
 
 
 def _record(source):
@@ -34,6 +66,7 @@ def _tag(obj, record):
     obj[skirt_rig.SOURCE_KEY] = bpy.data.objects[record["source"]]
     if obj.data:
         obj.data[skirt_rig.OWNER_KEY] = record["owner"]
+        obj.data[skirt_rig.SOURCE_KEY] = bpy.data.objects[record["source"]]
 
 
 def _mesh(name, vertices, faces, collection, matrix, record):
@@ -94,13 +127,8 @@ def _bone_name(rig, candidates):
     return next((lookup[c.casefold()] for c in candidates if c.casefold() in lookup), None)
 
 
-def _make_colliders(context, source, rig, record, collection):
-    plan = record["fit"]
-    scale = max(plan["height_world"], 1.0e-4)
-    fit_world = skirt_rig.fit_world(source, record)
-    waist_world = fit_world @ Vector(plan["waist_center"])
+def _collider_attachment(rig, record):
     attach = rig if skirt_rig.is_shared(record) else (rig.parent if rig.parent and rig.parent.type == "ARMATURE" else None)
-    # Resolve source character from rig attachment, without relying on file-specific names.
     if attach:
         pelvis = (record['shared']['anchor'] if skirt_rig.is_shared(record)
                   else rig.parent_bone or _bone_name(attach, ("Hips", "pelvis", "DEF-spine", "hip")))
@@ -108,6 +136,29 @@ def _make_colliders(context, source, rig, record, collection):
         attach, pelvis = rig, record["controls"]["waist"]
     if not pelvis or pelvis not in attach.data.bones:
         attach, pelvis = rig, record["controls"]["waist"]
+    return attach, pelvis
+
+
+def _collider_rest_world(source, rig, record, attach, pelvis):
+    fitted = skirt_rig.fit_rest_world(source, record)
+    # A legacy rig's matrix_world already follows its posed bone parent. Bring
+    # that fitted space back through the parent's deform before skinning the
+    # collider to the same bone. Shared rigs store their unposed fitted space.
+    if (not skirt_rig.is_shared(record) and attach is not rig
+            and rig.parent == attach and rig.parent_type == "BONE"
+            and rig.parent_bone == pelvis):
+        fitted = (attach.matrix_world @ attach.data.bones[pelvis].matrix_local
+                  @ attach.pose.bones[pelvis].matrix.inverted()
+                  @ attach.matrix_world.inverted() @ fitted)
+    return fitted
+
+
+def _make_colliders(context, source, rig, record, collection):
+    plan = record["fit"]
+    scale = max(plan["height_world"], 1.0e-4)
+    attach, pelvis = _collider_attachment(rig, record)
+    fit_world = _collider_rest_world(source, rig, record, attach, pelvis)
+    waist_world = fit_world @ Vector(plan["waist_center"])
     inverse = attach.matrix_world.inverted()
     linear = attach.matrix_world.to_3x3()
     world_to_units = 1.0 / max(linear.col[0].length, linear.col[1].length, linear.col[2].length, 1.0e-8)
@@ -143,11 +194,22 @@ def _make_colliders(context, source, rig, record, collection):
     return result
 
 
-def add_physics(context, source):
+def add_physics(context, source, *, backend=None, body=None, capability=None):
+    """Keep legacy callers unchanged; surface installation is an explicit transaction."""
+    if backend is not None and (type(backend) is not str or backend not in {LEGACY_BACKEND, ACTUAL_SURFACE_BACKEND}):
+        raise SkirtPhysicsError("Unknown requested Dress physics backend.")
     skirt_rig._require_controls_for_setup(source)
     record, rig = _record(source)
+    current_backend = _record_backend(record)
+    if backend == ACTUAL_SURFACE_BACKEND:
+        # The service owns the entire installation/upgrade transaction, including
+        # any legacy starting graph. Do not commit a partial legacy upgrade here.
+        intent = {} if capability is None else {"capability": capability}
+        return _surface_module().install(context, source, body=body, **intent)
+    if backend == LEGACY_BACKEND and current_backend == ACTUAL_SURFACE_BACKEND:
+        raise SkirtPhysicsError("Remove or explicitly rebuild the Dress surface setup before changing its backend.")
     if record.get("physics"):
-        _cloth(record)
+        validate_physics(source)
         return record
     original_record = json.loads(json.dumps(record))
     collection = bpy.data.collections.new(f"CD Skirt Collision · {source.name}")
@@ -215,13 +277,16 @@ def add_physics(context, source):
         objects.extend(_make_colliders(context, source, rig, record, collection))
         record["physics"] = {"proxy": proxy.name, "colliders": [o.name for o in objects[1:]],
                              "collection": collection.name, "rows": rows + 1, "columns": sides,
-                             "baked_range": None}
+                             "baked_range": None,
+                             "pin_weights": [1.0 if index < sides else 0.35 if index < sides * 2 else 0.0
+                                             for index in range(len(verts))]}
         record["owned_objects"].extend(o.name for o in objects)
         record.setdefault("owned_collections", []).append(collection.name)
         influence["physics_influence"] = 1.0
         influence.id_properties_ui("physics_influence").update(min=0.0, max=1.0, default=1.0,
                                                          description="Add simulated cloth sway to manual skirt shaping")
         proxy.hide_set(True)
+        _physics_graph(source, rig, record)
         skirt_rig.write_record(source, record)
         context.view_layer.update()
         return record
@@ -244,25 +309,325 @@ def add_physics(context, source):
         raise SkirtPhysicsError(f"Skirt physics was rolled back: {error}") from error
 
 
-def _cloth(record):
+def _require(condition, message):
+    if not condition:
+        raise SkirtPhysicsError(message)
+
+
+def _owned_mesh(obj, source, record):
+    _require(obj is not None and obj.type == "MESH" and obj.data is not None,
+             "An owned Dress physics mesh is missing.")
+    _require(obj.get(skirt_rig.OWNER_KEY) == record["owner"]
+             and obj.get(skirt_rig.SOURCE_KEY) == source
+             and obj.data.get(skirt_rig.OWNER_KEY) == record["owner"]
+             and obj.data.get(skirt_rig.SOURCE_KEY, source) == source
+             and obj.name in record["owned_objects"],
+             "Restore the Dress physics mesh ownership before continuing.")
+    _require(not (obj.library or obj.override_library or obj.data.library)
+             and obj.data.users == 1 and obj.data.shape_keys is None,
+             "Keep the Dress physics meshes local, unshared and without Shape Keys.")
+    _require(not obj.constraints and obj.animation_data is None and obj.data.animation_data is None,
+             "Preserve custom Dress physics animation or constraints before continuing.")
+    _require(all(math.isfinite(value) for vertex in obj.data.vertices for value in vertex.co),
+             "A Dress physics mesh contains invalid coordinates.")
+
+
+def _weights(obj):
+    groups = {group.index: group.name for group in obj.vertex_groups}
+    result = {name: {} for name in groups.values()}
+    for vertex in obj.data.vertices:
+        for assignment in vertex.groups:
+            _require(assignment.group in groups and math.isfinite(assignment.weight)
+                     and 0.0 <= assignment.weight <= 1.0,
+                     "A Dress physics vertex group has invalid weights.")
+            # Native groups may contain explicit zero assignments after Tuning.
+            if assignment.weight:
+                result[groups[assignment.group]][vertex.index] = assignment.weight
+    return result
+
+
+def _same_weights(actual, expected):
+    return (actual.keys() == expected.keys()
+            and all(abs(actual[index] - expected[index]) <= 1.0e-6 for index in expected))
+
+
+def _binding(obj, rig, bone, modifier_types):
+    modifiers = list(obj.modifiers)
+    _require([modifier.type for modifier in modifiers] == modifier_types
+             and obj.parent == rig and obj.parent_type == "OBJECT" and not obj.parent_bone,
+             "Restore the generated Dress physics modifier order and attachment.")
+    armature = modifiers[0]
+    _require(armature.object == rig and armature.use_vertex_groups
+             and not armature.use_bone_envelopes and not armature.vertex_group
+             and not armature.use_multi_modifier
+             and all(modifier.show_viewport and modifier.show_render for modifier in modifiers)
+             and bone in rig.data.bones,
+             "Restore the generated Dress physics bone binding.")
+    return modifiers
+
+
+def _relative_frame(obj, expected):
+    actual = obj.matrix_parent_inverse @ obj.matrix_basis
+    _require(all(math.isfinite(value) for row in actual for value in row)
+             and max(abs(actual[row][column] - expected[row][column])
+                     for row in range(4) for column in range(4)) <= 1.0e-5,
+             'Restore the generated Dress physics object attachment space.')
+
+
+def _face_edges(faces):
+    return Counter(tuple(sorted((first, second))) for face in faces
+                   for first, second in zip(face, face[1:] + face[:1]))
+
+
+def _closed_collider(obj):
+    faces = [tuple(face.vertices) for face in obj.data.polygons]
+    _require(len(obj.data.vertices) >= 4 and faces
+             and all(len(face) >= 3 and len(set(face)) == len(face) for face in faces),
+             "The Dress collision mesh is incomplete.")
+    uses = _face_edges(faces)
+    _require(all(count == 2 for count in uses.values())
+             and set(uses) == {tuple(sorted(edge.vertices)) for edge in obj.data.edges},
+             "Close the Dress collision mesh before continuing.")
+    adjacent = {index: set() for index in range(len(obj.data.vertices))}
+    for first, second in uses:
+        adjacent[first].add(second)
+        adjacent[second].add(first)
+    visited, pending = set(), [0]
+    while pending:
+        index = pending.pop()
+        if index not in visited:
+            visited.add(index)
+            pending.extend(adjacent[index] - visited)
+    _require(len(visited) == len(adjacent), "Keep each Dress collider a connected closed mesh.")
+    volume = 0.0
+    for face in faces:
+        origin = obj.data.vertices[face[0]].co
+        for first, second in zip(face[1:-1], face[2:]):
+            volume += origin.dot(obj.data.vertices[first].co.cross(obj.data.vertices[second].co)) / 6.0
+    _require(math.isfinite(volume) and volume > 1.0e-14,
+             "The Dress collider has zero volume or inverted winding.")
+
+
+def _action_paths(action):
+    if action is None:
+        return
+    # Native layered Actions in supported Blender versions; keep old Actions
+    # readable for a saved setup without depending on action.fcurves existing.
+    if hasattr(action, "layers"):
+        for layer in action.layers:
+            for strip in layer.strips:
+                for bag in strip.channelbags:
+                    for curve in bag.fcurves:
+                        yield curve.data_path
+    else:
+        for curve in action.fcurves:
+            yield curve.data_path
+
+
+def _physics_bone_animation(rig, record):
+    animation = rig.animation_data
+    if animation is None:
+        return
+    prefixes = tuple(rig.pose.bones[name].path_from_id() for chain in record['chains'] for name in chain['phys'])
+    _require(not any(curve.data_path.startswith(prefixes) for curve in animation.drivers),
+             "Preserve custom drivers on the Dress physics bones before continuing.")
+    actions = [animation.action]
+    pending = [strip for track in animation.nla_tracks for strip in track.strips]
+    while pending:
+        strip = pending.pop()
+        actions.append(strip.action)
+        pending.extend(getattr(strip, 'strips', ()))
+    _require(not any(path.startswith(prefixes) for action in actions for path in _action_paths(action)),
+             "Preserve custom animation on the Dress physics bones before continuing.")
+
+
+def _deform_targets(source, rig, record):
+    from . import skirt_original_mode
+    corrections = skirt_original_mode._corrections(source, record)
+    rotations, names = [], []
+    for chain in record['chains']:
+        for name, manual, physics in zip(chain['def'], chain['manual'], chain['phys']):
+            bone = rig.pose.bones[name]
+            copy = bone.constraints.get('Skirt manual pose')
+            rotation = bone.constraints.get('Skirt physics delta')
+            _require(copy is not None and rotation is not None and copy.type == 'COPY_TRANSFORMS'
+                     and rotation.type == 'COPY_ROTATION' and copy.target == rig and rotation.target == rig
+                     and copy.subtarget == manual and rotation.subtarget == physics
+                     and copy.owner_space == copy.target_space == rotation.owner_space == rotation.target_space == 'LOCAL'
+                     and copy.mix_mode == ('BEFORE_FULL' if name in corrections['bones'] else 'REPLACE')
+                     and not copy.remove_target_shear and abs(copy.influence - 1.0) <= 1e-7
+                     and rotation.mix_mode == 'BEFORE' and rotation.euler_order == 'AUTO'
+                     and all((rotation.use_x, rotation.use_y, rotation.use_z))
+                     and not any((rotation.invert_x, rotation.invert_y, rotation.invert_z))
+                     and list(bone.constraints).index(copy) < list(bone.constraints).index(rotation)
+                     and not any(not item.mute for item in bone.constraints if item not in (copy, rotation)),
+                     'Restore the generated Dress manual and physics deform targets.')
+            names.append(name)
+            rotations.append(rotation)
+    # Do not use Original's full posing preflight here: keyed waist/Body motion
+    # is a legitimate input to simulation and Bake must keep it working.
+    skirt_original_mode._constraint_animation(rig, source, names, rotations)
+
+
+def _verify_physics_graph(source, rig, record):
+    """Read-only proof of the complete generated physics graph, including v1 saves.
+
+    Physical coefficients and closed collider vertex fitting remain editable.
+    Tuning may atomically replace pin weights and their saved expectation; it
+    must validate the old graph before making either change.
+    """
     physics = record.get("physics")
-    proxy = bpy.data.objects.get(physics["proxy"]) if physics else None
-    if proxy is None or proxy.get(skirt_rig.OWNER_KEY) != record["owner"]:
-        raise SkirtPhysicsError("The owned cloth cage is missing.")
-    cloth = next((m for m in proxy.modifiers if m.type == "CLOTH"), None)
-    if cloth is None:
-        raise SkirtPhysicsError("The cloth cage has no Cloth modifier.")
+    _require(isinstance(physics, dict), "Add Dress physics before continuing.")
+    _require(isinstance(record['chain_count'], int) and not isinstance(record['chain_count'], bool)
+             and 3 <= record['chain_count'] <= 64
+             and record['chain_count'] == len(record['chains'])
+             and isinstance(record['segment_count'], int) and not isinstance(record['segment_count'], bool)
+             and 1 <= record['segment_count'] <= 32
+             and all(len(chain[layer]) == record['segment_count']
+                     for chain in record['chains'] for layer in ('manual', 'phys', 'def')),
+             'The saved Dress physics chain dimensions are invalid.')
+    sides, rows = record['chain_count'] * 4, record['segment_count'] * 3 + 1
+    _require(physics.get('columns') == sides and physics.get('rows') == rows,
+             "Restore the saved Dress physics cage dimensions.")
+    proxy = bpy.data.objects.get(physics.get("proxy", ""))
+    _owned_mesh(proxy, source, record)
+    waist = record['controls']['waist']
+    _attachment, cloth = _binding(proxy, rig, waist, ['ARMATURE', 'CLOTH'])
+    _relative_frame(proxy, Matrix(record['shared']['space_matrix'])
+                    if skirt_rig.is_shared(record) else Matrix.Identity(4))
+    expected_faces = [(row * sides + col, row * sides + (col + 1) % sides,
+                       (row + 1) * sides + (col + 1) % sides, (row + 1) * sides + col)
+                      for row in range(rows - 1) for col in range(sides)]
+    _require(len(proxy.data.vertices) == sides * rows
+             and [tuple(face.vertices) for face in proxy.data.polygons] == expected_faces
+             and len(proxy.data.edges) == len(_face_edges(expected_faces))
+             and {tuple(sorted(edge.vertices)) for edge in proxy.data.edges} == set(_face_edges(expected_faces)),
+             "The Dress physics cage topology or vertex indices were edited.")
+    _require(all((vertex.co - Vector(sample_fit(record['fit'], vertex.index // sides / (rows - 1),
+                                               math.tau * (vertex.index % sides) / sides))).length <= 1.0e-5
+                 for vertex in proxy.data.vertices),
+             "Preserve the edited Dress physics cage before continuing.")
+    pin = physics.get('pin_weights', [1.0 if index < sides else 0.35 if index < sides * 2 else 0.0
+                                      for index in range(sides * rows)])
+    _require(isinstance(pin, list) and len(pin) == sides * rows
+             and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                     and math.isfinite(value) and 0.0 <= value <= 1.0 for value in pin)
+             and all(abs(value - 1.0) <= 1.0e-6 for value in pin[:sides]),
+             "The saved Dress waist pin weights are invalid.")
+    expected = {waist: {index: 1.0 for index in range(sides * rows)},
+                'CD Waist Pin': {index: value for index, value in enumerate(pin) if value}}
+    _require(cloth.settings.vertex_group_mass == 'CD Waist Pin',
+             "Restore the Dress Cloth waist pin group.")
+    for chain_index, chain in enumerate(record['chains']):
+        for segment, name in enumerate(chain['phys']):
+            group = f'CD Sample {chain_index:02d}.{segment:02d}'
+            expected[group] = {(segment + 1) * 3 * sides + chain_index * 4: 1.0}
+            bone = rig.pose.bones[name]
+            constraints = list(bone.constraints)
+            _require(len(constraints) == 1, "Preserve custom Dress physics bone constraints before continuing.")
+            aim = constraints[0]
+            _require(aim.name == 'CD Physics Aim' and aim.type == 'DAMPED_TRACK'
+                     and aim.target == proxy and aim.subtarget == group and aim.track_axis == 'TRACK_Y'
+                     and aim.owner_space == 'WORLD' and aim.target_space == 'WORLD'
+                     and not aim.mute and abs(aim.influence - 1.0) <= 1.0e-6
+                     and abs(aim.head_tail) <= 1.0e-6,
+                     "Restore the generated Dress physics sample targets.")
+    actual = _weights(proxy)
+    _require(actual.keys() == expected.keys()
+             and all(_same_weights(actual[name], values) for name, values in expected.items()),
+             "Restore the Dress physics cage binding, pin and sample weights.")
+    _physics_bone_animation(rig, record)
+    _deform_targets(source, rig, record)
+    names = physics.get('colliders')
+    _require(isinstance(names, list) and len(names) == len(set(names)) and names,
+             "Restore the saved Dress collision objects.")
+    collection = bpy.data.collections.get(physics.get('collection', ''))
+    _require(collection is not None and collection.get(skirt_rig.OWNER_KEY) == record['owner']
+             and collection.name in record.get('owned_collections', ())
+             and not (collection.library or collection.override_library) and not collection.children
+             and set(collection.objects.keys()) == set(names)
+             and proxy.name not in collection.objects and cloth.collision_settings.collection == collection,
+             "Restore the owned Dress collision collection and exact members.")
+    attach, pelvis = _collider_attachment(rig, record)
+    bones = [pelvis]
+    bones.extend(name for side in ('L', 'R') if (name := _bone_name(
+        attach, (f'thigh.{side}', f'thigh_{side}', f'DEF-thigh.{side}', f'upper_leg.{side}', f'UpperLeg_{side}'))))
+    _require(len(names) == len(bones), "Restore the complete Dress pelvis and leg collision set.")
+    for name, bone in zip(names, bones):
+        collider = bpy.data.objects.get(name)
+        _owned_mesh(collider, source, record)
+        _binding(collider, attach, bone, ['ARMATURE', 'COLLISION'])
+        _relative_frame(collider, Matrix.Identity(4))
+        _require(_weights(collider) == {bone: {index: 1.0 for index in range(len(collider.data.vertices))}},
+                 "Restore the Dress collider's complete bone weights.")
+        _closed_collider(collider)
+    cache = cloth.point_cache
+    _require(not cache.use_external and not cache.is_baking and cache.frame_start <= cache.frame_end,
+             "Finish the native bake or restore the local Dress cache before continuing.")
     return proxy, cloth
 
 
+def _physics_graph(source, rig, record):
+    try:
+        if backend(record) == ACTUAL_SURFACE_BACKEND:
+            return _surface_module().validate(source, rig, record)
+        return _verify_physics_graph(source, rig, record)
+    except (KeyError, TypeError, AttributeError, IndexError, OverflowError) as error:
+        raise SkirtPhysicsError('The saved Dress physics graph is incomplete; restore its saved file.') from error
+
+
+def validate_physics(source):
+    """Return (record, rig, proxy, cloth) without changing native or saved data."""
+    record, rig = _record(source)
+    proxy, cloth = _physics_graph(source, rig, record)
+    return record, rig, proxy, cloth
+
+
+def _cloth(record):
+    """Compatibility helper; callers receive the same complete read-only proof."""
+    source, rig = bpy.data.objects.get(record['source']), bpy.data.objects.get(record['rig'])
+    _require(source is not None and rig is not None, "The owned Dress physics source or rig is missing.")
+    return _physics_graph(source, rig, record)
+
+
 def clear_cache(context, source):
-    record, _ = _record(source)
-    proxy, cloth = _cloth(record)
+    record, _, proxy, cloth = validate_physics(source)
     with context.temp_override(object=proxy, active_object=proxy, point_cache=cloth.point_cache):
         if cloth.point_cache.is_baked:
             bpy.ops.ptcache.free_bake()
     record["physics"]["baked_range"] = None
     skirt_rig.write_record(source, record)
+
+
+def reset_simulation(context, source):
+    """Discard the owned simulation state and return to its native start frame.
+
+    Cache-Step's native RNA update marks even an unbaked cache outdated. At the
+    start frame Cloth then clears that cache and initializes zero-velocity Rest
+    simulation state. The actual cache step and artist Actions are unchanged.
+    """
+    skirt_rig._require_controls_for_setup(source)
+    record, _, proxy, cloth = validate_physics(source)
+    cache = cloth.point_cache
+    start = cache.frame_start
+    saved_frame, saved_subframe = context.scene.frame_current, context.scene.frame_subframe
+    try:
+        with context.temp_override(object=proxy, active_object=proxy, point_cache=cache):
+            if cache.is_baked:
+                result = bpy.ops.ptcache.free_bake()
+                _require('FINISHED' in result and not cache.is_baked,
+                         'Blender could not release the owned Dress cache.')
+        cache.frame_step = cache.frame_step
+        context.scene.frame_set(start - 1)
+        context.scene.frame_set(start)
+        context.view_layer.update()
+        _require(not cache.is_baked, 'The Dress cache remained baked after Reset.')
+        record['physics']['baked_range'] = None
+        skirt_rig.write_record(source, record)
+        return {'start': start, 'is_baked': False}
+    except Exception:
+        context.scene.frame_set(saved_frame, subframe=saved_subframe)
+        raise
 
 
 def _set_object_mode(context):
@@ -375,6 +740,8 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
         raise SkirtPhysicsError("Bake at most 20,001 frames in one operation.")
     record, rig = _record(source)
     proxy, cloth = _cloth(record)
+    if backend(record) == ACTUAL_SURFACE_BACKEND and kind == "ANIMATION":
+        raise SkirtPhysicsError("The Dress surface uses a per-vertex Cloth result. Bake its simulation; a bone-only animation copy cannot preserve that result.")
     saved_frame = context.scene.frame_current
     saved_subframe = context.scene.frame_subframe
     saved_active = context.view_layer.objects.active
@@ -446,6 +813,8 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
         record["physics"]["baked_range"] = [start, end]
         skirt_rig.write_record(source, record)
         result = {"start": start, "end": end, "frames": total, "kind": kind}
+        if backend(record) == ACTUAL_SURFACE_BACKEND:
+            result.update(backend=ACTUAL_SURFACE_BACKEND, surface=proxy.name)
         if export:
             output = export[1]
             if output.animation_data and output.animation_data.action:

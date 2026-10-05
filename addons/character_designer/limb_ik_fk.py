@@ -128,7 +128,12 @@ def ensure_switching(armature, inventory=None, keys=None):
     """Install native drivers without changing a legacy rig's evaluated pose."""
     inventory = inventory if inventory is not None else _limb()._validate_inventory(armature)
     selected = set(keys) if keys is not None else set(inventory["rigs"])
-    if selected and inventory["schema"] not in {
+    existing_direct_switches = (
+        inventory['schema'] == _limb().LEGACY_DIRECT_PREROLL_SCHEMA
+        and all(armature.data.bones[inventory['rigs'][key]['target'].name].get(VERSION_KEY) == VERSION
+                for key in selected)
+    )
+    if selected and not existing_direct_switches and inventory["schema"] not in {
         _limb().ROLL_DECOUPLED_SCHEMA, _limb().DIRECT_PREROLL_SCHEMA,
     }:
         raise _error("Rebuild this older limb rig before adding IK/FK switching.")
@@ -175,7 +180,11 @@ def ensure_switching(armature, inventory=None, keys=None):
                 variable.type = "SINGLE_PROP"
                 variable.targets[0].id = armature
                 variable.targets[0].data_path = property_path(target)
-        armature.update_tag(refresh={"OBJECT"})
+        # The installed-driver path is a read-only ownership check. Tag only
+        # a real installation; forcing another solve here evaluates all bound
+        # meshes even though none of their pose inputs have changed.
+        if added:
+            armature.update_tag(refresh={"OBJECT"})
     except Exception:
         for target, constraints in reversed(added):
             for constraint in constraints:
@@ -346,27 +355,201 @@ def _match_pole_plane(context, armature, rig, desired, *, precise=False):
         _set_matrix(context, armature, pole, matrix)
 
 
+def _fk_parent_dependencies(armature, parent, chain):
+    """Prove that the external parent frame cannot read the matched chain.
+
+    The caller has already run strict inventory validation. Only the optional
+    Torso/Root relations from that inventory are understood here; an unrelated
+    relation, even a currently muted one, keeps the sequential matcher.
+    """
+    from . import root_control, torso_controls
+
+    records = (torso_controls.get_record(armature), root_control.get_record(armature))
+    owned = {(entry['owner'], entry['name']): entry
+             for record in records if record for entry in record['constraints']}
+    dependencies, pending = {}, [parent] if parent else []
+    while pending:
+        pb = pending.pop()
+        if pb.name in chain:
+            return None
+        if pb.name in dependencies:
+            continue
+        dependencies[pb.name] = pb
+        if pb.parent:
+            pending.append(pb.parent)
+        for con in pb.constraints:
+            entry = owned.get((pb.name, con.name))
+            if (entry is None or con.type not in {'COPY_TRANSFORMS', 'COPY_ROTATION'}
+                    or con.type != entry['type'] or con.target != armature
+                    or con.subtarget != entry['fields'].get('subtarget')):
+                return None
+            target = armature.pose.bones.get(con.subtarget)
+            if target is None:
+                return None
+            pending.append(target)
+
+    root = records[1]
+    root_scale = None
+    if root and root['master'] in dependencies:
+        master = dependencies[root['master']]
+        root_control._validate_scale_drivers(armature, master)
+        root_scale = master.path_from_id('scale')
+    return dependencies, root_scale
+
+
+def _native_fk_bases(armature, rig, desired):
+    """Return three independently computable FK bases, or use the old path.
+
+    Parent target matrices, rather than stale evaluated child frames, let
+    Blender account for connected bones and its inheritance/local-location
+    flags. This is deliberately limited to the strictly inventoried Direct
+    chain; it does not batch constrained helpers or separate limbs.
+    """
+    chain = tuple(rig['chain'])
+    if (not rig.get('direct_rest') or len(chain) != 3 or len(set(chain)) != 3
+            or any(name not in desired for name in chain)
+            or armature.parent is not None or armature.constraints
+            or (armature.data.animation_data and armature.data.animation_data.drivers)):
+        return None
+    bones = [armature.pose.bones[name] for name in chain]
+    if bones[1].parent != bones[0] or bones[2].parent != bones[1]:
+        return None
+
+    switch_paths = set()
+    owned = {con.as_pointer(): (pb, con, record) for pb, con, record in rig['entries']}
+    for pb in bones:
+        for con in pb.constraints:
+            entry = owned.get(con.as_pointer())
+            if (entry is None or entry[0] != pb or not is_switch_constraint(armature, *entry)
+                    or not validate_constraint_influence(armature, *entry)
+                    or con.influence != 0.0):
+                return None
+            switch_paths.add(con.path_from_id('influence'))
+
+    proof = _fk_parent_dependencies(armature, bones[0].parent, set(chain))
+    if proof is None:
+        return None
+    dependencies, root_scale = proof
+    prefixes = tuple(pb.path_from_id() for pb in (*bones, *dependencies.values()))
+    animation = armature.animation_data
+    for curve in animation.drivers if animation else ():
+        path = curve.data_path
+        if path in switch_paths or path == root_scale:
+            continue
+        if (any(path == prefix or path.startswith(prefix + '.') or path.startswith(prefix + '[')
+                for prefix in prefixes)
+                or path.startswith(('location', 'rotation_', 'scale', 'delta_', 'matrix_', 'constraints['))):
+            return None
+
+    bases = []
+    for pb in bones:
+        kwargs = ({'parent_matrix': desired[pb.parent.name] if pb.parent.name in chain else pb.parent.matrix.copy(),
+                   'parent_matrix_local': pb.parent.bone.matrix_local}
+                  if pb.parent else {})
+        try:
+            basis = pb.bone.convert_local_to_pose(desired[pb.name], pb.bone.matrix_local,
+                                                   invert=True, **kwargs)
+            if not _limb()._matrix_is_finite(basis) or basis.to_3x3().determinant() <= 1e-10:
+                return None
+            # RNA matrix_basis stores location/rotation/scale, not shear. Keep
+            # the established sequential behavior if decomposition loses data.
+            representable = Matrix.LocRotScale(*basis.decompose())
+            if max(abs(basis[i][j] - representable[i][j]) for i in range(4) for j in range(4)) > 2e-6:
+                return None
+        except (ValueError, RuntimeError):
+            return None
+        bases.append((pb, basis))
+    return bases
+
+
 def _match_fk(context, armature, rig, desired):
     target = armature.pose.bones[rig["target"].name]
     target[PROPERTY] = 0.0
     _update(context, armature)
-    for name in rig["chain"]:
-        _set_matrix(context, armature, armature.pose.bones[name], desired[name])
+    bases = _native_fk_bases(armature, rig, desired)
+    if bases is None:
+        for name in rig["chain"]:
+            _set_matrix(context, armature, armature.pose.bones[name], desired[name])
+    else:
+        for pb, basis in bases:
+            pb.matrix_basis = basis
+        _update(context, armature)
     return set(rig["chain"])
 
 
-def _match_ik(context, armature, inventory, rig, desired, *, calibrated_rest=False, reach_offset=None):
+def _seed_ik(context, armature, inventory, rig, desired, solver_position, *, calibrated_rest=False):
+    """Batch only independent Direct target/pole inputs; False never writes.
+
+    Reverse-foot and Stable orientation helpers still need their established
+    ordered evaluations. A supported Root parent is fixed during these writes;
+    no other parent relation or controller transform driver is assumed safe.
+    """
+    from . import root_control
+
+    if (inventory['schema'] not in {_limb().LEGACY_DIRECT_PREROLL_SCHEMA, _limb().DIRECT_PREROLL_SCHEMA}
+            or rig.get('foot_controls') or rig['solver_target'].name != rig['target'].name
+            or armature.parent is not None or armature.constraints
+            or (armature.data.animation_data and armature.data.animation_data.drivers)):
+        return False
+    target = armature.pose.bones[rig['target'].name]
+    pole = armature.pose.bones[rig['pole'].name]
+    if target == pole or target.constraints or pole.constraints:
+        return False
+    root = root_control.get_record(armature)
+    parents = {pb.parent.name: pb.parent for pb in (target, pole) if pb.parent}
+    if parents and (root is None or set(parents) != {root['master']}):
+        return False
+    root_scale = None
+    if parents:
+        master = parents[root['master']]
+        if master.parent is not None or master.constraints:
+            return False
+        root_control._validate_scale_drivers(armature, master)
+        root_scale = master.path_from_id('scale')
+    prefixes = tuple(pb.path_from_id() for pb in (target, pole, *parents.values()))
+    animation = armature.animation_data
+    for curve in animation.drivers if animation else ():
+        path = curve.data_path
+        if path == root_scale:
+            continue
+        if (any(path == prefix or path.startswith(prefix + '.') or path.startswith(prefix + '[')
+                for prefix in prefixes)
+                or path.startswith(('location', 'rotation_', 'scale', 'delta_', 'matrix_', 'constraints['))):
+            return False
+
+    target_matrix = target.matrix.copy()
+    # Preserve the sequential seed's float32 arithmetic, including calibrated
+    # almost-straight reach trials, rather than replacing the translation.
+    target_matrix.translation += solver_position - target.matrix.translation
+    pole_matrix = None
+    if not calibrated_rest:
+        pole_matrix = pole.matrix.copy()
+        pole_matrix.translation = _pole_position(armature, rig, desired)
+    target.matrix = target_matrix
+    if pole_matrix is not None:
+        pole.matrix = pole_matrix
+    if not calibrated_rest or target.get(PROPERTY) != 1.0:
+        target[PROPERTY] = 1.0
+    _update(context, armature)
+    return True
+
+
+def _match_ik(context, armature, inventory, rig, desired, *, calibrated_rest=False, reach_offset=None,
+              precise=False):
     target = armature.pose.bones[rig["target"].name]
     pole = armature.pose.bones[rig["pole"].name]
     end = armature.pose.bones[rig["chain"][2]]
     changed = {target.name, pole.name}
     desired_end = desired[end.name]
     solver_position = desired_end.translation + (reach_offset if reach_offset is not None else Vector())
-    _set_solver_position(context, armature, rig, solver_position)
-    if not calibrated_rest:
-        pole_matrix = pole.matrix.copy()
-        pole_matrix.translation = _pole_position(armature, rig, desired)
-        _set_matrix(context, armature, pole, pole_matrix)
+    seeded = _seed_ik(context, armature, inventory, rig, desired, solver_position,
+                      calibrated_rest=calibrated_rest)
+    if not seeded:
+        _set_solver_position(context, armature, rig, solver_position)
+        if not calibrated_rest:
+            pole_matrix = pole.matrix.copy()
+            pole_matrix.translation = _pole_position(armature, rig, desired)
+            _set_matrix(context, armature, pole, pole_matrix)
 
     if inventory["schema"] == _limb().ROLL_DECOUPLED_SCHEMA:
         # The ORI frames carry the freely authored FK roll. Their existing
@@ -378,10 +561,10 @@ def _match_ik(context, armature, inventory, rig, desired, *, calibrated_rest=Fal
 
     # Calibrated reach trials are already in IK. The solver-position write
     # above has just refreshed the graph; don't dirty it again for the same value.
-    if not calibrated_rest or target.get(PROPERTY) != 1.0:
+    if not seeded and (not calibrated_rest or target.get(PROPERTY) != 1.0):
         target[PROPERTY] = 1.0
         _update(context, armature)
-    _match_pole_plane(context, armature, rig, desired,precise=calibrated_rest)
+    _match_pole_plane(context, armature, rig, desired, precise=calibrated_rest or precise)
     end_constraint = next(con for _pb, con, record in rig["entries"] if record["role"] == "END_ROTATION")
     offset = rig.get("auto_offset_rotation")
     if rig.get("foot_controls") and rig['foot_controls'].get('auto_follow') == 1 and rig['auto_align']:
@@ -492,7 +675,8 @@ def _refine_calibrated_reach(context, armature, inventory, rig, desired):
     _update(context,armature)
 
 
-def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=None, calibrated_rest=False):
+def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=None,
+                calibrated_rest=False, precise=False):
     """Switch one limb and match its evaluated pose; restore everything on error."""
     if mode not in {"IK", "FK"}:
         raise _error("Choose IK or FK.")
@@ -504,9 +688,21 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
     if key not in inventory["rigs"]:
         raise _error("Build this limb's controls before switching IK/FK.")
     rig = inventory["rigs"][key]
+    from . import bone_collections, bone_display
+    # Original.leave uses this matcher while its saved workspace is still
+    # active. Its outer transaction owns the final display handoff.
+    sync_display = 'character_designer_body_original_mode_v1' not in armature
     target = armature.pose.bones[rig["target"].name]
     old_mode = mode_for_rig(armature, rig)
     if old_mode == mode and desired_pose is None:
+        display_before = bone_display._snapshot(armature)
+        try:
+            if sync_display:
+                bone_collections.sync_limb_display(armature, inventory, keys=(key,), force_flags=True)
+        except Exception:
+            bone_display._restore(armature, display_before)
+            bone_collections._FRAME_CACHE.pop(armature.as_pointer(), None)
+            raise
         return {"mode": mode, "changed": False, "keyed": False, "errors": (0.0, 0.0, 0.0)}
     _update(context, armature)
     desired = _matrices(armature, pose_names(rig)) if desired_pose is None else {
@@ -518,11 +714,17 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
     mute_before = [(con, con.mute) for _pb, con, _record in rig["entries"]]
     value_before = target.get(PROPERTY, 1.0)
     had_switching = VERSION_KEY in target.bone
+    display_before = bone_display._snapshot(armature)
     try:
-        ensure_switching(armature, inventory, keys=(key,))
-        _update(context, armature)
-        affected = _match_fk(context, armature, rig, desired) if mode == "FK" else _match_ik(context, armature, inventory, rig, desired,calibrated_rest=calibrated_rest)
-        if mode=='IK' and calibrated_rest:
+        installed_count = ensure_switching(armature, inventory, keys=(key,))
+        if installed_count:
+            _update(context, armature)
+        affected = (_match_fk(context, armature, rig, desired) if mode == "FK" else
+                    _match_ik(context, armature, inventory, rig, desired,
+                              calibrated_rest=calibrated_rest, precise=precise))
+        # Intentional Rest resync needs the same bounded precision as a
+        # confirmed calibration, while still seeding its new desired Pole.
+        if mode == 'IK' and (calibrated_rest or precise):
             _refine_calibrated_reach(context,armature,inventory,rig,desired)
         affected.update(_match_toe(context, armature, rig, desired))
         # Removal of an optional extension restores its native Toe constraint
@@ -534,11 +736,15 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
                 _set_matrix(context, armature, armature.pose.bones[name], desired[name])
                 affected.add(name)
         errors = _verify(armature, desired)
-        _limb()._validate_inventory(armature)
+        final_inventory = _limb()._validate_inventory(armature)
+        if sync_display:
+            bone_collections.sync_limb_display(armature, final_inventory, keys=(key,), force_flags=True)
         keyed = bool(keyframe if keyframe is not None else context.scene.tool_settings.use_keyframe_insert_auto)
         if keyed:
             _key_switch(context, armature, target, affected, value_before, pose_before)
     except Exception:
+        bone_display._restore(armature, display_before)
+        bone_collections._FRAME_CACHE.pop(armature.as_pointer(), None)
         for con, mute in mute_before:
             con.mute = mute
         target[PROPERTY] = value_before
@@ -652,7 +858,7 @@ def _restore_bookend(curve, frame, plan):
     curve.update()
 
 
-def _key_switch(context, armature, target, affected, old_value, pose_before):
+def _key_switch(context, armature, target, affected, old_value, pose_before, *, keep_previous=False):
     # Stage the key changes in a copy so an insertion failure cannot leave a
     # half-keyed switch. Preserve shared Actions by keeping the previous one.
     animation = armature.animation_data_create()
@@ -734,10 +940,16 @@ def _key_switch(context, armature, target, affected, old_value, pose_before):
         animation.action = previous_action
         if previous_action and previous_slot:
             animation.action_slot = previous_slot
-        if failed and failed is not previous_action and failed.users == 0:
-            bpy.data.actions.remove(failed)
+        if failed and failed is not previous_action:
+            # A surrounding batch retains its previous Action until every limb
+            # commits. The failed copy is transaction-owned, including an
+            # inherited fake user; no real user may be discarded here.
+            if keep_previous and failed.users == int(failed.use_fake_user):
+                failed.use_fake_user = False
+            if failed.users == 0:
+                bpy.data.actions.remove(failed)
         raise
-    if previous_action and previous_action.users == 0 and not previous_action.use_fake_user:
+    if not keep_previous and previous_action and previous_action.users == 0 and not previous_action.use_fake_user:
         old_name = previous_action.name
         bpy.data.actions.remove(previous_action)
         animation.action.name = old_name

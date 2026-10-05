@@ -1,6 +1,7 @@
 """Worklist drawing and stable-ID gestures without Blender or worker processes."""
 
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -66,13 +67,20 @@ class WorklistUI(unittest.TestCase):
         self.backend = ModuleType(package_name + '.animation_worklist')
         for method in ('connect', 'refresh', 'add', 'activate', 'remove', 'move', 'sync'):
             setattr(self.backend, method, Mock())
+        self.collection = ModuleType(package_name + '.animation_worklist_collection')
+        for method in ('begin_add_ready', 'scan_changes', 'begin_sync_changed', 'cancel', 'stop'):
+            setattr(self.collection, method, Mock())
+        self.collection.running = Mock(return_value=False)
+        self.collection.export_finished = Mock(return_value='')
         modules = patch.dict(sys.modules, {
             package_name: package, 'bpy': bpy, 'bpy.props': props, 'bpy.types': types,
             animation.__name__: animation, self.backend.__name__: self.backend,
+            self.collection.__name__: self.collection,
         })
         modules.start()
         self.addCleanup(modules.stop)
         package.animation_worklist = self.backend
+        package.animation_worklist_collection = self.collection
         name = package_name + '.animation_worklist_ui'
         spec = importlib.util.spec_from_file_location(name, SOURCE / 'animation_worklist_ui.py')
         self.ui = importlib.util.module_from_spec(spec)
@@ -82,7 +90,9 @@ class WorklistUI(unittest.TestCase):
         self.animation = animation
         rig = SimpleNamespace(animation_data=SimpleNamespace(action=None))
         items = [SimpleNamespace(item_id='id-' + name, clip_key='clip-' + name, name=name,
-                                 source_action=object(), custom_action=object(), rig=rig, side='CUSTOM')
+                                 source_action=object(), custom_action=object(), rig=rig, side='CUSTOM',
+                                 last_synced_receipt='', scan_state='NOT_SCANNED', scan_reason='',
+                                 sync_selected=False)
                  for name in ('Walk', 'Run', 'Idle')]
         rig.animation_data.action = items[0].custom_action
         catalog = [SimpleNamespace(clip_key='clip-' + name, name=name, source_name=source,
@@ -90,13 +100,32 @@ class WorklistUI(unittest.TestCase):
                    for name, source, ready in (('Walk', 'Soldier', True), ('Dance', 'Civilian', False))]
         self.state = SimpleNamespace(items=items, catalog=catalog, active_index=0, catalog_index=1,
                                      search='', workspace_path='character_animation_workspace.json',
-                                     target_name='Cosha', show_catalog=True, status='', has_error=False)
+                                     target_name='Cosha', show_catalog=True, status='', has_error=False,
+                                     collection_status='', scan_completed=False)
         self.context = SimpleNamespace(
             scene=SimpleNamespace(character_designer_animation_worklist=self.state),
             screen=SimpleNamespace(areas=[]), region=SimpleNamespace(width=360),
             preferences=SimpleNamespace(system=SimpleNamespace(ui_scale=1.0)),
             workspace=SimpleNamespace(status_text_set=Mock()),
             window_manager=SimpleNamespace(modal_handler_add=Mock()))
+        self.window = SimpleNamespace(scene=self.context.scene, screen=self.context.screen)
+        self.context.window = self.window
+        self.context.window_manager.windows = [self.window]
+        self.timers = SimpleNamespace(register=Mock(), is_registered=Mock(return_value=True), unregister=Mock())
+        bpy.app = SimpleNamespace(timers=self.timers)
+        bpy.data = SimpleNamespace(scenes=[self.context.scene])
+        bpy.context = self.context
+
+        @contextmanager
+        def override(**kwargs):
+            scene, window = self.context.scene, self.context.window
+            self.context.scene, self.context.window = kwargs['scene'], kwargs['window']
+            try:
+                yield self.context
+            finally:
+                self.context.scene, self.context.window = scene, window
+
+        self.context.temp_override = override
 
     def load_animation(self):
         """Load the actual coordinator; only Blender/services are substitutes."""
@@ -109,7 +138,7 @@ class WorklistUI(unittest.TestCase):
         handlers.load_pre = []
         app = ModuleType('bpy.app')
         app.handlers = handlers
-        app.timers = SimpleNamespace(is_registered=Mock(return_value=True), unregister=Mock())
+        app.timers = self.timers
         bpy.app = app
         sys.modules['bpy.app'], sys.modules['bpy.app.handlers'] = app, handlers
         runtime = ModuleType(package_name + '.animation_runtime')
@@ -177,6 +206,286 @@ class WorklistUI(unittest.TestCase):
         for field in ('item_id', 'source_action', 'custom_action', 'manifest_path', 'source_file', 'source_hash',
                       'link_identity', 'source_slot', 'custom_slot', 'source_data', 'custom_data'):
             self.assertIn(field, item)
+
+    def test_collection_receipt_is_persistent_but_scan_and_selection_are_session_only(self):
+        item = self.ui.CharacterDesignerAnimationWorklistItem.__annotations__
+        state = self.ui.CharacterDesignerAnimationWorklistState.__annotations__
+        self.assertIn('HIDDEN', item['last_synced_receipt']['options'])
+        self.assertNotIn('SKIP_SAVE', item['last_synced_receipt']['options'])
+        for field in ('scan_state', 'scan_reason', 'sync_selected'):
+            self.assertIn('SKIP_SAVE', item[field]['options'])
+            self.assertNotIn('update', item[field])
+        self.assertEqual(item['scan_state']['default'], 'NOT_SCANNED')
+        self.assertFalse(item['sync_selected']['default'])
+        self.assertEqual({entry[0] for entry in item['scan_state']['items']},
+                         {'NOT_SCANNED', 'CHANGED', 'UNCHANGED', 'UNKNOWN', 'BLOCKED'})
+        for field in ('collection_status', 'scan_completed'):
+            self.assertIn('SKIP_SAVE', state[field]['options'])
+
+    def test_collection_operators_are_registered(self):
+        for operator in (self.ui.CHARACTERDESIGNER_OT_worklist_add_ready,
+                         self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes,
+                         self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed,
+                         self.ui.CHARACTERDESIGNER_OT_worklist_cancel_collection):
+            self.assertIn(operator, self.ui.WORKLIST_CLASSES)
+
+    def test_add_ready_dispatches_only_collection_without_activating_an_action(self):
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_add_ready()
+        self.assertTrue(operator.poll(self.context))
+        before = self.state.active_index, self.state.items[0].rig.animation_data.action
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.collection.begin_add_ready.assert_called_once_with(self.context)
+        for name in ('connect', 'refresh', 'add', 'activate', 'remove', 'move', 'sync'):
+            getattr(self.backend, name).assert_not_called()
+        self.assertEqual((self.state.active_index, self.state.items[0].rig.animation_data.action), before)
+        self.state.workspace_path = ''
+        self.assertFalse(operator.poll(self.context))
+        self.state.workspace_path = 'workspace.json'
+        self.animation._link_idle.return_value = False
+        self.assertFalse(operator.poll(self.context))
+
+    def test_scan_changes_is_explicit_and_does_not_start_export(self):
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes()
+        self.assertTrue(operator.poll(self.context))
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.collection.scan_changes.assert_not_called()
+        self.assertIn('Scanning animations', self.state.status)
+        self.timers.register.assert_called_once_with(self.ui._poll_scan, first_interval=.05)
+        self.assertTrue(self.ui.scan_pending())
+        self.assertFalse(operator.poll(self.context))
+        self.assertIsNone(self.ui._poll_scan())
+        self.assertFalse(self.ui.scan_pending())
+        self.collection.scan_changes.assert_called_once_with(self.context)
+        self.collection.begin_sync_changed.assert_not_called()
+        self.backend.sync.assert_not_called()
+        self.state.items = []
+        self.assertFalse(operator.poll(self.context))
+
+    def test_sync_changed_rescans_before_starting_collection(self):
+        calls = Mock()
+        calls.attach_mock(self.collection.scan_changes, 'scan')
+        calls.attach_mock(self.collection.begin_sync_changed, 'begin')
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed()
+        self.assertTrue(operator.poll(self.context))
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.assertFalse(calls.mock_calls)
+        self.assertIsNone(self.ui._poll_scan())
+        self.assertEqual([call[0] for call in calls.mock_calls], ['scan', 'begin'])
+        self.collection.scan_changes.assert_called_once_with(self.context)
+        self.collection.begin_sync_changed.assert_called_once_with(self.context)
+        self.backend.sync.assert_not_called()
+        self.animation._link_idle.return_value = False
+        self.assertFalse(operator.poll(self.context))
+
+    def test_failed_scan_stops_sync_and_reports_scene_feedback_with_redraw(self):
+        self.collection.scan_changes.side_effect = ValueError('Workspace revision changed')
+        area = SimpleNamespace(type='VIEW_3D', tag_redraw=Mock())
+        self.context.screen.areas = [area]
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed()
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.assertIsNone(self.ui._poll_scan())
+        self.collection.begin_sync_changed.assert_not_called()
+        self.assertEqual(self.state.status, 'Workspace revision changed')
+        self.assertEqual(self.state.collection_status, 'Workspace revision changed')
+        self.assertTrue(self.state.has_error)
+        self.assertFalse(self.ui.scan_pending())
+        self.assertFalse(hasattr(operator, 'last_report'))  # No expired Operator retained by the timer.
+        self.assertEqual(area.tag_redraw.call_count, 2)
+
+    def test_pending_scan_keeps_unknown_selection_and_completed_scan_until_backend(self):
+        self.state.scan_completed = True
+        item = self.state.items[0]
+        item.scan_state, item.sync_selected = 'UNKNOWN', True
+        self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed().execute(self.context)
+        self.assertTrue(self.state.scan_completed)
+        self.assertEqual((item.scan_state, item.sync_selected), ('UNKNOWN', True))
+        self.collection.scan_changes.assert_not_called()
+        self.ui.CHARACTERDESIGNER_OT_worklist_cancel_collection().execute(self.context)
+        self.assertTrue(self.state.scan_completed)
+        self.assertEqual((item.scan_state, item.sync_selected), ('UNKNOWN', True))
+
+    def test_pending_scan_prevents_all_worklist_reentry_and_duplicate_registration(self):
+        scan = self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes()
+        self.assertEqual(scan.execute(self.context), {'FINISHED'})
+        message = self.state.status
+        for cls in (self.ui.CHARACTERDESIGNER_OT_worklist_add_ready,
+                    self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes,
+                    self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed,
+                    self.ui.CHARACTERDESIGNER_OT_worklist_activate):
+            self.assertFalse(cls.poll(self.context))
+        self.assertEqual(scan.execute(self.context), {'CANCELLED'})
+        self.assertEqual(self.state.status, message)
+        self.assertEqual(self.timers.register.call_count, 1)
+        self.collection.scan_changes.assert_not_called()
+
+    def test_sync_callback_releases_idle_lock_before_scan_and_begin(self):
+        calls = []
+        def scan(_context):
+            self.assertFalse(self.ui.scan_pending())
+            self.assertTrue(self.ui._idle(self.context))
+            calls.append('scan')
+        self.collection.scan_changes.side_effect = scan
+        self.collection.begin_sync_changed.side_effect = lambda _context: calls.append('begin')
+        self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed().execute(self.context)
+        self.ui._poll_scan()
+        self.assertEqual(calls, ['scan', 'begin'])
+
+    def test_registration_error_releases_lock_without_unregistering_unarmed_callback(self):
+        self.timers.register.side_effect = RuntimeError('Timer registration failed')
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes()
+        self.assertEqual(operator.execute(self.context), {'CANCELLED'})
+        self.assertFalse(self.ui.scan_pending())
+        self.assertTrue(self.state.has_error)
+        self.assertEqual(operator.last_report, ({'ERROR'}, 'Timer registration failed'))
+        self.timers.unregister.assert_not_called()
+        self.collection.scan_changes.assert_not_called()
+
+    def test_cancel_pending_removes_only_owned_callback_and_never_cancels_other_export(self):
+        self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes().execute(self.context)
+        self.collection.running.return_value = True
+        cancel = self.ui.CHARACTERDESIGNER_OT_worklist_cancel_collection()
+        self.assertTrue(cancel.poll(self.context))
+        self.assertEqual(cancel.execute(self.context), {'FINISHED'})
+        self.timers.unregister.assert_called_once_with(self.ui._poll_scan)
+        self.collection.cancel.assert_not_called()
+        self.collection.scan_changes.assert_not_called()
+        self.assertIsNone(self.ui._poll_scan())
+        self.assertFalse(self.ui.scan_pending())
+
+    def test_scene_change_cancels_before_scan_and_does_not_touch_new_scene(self):
+        self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed().execute(self.context)
+        other_state = SimpleNamespace(status='Other scene unchanged', has_error=False)
+        self.window.scene = SimpleNamespace(character_designer_animation_worklist=other_state)
+        self.ui._poll_scan()
+        self.assertFalse(self.ui.scan_pending())
+        self.assertIn('owning window or scene changed', self.state.status)
+        self.assertEqual(other_state.status, 'Other scene unchanged')
+        self.collection.scan_changes.assert_not_called()
+        self.collection.begin_sync_changed.assert_not_called()
+
+    def test_removed_window_or_scene_cancels_before_backend(self):
+        for missing in ('window', 'scene'):
+            with self.subTest(missing=missing):
+                self.context.window_manager.windows = [self.window]
+                sys.modules['bpy'].data.scenes = [self.context.scene]
+                self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes().execute(self.context)
+                if missing == 'window':
+                    self.context.window_manager.windows = []
+                else:
+                    sys.modules['bpy'].data.scenes = []
+                self.ui._poll_scan()
+                self.assertFalse(self.ui.scan_pending())
+                self.collection.scan_changes.assert_not_called()
+
+    def test_late_job_blocks_scan_without_cancelling_that_job(self):
+        self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed().execute(self.context)
+        self.animation._link_idle.return_value = False
+        self.ui._poll_scan()
+        self.assertFalse(self.ui.scan_pending())
+        self.assertTrue(self.state.has_error)
+        self.assertIn('Another animation operation', self.state.status)
+        self.collection.cancel.assert_not_called()
+        self.collection.scan_changes.assert_not_called()
+
+    def test_lost_nonpersistent_timer_releases_lock_without_writing_loaded_scene(self):
+        self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes().execute(self.context)
+        old_status = self.state.status
+        self.timers.is_registered.return_value = False
+        self.assertFalse(self.ui.scan_pending())
+        self.assertTrue(self.ui._idle(self.context))
+        self.assertEqual(self.state.status, old_status)
+        self.collection.scan_changes.assert_not_called()
+        self.timers.unregister.assert_not_called()
+
+    def test_stop_for_reload_clears_pending_timer_without_starting_scan(self):
+        self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed().execute(self.context)
+        self.ui.stop_worklist_ui()
+        self.assertFalse(self.ui.scan_pending())
+        self.timers.unregister.assert_called_once_with(self.ui._poll_scan)
+        self.collection.stop.assert_called_once_with()
+        self.collection.scan_changes.assert_not_called()
+        self.collection.begin_sync_changed.assert_not_called()
+
+    def test_native_link_and_export_idle_guard_also_covers_pending_gap(self):
+        animation = self.load_animation()
+        self.exporter.active_job.return_value = None
+        self.context.scene = self.origin_scene
+        self.assertTrue(animation._link_idle())
+        self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes().execute(self.context)
+        self.assertFalse(animation._link_idle())
+        self.assertFalse(animation._link_idle(include_collection=False))
+        self.ui.CHARACTERDESIGNER_OT_worklist_cancel_collection().execute(self.context)
+        self.assertTrue(animation._link_idle())
+
+    def test_cancel_collection_is_available_only_while_busy_even_when_not_idle(self):
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_cancel_collection()
+        self.assertFalse(operator.poll(self.context))
+        self.collection.running.return_value = True
+        self.animation._link_idle.return_value = False
+        self.assertTrue(operator.poll(self.context))
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.collection.cancel.assert_called_once_with(self.context)
+        self.collection.scan_changes.assert_not_called()
+        self.collection.begin_sync_changed.assert_not_called()
+
+    def test_unknown_row_requires_an_explicit_selection_and_displays_reason(self):
+        item = self.state.items[0]
+        item.scan_state, item.scan_reason = 'UNKNOWN', 'Unsupported animated dependency.'
+        self.state.scan_completed = True
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+            self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
+        labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
+        self.assertIn('Unknown: select explicitly to sync.', labels)
+        self.assertIn('Unsupported animated dependency.', labels)
+        self.assertIn('Unknown', labels)
+        selections = [(value, enabled) for kind, value, enabled in layout.records
+                      if kind == 'prop' and value[0] == 'sync_selected']
+        self.assertEqual(len(selections), 1)
+        self.assertTrue(selections[0][1])
+        self.assertFalse(item.sync_selected)
+        item.sync_selected = True  # The artist explicitly checks this row.
+        self.ui.draw_worklist(Layout(), self.context)
+        self.assertTrue(item.sync_selected)
+        self.collection.scan_changes.assert_not_called()
+        self.collection.begin_sync_changed.assert_not_called()
+
+    def test_blocked_and_unscanned_rows_cannot_be_checked_for_sync(self):
+        item = self.state.items[0]
+        for state, enabled in (('BLOCKED', False), ('NOT_SCANNED', False),
+                               ('CHANGED', True), ('UNCHANGED', True), ('UNKNOWN', True)):
+            with self.subTest(state=state):
+                item.scan_state = state
+                layout = Layout()
+                self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+                    self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
+                selections = [active for kind, value, active in layout.records
+                              if kind == 'prop' and value[0] == 'sync_selected']
+                self.assertEqual(selections, [enabled])
+
+    def test_drawing_saved_scan_results_never_rescans_or_reads_fingerprint_inputs(self):
+        self.state.items[0].scan_state = 'CHANGED'
+        self.state.items[0].sync_selected = True
+        self.state.items[1].scan_state = 'UNKNOWN'
+        self.state.items[1].scan_reason = 'No complete proof.'
+        before = [(item.scan_state, item.scan_reason, item.sync_selected, item.last_synced_receipt)
+                  for item in self.state.items]
+        self.collection.scan_changes.side_effect = AssertionError('Draw computed a fingerprint')
+        self.collection.begin_sync_changed.side_effect = AssertionError('Draw started a worker')
+        with patch.object(Path, 'open', side_effect=AssertionError('Draw read a file')), \
+                patch.object(Path, 'read_text', side_effect=AssertionError('Draw read a manifest')), \
+                patch.object(Path, 'stat', side_effect=AssertionError('Draw inspected file metadata')), \
+                patch.object(self.ui, '_backend', side_effect=AssertionError('Draw called backend')):
+            layout = Layout()
+            self.ui.draw_worklist(layout, self.context)
+            for index, item in enumerate(self.state.items):
+                self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+                    self.context, layout, self.state, item, 0, self.state, 'active_index', index)
+        self.assertEqual([(item.scan_state, item.scan_reason, item.sync_selected, item.last_synced_receipt)
+                          for item in self.state.items], before)
+        for name in ('scan_changes', 'begin_add_ready', 'begin_sync_changed', 'cancel'):
+            getattr(self.collection, name).assert_not_called()
 
     def test_draw_does_not_read_files_or_call_backend(self):
         layout = Layout()
@@ -343,6 +652,7 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(operator.modal(self.context, self.event('LEFTMOUSE', value='RELEASE')), {'CANCELLED'})
         self.backend.move.assert_not_called()
         self.assertFalse(self.ui._DRAGS)
+        self.collection.stop.assert_called_once_with()
 
     def test_remove_only_dispatches_membership_operation(self):
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_remove()
@@ -518,6 +828,47 @@ class WorklistUI(unittest.TestCase):
         self.assertIsNone(animation._export_window_manager)
         self.exporter.cancel_export.assert_not_called()
         animation._redraw.assert_called_once_with()
+
+    def test_deleted_ui_owner_still_delivers_published_result_to_collection_hook(self):
+        animation = self.load_animation()
+
+        class DeletedOwner:
+            @property
+            def character_designer_animation(self):
+                raise ReferenceError('WindowManager owner was removed')
+
+        animation._export_window_manager = DeletedOwner()
+        published = self.exporter.poll_export.return_value
+        self.assertIsNone(animation._poll_action_export())
+        self.collection.export_finished.assert_called_once_with(self.job, published, '')
+        self.exporter.cancel_export.assert_not_called()
+        self.assertIn('Synced Edited Walk.fbx', self.state.status)
+        self.assertFalse(self.state.has_error)
+        self.assertEqual(self.other_state.status, 'Other scene unchanged')
+        self.assertIsNone(animation._export_window_manager)
+        animation._redraw.assert_called_once_with()
+
+    def test_deleted_ui_feedback_during_write_does_not_reclassify_publication_as_failure(self):
+        animation = self.load_animation()
+
+        class DeletedFeedback:
+            @property
+            def export_result_path(self):
+                return ''
+
+            @export_result_path.setter
+            def export_result_path(self, _value):
+                raise ReferenceError('WindowManager properties were removed')
+
+        animation._export_window_manager = SimpleNamespace(character_designer_animation=DeletedFeedback())
+        published = self.exporter.poll_export.return_value
+        self.assertIsNone(animation._poll_action_export())
+        self.collection.export_finished.assert_called_once_with(self.job, published, '')
+        self.exporter.cancel_export.assert_not_called()
+        self.assertIn('Synced Edited Walk.fbx', self.state.status)
+        self.assertFalse(self.state.has_error)
+        self.assertEqual(self.other_state.status, 'Other scene unchanged')
+        self.assertIsNone(animation._export_window_manager)
 
     def test_failed_export_updates_originating_scene_after_scene_switch(self):
         animation = self.load_animation()

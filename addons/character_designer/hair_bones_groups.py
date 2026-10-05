@@ -144,6 +144,8 @@ def captured_strand_count(obj):
 
 def clear_groups(obj):
     """Explicitly clear only source partition settings; retain guides and rigs."""
+    from . import hair_motion_lifecycle
+    hair_motion_lifecycle.before_mutation(bpy.context, obj)
     if obj.library is not None:
         raise HairGroupsError("Make the source hair object local before clearing its groups.")
     if GROUPS_KEY in obj:
@@ -190,6 +192,8 @@ def capture_plans(obj, plans, *, replace=False):
     Replacement keeps the old capture until every new strand has passed, so a
     failed discovery or validation never leaves the source without its record.
     """
+    from . import hair_motion_lifecycle
+    hair_motion_lifecycle.before_mutation(bpy.context, obj)
     plans = tuple(plans)
     if not plans:
         raise HairGroupsError("Select Hair Strands before capturing groups.")

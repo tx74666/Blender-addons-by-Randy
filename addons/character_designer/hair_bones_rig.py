@@ -8,13 +8,13 @@ import hashlib
 import json
 import math
 import re
-import uuid
 
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
 from .selected_bone_weights import _capture_vertex_groups, _restore_vertex_groups
+from . import hair_motion_lifecycle as motion_lifecycle
 
 
 RECORD_KEY = "character_designer_hair_bones_v1"
@@ -605,6 +605,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
     integer ``created``/``reused``, ``parent_bone`` and creation flags.
     The caller supplies an UNDO operator; this service never pushes extra undo.
     """
+    motion_lifecycle.before_mutation(context, obj)
     _validate_object(context, obj)
     if context.mode not in {"OBJECT", "EDIT_MESH", "POSE"}:
         raise HairBonesRigError("Use Object Mode or select hair bands in Mesh Edit Mode.")
@@ -630,7 +631,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         plans = hair_bones_mirror.prepare_plans(obj, plans)
     owned = _validate_owned(obj, armature, record, snapshot)
     new, selected_chains = [], []
-    source_id = record["source_id"] if record else uuid.uuid4().hex
+    source_id = motion_lifecycle.source_uid_for_bind(obj, record)
     reserved_names = set(armature.data.bones.keys()) if armature else set()
     for plan in plans:
         old = owned.get(plan["signature"])
@@ -673,6 +674,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
     # Edit Mode group assignments are stored in BMesh; flush the mode only
     # after the complete geometric preflight, and restore it on any failure.
     old_json, old_rig, old_mirror = obj.get(RECORD_KEY), obj.get(RIG_KEY), obj.get(MIRROR_KEY)
+    motion_identity = motion_lifecycle.snapshot(obj)
     old_parent = (obj.parent, obj.parent_type, obj.parent_bone, obj.matrix_parent_inverse.copy(), obj.matrix_basis.copy())
     original_world = obj.matrix_world.copy()
     old_mirror_objects = [(m, m.mirror_object) for m in mirrors]
@@ -800,6 +802,7 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         for plan in new:
             for name in plan['names']:
                 control_colors.style(armature.pose.bones[name])
+        motion_lifecycle.claim_bound(obj)
         return {"armature": armature, "chains": tuple(selected_chains), "created": len(new),
                 "reused": len(plans) - len(new), "parent_bone": parent_bone,
                 "rig_created": created_rig is not None, "modifier_created": created_modifier is not None}
@@ -854,6 +857,10 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
                     del obj[name]
             else:
                 obj[name] = value
+        try:
+            motion_lifecycle.restore(obj, motion_identity)
+        except Exception as rollback_exc:
+            rollback_errors.append(str(rollback_exc))
         try:
             _restore_context(context, obj, state)
         except Exception as rollback_exc:

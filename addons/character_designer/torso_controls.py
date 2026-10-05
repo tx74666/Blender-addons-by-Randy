@@ -49,7 +49,7 @@ def collection_members(armature):
             "always": visible, "visible": visible}
 
 
-def validate(armature, inventory=None):
+def validate(armature, inventory=None, *, original_mutes=None):
     """Validate only this optional module, without entering limb inventory again."""
     from . import spine_ik_fk
     record = get_record(armature)
@@ -80,7 +80,8 @@ def validate(armature, inventory=None):
         for entry in record['constraints']:
             con = armature.pose.bones[entry['owner']].constraints.get(entry['name'])
             if (con is None or con.type != entry['type'] or con.target != armature
-                    or con.mute or any(not _same_value(getattr(con, k), v) for k, v in entry['fields'].items())):
+                    or _limb()._validation_mute(armature.pose.bones[entry['owner']], con, original_mutes)
+                    or any(not _same_value(getattr(con, k), v) for k, v in entry['fields'].items())):
                 raise _error(f"Torso constraint '{entry['name']}' was edited.")
         for role, entry in record['widgets'].items():
             obj = bpy.data.objects.get(entry['object'])

@@ -25,9 +25,10 @@ def current(context):
     return saved.items[saved.active_index] if 0 <= saved.active_index < len(saved.items) else None
 
 
-def _idle(context):
+def _idle(context, *, _collection=False):
     from .animation import _link_idle
-    if not _link_idle():
+    idle = _link_idle(include_collection=False) if _collection else _link_idle()
+    if not idle:
         raise ValueError('Finish the current animation or model export first.')
     if context.object and context.object.mode == 'EDIT':
         raise ValueError('Leave Edit Mode before changing the animation worklist.')
@@ -221,12 +222,13 @@ def _copy_workspace(source_state, destination):
     _fill_catalog(destination, workspace.load_workspace(destination.workspace_path))
 
 
-def add(context, clip_key):
-    _idle(context)
+def add(context, clip_key, *, activate_new=True, _collection=False):
+    _idle(context, _collection=_collection)
     saved = state(context)
     existing = next((item for item in saved.items if item.clip_key == clip_key), None)
     if existing:
-        activate(context, existing.item_id, 'CUSTOM')
+        if activate_new:
+            activate(context, existing.item_id, 'CUSTOM', _collection=_collection)
         return existing
     _record, clip, link, packet, export_name, model = _prepared(saved, clip_key)
     old_context = source._context_state(context)
@@ -303,7 +305,15 @@ def add(context, clip_key):
         item.source_file, item.source_hash = cache_file, cache_hash
         saved.rig = rig
         rig['character_designer_animation_source_model_sha256'] = saved.model_sha256
-        activate(context, item.item_id, 'CUSTOM')
+        if activate_new:
+            activate(context, item.item_id, 'CUSTOM', _collection=_collection)
+        elif captured:
+            # Collection import never activates a new Custom over an existing
+            # author Action. The native temporary bake has already finished.
+            _restore_rig(context, rig, captured)
+            source._restore_context(context, old_context, playing=True)
+        else:
+            saved.active_index = -1
         bpy.data.actions.remove(baseline)
         saved.status, saved.has_error = 'Added ' + item.name + '. Select Source to compare or Custom to edit.', False
         if captured:
@@ -387,8 +397,8 @@ def _association(item, prepared=None):
     rig[links.RIG_ID_KEY], rig[links.ACTION_KEY], rig[links.LINK_KEY] = rig_id, item.custom_action, encoded
 
 
-def activate(context, item_id, side='CUSTOM'):
-    _idle(context)
+def activate(context, item_id, side='CUSTOM', *, _collection=False):
+    _idle(context, _collection=_collection)
     if side not in {'SOURCE', 'CUSTOM'}:
         raise ValueError('Choose Source or Custom.')
     saved = state(context)
@@ -465,8 +475,8 @@ def remove(context, item_id):
     saved.status, saved.has_error = 'Removed from the worklist. Source and Custom Actions are retained.', False
 
 
-def sync(context):
-    _idle(context)
+def sync(context, *, _collection=False, _collection_proof=None):
+    _idle(context, _collection=_collection)
     saved = state(context)
     item = current(context)
     if item is None or item.side != 'CUSTOM':
@@ -482,9 +492,19 @@ def sync(context):
     current_link = links.load_link(item.manifest_path)
     if links._identity(current_link) != links._identity(json.loads(item.link_identity)):
         raise ValueError('Unity rebuilt this clip Link. Existing edits are kept; import the new baseline as a separate worklist.')
+    from .animation_worklist_collection import export_implementation, item_fingerprint
+    # Collect before launching: a proof error must never strand a worker without
+    # its poll/disposal owner. The snapshot freezes in the same event-loop turn.
+    proof = item_fingerprint(context, item)
+    implementation = export_implementation()
+    if _collection_proof is not None:
+        if not _collection or not _collection_proof(proof):
+            raise ValueError('The collection launch was cancelled or lost its fingerprint owner.')
     _association(item)
     job = links.begin_linked_export(context, item.rig)
     job['_worklist_scene'], job['_worklist_item_id'] = context.scene, item.item_id
+    job['_worklist_fingerprint'] = proof
+    job['_worklist_export_implementation'] = implementation
     from . import animation
     animation._export_window_manager = context.window_manager
     bpy.app.timers.register(animation._poll_action_export, first_interval=0.25)

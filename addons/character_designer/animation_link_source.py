@@ -126,6 +126,16 @@ def import_source(context, manifest_path, model_file=None, start_frame=1):
                                    start_frame=start_frame)
 
 
+def _restore_image_settings(image_settings):
+    for image, colorspace, alpha_mode in image_settings:
+        # Render Result can expose an unset/empty colorspace enum. Preserve that
+        # unchanged native state without assigning an invalid enum back to RNA.
+        if image.colorspace_settings.name != colorspace:
+            image.colorspace_settings.name = colorspace
+        if image.alpha_mode != alpha_mode:
+            image.alpha_mode = alpha_mode
+
+
 def _import_prepared_source(context, link, packet, export_name, path, digest, *, start_frame=1):
     """Use this operation's validated Link, packet and model without reparsing.
 
@@ -166,8 +176,7 @@ def _import_prepared_source(context, link, packet, export_name, path, digest, *,
                                              use_custom_props=False)
         if 'FINISHED' not in imported:
             raise _error('Blender did not finish importing the linked character FBX.')
-        for image, colorspace, alpha_mode in image_settings:
-            image.colorspace_settings.name, image.alpha_mode = colorspace, alpha_mode
+        _restore_image_settings(image_settings)
         rigs = [obj for obj in scene.objects if obj.type == 'ARMATURE']
         if len(rigs) != 1:
             raise _error('The linked FBX must contain exactly one exported character armature.')
@@ -210,8 +219,7 @@ def _import_prepared_source(context, link, packet, export_name, path, digest, *,
         if context.object and context.object.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
         _restore_context(context, saved, playing=True)
-        for image, colorspace, alpha_mode in image_settings:
-            image.colorspace_settings.name, image.alpha_mode = colorspace, alpha_mode
+        _restore_image_settings(image_settings)
         created = {value for value in set(bpy.data.user_map()) - existing if not value.is_embedded_data}
         if created:
             bpy.data.batch_remove(ids=tuple(created))

@@ -228,7 +228,7 @@ def _auto_key(context, rig, before, values):
             _insert_key(pb, path, frame)
 
 
-def _match(context, rig, desired, changed, *, preserve_modes=False):
+def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limbs=()):
     from . import torso_controls, spine_ik_fk, eye_controls, bone_collections, root_control
     inventory = limb_ik._validate_inventory(rig)
     torso, spine, eyes = torso_controls.validate(rig), spine_ik_fk.validate(rig), eye_controls.validate(rig)
@@ -270,7 +270,8 @@ def _match(context, rig, desired, changed, *, preserve_modes=False):
         match.switch_limb(context, rig, key, 'FK', keyframe=False, desired_pose=wanted)
         if previous != 'FK':
             try:
-                match.switch_limb(context, rig, key, 'IK', keyframe=False, desired_pose=wanted)
+                match.switch_limb(context, rig, key, 'IK', keyframe=False, desired_pose=wanted,
+                                  precise=key in precise_limbs)
                 if previous == 'BLEND':
                     rig.pose.bones[entry['target'].name][match.PROPERTY] = previous_value
                     match._update(context, rig)

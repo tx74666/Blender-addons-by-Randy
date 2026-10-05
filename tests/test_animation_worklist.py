@@ -206,10 +206,19 @@ class WorklistTests(unittest.TestCase):
         with patch.object(self.worklist, 'activate') as activate, \
                 patch.object(self.worklist, '_prepared', side_effect=AssertionError('Existing item was rebaked')):
             self.assertIs(self.worklist.add(self.context, first.clip_key), first)
-        activate.assert_called_once_with(self.context, first.item_id, 'CUSTOM')
+        activate.assert_called_once_with(self.context, first.item_id, 'CUSTOM', _collection=False)
         self.assertEqual(first.source_hash, 'frozen baseline')
         self.assertEqual(first.custom_action['artist_edit'], 17)
         self.assertEqual(len(self.saved.items), 2)
+
+    def test_collection_add_of_existing_item_never_activates_or_rebakes(self):
+        rig, first, _second = self.populated()
+        with patch.object(self.worklist, 'activate') as activate, \
+                patch.object(self.worklist, '_prepared', side_effect=AssertionError('Existing item was rebaked')):
+            self.assertIs(self.worklist.add(self.context, first.clip_key, activate_new=False, _collection=True), first)
+        activate.assert_not_called()
+        self.assertIs(rig.animation_data.action, first.custom_action)
+        self.assertEqual(first.custom_action['artist_edit'], 17)
 
     def test_move_preserves_active_identity_and_exact_action(self):
         rig, first, second = self.populated()

@@ -4,16 +4,18 @@ import json
 import os
 import re
 import textwrap
+import uuid
 from functools import lru_cache
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 
 from . import character_setup
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
 
 _MODAL_EXPORTS = []
+_SIMPLE_MATERIAL_SEARCH = {}
 
 
 def stop_export_ui():
@@ -21,6 +23,7 @@ def stop_export_ui():
     _exporter().stop_exports()
     for operator in list(_MODAL_EXPORTS):
         operator._finish_timer()
+    _SIMPLE_MATERIAL_SEARCH.clear()
 
 
 def _redraw(context):
@@ -121,6 +124,12 @@ def _material_choices(objects, config):
     used = {slot.material for obj in objects if obj.type == 'MESH'
             for slot in obj.material_slots if slot.material is not None}
     return sorted(used | chosen, key=lambda material: material.name.casefold()), chosen
+
+
+def _simple_material_search_items(operator, _context):
+    # Blender passes OperatorProperties here, not the Python Operator instance.
+    # Keep strings alive for this popup only; acceptance validates independently.
+    return _SIMPLE_MATERIAL_SEARCH.get(getattr(operator, 'search_token', ''), ())
 
 
 def _visible_collection_path(layer, obj):
@@ -394,6 +403,80 @@ class CHARACTERDESIGNER_OT_unity_locate_unweighted(Operator):
             return {'CANCELLED'}
 
 
+class CHARACTERDESIGNER_OT_unity_export_section(Operator):
+    bl_idname = 'character_designer.unity_export_section'
+    bl_label = 'Expand Export Section'
+    bl_description = 'Expand or collapse this export section'
+    bl_options = {'INTERNAL'}
+    section: StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            _rig_obj, config = _config(context)
+            name = {'OBJECTS': 'show_objects', 'MATERIALS': 'show_materials',
+                    'WARNINGS': 'show_warnings'}.get(self.section)
+            if name is None:
+                raise ValueError('Unknown export section.')
+            setattr(config, name, not getattr(config, name))
+            _redraw(context)
+            return {'FINISHED'}
+        except (ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
+class CHARACTERDESIGNER_OT_unity_choose_simple_material(Operator):
+    bl_idname = 'character_designer.unity_choose_simple_material'
+    bl_label = 'Add Simplified Material'
+    bl_description = 'Choose an included character material to simplify on export'
+    bl_options = {'INTERNAL'}
+    bl_property = 'material_name'
+    material_name: EnumProperty(items=_simple_material_search_items)
+    search_token: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, _event):
+        try:
+            self.cancel(context)
+            exporter = _exporter()
+            if exporter.export_running():
+                raise ValueError('Wait for the current export to finish.')
+            rig, config = _config(context)
+            collected = exporter.collect_character(context, rig, config)
+            materials, chosen = _material_choices(collected['objects'], config)
+            self._material_items = tuple((material.name, material.name, '')
+                                         for material in materials if material not in chosen)
+            if not self._material_items:
+                self.report({'INFO'}, 'No other included character materials to add.')
+                return {'CANCELLED'}
+            self.search_token = uuid.uuid4().hex
+            _SIMPLE_MATERIAL_SEARCH[self.search_token] = self._material_items
+            self._rig_identity = rig.as_pointer()
+            context.window_manager.invoke_search_popup(self)
+            return {'RUNNING_MODAL'}
+        except (ValueError, RuntimeError) as exc:
+            self.cancel(context)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+    def cancel(self, _context):
+        _SIMPLE_MATERIAL_SEARCH.pop(getattr(self, 'search_token', ''), None)
+
+    def execute(self, context):
+        try:
+            rig, _config_data = _config(context)
+            if getattr(self, '_rig_identity', rig.as_pointer()) != rig.as_pointer():
+                raise ValueError('The character changed; choose a material again.')
+            # The existing undoable action freshly checks included bindings and
+            # material use, even if the scene changed while the popup was open.
+            return bpy.ops.character_designer.unity_simple_material(
+                material_name=self.material_name, enabled=True)
+        except (ValueError, RuntimeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        finally:
+            self.cancel(context)
+
+
 class CHARACTERDESIGNER_OT_unity_simple_material(Operator):
     bl_idname = 'character_designer.unity_simple_material'
     bl_label = 'Simple Export Material'
@@ -581,7 +664,9 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
 
         objects, eligible, warnings, error, scope = [], [], [], '', None
         try:
-            scope = _exporter()._collection_scope(context, rig)
+            exporter = _exporter()
+            scope = exporter._collection_scope(
+                context, rig, references=exporter._scope_references(config, setup))
             eligible = scope['eligible']
             collected = _exporter().collect_character(context, rig, config, _scope=scope)
             objects = collected['objects']
@@ -609,43 +694,39 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
         row = layout.row()
         meshes = sum(obj.type == 'MESH' for obj in objects)
         rigs = sum(obj.type == 'ARMATURE' for obj in objects)
-        row.prop(config, 'show_objects',
-                 text='Objects' if error else f'Objects · {meshes} Meshes · {rigs} Armatures', emboss=False,
-                 icon='TRIA_DOWN' if config.show_objects else 'TRIA_RIGHT')
+        row.operator('character_designer.unity_export_section',
+                     text='Objects' if error else f'Objects · {meshes} Meshes · {rigs} Armatures', emboss=False,
+                     icon='TRIA_DOWN' if config.show_objects else 'TRIA_RIGHT').section = 'OBJECTS'
         if config.show_objects:
             CHARACTERDESIGNER_PT_unity_export._draw_objects(
                 layout, context, rig, config, setup, objects, eligible, error, scope)
 
         chosen = {entry.material for entry in _simple_material_entries(config)}
         row = layout.row()
-        row.prop(config, 'show_materials', text=f'Use Simplified Materials · {len(chosen)}', emboss=False,
-                 icon='TRIA_DOWN' if config.show_materials else 'TRIA_RIGHT')
+        row.operator('character_designer.unity_export_section', text=f'Use Simplified Materials · {len(chosen)}', emboss=False,
+                     icon='TRIA_DOWN' if config.show_materials else 'TRIA_RIGHT').section = 'MATERIALS'
         if config.show_materials:
-            materials, chosen = _material_choices(objects, config)
             box = layout.box()
             box.enabled = not running
-            for material in materials:
-                selected = material in chosen
+            row = box.row()
+            row.operator_context = 'INVOKE_DEFAULT'
+            row.operator('character_designer.unity_choose_simple_material', text='Add Material', icon='ADD')
+            for material in sorted(chosen, key=lambda material: material.name.casefold()):
                 row = box.row(align=True)
+                row.label(text=_short(material.name, 30), icon='MATERIAL')
                 action = row.operator('character_designer.unity_simple_material',
-                                      text=_short(material.name, 30), emboss=False,
-                                      icon='CHECKBOX_HLT' if selected else 'CHECKBOX_DEHLT')
+                                      text='Use Original', icon='LOOP_BACK')
                 action.material_name = material.name
-                action.enabled = not selected
-                if selected:
-                    action = row.operator('character_designer.unity_simple_material',
-                                          text='Use Original', icon='LOOP_BACK')
-                    action.material_name = material.name
-                    action.enabled = False
-            if not materials:
-                box.label(text='No materials on included meshes.')
+                action.enabled = False
+            if not chosen:
+                box.label(text='No simplified materials selected.')
 
         report = _last_report(config)
         reported_warnings = _panel_warnings(report or {'warnings': warnings})
         if reported_warnings:
             row = layout.row()
-            row.prop(config, 'show_warnings', text=f'Warnings · {len(reported_warnings)}', emboss=False,
-                     icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT')
+            row.operator('character_designer.unity_export_section', text=f'Warnings · {len(reported_warnings)}', emboss=False,
+                         icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT').section = 'WARNINGS'
         if reported_warnings and config.show_warnings:
             box = layout.box()
             scale = context.preferences.system.ui_scale or 1.0
@@ -698,6 +779,8 @@ UNITY_EXPORT_CLASSES = (
     CharacterDesignerUnityExport,
     CHARACTERDESIGNER_OT_unity_export,
     CHARACTERDESIGNER_OT_unity_locate_unweighted,
+    CHARACTERDESIGNER_OT_unity_export_section,
+    CHARACTERDESIGNER_OT_unity_choose_simple_material,
     CHARACTERDESIGNER_OT_unity_simple_material,
     CHARACTERDESIGNER_OT_unity_add_selected,
     CHARACTERDESIGNER_OT_unity_remove_extra,

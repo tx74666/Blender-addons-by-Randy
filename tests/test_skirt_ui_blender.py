@@ -60,6 +60,14 @@ def cancelled(callback):
 def test_modal_cleanup():
     closed = []
 
+    class Event:
+        # Match the native event surface, without an invented timer identity.
+        __slots__ = ("type", "value")
+
+        def __init__(self, event_type, value="NOTHING"):
+            assert set(self.__slots__) <= set(bpy.types.Event.bl_rna.properties.keys())
+            self.type, self.value = event_type, value
+
     def steps():
         try:
             yield (1, 3, "Frame 1 / 3")
@@ -77,7 +85,7 @@ def test_modal_cleanup():
     assert not skirt._idle(bpy.context)
     assert operator._advance(bpy.context) is None
     assert skirt._settings(bpy.context).last_message == "Frame 1 / 3"
-    assert operator.modal(bpy.context, SimpleNamespace(type="ESC")) == {"CANCELLED"}
+    assert operator.modal(bpy.context, Event("ESC", "PRESS")) == {"CANCELLED"}
     assert closed == [True] and skirt._idle(bpy.context)
     assert operator._steps is None and operator._wm is None
 
@@ -109,7 +117,7 @@ def test_baked_preview(source, record):
 def test_ui_workflow():
     settings = bpy.context.window_manager.character_designer_skirt
     assert settings.chain_count == 8 and settings.segment_count == 4
-    assert not settings.physics and settings.use_scene_range
+    assert settings.physics and settings.capability == 'BOTH' and settings.use_scene_range
     settings.physics = False
     source = make_skirt("Skirt UI Source")
     activate(source)
@@ -274,6 +282,8 @@ def test_shared_attachment_operator_workflow():
         separator=lambda: None,
     )
     layout.row = lambda **_kwargs: layout
+    layout.column = lambda **_kwargs: layout
+    layout.box = lambda: layout
     skirt.CHARACTERDESIGNER_PT_skirt_setup.draw(SimpleNamespace(layout=layout), bpy.context)
     assert f"Rig: {original.name} / Dress" in labels
     assert f"New target: {replacement.name} / Travel Base" in labels

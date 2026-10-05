@@ -21,10 +21,129 @@ from . import character_setup
 
 SCHEMA = "cdesigner.unity-character.v1"
 _ACTIVE_JOB = None
+_DRESS_RECORD_KEY = 'character_designer_skirt_v1'
+_DRESS_OWNER_KEY = 'character_designer_skirt_owner'
+_DRESS_SOURCE_KEY = 'character_designer_skirt_source'
+_DRESS_RIG_KEY = 'character_designer_skirt_armature'
+_DRESS_ROLE_KEY = 'character_designer_skirt_surface_role'
+_DRESS_BACKEND = 'ACTUAL_SURFACE_DELTA_V1'
+_DRESS_ROLES = {'CLOTH_PROXY', 'BODY_ATTACHMENT', 'NEUTRAL_RIG',
+                'NEUTRAL_WIRE', 'NEUTRAL_SURFACE', 'TRACKER'}
 
 
 class ExportError(ValueError):
     pass
+
+
+def _dress_record(obj):
+    """Inspect saved metadata only; collect/draw never load surface services."""
+    if obj.type != 'MESH' or _DRESS_RECORD_KEY not in obj:
+        return None
+    try:
+        raw = obj[_DRESS_RECORD_KEY]
+        if type(raw) is not str:
+            raise ValueError()
+        record = json.loads(raw)
+        if type(record) is not dict:
+            raise ValueError()
+        physics = record.get('physics')
+        if physics is None:
+            return None
+        if type(physics) is not dict:
+            raise ValueError()
+        backend = physics.get('backend', 'LEGACY_CAGE')
+        if backend == 'LEGACY_CAGE':
+            if 'surface' in physics:
+                raise ValueError()
+            return None
+        if type(backend) is not str or backend != _DRESS_BACKEND:
+            raise ValueError()
+        surface = physics.get('surface')
+        if (type(record.get('version')) is not int or record['version'] != 1 or type(record.get('owner')) is not str
+                or not record['owner'] or type(surface) is not dict
+                or type(surface.get('version')) is not int or surface['version'] != 1
+                or type(surface.get('roles')) is not dict):
+            raise ValueError()
+        inventory = []
+        for role, names in surface['roles'].items():
+            if (role not in _DRESS_ROLES or type(names) is not list
+                    or any(type(name) is not str or not name for name in names)):
+                raise ValueError()
+            inventory.extend(names)
+        if len(inventory) != len(set(inventory)):
+            raise ValueError()
+        colliders = physics.get('colliders')
+        if (type(colliders) is not list or any(type(name) is not str or not name for name in colliders)
+                or len(colliders) != len(set(colliders))):
+            raise ValueError()
+        return record
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ExportError(f'{obj.name}: saved Dress surface metadata is invalid; restore its owned setup before export.') from exc
+
+
+def _dress_surface_helper(obj, *, records=None):
+    marked = _DRESS_ROLE_KEY in obj
+    role = obj.get(_DRESS_ROLE_KEY)
+    source = obj.get(_DRESS_SOURCE_KEY)
+    if not marked and (source is None or source is obj or source.type != 'MESH'):
+        return False
+    if (marked and (type(role) is not str or role not in _DRESS_ROLES)
+            or source is None or source is obj or source.type != 'MESH'):
+        raise ExportError(f'{obj.name}: the Dress helper role or source is invalid.')
+    if records is not None and source in records:
+        record = records[source]
+    else:
+        record = _dress_record(source)
+        if records is not None:
+            records[source] = record
+    if not marked and (record is None or obj.name not in record['physics']['colliders']):
+        return False
+    if (record is None or obj.get(_DRESS_OWNER_KEY) != record['owner']
+            or source.get(_DRESS_OWNER_KEY) != record['owner']
+            or marked and obj.name not in record['physics']['surface']['roles'].get(role, ())):
+        raise ExportError(f'{obj.name}: the Dress helper identity is outside its saved owner inventory.')
+    return True
+
+
+def _capture_dress_surfaces(objects):
+    if any(_dress_surface_helper(obj) for obj in objects):
+        raise ExportError('A Dress surface helper is inside the explicit export inventory.')
+    sources = [(obj, record) for obj in objects
+               if (record := _dress_record(obj)) is not None]
+    if not sources:
+        return []
+    try:
+        from . import skirt_surface
+    except ImportError as exc:
+        raise ExportError('Restore the validated Dress surface export service before exporting.') from exc
+    if getattr(skirt_surface, 'BACKEND', None) != _DRESS_BACKEND:
+        raise ExportError('The installed Dress surface export service has a different backend contract.')
+    result = []
+    for source, record in sources:
+        rig = source.get(_DRESS_RIG_KEY)
+        if rig not in objects or rig.type != 'ARMATURE' or _dress_surface_helper(rig):
+            raise ExportError(f'{source.name}: its original Dress skinning rig is outside the export inventory.')
+        try:
+            proof = json.loads(json.dumps(skirt_surface.export_capture(source), allow_nan=False))
+            if (type(proof) is not dict or type(proof.get('version')) is not int or proof['version'] != 1
+                    or proof.get('backend') != _DRESS_BACKEND or proof.get('source') != source.name
+                    or proof.get('owner') != record['owner'] or proof.get('rig') != rig.name):
+                raise ValueError('The surface capture does not match the selected source and rig.')
+        except (ValueError, TypeError) as exc:
+            raise ExportError(f'{source.name}: Dress surface export proof is invalid: {exc}') from exc
+        result.append(proof)
+    return result
+
+
+def _dress_publication(job, result):
+    captured = job.get('dress_surfaces', [])
+    actual = result.get('dress_surfaces', [])
+    expected = [{'source': proof['source'], 'owner': proof['owner'], 'backend': _DRESS_BACKEND,
+                 'static_source_rest': True, 'simulation_baked': False} for proof in captured]
+    if (type(actual) is not list or actual != expected
+            or any(type(item) is not dict or item.get('static_source_rest') is not True
+                   or item.get('simulation_baked') is not False for item in actual)):
+        raise ExportError('The worker did not preserve the captured Dress static export boundary; no files were published.')
 
 
 def _hash(path):
@@ -56,15 +175,31 @@ def _binding_armatures(obj):
 def _character_armatures(scene, rig):
     if rig is None or rig.type != 'ARMATURE' or rig.name not in scene.objects:
         raise ExportError('Set the character Main Rig in Character Setup first.')
+    if _dress_surface_helper(rig):
+        raise ExportError('A Dress surface helper cannot be the exported Main Rig.')
     return {rig} | {obj for obj in scene.objects
-                    if obj.type == 'ARMATURE' and _descends(obj.parent, rig)}
+                    if obj.type == 'ARMATURE' and _descends(obj.parent, rig)
+                    and not _dress_surface_helper(obj)}
 
 
-def _helpers(scene):
-    shapes = {pb.custom_shape for obj in scene.objects if obj.type == 'ARMATURE'
-              for pb in obj.pose.bones if pb.custom_shape is not None}
+def _helpers(scene, *, candidates=None):
+    # Every scene rig can reference a character mesh as a custom shape. Read
+    # those pointers afresh, but inspect object metadata only where it matters.
+    candidates = None if candidates is None else set(candidates)
+    if candidates is not None and not candidates:
+        return set()
+    shapes = set()
     for obj in scene.objects:
+        if obj.type == 'ARMATURE':
+            for pb in obj.pose.bones:
+                shape = pb.custom_shape
+                if shape is not None and (candidates is None or shape in candidates):
+                    shapes.add(shape)
+    dress_records = {}
+    for obj in scene.objects if candidates is None else candidates:
         # Ownership roles, not names or visibility: hidden clothes still export.
+        if _dress_surface_helper(obj, records=dress_records):
+            shapes.add(obj)
         roles = [str(obj.get(key, '')).upper() for key in obj.keys()
                  if str(key).startswith('character_designer') and str(key).endswith('role')]
         if any(any(token in role for token in ('WIDGET', 'COLLIDER', 'PROXY', 'GUIDE')) for role in roles):
@@ -74,13 +209,13 @@ def _helpers(scene):
     return shapes
 
 
-def _bound_meshes(scene, rigs, helpers):
+def _bound_meshes(scene, rigs, helpers, *, _bindings=None):
     """Discover bindings using this operation's freshly inspected scene scope."""
     meshes = []
-    for obj in scene.objects:
+    for obj in scene.objects if _bindings is None else _bindings:
         if obj.type != 'MESH' or obj in helpers:
             continue
-        bound = _binding_armatures(obj)
+        bound = _binding_armatures(obj) if _bindings is None else _bindings[obj]
         if bound & rigs:
             if bound - rigs:
                 raise ExportError(f'{obj.name}: linked to more than this character rig.')
@@ -88,13 +223,23 @@ def _bound_meshes(scene, rigs, helpers):
     return sorted(meshes, key=lambda obj: obj.name)
 
 
-def _collection_scope(context, rig):
+def _collection_scope(context, rig, *, references=()):
     """One synchronous inspection; never retained between redraws or exports."""
     scene = context.scene
     rigs = _character_armatures(scene, rig)
-    helpers = _helpers(scene)
+    bindings = {obj: _binding_armatures(obj) for obj in scene.objects if obj.type == 'MESH'}
+    candidates = {obj for obj, bound in bindings.items() if bound & rigs}
+    candidates.update(obj for obj in references if obj is not None and obj.name in scene.objects)
+    helpers = _helpers(scene, candidates=candidates)
     return {'rigs': rigs, 'helpers': helpers,
-            'eligible': _bound_meshes(scene, rigs, helpers)}
+            'bindings': bindings,
+            'eligible': _bound_meshes(scene, rigs, helpers, _bindings=bindings)}
+
+
+def _scope_references(config, setup):
+    """Saved references still need fresh helper checks, including unbound ones."""
+    return [entry.object for entry in config.extras] + (
+        [item.object for item in setup.assets] if setup else [])
 
 
 def bound_meshes(context, rig):
@@ -106,12 +251,12 @@ def collect_character(context, rig, config, *, _scope=None):
     # The panel shares only its current draw's inspection. Operators/export
     # callers always inspect afresh; no scene-change cache authorizes export.
     scene = context.scene
-    scope = _collection_scope(context, rig) if _scope is None else _scope
+    setup = character_setup.settings(context)
+    scope = _collection_scope(context, rig, references=_scope_references(config, setup)) if _scope is None else _scope
     rigs, helpers = scope['rigs'], scope['helpers']
     eligible = set(scope['eligible'])
     objects = set(eligible)
     warnings = []
-    setup = character_setup.settings(context)
     for entry in config.extras:
         obj = entry.object
         if not entry.enabled:
@@ -124,7 +269,7 @@ def collect_character(context, rig, config, *, _scope=None):
             raise ExportError('A saved export reference is missing; clear it under Objects.')
         if obj.type != 'MESH' or obj in helpers:
             raise ExportError(f'{obj.name}: a controller or helper cannot be exported; clear this reference under Objects.')
-        if _binding_armatures(obj) - rigs:
+        if scope['bindings'][obj] - rigs:
             raise ExportError(f'{obj.name}: bound to another rig; use that character export profile.')
         if obj not in eligible:
             warnings.append(f'{obj.name}: skipped; no enabled Armature binding to this character.')
@@ -139,9 +284,10 @@ def collect_character(context, rig, config, *, _scope=None):
     if not meshes:
         raise ExportError('No bound character meshes found. Enable an Armature binding to the Main Rig first.')
     for obj in meshes:
+        _dress_record(obj)
         if not obj.data.vertices:
             raise ExportError(f'{obj.name}: mesh has no vertices.')
-        objects.update(_binding_armatures(obj))
+        objects.update(scope['bindings'][obj])
     # Only keep accessory rigs used by selected meshes, plus their rig ancestors.
     # A character may contain other attached helper rigs without exportable skins.
     for arm in tuple(objects):
@@ -262,17 +408,56 @@ def _image_buffers(objects, root):
     return result
 
 
+def _capture_hair_motion(objects):
+    """Read the selected source's current native proof before snapshotting."""
+    from . import hair_bones_rig, hair_motion_profiles, hair_strand_registry
+    sources = [obj for obj in objects if obj.type == 'MESH' and hair_motion_profiles.PROFILE_KEY in obj]
+    if len(sources) > 1:
+        raise ExportError('The first Hair motion export supports one configured Hair source per character.')
+    if not sources:
+        return None
+    source = sources[0]
+    armature = source.get(hair_bones_rig.RIG_KEY)
+    if armature not in objects or armature.type != 'ARMATURE':
+        raise ExportError(f'{source.name}: its authoritative Hair armature is outside the collected export.')
+    try:
+        registry = hair_strand_registry.read(source, validate=True)
+        profiles = hair_motion_profiles.effective_all(source, registry=registry)
+        # Validate the detached semantic contract now, before starting any worker.
+        # These identity bindings are proof-only, not a guessed final FBX mapping.
+        from . import hair_motion_export
+        hair_motion_export.build_payload(source, registry, profiles,
+            {name: name for strand in registry['strands'] for name in strand['bones']},
+            'preflight-only', '0' * 64,
+            {'source_meters_per_unit': 1.0, 'export_meters_per_unit': 1.0})
+    except ValueError as exc:
+        raise ExportError(f'{source.name}: Hair motion proof/settings are invalid: {exc}') from exc
+    from . import bl_info
+    return {'source': source.name, 'rig': armature.name, 'registry': registry, 'profiles': profiles,
+            'tool_version': '.'.join(str(part) for part in bl_info['version'])}
+
+
 def begin_export(context, rig, config):
     global _ACTIVE_JOB
     if export_running():
         raise ExportError('A character export is already running.')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ExportError('Finish Edit Mode before exporting; the current pose is preserved.')
+    from . import hair_wiggle_adapter
+    if hair_wiggle_adapter.status(context)['active']:
+        try:
+            hair_wiggle_adapter.stop_preview(context, reason='Stopped before the model export snapshot.')
+        except ValueError as exc:
+            raise ExportError('Hair preview could not restore its author state before export: ' + str(exc)) from exc
+        if hair_wiggle_adapter.status(context)['active']:
+            raise ExportError('Finish the active Hair preview before model export.')
     collected = collect_character(context, rig, config)
     directory, filename = _target(config, rig)
     asset_id = config.asset_id or uuid.uuid4().hex
     prior = _previous(directory, filename, asset_id)
     objects = collected['objects']
+    dress_surfaces = _capture_dress_surfaces(objects)
+    hair_motion = _capture_hair_motion(objects)
     owned_keys = _owned_keys(objects)
     from . import unity_forearm
     forearm = {obj.name: unity_forearm.capture(obj) for obj in objects
@@ -286,15 +471,18 @@ def begin_export(context, rig, config):
            'directory': directory, 'filename': filename, 'asset_id': asset_id,
            'prior': prior, 'manifest_hash': _hash(manifest) if manifest.exists() else None,
            'rig': rig, 'config': config, 'started': time.monotonic(), 'process': None,
-           'objects': [obj.name for obj in objects]}
+           'objects': [obj.name for obj in objects], 'hair_motion': hair_motion,
+           'dress_surfaces': dress_surfaces}
     try:
         specification = {
             'objects': job['objects'], 'rig': rig.name,
             'rigs': [obj.name for obj in objects if obj.type == 'ARMATURE'],
-            'filename': filename, 'stage': str(stage),
+            'filename': filename, 'stage': str(stage), 'asset_id': asset_id,
             'unit_scale': context.scene.unit_settings.scale_length,
             'owned_keys': owned_keys, 'warnings': collected['warnings'],
             'forearm': forearm,
+            'hair_motion': hair_motion,
+            'dress_surfaces': dress_surfaces,
             'had_forearm': bool(prior and prior.get('forearm_correction')),
             'simple_materials': sorted({entry.material.name for entry in getattr(config, 'simple_materials', [])
                                         if entry.material is not None and any(
@@ -344,13 +532,35 @@ def _publish(job, result):
         raise ExportError('The export worker did not produce a valid FBX.')
     if len(files) != len(set(files)):
         raise ExportError('Duplicate output filenames in worker result.')
+    _dress_publication(job, result)
+    hair_motion = result.get('hair_motion', {'active': False, 'file': None,
+        'simulation_baked': False, 'status': 'No configured Hair motion source in this export.'})
+    if (not isinstance(hair_motion, dict) or type(hair_motion.get('active')) is not bool
+            or hair_motion.get('simulation_baked') is not False):
+        raise ExportError('The worker Hair motion publication state is invalid.')
+    if hair_motion['active']:
+        from . import hair_motion_export
+        relative = Path(filename).stem + '.hair-motion.json'
+        if hair_motion.get('file') != relative or relative not in files or not job.get('hair_motion'):
+            raise ExportError('The worker did not retain the captured Hair motion sidecar binding.')
+        try:
+            payload = hair_motion_export.verify_read(_safe_file(stage, relative), fbx_path=_safe_file(stage, filename))
+        except ValueError as exc:
+            raise ExportError('The Hair motion sidecar failed publication validation: ' + str(exc)) from exc
+        if (payload['asset_id'] != job['asset_id']
+                or payload['source_uid'] != job['hair_motion']['registry']['source_uid']):
+            raise ExportError('The Hair motion sidecar belongs to another source or export profile.')
+    elif job.get('hair_motion'):
+        raise ExportError('Captured Hair motion settings were omitted by the worker; no files were published.')
+    elif hair_motion.get('file') is not None or any(relative.endswith('.hair-motion.json') for relative in files):
+        raise ExportError('An inactive Hair sidecar cannot be emitted as a new model export output.')
     for relative in files:
         source, target = _safe_file(stage, relative), _safe_file(directory, relative)
         if not source.is_file():
             raise ExportError(f'Export output is missing: {relative}')
         if target.exists() and (not prior or relative not in prior.get('files', {})):
             raise ExportError(f'{relative} already exists and is not owned by this export.')
-    report = {**result, 'schema': SCHEMA, 'asset_id': job['asset_id'],
+    report = {**result, 'schema': SCHEMA, 'asset_id': job['asset_id'], 'hair_motion': hair_motion,
               'source_rig': job['rig'].name, 'filename': filename,
               'files': {relative: _hash(_safe_file(stage, relative)) for relative in files},
               'unity_status': 'Exported; Unity import has not been verified.',
@@ -369,6 +579,16 @@ def _publish(job, result):
             path = _safe_file(directory, relative)
             if path.exists():
                 report['files'][relative] = _hash(path)
+    inactive_hair = sorted(relative for relative in stale if relative.endswith('.hair-motion.json')
+                           and _safe_file(directory, relative).is_file())
+    if inactive_hair:
+        report['hair_motion'] = {**hair_motion, 'inactive_files': inactive_hair,
+            'status': ('Older inactive Hair sidecars are retained; apply only the current advertised file.'
+                       if hair_motion['active'] else
+                       'Hair motion is disabled in this export; retained older sidecars must not be applied.')}
+        report.setdefault('warnings', []).append(
+            'Inactive Hair motion sidecars retained for reference safety: ' + ', '.join(inactive_hair)
+            + '. Apply only a sidecar advertised as active by the current character manifest.')
     report['warnings'], report['notices'] = report_messages(report)
     (stage / manifest_name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     files = files + [manifest_name]

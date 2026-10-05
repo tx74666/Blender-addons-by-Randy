@@ -1,7 +1,7 @@
 """Readable generated ID names; ownership stays in private properties.
 
 Legacy cleanup renames owned objects/data/collections and their recovery records.
-Bone names and animation paths are deliberately preserved in existing rigs.
+Verified legacy Dress bones are migrated with their typed binding/session refs.
 """
 import json
 import re
@@ -38,11 +38,29 @@ def collection_name(armature, role):
     return _shorten(armature.name + ' · ' + role, 59)
 
 
-def skirt_prefix(source):
+def skirt_prefix(source, *, armature=None):
+    """Reserve one readable namespace before generating any Dress resources.
+
+    Character bones and existing weights on its bound meshes must not be
+    captured by a new shared Dress. Global IDs are also reserved as one group,
+    so helper objects/data keep the same prefix as their recorded bone names.
+    Numeric alternatives are deterministic; UUIDs stay in ownership records.
+    """
+    import bpy
     base = 'SK_' + label(source.name, 37)
     candidate, index = base, 1
+    reserved = {group.name for group in source.vertex_groups}
+    if armature is not None:
+        reserved.update(bone.name for bone in armature.data.bones)
+        for obj in bpy.data.objects:
+            if obj.type == 'MESH' and (obj.parent == armature or any(
+                    modifier.type == 'ARMATURE' and modifier.object == armature
+                    for modifier in obj.modifiers)):
+                reserved.update(group.name for group in obj.vertex_groups)
+    for domain in (bpy.data.objects, bpy.data.armatures, bpy.data.curves, bpy.data.meshes):
+        reserved.update(item.name for item in domain)
     # Artist groups must never receive weights intended for generated bones.
-    while any(group.name.startswith(candidate + '_') for group in source.vertex_groups):
+    while any(name == candidate or name.startswith(candidate + '_') for name in reserved):
         index += 1
         candidate = base + f'_{index:02d}'
     return candidate
@@ -220,7 +238,7 @@ def _skirt_targets(source):
 
 
 def clean_generated_names(context=None):
-    """Clean verified legacy ID names, retaining artist names and existing bones."""
+    """Clean verified legacy ID and Dress names, retaining artist resources."""
     import bpy
     from . import skirt_rig, widget_collections
     context = context or bpy.context
@@ -247,6 +265,8 @@ def clean_generated_names(context=None):
                     record = skirt_rig.read_record(source)
                     skirt_rig._check_existing_geometry(source, record)
                 result['renamed'].extend(_transaction(targets, validate))
+            from . import skirt_names
+            result['renamed'].extend(skirt_names.clean(source))
         except (ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
             result['skipped'].append({'name': source.name, 'reason': str(exc)})
     if result['renamed'] and context.view_layer:

@@ -106,7 +106,7 @@ def resolve_eyes(context, armature, head_name=None, left_name=None, right_name=N
     return head_name, *result
 
 
-def validate(armature, inventory=None):
+def validate(armature, inventory=None, *, original_mutes=None):
     """Check owned resources and native rest data without recursing into inventory."""
     record = get_record(armature)
     actual = {b.name for b in armature.data.bones if b.get(OWNER_KEY) == OWNER_VALUE}
@@ -138,7 +138,8 @@ def validate(armature, inventory=None):
                     or entry['type'] != 'DAMPED_TRACK' or entry['fields'] != expected):
                 raise _error('Eye Controls aim recovery data was edited.')
             con = armature.pose.bones[entry['owner']].constraints.get(entry['name'])
-            if (con is None or con.type != 'DAMPED_TRACK' or con.target != armature or con.mute
+            if (con is None or con.type != 'DAMPED_TRACK' or con.target != armature
+                    or _limb()._validation_mute(armature.pose.bones[entry['owner']], con, original_mutes)
                     or any(not _same_value(getattr(con, key), value) for key, value in expected.items())):
                 raise _error(f"Eye constraint on '{entry['owner']}' was edited.")
         for role, entry in record['widgets'].items():

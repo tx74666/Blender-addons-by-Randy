@@ -86,11 +86,16 @@ def _affected(context, main):
 
 
 def _snapshot(rig):
+    from . import limb_fk_visuals
+    body = groups.body_collection(rig)
     return {'shapes': rig.data.show_bone_custom_shapes, 'display': rig.data.display_type,
             'collections': {c.name: [c.is_visible, c.is_solo] for c in rig.data.collections_all},
             'hidden': {b.name: [b.hide, b.hide_select] for b in rig.data.bones},
             'pose_hidden': {pb.name: pb.hide for pb in rig.pose.bones if hasattr(pb, 'hide')},
-            'object_visibility': _object_snapshot(rig)}
+            'object_visibility': _object_snapshot(rig),
+            'native_fk_display': limb_fk_visuals.native_display_snapshot(rig),
+            'managed_body': ({'collection': body.name, 'members': sorted(body.bones.keys()),
+                              'backup': rig.data.get(groups.BACKUP_KEY)} if body else None)}
 
 
 def _object_snapshot(rig):
@@ -143,6 +148,21 @@ def _set_hidden(rig, bone, hidden):
 
 def _restore(rig, saved):
     _check_object_restore(rig, saved)
+    if 'native_fk_display' in saved:
+        from . import limb_fk_visuals
+        limb_fk_visuals.restore_native_display(rig, saved['native_fk_display'])
+    body_state = saved.get('managed_body')
+    if body_state is not None:
+        body = rig.data.collections_all.get(body_state['collection'])
+        if body is None or set(body_state['members']) - set(rig.data.bones.keys()):
+            raise ValueError('The saved managed Body display cannot restore missing bones or a missing collection.')
+        if set(body.bones.keys()) != set(body_state['members']):
+            groups._assign_exact(body, rig.data, set(body_state['members']))
+        raw = body_state.get('backup')
+        if raw is None:
+            rig.data.pop(groups.BACKUP_KEY, None)
+        elif rig.data.get(groups.BACKUP_KEY) != raw:
+            rig.data[groups.BACKUP_KEY] = raw
     if rig.data.show_bone_custom_shapes != saved['shapes']:
         rig.data.show_bone_custom_shapes = saved['shapes']
     if rig.data.display_type != saved['display']:

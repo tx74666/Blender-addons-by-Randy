@@ -170,6 +170,9 @@ def fingerprint(f):
                           for b in obj.data.bones])
         records.append(value)
     records.extend(([(entry.object.name if entry.object else None, entry.enabled) for entry in f.config.extras],
+                    [entry.material.name if entry.material else None for entry in f.config.simple_materials],
+                    (f.config.directory, f.config.filename, f.config.show_objects,
+                     f.config.show_materials, f.config.show_warnings),
                     f.scene.frame_current, bpy.context.mode, bpy.data.filepath))
     return hashlib.sha256(repr(records).encode()).hexdigest()
 
@@ -183,12 +186,21 @@ def benchmark(f, backend, panel, expected_scans, iterations):
         with ExitStack() as stack:
             helpers = stack.enter_context(patch.object(backend, '_helpers', wraps=backend._helpers))
             rigs = stack.enter_context(patch.object(backend, '_character_armatures', wraps=backend._character_armatures))
+            bindings = stack.enter_context(patch.object(backend, '_binding_armatures', wraps=backend._binding_armatures))
             materials = stack.enter_context(patch.object(panel, '_material_choices', wraps=panel._material_choices))
+            if panel is ui:
+                stack.enter_context(patch.object(backend, '_capture_hair_motion',
+                                                side_effect=AssertionError('Draw captured Hair export proof')))
             draw(panel)
             counts = {'helpers': helpers.call_count, 'character_armatures': rigs.call_count,
-                      'material_choices': materials.call_count}
+                      'material_choices': materials.call_count, 'binding_queries': bindings.call_count}
+            if panel is ui:
+                counts['helper_role_candidates'] = len(helpers.call_args.kwargs['candidates'])
         assert counts['helpers'] == counts['character_armatures'] == expected, counts
         assert counts['material_choices'] == (0 if panel is ui else 1), counts
+        if panel is ui:
+            assert counts['binding_queries'] == len(f.meshes), counts
+            assert counts['helper_role_candidates'] == len(f.meshes), counts
         samples = []
         for _ in range(iterations):
             started = time.perf_counter()
@@ -251,10 +263,31 @@ def check_freshness(f, old_backend):
     observe('direct helper role added', excluded=[changed.name])
     del changed['character_designer_fixture_role']
     observe('direct helper role removed')
+    container = bpy.data.collections.new('Bound Widget Container')
+    f.scene.collection.children.link(container)
+    container.objects.link(changed)
+    container['character_designer_widget_container_role'] = 'WIDGET'
+    observe('direct widget container role added', excluded=[changed.name])
+    del container['character_designer_widget_container_role']
+    observe('direct widget container role removed')
+    container.objects.unlink(changed)
     f.rig.pose.bones[0].custom_shape = changed
     observe('direct custom shape assigned', excluded=[changed.name])
     f.rig.pose.bones[0].custom_shape = None
     observe('direct custom shape cleared')
+    f.other.pose.bones[0].custom_shape = changed
+    observe('foreign rig custom shape assigned', excluded=[changed.name])
+    f.other.pose.bones[0].custom_shape = None
+    observe('foreign rig custom shape cleared')
+    modifier.object = f.other
+    observe('direct binding changed to foreign rig', excluded=[changed.name])
+    f.other.parent = f.rig
+    observe('direct rig ancestry attached')
+    assert changed.name in signature(exporter.collect_character(bpy.context, f.rig, f.config))['objects']
+    f.other.parent = None
+    observe('direct rig ancestry detached', excluded=[changed.name])
+    modifier.object = f.rig
+    observe('direct character binding restored')
     f.scene.collection.objects.unlink(changed)
     observe('direct scene member removed', excluded=[changed.name])
     f.scene.collection.objects.link(changed)
@@ -286,13 +319,58 @@ def check_freshness(f, old_backend):
     observe('main body exclusion rejected', error='main rig and body cannot be excluded')
     assert bpy.ops.character_designer.unity_remove_extra(index=0) == {'FINISHED'}
     observe('main body cleanup recovers')
-    with patch.object(ui, '_material_choices', side_effect=AssertionError('Collapsed material scan')):
-        draw()
-    f.config.show_materials = True
-    with patch.object(ui, '_material_choices', wraps=ui._material_choices) as choices:
-        draw()
-        assert choices.call_count == 1
-    checks.append('material enumeration occurs only when expanded')
+
+    # Role checks must include saved references and setup assets even when
+    # those meshes have no eligible Armature modifier.
+    unbound = f.mesh('Saved Unbound Helper')
+    entry = f.config.extras.add()
+    entry.object, entry.enabled = unbound, True
+    observe('saved unbound reference remains skipped')
+    unbound['character_designer_fixture_role'] = 'GUIDE'
+    observe('unbound saved helper role rejected', error='controller or helper')
+    del unbound['character_designer_fixture_role']
+    assert bpy.ops.character_designer.unity_remove_extra(index=0) == {'FINISHED'}
+    asset = f.setup.assets.add()
+    asset.object = unbound
+    observe('unbound setup asset remains skipped')
+    unbound['character_designer_fixture_role'] = 'GUIDE'
+    observe('unbound setup helper warning suppressed')
+    assert not any(unbound.name in warning for warning in exporter.collect_character(
+        bpy.context, f.rig, f.config)['warnings'])
+    del unbound['character_designer_fixture_role']
+    f.setup.assets.remove(len(f.setup.assets) - 1)
+    observe('unbound setup helper removed')
+
+    # Even an expanded material section lists only saved choices. Reading
+    # current material slots belongs to the explicit searchable chooser.
+    entry = f.config.simple_materials.add()
+    entry.material = f.material
+    class SlotGuard:
+        def __init__(self, obj): self.object = obj
+        def __getattr__(self, name):
+            if name == 'material_slots':
+                raise AssertionError('Main panel read a mesh material slot')
+            return getattr(self.object, name)
+    collecting = exporter.collect_character
+    def guarded_collection(*args, **kwargs):
+        result = collecting(*args, **kwargs)
+        return dict(result, objects=[SlotGuard(obj) if obj.type == 'MESH' else obj
+                                     for obj in result['objects']])
+    f.config.show_objects = False
+    for expanded in (False, True):
+        f.config.show_materials = expanded
+        before = fingerprint(f)
+        with patch.object(ui, '_material_choices', side_effect=AssertionError('Main material scan')) as choices, \
+             patch.object(exporter, '_capture_hair_motion', side_effect=AssertionError('Draw captured Hair proof')), \
+             patch.object(exporter, 'collect_character', side_effect=guarded_collection):
+            layout = draw()
+            assert choices.call_count == 0, ('material-expanded' if expanded else 'material-collapsed')
+        assert fingerprint(f) == before, 'Material body draw changed source data'
+        if expanded:
+            assert any(record[0] == 'operator' and record[1] == 'character_designer.unity_choose_simple_material'
+                       for record in layout.records)
+    f.config.simple_materials.remove(len(f.config.simple_materials) - 1)
+    checks.append('collapsed and expanded material bodies never enumerate slots or capture Hair')
     return checks
 
 

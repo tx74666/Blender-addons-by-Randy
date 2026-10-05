@@ -48,6 +48,7 @@ class Layout:
     def __init__(self):
         self.labels, self.buttons = [], []
     def row(self, **kwargs): return self
+    column = row
     def box(self): return self
     def label(self, **kwargs): self.labels.append(kwargs.get('text', ''))
     def operator(self, identifier, **kwargs):
@@ -55,8 +56,15 @@ class Layout:
         return SimpleNamespace()
 layout = Layout()
 torso_ui.CHARACTERDESIGNER_PT_torso_controls.draw(SimpleNamespace(layout=layout), bpy.context)
+assert 'Bend Spine' in layout.buttons
+assert not {'Match to FK', 'Match to IK', 'Chest IK', 'Spine Shape', 'Reset Spine Pose'} & set(layout.buttons)
+assert any('Optional Spine IK is active' in text for text in layout.labels)
+limb_ik._settings(bpy.context).show_body_setup_advanced = True
+layout = Layout()
+torso_ui.CHARACTERDESIGNER_PT_torso_controls.draw(SimpleNamespace(layout=layout), bpy.context)
 assert any('Blended pose (0.5)' in text for text in layout.labels)
 assert {'Match to FK', 'Match to IK'} <= set(layout.buttons)
+limb_ik._settings(bpy.context).show_body_setup_advanced = False
 assert bpy.ops.character_designer.spine_ik_fk(action='SWITCH', mode='FK') == {'FINISHED'}
 spine._verify_pose(rig, desired)
 assert rig.data.bones.active.name == record['fk_controls'][chain[-1]]

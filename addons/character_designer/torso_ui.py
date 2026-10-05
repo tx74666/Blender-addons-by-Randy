@@ -123,8 +123,20 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
             if record:
                 torso_controls.validate(rig)
                 extension = spine_ik_fk.validate(rig)
-                current = spine_ik_fk.mode_for_rig(rig)
-                if extension:
+                current = spine_ik_fk.mode_for_rig(rig) if extension else 'FK'
+                if extension and current != 'FK' and not show_advanced:
+                    layout.label(text='Optional Spine IK is active.', icon='INFO')
+                    layout.label(text='Use Advanced Setup to return to Bend controls.')
+                fk = layout.column()
+                fk.enabled = current == 'FK'
+                op = fk.operator('character_designer.torso_controls', text='Bend Spine', icon='CON_ROTLIKE')
+                op.action, op.bone = 'SELECT', record['bend']
+                row = fk.row(align=True)
+                for source in record['sources']:
+                    op = row.operator('character_designer.torso_controls', text=source)
+                    op.action, op.bone = 'SELECT', record['controls'][source]
+                fk.label(text='Rotate together; refine each section.', icon='INFO')
+                if extension and show_advanced:
                     if current == 'BLEND':
                         box = layout.box()
                         box.alert = True
@@ -138,26 +150,16 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
                                           depress=current == mode)
                         op.action, op.mode = 'SWITCH', mode
                     layout.label(text='Choose the mode before animating.', icon='INFO')
-                if current != 'IK':
-                    op = layout.operator('character_designer.torso_controls', text='Bend Spine', icon='CON_ROTLIKE')
-                    op.action, op.bone = 'SELECT', record['bend']
-                    row = layout.row(align=True)
-                    for source in record['sources']:
-                        op = row.operator('character_designer.torso_controls', text=source)
-                        op.action, op.bone = 'SELECT', record['controls'][source]
-                    layout.label(text='Rotate together; refine each section.', icon='INFO')
-                if extension and current != 'FK':
-                    for key, label in (('chest', 'Chest IK'), ('shape', 'Spine Shape')):
-                        op = layout.operator('character_designer.spine_ik_fk', text=label)
-                        op.action, op.bone = 'SELECT', extension[key]
-                    layout.label(text='Chest: G / R; Shape: R.', icon='INFO')
-                    layout.label(text='Straight spine: bend Shape slightly first.')
-                if extension:
+                    if current != 'FK':
+                        for key, label in (('chest', 'Chest IK'), ('shape', 'Spine Shape')):
+                            op = layout.operator('character_designer.spine_ik_fk', text=label)
+                            op.action, op.bone = 'SELECT', extension[key]
+                        layout.label(text='Chest: G / R; Shape: R.', icon='INFO')
+                        layout.label(text='Straight spine: bend Shape slightly first.')
                     layout.operator('character_designer.spine_ik_fk', text='Reset Spine Pose', icon='LOOP_BACK').action = 'RESET'
-                    if show_advanced:
-                        row = layout.row()
-                        row.alert = True
-                        row.operator('character_designer.spine_ik_fk', text='Remove Spine IK / FK', icon='TRASH').action = 'REMOVE'
+                    row = layout.row()
+                    row.alert = True
+                    row.operator('character_designer.spine_ik_fk', text='Remove Spine IK / FK', icon='TRASH').action = 'REMOVE'
                 elif show_advanced:
                     row = layout.row()
                     row.operator('character_designer.spine_ik_fk', text='Add Spine IK / FK', icon='CON_KINEMATIC').action = 'BUILD'

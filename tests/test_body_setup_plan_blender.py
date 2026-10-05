@@ -87,7 +87,8 @@ class BodySetupPlanTests(unittest.TestCase):
         self.assertEqual(states(rig, body), before)
         self.assertEqual(tuple(parts(result)), planner.COMPONENT_KEYS)
         self.assertFalse(result['blocked'], result)
-        self.assertTrue(all(entry['status'] == 'ADD' for entry in result['components']), result)
+        self.assertEqual(parts(result)['SPINE']['status'], 'SKIP')
+        self.assertTrue(all(entry['status'] == 'ADD' for entry in result['components'] if entry['key'] != 'SPINE'), result)
         json.dumps(result)
         base.analyze(rig)
         limb_ik._settings(bpy.context).build_method = 'ROLL_DECOUPLED'

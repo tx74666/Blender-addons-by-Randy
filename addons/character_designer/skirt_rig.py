@@ -618,9 +618,9 @@ def _purge_owned(source, owner):
 
 
 def _clear_source_properties(source):
-    from . import skirt_original_mode
+    from . import skirt_original_mode, skirt_motion_profiles
     for key in (RECORD_KEY, RIG_KEY, OWNER_KEY, PARENT_KEY, ATTACHMENT_BACKUP_KEY,
-                ATTACHMENT_PARENT_KEY, skirt_original_mode.CORRECTIONS):
+                ATTACHMENT_PARENT_KEY, skirt_original_mode.CORRECTIONS, skirt_motion_profiles.PROFILE_KEY):
         if key in source:
             del source[key]
 
@@ -630,9 +630,11 @@ def _validate_source(obj):
         raise SkirtRigError("Select the skirt mesh before building its controls.")
     if any(key in obj for key in (RIG_KEY, OWNER_KEY, PARENT_KEY)):
         raise SkirtRigError("The skirt has incomplete setup ownership. Undo the previous change before rebuilding.")
-    from . import skirt_original_mode
+    from . import skirt_original_mode, skirt_motion_profiles
     if skirt_original_mode.CORRECTIONS in obj:
         raise SkirtRigError("The skirt has an orphaned pose correction. Restore its setup before rebuilding.")
+    if skirt_motion_profiles.PROFILE_KEY in obj:
+        raise SkirtRigError("The skirt has orphaned motion settings. Restore its setup before rebuilding.")
     if obj.library or obj.override_library or obj.data.library or obj.data.users > 1:
         raise SkirtRigError("Make the skirt and its mesh local and single-user before setup.")
     if obj.constraints:
@@ -700,7 +702,7 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
     saved_context = _context_state(context)
     original_parent = obj.parent
     owner = uuid.uuid4().hex
-    prefix = skirt_prefix(obj)
+    prefix = skirt_prefix(obj, armature=character)
     record = {
         "version": 1, "owner": owner, "source": obj.name, "rig": "",
         "chain_count": chain_count, "segment_count": segment_count,
@@ -944,6 +946,15 @@ def select_controls(context, obj, level="ALL"):
     return rig
 
 
+def _surface_remove_plan(context, source, rig, record):
+    """Prove exact surface dependencies before either removal branch mutates."""
+    from . import skirt_physics
+    if skirt_physics.backend(record) != skirt_physics.ACTUAL_SURFACE_BACKEND:
+        return None, None
+    service = skirt_physics._surface_module()
+    return service, service.preflight_remove(context, source, rig, record)
+
+
 def remove_skirt(context, obj, allow_animation=False):
     _require_controls_for_setup(obj)
     record = read_record(obj)
@@ -953,6 +964,7 @@ def remove_skirt(context, obj, allow_animation=False):
         from . import skirt_shared_rig
         return skirt_shared_rig.remove(context, obj, allow_animation=allow_animation)
     rig = obj[RIG_KEY]
+    surface, surface_plan = _surface_remove_plan(context, obj, rig, record)
     owned = [candidate for candidate in bpy.data.objects if candidate is not obj and candidate.get(OWNER_KEY) == record["owner"]]
     if not allow_animation and any(candidate.animation_data and
                                    (candidate.animation_data.action or candidate.animation_data.nla_tracks)
@@ -973,6 +985,8 @@ def remove_skirt(context, obj, allow_animation=False):
         child.parent = None
         child.matrix_world = world
     _activate(context, obj)
+    if surface is not None:
+        surface.commit_remove(obj, surface_plan)
     if expected:
         obj.modifiers.remove(expected)
     for name in record["groups"]:

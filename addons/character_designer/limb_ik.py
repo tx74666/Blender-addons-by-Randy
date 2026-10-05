@@ -1803,6 +1803,40 @@ def _pole_guide_color(context, armature, pole_data, pole_pose, state):
         return fallback
 
 
+def _pole_display_visible(context, armature, pole_data, pole_pose):
+    """Read-only visibility of the Pole arrow and its connecting shaft.
+
+    This bounded query uses the declared limb target, never a strict inventory
+    or scene audit from a viewport draw callback.
+    """
+    if (pole_data.hide or bool(getattr(pole_pose, 'hide', False))
+            or not armature.data.show_bone_custom_shapes or pole_pose.custom_shape is None
+            or _control_shape_style(pole_data, strict=False) == 'SPHERE'
+            or 'character_designer_body_original_mode_v1' in armature
+            or 'character_designer_bone_display_view_v1' in armature.data):
+        return False
+    overlay = getattr(getattr(context, 'space_data', None), 'overlay', None)
+    if overlay is not None and (not overlay.show_overlays or not getattr(overlay, 'show_bones', True)):
+        return False
+    collections = tuple(getattr(pole_data, 'collections', ()))
+    if collections and not any(collection.is_visible_effectively for collection in collections):
+        return False
+    kind, side = pole_data.get(KIND_KEY), pole_data.get(SIDE_KEY)
+    if kind not in LIMB_SPEC or side not in SIDES:
+        return False
+    target = armature.pose.bones.get(LIMB_SPEC[kind]['target'].format(side=side))
+    if (target is None or target.bone.get(RIG_ID_KEY) != pole_data.get(RIG_ID_KEY)
+            or not _owned(target.bone, armature.data.get(ARMATURE_ID_KEY),
+                          role=LIMB_SPEC[kind]['target_role'])):
+        return False
+    value = target.get('ik_fk', 1.0)
+    if type(value) not in {int, float} or not math.isfinite(value) or value <= 1.0e-6:
+        return False
+    scale = tuple(pole_pose.custom_shape_scale_xyz)
+    return (all(math.isfinite(float(component)) for component in scale)
+            and max(abs(float(component)) for component in scale) > EPSILON)
+
+
 def _direct_pole_guide_segments(context):
     """Return visible Direct-IK joint-to-Pole segments in world space.
 
@@ -1838,17 +1872,10 @@ def _direct_pole_guide_segments(context):
                 continue
             world = armature.matrix_world
             for pole_data in armature.data.bones:
-                if (
-                    not _owned(pole_data, armature_id, role="POLE")
-                    or pole_data.hide
-                    or _control_shape_style(pole_data, strict=False) == "SPHERE"
-                ):
+                if not _owned(pole_data, armature_id, role="POLE"):
                     continue
-                collections = tuple(getattr(pole_data, "collections", ()))
-                if collections and not any(
-                    bool(getattr(collection, "is_visible_effectively", True))
-                    for collection in collections
-                ):
+                pole = armature.pose.bones.get(pole_data.name)
+                if pole is None or not _pole_display_visible(context, armature, pole_data, pole):
                     continue
                 raw_chain = pole_data.get(CHAIN_KEY, "")
                 try:
@@ -1862,8 +1889,7 @@ def _direct_pole_guide_segments(context):
                 ):
                     continue
                 lower = armature.pose.bones.get(chain[1])
-                pole = armature.pose.bones.get(pole_data.name)
-                if lower is None or pole is None:
+                if lower is None:
                     continue
                 joint_world = world @ Vector(lower.head)
                 pole_world = _custom_shape_anchor_world(armature, pole)
@@ -2303,8 +2329,26 @@ def _sync_pole_connector_visibility(inventory, pole_bone, style):
 
     line = _pole_connector_bone(inventory, pole_bone)
     if line is not None:
-        line.hide = style == "SPHERE"
+        rig = next(rig for rig in inventory['rigs'].values() if rig['pole'].name == pole_bone.name)
+        line_pose = next((pb for pb, _constraint, _record in rig['entries'] if pb.name == line.name), None)
+        armature = line_pose.id_data if line_pose is not None else None
+        pole_pose = armature.pose.bones[pole_bone.name] if armature is not None else None
+        ik = (limb_ik_fk.mode_for_rig(armature, rig) != 'FK') if armature is not None else True
+        hidden = (style == 'SPHERE' or not ik or pole_bone.hide
+                  or bool(getattr(pole_pose, 'hide', False)))
+        if line.hide != hidden:
+            line.hide = hidden
+        if line_pose is not None and hasattr(line_pose, 'hide') and line_pose.hide != hidden:
+            line_pose.hide = hidden
     return line
+
+
+def _pole_connector_pose(inventory, pole_bone):
+    line = _pole_connector_bone(inventory, pole_bone)
+    if line is None:
+        return None
+    rig = next(rig for rig in inventory['rigs'].values() if rig['pole'].name == pole_bone.name)
+    return next((pb for pb, _constraint, _record in rig['entries'] if pb.name == line.name), None)
 
 
 def _restore_pose_shape_state(armature, pose_bone, state, *, runtime=False):
@@ -3088,7 +3132,14 @@ def _record_master_constraint(pose_bone, constraint, armature_id):
     _write_constraint_registry(pose_bone, registry)
 
 
-def _validate_inventory(armature):
+def _validation_mute(pose_bone, constraint, original_mutes=None):
+    """Read a mute without changing RNA during an explicit Original preflight."""
+    if original_mutes is None:
+        return bool(constraint.mute)
+    return original_mutes.mute(pose_bone, constraint)
+
+
+def _validate_inventory(armature, *, original_mutes=None, original_rest=None):
     armature_id = armature.data.get(ARMATURE_ID_KEY, "")
     generated = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE]
     records = _owned_constraint_records(armature, strict=True)
@@ -3162,6 +3213,7 @@ def _validate_inventory(armature):
         direct_registry = {"version": DIRECT_PREROLL_RESULT_VERSION, "limbs": {}}
     for pose_bone, constraint, record in records:
         influence = float(constraint.influence)
+        muted = _validation_mute(pose_bone, constraint, original_mutes)
         switched = limb_ik_fk.validate_constraint_influence(armature, pose_bone, constraint, record)
         if not switched and (not math.isfinite(influence) or abs(influence - 1.0) > 1.0e-6):
             raise LimbIKError(f"Owned constraint '{constraint.name}' on '{pose_bone.name}' was disabled or had its influence edited.")
@@ -3177,11 +3229,11 @@ def _validate_inventory(armature):
                 if record["role"] == "END_ROTATION"
                 else not auto_value
             )
-            if bool(constraint.mute) != expected_mute:
+            if muted != expected_mute:
                 raise LimbIKError(
                     f"Owned Target rotation '{constraint.name}' does not match its Auto Align state."
                 )
-        elif constraint.mute:
+        elif muted:
             raise LimbIKError(f"Owned constraint '{constraint.name}' on '{pose_bone.name}' was disabled or had its influence edited.")
     rigs = {}
     by_rig = {}
@@ -3613,10 +3665,16 @@ def _validate_inventory(armature):
             ):
                 raise LimbIKError(f"Limb IK rig '{rig_id}' has missing or mismatched Direct Pre-Roll Rest data.")
             for name in chain[:2]:
-                if not _rest_state_matches(armature.data.bones.get(name), direct_rest["applied"][name]):
+                source_bone = armature.data.bones.get(name)
+                state = direct_rest['applied'][name]
+                matches = (_rest_state_matches(source_bone, state) if original_rest is None
+                           else original_rest.matches(source_bone, state))
+                if not matches:
+                    details = (_rest_state_mismatch_details(source_bone, state) if original_rest is None
+                               else original_rest.details(source_bone, state))
                     raise LimbIKError(
                         f"Direct Pre-Roll source Rest bone '{name}' was edited after the rig was built "
-                        f"({_rest_state_mismatch_details(armature.data.bones.get(name), direct_rest['applied'][name])})."
+                        f"({details})."
                     )
         rigs[key] = {
             "rig_id": rig_id,
@@ -3673,11 +3731,12 @@ def _validate_inventory(armature):
         "master_records": master_records,
         "source_widgets": source_widgets,
     }
-    foot_controls.validate(armature, inventory)
-    torso_controls.validate(armature, inventory)
-    spine_ik_fk.validate(armature, inventory)
-    eye_controls.validate(armature, inventory)
-    root_control.validate(armature, inventory)
+    mute_view = {'original_mutes': original_mutes} if original_mutes is not None else {}
+    foot_controls.validate(armature, inventory, **mute_view)
+    torso_controls.validate(armature, inventory, **mute_view)
+    spine_ik_fk.validate(armature, inventory, **mute_view)
+    eye_controls.validate(armature, inventory, **mute_view)
+    root_control.validate(armature, inventory, **mute_view)
     limb_fk_visuals.validate(armature, inventory)
     return inventory
 
@@ -6844,6 +6903,33 @@ class CHARACTERDESIGNER_OT_limb_ik_fk_switch(Operator):
         return {"FINISHED"}
 
 
+class CHARACTERDESIGNER_OT_body_ik_fk_switch(Operator):
+    bl_idname = "character_designer.body_ik_fk_switch"
+    bl_label = "Switch All Limbs IK / FK"
+    bl_description = "Match both arms and legs together; FK rotates the original bones and Auto Key is respected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    mode: EnumProperty(items=(("IK", "IK", "Move the hand and foot targets"), ("FK", "FK", "Rotate the original arm and leg bones")))
+    keyframe: BoolProperty(name="Insert Switch Keys", default=False)
+
+    def execute(self, context):
+        from . import limb_ik_fk_batch
+        settings = _settings(context)
+        try:
+            armature = _require_active_armature(context, settings, analyzed=False)
+            result = limb_ik_fk_batch.switch_all(context, armature, self.mode,
+                                                keyframe=True if self.keyframe else None)
+        except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({"WARNING"}, str(exc))
+            return {"CANCELLED"}
+        message = f"Arms and legs: {result['mode']}; current pose matched."
+        if result["keyed"]:
+            message += " Switch keys inserted."
+        _set_status(settings, "SUCCESS", message)
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 class CHARACTERDESIGNER_OT_foot_controls(Operator):
     bl_idname = "character_designer.foot_controls"
     bl_label = "Foot Controls"
@@ -8726,7 +8812,10 @@ def _set_active_control_shape(operator, context, style):
     previous_style_present = False
     previous_style = None
     connector = None
+    connector_pose = None
     previous_connector_hidden = None
+    previous_connector_pose_hidden = None
+    display_before = None
     transaction = None
     try:
         if style not in CONTROL_SHAPE_STYLES:
@@ -8736,7 +8825,12 @@ def _set_active_control_shape(operator, context, style):
         resources = _removal_resources(context, armature, inventory)
         connector = _pole_connector_bone(inventory, pose_bone.bone)
         if connector is not None:
+            from . import bone_display
+            display_before = bone_display._snapshot(armature)
             previous_connector_hidden = bool(connector.hide)
+            connector_pose = _pole_connector_pose(inventory, pose_bone.bone)
+            if connector_pose is not None and hasattr(connector_pose, 'hide'):
+                previous_connector_pose_hidden = bool(connector_pose.hide)
         previous_shape = pose_bone.custom_shape
         previous_style_present = CONTROL_SHAPE_STYLE_KEY in pose_bone.bone
         previous_style = pose_bone.bone.get(CONTROL_SHAPE_STYLE_KEY, None)
@@ -8780,7 +8874,17 @@ def _set_active_control_shape(operator, context, style):
             pose_bone.bone[CONTROL_SHAPE_STYLE_KEY] = style
         _sync_pole_connector_visibility(inventory, pose_bone.bone, style)
         context.view_layer.update()
-        _removal_resources(context, armature, _validate_inventory(armature))
+        verified_inventory = _validate_inventory(armature)
+        if (connector is not None
+                and 'character_designer_body_original_mode_v1' not in armature
+                and bone_groups.VIEW_KEY not in armature.data
+                and context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') != armature):
+            # Stable shafts are Body collection members. Hand their membership
+            # over with the new cone style immediately, preserving manual hide
+            # flags; Direct shafts are read-only GPU guides and need no plan.
+            key = (pose_bone.bone.get(KIND_KEY), pose_bone.bone.get(SIDE_KEY))
+            bone_groups.sync_limb_display(armature, verified_inventory, keys=(key,), force_flags=False)
+        _removal_resources(context, armature, verified_inventory)
         label = CONTROL_SHAPE_STYLE_LABELS[style]
         message = f"Set '{pose_bone.name}' display shape to {label}."
         _set_status(settings, "SUCCESS", message)
@@ -8796,6 +8900,11 @@ def _set_active_control_shape(operator, context, style):
                     del pose_bone.bone[CONTROL_SHAPE_STYLE_KEY]
                 if connector is not None and previous_connector_hidden is not None:
                     connector.hide = previous_connector_hidden
+                if connector_pose is not None and previous_connector_pose_hidden is not None:
+                    connector_pose.hide = previous_connector_pose_hidden
+                if display_before is not None:
+                    bone_display._restore(armature, display_before)
+                    bone_groups._FRAME_CACHE.pop(armature.as_pointer(), None)
             except Exception:
                 pass
         _discard_control_shape_widget_transaction(transaction)
@@ -8876,6 +8985,30 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_control_visual(Operator):
             return {"CANCELLED"}
 
 
+def _draw_body_limb_modes(layout, context, armature):
+    from . import limb_ik_fk_batch, body_original_mode
+    if armature is None or armature.type != "ARMATURE":
+        layout.label(text="Select the main armature.", icon="INFO")
+        return None
+    row = layout.row(align=True)
+    row.enabled = context.active_object == armature and context.mode in {"OBJECT", "POSE"}
+    inventory = None
+    try:
+        if not body_original_mode.active(armature):
+            inventory = _validate_inventory(armature)
+        mode = limb_ik_fk_batch.mode_for_keys(armature, inventory=inventory)
+    except (LimbIKError, ReferenceError, RuntimeError, ValueError) as exc:
+        row.enabled = False
+        mode = None
+        layout.label(text=str(exc), icon="ERROR")
+    for choice in ("IK", "FK"):
+        row.operator("character_designer.body_ik_fk_switch", text=choice,
+                     depress=mode == choice).mode = choice
+    if mode == "MIXED":
+        layout.label(text="Arms and legs use different modes", icon="INFO")
+    return inventory
+
+
 class CHARACTERDESIGNER_PT_limb_ik(Panel):
     bl_label = "Bone Setup"
     bl_idname = "CHARACTERDESIGNER_PT_limb_ik"
@@ -8885,8 +9018,7 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
 
     @classmethod
     def poll(cls, context):
-        from . import body_original_mode, bone_display
-        return rig_page_active(context, "BODY") and not body_original_mode.active(bone_display.character_rig(context))
+        return rig_page_active(context, "BODY")
 
     def draw(self, context):
         layout = self.layout
@@ -8895,7 +9027,9 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
         from . import body_setup_ui, body_calibration_ui, body_original_mode
-        if body_original_mode.active(body_original_mode.display.character_rig(context)):
+        armature = body_original_mode.display.character_rig(context)
+        if body_original_mode.active(armature):
+            _draw_body_limb_modes(layout, context, armature)
             return
         if body_calibration_ui.draw(layout, context):
             # Native mapping remains reachable before Generate. The stored old
@@ -8916,11 +9050,17 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                 kind, side = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
                 _draw_limb_fields(fields, settings, armature, kind, side)
             return
+        daily_inventory = _draw_body_limb_modes(layout, context, armature)
+        layout.prop(settings, "show_body_setup_advanced", text="Advanced",
+                    icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
+        if not settings.show_body_setup_advanced:
+            return
+        layout = layout.box()
         layout.prop(settings, "selected_limb", text="")
         active = context.object
         if active is not None and active.type == "ARMATURE":
             try:
-                inventory = _validate_inventory(active)
+                inventory = daily_inventory if active == armature and daily_inventory is not None else _validate_inventory(active)
                 selected_key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
                 rig = inventory["rigs"].get(selected_key)
                 if rig is not None:
@@ -8987,12 +9127,7 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                               icon="CON_ROTLIKE", depress=auto_enabled).action = "DISABLE" if auto_enabled else "ENABLE"
         from .body_controls_ui import draw_foot_auto_align_upgrade
         draw_foot_auto_align_upgrade(layout, context)
-        layout.prop(settings, "show_body_setup_advanced", text="Advanced",
-                    icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
-        if not settings.show_body_setup_advanced:
-            return
         from .body_controls_ui import draw_root_controls, draw_fk_visuals, draw_head_neck_visuals, draw_body_detail_visuals
-        layout = layout.box()
         body_setup_ui.draw_plan(layout, context)
         draw_root_controls(layout, context)
         draw_fk_visuals(layout, context)
@@ -9204,6 +9339,7 @@ LIMB_IK_CLASSES = (
     CHARACTERDESIGNER_OT_limb_ik_remove,
     CHARACTERDESIGNER_OT_limb_ik_rebuild,
     CHARACTERDESIGNER_OT_limb_ik_fk_switch,
+    CHARACTERDESIGNER_OT_body_ik_fk_switch,
     CHARACTERDESIGNER_OT_foot_controls,
     CHARACTERDESIGNER_OT_limb_ik_default_pole_direction,
     CHARACTERDESIGNER_OT_limb_ik_auto_align_target,

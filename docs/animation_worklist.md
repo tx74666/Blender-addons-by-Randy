@@ -11,7 +11,8 @@ A workspace describes one Unity character and its Controller clips. The Clip
 Browser lists that metadata; the worklist contains the clips you choose to edit.
 Prepared entries share one independent Blender editing rig. Each entry has a
 linked **Source** Action for comparison and a local **Custom** Action for editing.
-Sync operates on one active Custom Action at a time.
+Sync exports one Custom Action at a time. The collection controls introduced
+in the 0.76.3 candidate schedule these existing imports/exports serially.
 
 The workspace producer for this integration is **RandomRealm2 > Character
 Tuning**. The bundled standalone Unity Animation Exchange window retains its
@@ -45,7 +46,48 @@ keeps existing worklist entries and Custom edits; it does not silently replace
 their Source baselines.
 
 The catalog covers this character's published Controller clips. It does not
-scan the entire Unity project, sample all clips, or perform batch Sync.
+scan the entire Unity project or sample all clips merely by opening the panel.
+
+## Add and return a collection (0.76.3 candidate)
+
+**Add Ready** adds prepared missing Controller slots on the shared editing rig.
+It skips existing rows and keeps their Custom edits; it does not activate each
+new Action, rebuild Links, or overwrite baselines. Unprepared slots stay in the
+browser for preparation in Unity.
+
+Click **Scan Changes** after editing. This explicit scan reads the selected
+Action slot, keyframes, handles, modifiers, timing/loop policy and supported
+rig inputs. It never activates Actions and never runs while drawing the panel.
+The button first displays **Scanning animations** and schedules the check for
+the next UI turn. Repeated clicks cannot start another scan. The actual check
+still runs synchronously: a dense Action can take time, and **Cancel Collection**
+can cancel before the check starts but must wait for a running check to finish.
+**Unchanged** requires a complete matching receipt from a successful publication,
+including the Link output hashes and export implementation. Old entries without
+a receipt, unsupported dependencies and transient Hair preview are **Unknown**.
+They cannot be silently skipped as unchanged or automatically selected to sync.
+
+Select any **Unknown** rows deliberately, review selected **Changed** rows, then
+click **Sync Changed**. It rescans and exports selected Changed/Unknown entries
+one by one. A later entry starts only after the previous FBX and metadata are
+published and its worker is disposed. **Cancel Collection** stops further work;
+already-added or published entries remain. Failures stop the queue and keep its
+successful prefix. Reloading the add-on or opening a file cancels transient work;
+loading a saved worklist never restarts a queue.
+
+Blender publishes candidates. Unity still performs candidate collection/preview
+and explicit Apply. A new Blender Action needs an explicit Unity Controller slot
+or asset identity; renaming a Custom Action does not create that mapping.
+
+The private two-motion Blender fixture passed independent edits, save/reopen,
+serial publication and a repeated Sync with no new worker or output. R8 adds
+early scan feedback and guards repeated clicks; it does not make dense scans
+instant. The frozen 0.76.3 candidate has been deployed and checked against the
+Blender 5.1 installation and X copy. The isolated fixture checks did not apply
+motions to the production character. A separate live inspection verified the
+loaded R8 code, and the artist's X file was saved under a later explicit user
+instruction. The post-save diagnosis and private Unity acceptance are
+recorded in the release evidence.
 
 ## Compare and edit
 

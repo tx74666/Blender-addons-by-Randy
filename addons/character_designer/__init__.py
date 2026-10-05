@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 73, 2),
+    "version": (0, 76, 3),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -78,6 +78,8 @@ from .body_controls_ui import BODY_CONTROL_UI_CLASSES
 from .control_colors import CONTROL_COLOR_CLASSES
 from .bone_color_palette import BONE_COLOR_PALETTE_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
+from .hair_motion_ui import HAIR_MOTION_CLASSES, CharacterDesignerHairMotionState
+from .hair_wiggle_adapter import register_guards as register_hair_motion_guards, unregister_guards as unregister_hair_motion_guards
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
 from .animation import (
     ANIMATION_CLASSES,
@@ -8684,6 +8686,7 @@ CLASSES = (
     *CHARACTER_SETUP_CLASSES,
     *UNITY_EXPORT_CLASSES,
     *HAIR_BONES_CLASSES,
+    *HAIR_MOTION_CLASSES,
     *SKIRT_CLASSES,
     *WORKLIST_CLASSES,
     *ANIMATION_CLASSES,
@@ -8713,6 +8716,7 @@ CLASSES = (
 _WINDOW_MANAGER_POINTER_TYPES = (
     ("character_designer", CharacterDesignerState),
     ("character_designer_hair_bones", CharacterDesignerHairBonesState),
+    ("character_designer_hair_motion", CharacterDesignerHairMotionState),
     ("character_designer_skirt", CharacterDesignerSkirtState),
     ("character_designer_animation", CharacterDesignerAnimationState),
     ("character_designer_delta", CharacterDesignerDeltaState),
@@ -8818,6 +8822,7 @@ def register():
     forearm_twist_registered = hasattr(bpy.types.WindowManager, "character_designer_forearm_twist")
     finger_root_registered = hasattr(bpy.types.WindowManager, "character_designer_finger_root")
     hair_bones_registered = hasattr(bpy.types.WindowManager, "character_designer_hair_bones")
+    hair_motion_registered = hasattr(bpy.types.WindowManager, "character_designer_hair_motion")
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
     animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
     setup_registered = hasattr(bpy.types.Scene, "character_designer_setup")
@@ -8832,6 +8837,7 @@ def register():
         forearm_twist_registered,
         finger_root_registered,
         hair_bones_registered,
+        hair_motion_registered,
         skirt_registered,
         animation_registered,
         setup_registered,
@@ -8856,6 +8862,7 @@ def register():
         _register_workspace_filter_guard()
         _register_source_watch()
         generated_names.register_handlers()
+        register_hair_motion_guards()
         return
     if any(registration_state):
         raise RuntimeError("Character Designer is only partially registered.")
@@ -8885,6 +8892,11 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_hair_bones")
+        bpy.types.WindowManager.character_designer_hair_motion = PointerProperty(
+            type=CharacterDesignerHairMotionState,
+            options={"SKIP_SAVE"},
+        )
+        added_properties.append("character_designer_hair_motion")
         bpy.types.WindowManager.character_designer_skirt = PointerProperty(
             type=CharacterDesignerSkirtState,
             options={"SKIP_SAVE"},
@@ -8941,7 +8953,9 @@ def register():
         _register_workspace_filter_guard()
         _register_source_watch()
         generated_names.register_handlers()
+        register_hair_motion_guards()
     except Exception:
+        unregister_hair_motion_guards()
         generated_names.unregister_handlers()
         stop_worklist_ui()
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
@@ -8979,6 +8993,7 @@ def register():
 
 def unregister():
     from . import body_calibration_ui, control_pose_assets, control_weight_paint, generated_names
+    unregister_hair_motion_guards()
     generated_names.unregister_handlers()
     control_pose_assets.unregister()
     control_weight_paint.unregister()
@@ -9012,6 +9027,8 @@ def unregister():
         del bpy.types.WindowManager.character_designer_animation
     if hasattr(bpy.types.WindowManager, "character_designer_hair_bones"):
         del bpy.types.WindowManager.character_designer_hair_bones
+    if hasattr(bpy.types.WindowManager, "character_designer_hair_motion"):
+        del bpy.types.WindowManager.character_designer_hair_motion
     if hasattr(bpy.types.WindowManager, "character_designer_references"):
         del bpy.types.WindowManager.character_designer_references
     if hasattr(bpy.types.WindowManager, "character_designer_spline_ik"):

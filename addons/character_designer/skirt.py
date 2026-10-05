@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import time
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
@@ -21,6 +22,17 @@ def _rig():
 
 def _physics():
     return importlib.import_module(__package__ + ".skirt_physics")
+
+
+def _add_requested_physics(context, source, actual_surface, *, capability=None):
+    """The panel opts into the surface backend; legacy scripted calls stay valid."""
+    physics = _physics()
+    if not actual_surface:
+        return physics.add_physics(context, source)
+    setup = _setup().settings(context)
+    body = setup.body if setup is not None else None
+    return physics.add_physics(context, source,
+                               backend=physics.ACTUAL_SURFACE_BACKEND, body=body, capability=capability)
 
 
 def _setup():
@@ -92,10 +104,22 @@ def _has_physics(context):
         return False
 
 
+def _colliders(record):
+    """Only independent fitting meshes, never the shared Body collision input."""
+    physics = record.get("physics") or {}
+    surface = physics.get("surface") or {}
+    protected = set(surface.get("roles", {}).get("BODY_ATTACHMENT", ()))
+    if surface.get("body"):
+        protected.add(surface["body"])
+    return [obj for name in physics.get("colliders", ())
+            if name not in protected and (obj := bpy.data.objects.get(name)) is not None
+            and obj.get("character_designer_skirt_surface_role") != "BODY_ATTACHMENT"]
+
+
 def _helper_objects(record, kind):
     physics = record.get("physics") or {}
     if kind == "COLLIDERS":
-        names = physics.get("colliders", [])
+        return _colliders(record)
     else:
         names = list(record.get("cage", []))
         if physics.get("proxy"):
@@ -239,8 +263,13 @@ class CharacterDesignerSkirtState(PropertyGroup):
                              default=8, min=3, max=32, options={"SKIP_SAVE"})
     segment_count: IntProperty(name="Bones per Chain", default=4, min=2, max=12,
                                options={"SKIP_SAVE"})
-    physics: BoolProperty(name="Physics + Colliders", default=False, options={"SKIP_SAVE"},
-                          description="Create a cloth proxy and closed character colliders")
+    physics: BoolProperty(name="Physics + Colliders", default=True, options={"SKIP_SAVE", "HIDDEN"},
+                          description="Compatibility flag for scripted setup; use Generation in the panel")
+    capability: EnumProperty(name="Generation", default="BOTH", options={"SKIP_SAVE"}, items=(
+        ("BOTH", "Physics + Manual", "Automatic Cloth with optional manual shaping tools"),
+        ("PHYSICS", "Physics", "Automatic Cloth; daily controls remain simple"),
+        ("MANUAL", "Manual", "Wire controls without a Cloth simulation")))
+    show_manual: BoolProperty(name="Manual Refinement", default=False, options={"SKIP_SAVE"})
     show_attachment: BoolProperty(name="Attachment Override", default=False,
                                   description="Optional local target; leave fields blank to use Character Setup",
                                   options={"SKIP_SAVE"})
@@ -264,6 +293,8 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
     bl_description = "Fit a tapered wire cage, waist ring, bone controls, weights, and optional physics"
     bl_options = {"REGISTER", "UNDO"}
 
+    actual_surface: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
     @classmethod
     def poll(cls, context):
         return _idle(context) and _settings(context) is not None and _source(context) is not None
@@ -275,18 +306,32 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
         built = False
         try:
             _restore_preview(context, source)
-            had_setup = _rig().read_record(source) is not None
+            record = _rig().read_record(source)
+            had_setup = record is not None
             settings.source = source
-            armature, bone = (None, '') if had_setup else _desired_attachment(context, source)
-            record = _rig().build_skirt(
-                context, source, chain_count=settings.chain_count,
-                segment_count=settings.segment_count,
-                armature=armature,
-                parent_bone=bone,
-            )
-            built = True
-            if settings.physics:
-                _physics().add_physics(context, source)
+            capability = settings.capability
+            # Preserve existing scripts that explicitly opted out of physics.
+            if not settings.is_property_set("capability") and settings.is_property_set("physics"):
+                capability = "BOTH" if settings.physics else "MANUAL"
+            if had_setup and self.actual_surface:
+                # Explicitly update this installed graph, independent of the
+                # creation panel's dimensions or generation preset.
+                _rig()._require_controls_for_setup(source)
+                _add_requested_physics(context, source, self.actual_surface)
+            else:
+                armature, bone = (None, '') if had_setup else _desired_attachment(context, source)
+                record = _rig().build_skirt(
+                    context, source, chain_count=settings.chain_count,
+                    segment_count=settings.segment_count,
+                    armature=armature,
+                    parent_bone=bone,
+                )
+                built = True
+                if capability != "MANUAL":
+                    _add_requested_physics(context, source, self.actual_surface, capability=capability)
+            from . import skirt_motion_tuning
+            if not (self.actual_surface and _physics().backend(_rig().read_record(source)) == _physics().ACTUAL_SURFACE_BACKEND):
+                skirt_motion_tuning.initialize(source, capability=capability if not had_setup else None, context=context)
             _rig().select_controls(context, source)
             record = _rig().read_record(source) or record
             _setup().remember_asset(context, source, "SKIRT")
@@ -302,7 +347,8 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
             return {"CANCELLED"}
         count = record.get("chain_count", settings.chain_count)
         segments = record.get("segment_count", settings.segment_count)
-        message = f"Skirt ready: {count} chains × {segments} bones. Pose the waist and wire controls."
+        message = f"Dress ready: {count} chains × {segments} bones."
+        message += " Reset to the start frame and play or bake." if record.get("physics") else " Pose the waist and wire controls."
         _report(self, context, message)
         return {"FINISHED"}
 
@@ -415,6 +461,8 @@ class CHARACTERDESIGNER_OT_skirt_add_physics(Operator):
     bl_description = "Create the skirt cloth proxy and closed collision meshes"
     bl_options = {"REGISTER", "UNDO"}
 
+    actual_surface: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
     @classmethod
     def poll(cls, context):
         return _idle(context) and _has_setup(context) and not _has_physics(context)
@@ -423,7 +471,10 @@ class CHARACTERDESIGNER_OT_skirt_add_physics(Operator):
         try:
             source = _source(context)
             _settings(context).source = source
-            _physics().add_physics(context, source)
+            _add_requested_physics(context, source, self.actual_surface, capability="BOTH")
+            from . import skirt_motion_tuning
+            if not self.actual_surface:
+                skirt_motion_tuning.initialize(source, capability="BOTH", context=context)
             _rig().select_controls(context, source)
         except (ValueError, RuntimeError) as exc:
             _report(self, context, str(exc), error=True)
@@ -471,23 +522,66 @@ class CHARACTERDESIGNER_OT_skirt_select_colliders(Operator):
         return _idle(context) and _has_physics(context)
 
     def execute(self, context):
+        checkpoint = None
         try:
             source = _source(context)
-            colliders = [obj for obj in _helper_objects(_rig().read_record(source), "COLLIDERS")
-                         if obj.name in context.view_layer.objects]
+            record, rig, proxy, cloth = _physics().validate_physics(source)
+            surface = None
+            body = None
+            updated = record
+            if record["physics"].get("backend") == "ACTUAL_SURFACE_DELTA_V1":
+                from . import skirt_surface as surface
+                updated, candidates, body = surface.prepare_collider_fitting(source, rig, record)
+            else:
+                cache = cloth.point_cache
+                if (cache.is_baked or cache.is_baking or cache.use_external
+                        or record["physics"].get("baked_range")):
+                    raise ValueError("Reset Dress before fitting its colliders. Finish any bake and disable external cache first.")
+                candidates = _colliders(record)
+            colliders = [obj for obj in candidates if obj.name in context.view_layer.objects]
             if not colliders:
                 raise ValueError("No generated colliders are available in this view layer.")
+            selected = tuple(context.selected_objects)
+            changed = list(colliders) + ([body] if body is not None else [])
+            checkpoint = {"source": source, "raw": source[_rig().RECORD_KEY],
+                          "settings_source": _settings(context).source,
+                          "active": context.view_layer.objects.active, "selected": selected,
+                          "mode": context.view_layer.objects.active.mode if context.view_layer.objects.active else "OBJECT",
+                          "flags": [(obj, obj.hide_get(view_layer=context.view_layer)
+                                     if obj.name in context.view_layer.objects else None, obj.hide_select)
+                                    for obj in changed]}
             _settings(context).source = source
             if context.mode != "OBJECT":
                 bpy.ops.object.mode_set(mode="OBJECT")
             for obj in context.selected_objects:
                 obj.select_set(False)
+            if body is not None:
+                body.hide_select = True
             for obj in colliders:
-                obj.hide_set(False)
+                obj.hide_set(False, view_layer=context.view_layer)
                 obj.hide_select = False
                 obj.select_set(True)
             context.view_layer.objects.active = colliders[0]
+            if surface is not None:
+                _rig().write_record(source, updated)
+                surface.validate(source, rig, updated)
         except (ValueError, RuntimeError) as exc:
+            if checkpoint is not None:
+                checkpoint["source"][_rig().RECORD_KEY] = checkpoint["raw"]
+                _settings(context).source = checkpoint["settings_source"]
+                if context.mode != "OBJECT":
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                for obj in context.selected_objects:
+                    obj.select_set(False)
+                for obj, hidden, restricted in checkpoint["flags"]:
+                    if hidden is not None:
+                        obj.hide_set(hidden, view_layer=context.view_layer)
+                    obj.hide_select = restricted
+                for obj in checkpoint["selected"]:
+                    obj.select_set(True)
+                context.view_layer.objects.active = checkpoint["active"]
+                if checkpoint["active"] is not None and checkpoint["mode"] != "OBJECT":
+                    bpy.ops.object.mode_set(mode=checkpoint["mode"])
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
         _report(self, context, "Adjust collider vertices in Edit Mode. Clear the cache after changes.")
@@ -520,6 +614,8 @@ class _SkirtBakeOperator:
     kind = "SIMULATION"
     _steps = None
     _timer = None
+    _timer_interval = 0.01
+    _next_step_time = None
     _wm = None
     _bake_source = None
 
@@ -529,18 +625,26 @@ class _SkirtBakeOperator:
 
     def _finish(self):
         wm = self._wm
-        if wm is None:
-            return
-        if self._timer is not None:
+        timer = self._timer
+        self._timer = None
+        self._next_step_time = None
+        if wm is not None:
+            if timer is not None:
+                try:
+                    wm.event_timer_remove(timer)
+                except (ReferenceError, RuntimeError):
+                    pass
             try:
-                wm.event_timer_remove(self._timer)
+                wm.progress_end()
             except (ReferenceError, RuntimeError):
                 pass
-            self._timer = None
-        wm.progress_end()
-        _ACTIVE_BAKES.pop(wm.as_pointer(), None)
+        # A removed window may no longer expose a usable RNA pointer.
+        for key, operator in tuple(_ACTIVE_BAKES.items()):
+            if operator is self:
+                _ACTIVE_BAKES.pop(key, None)
         self._wm = None
         self._steps = None
+        self._bake_source = None
 
     def _close(self):
         try:
@@ -591,9 +695,10 @@ class _SkirtBakeOperator:
             result = self._advance(context)
             if result is not None:
                 return result
-            self._timer = self._wm.event_timer_add(0.01, window=context.window)
+            self._timer = self._wm.event_timer_add(self._timer_interval, window=context.window)
+            self._next_step_time = time.monotonic() + self._timer_interval
             self._wm.modal_handler_add(self)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, ReferenceError) as exc:
             self._close()
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
@@ -602,20 +707,22 @@ class _SkirtBakeOperator:
     def _advance(self, context):
         try:
             completed, total, message = next(self._steps)
+            self._wm.progress_update(completed / max(1, total))
+            _settings(context).last_message = message
+            if context.area is not None:
+                context.area.tag_redraw()
         except StopIteration as completed:
-            if self.kind == "ANIMATION":
-                _remember_bake(self._bake_source, completed.value)
-            self._finish()
+            try:
+                if self.kind == "ANIMATION":
+                    _remember_bake(self._bake_source, completed.value)
+            finally:
+                self._finish()
             _report(self, context, self._complete_message(self._start, self._end))
             return {"FINISHED"}
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, ReferenceError) as exc:
             self._close()
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
-        self._wm.progress_update(completed / max(1, total))
-        _settings(context).last_message = message
-        if context.area is not None:
-            context.area.tag_redraw()
         return None
 
     def modal(self, context, event):
@@ -625,8 +732,17 @@ class _SkirtBakeOperator:
             self._close()
             _report(self, context, "Skirt bake cancelled. Bake the complete range before playback.")
             return {"CANCELLED"}
-        if event.type == "TIMER" and event.timer == self._timer:
-            return self._advance(context) or {"RUNNING_MODAL"}
+        if event.type == "TIMER" and self._timer is not None:
+            # Native Event has no timer identity. Other window timers can wake
+            # this operator, but each wake advances at most one sequential frame
+            # and only once per interval; queued events never catch up in a burst.
+            now = time.monotonic()
+            if self._next_step_time is not None and now >= self._next_step_time:
+                self._next_step_time = now + self._timer_interval
+                result = self._advance(context)
+                if self._steps is not None:
+                    self._next_step_time = time.monotonic() + self._timer_interval
+                return result or {"RUNNING_MODAL"}
         # Keep transform/timeline input from changing the simulation mid-bake.
         return {"RUNNING_MODAL"}
 
@@ -822,11 +938,12 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             row = layout.row(align=True)
             row.prop(settings, "chain_count")
             row.prop(settings, "segment_count", text="Bones")
-            layout.prop(settings, "physics")
+            layout.prop(settings, "capability")
             row = layout.row()
             row.scale_y = 1.4
             row.enabled = not attachment_error
-            row.operator("character_designer.create_skirt_setup", icon="OUTLINER_OB_ARMATURE")
+            row.operator("character_designer.create_skirt_setup", text="Setup Dress",
+                         icon="OUTLINER_OB_ARMATURE").actual_surface = True
             layout.label(text="Fits the waist, hem, and wire cage.", icon="INFO")
             if _last_bake(source):
                 restoring = PREVIEW_KEY in source
@@ -837,6 +954,8 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
 
         layout.label(text=f'{record.get("chain_count", "?")} chains × '
                           f'{record.get("segment_count", "?")} bones', icon="BONE_DATA")
+        from .skirt_motion_ui import draw_motion
+        draw_motion(layout, context, source, record)
         from . import body_original_mode, skirt_original_mode
         dress_rig = source.get(_rig().RIG_KEY)
         original_edit = body_original_mode.active(dress_rig)
@@ -850,30 +969,14 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
                          text='Clear Dress Pose').scope = 'ALL'
             row.operator('character_designer.clear_dress_corrections',
                          text='Selected').scope = 'SELECTED'
-        layout.operator("character_designer.skirt_select_controls", icon="POSE_HLT",
-                        text="Return to Controls" if PREVIEW_KEY in source else "Select Skirt Controls")
-        layout.label(text="Rings: G / R / S to move, rotate, and scale.")
-        layout.label(text="Side points: G to shape the wire.")
-        row = layout.row(align=True)
-        wire = row.operator("character_designer.skirt_toggle_helpers", text="Wire", icon="SHADING_WIRE",
-                            depress=_helpers_visible(record, "WIRE", context))
-        wire.kind = "WIRE"
         physics = record.get("physics") or {}
+        actual_surface = physics.get("backend") == "ACTUAL_SURFACE_DELTA_V1"
+        if not physics:
+            layout.operator("character_designer.skirt_add_physics", icon="PHYSICS").actual_surface = True
+        elif not actual_surface and physics.get("backend", "LEGACY_CAGE") == "LEGACY_CAGE":
+            layout.operator("character_designer.create_skirt_setup", text="Update Dress Physics",
+                            icon="PHYSICS").actual_surface = True
         if physics:
-            colliders = row.operator("character_designer.skirt_toggle_helpers", text="Colliders",
-                                     icon="MESH_ICOSPHERE",
-                                     depress=_helpers_visible(record, "COLLIDERS", context))
-            colliders.kind = "COLLIDERS"
-            layout.operator("character_designer.skirt_select_colliders", icon="RESTRICT_SELECT_OFF")
-        else:
-            layout.operator("character_designer.skirt_add_physics", icon="PHYSICS")
-
-        if physics:
-            holder, _rig_object, _path = _rig().physics_control(source)
-            if holder is not None and "physics_influence" in holder:
-                row = layout.row(align=True)
-                row.use_property_decorate = True
-                row.prop(holder, '["physics_influence"]', text="Physics", slider=True)
             layout.prop(settings, "use_scene_range")
             if settings.use_scene_range:
                 layout.label(text=f"Frames {context.scene.frame_start}–{context.scene.frame_end}")
@@ -881,13 +984,28 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
                 row = layout.row(align=True)
                 row.prop(settings, "bake_start")
                 row.prop(settings, "bake_end")
-            row = layout.row(align=True)
-            row.operator("character_designer.skirt_bake_physics", icon="REC")
-            row.operator("character_designer.skirt_clear_cache", text="Clear", icon="X")
-            layout.operator("character_designer.skirt_bake_animation", icon="ACTION")
-            if _last_bake(source):
-                layout.operator("character_designer.skirt_preview_bake", icon="PLAY")
-            layout.label(text="Clear and rebake after pose or collider edits.", icon="INFO")
+        layout.operator("character_designer.skirt_details", text="Manual Refinement & Export",
+                        icon="TRIA_DOWN" if settings.show_manual else "TRIA_RIGHT", emboss=False)
+        if settings.show_manual:
+            box = layout.box()
+            box.operator("character_designer.skirt_select_controls", icon="POSE_HLT",
+                         text="Return to Controls" if PREVIEW_KEY in source else "Select Skirt Controls")
+            box.label(text="Rings: G / R / S. Side points: G.")
+            row = box.row(align=True)
+            row.operator("character_designer.skirt_toggle_helpers", text="Wire", icon="SHADING_WIRE",
+                         depress=_helpers_visible(record, "WIRE", context)).kind = "WIRE"
+            if physics:
+                row.operator("character_designer.skirt_toggle_helpers", text="Colliders", icon="MESH_ICOSPHERE",
+                             depress=_helpers_visible(record, "COLLIDERS", context)).kind = "COLLIDERS"
+                box.operator("character_designer.skirt_select_colliders", icon="RESTRICT_SELECT_OFF")
+                if not actual_surface:
+                    holder, _rig_object, _path = _rig().physics_control(source)
+                    if holder is not None and "physics_influence" in holder:
+                        box.prop(holder, '["physics_influence"]', text="Physics Blend", slider=True)
+                    box.operator("character_designer.skirt_bake_animation", icon="ACTION")
+                    if _last_bake(source):
+                        box.operator("character_designer.skirt_preview_bake", icon="PLAY")
+                box.label(text="Baked physics retains manual shaping and Dress pose corrections.")
         layout.separator()
         remove_row = layout.row()
         remove_row.alert = True
@@ -904,6 +1022,24 @@ def stop_skirt_runtime():
     _ACTIVE_BAKES.clear()
 
 
+class CHARACTERDESIGNER_OT_skirt_details(Operator):
+    bl_idname = "character_designer.skirt_details"
+    bl_label = "Show Dress Details"
+    bl_description = "Expand or collapse manual refinement and export tools"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context):
+        settings = _settings(context)
+        if settings is None:
+            return {"CANCELLED"}
+        settings.show_manual = not settings.show_manual
+        if context.area:
+            context.area.tag_redraw()
+        return {"FINISHED"}
+
+
+from .skirt_motion_ui import DRESS_MOTION_CLASSES
+
 SKIRT_CLASSES = (
     CharacterDesignerSkirtState,
     CHARACTERDESIGNER_OT_create_skirt_setup,
@@ -919,5 +1055,7 @@ SKIRT_CLASSES = (
     CHARACTERDESIGNER_OT_skirt_bake_animation,
     CHARACTERDESIGNER_OT_skirt_preview_bake,
     CHARACTERDESIGNER_OT_remove_skirt_setup,
+    CHARACTERDESIGNER_OT_skirt_details,
+    *DRESS_MOTION_CLASSES,
     CHARACTERDESIGNER_PT_skirt_setup,
 )

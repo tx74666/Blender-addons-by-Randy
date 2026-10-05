@@ -34,21 +34,36 @@ class LayoutRecorder:
         self.events.append(("prop", dict(kwargs, name=name)))
 
     def operator(self, name, **kwargs):
-        self.events.append(("operator", dict(kwargs, name=name, enabled=self.enabled)))
-        return SimpleNamespace()
+        properties = SimpleNamespace()
+        self.events.append(("operator", dict(kwargs, name=name, enabled=self.enabled,
+                                             properties=properties)))
+        return properties
+
+    def template_list(self, *_args, **kwargs):
+        self.events.append(("template_list", kwargs))
+
+    def separator(self):
+        self.events.append(("separator", {}))
 
 
 def load_functions(namespace):
-    names = {"show_builder_popup", "export_objects", "draw_exporter_page", "draw_export_group_box"}
+    names = {"show_builder_popup", "export_objects", "draw_exporter_page", "draw_export_group_box",
+             "effective_export_resources", "export_mode_is_standard", "draw_export_queue_box",
+             "draw_file_export_menu"}
     tree = ast.parse(SOURCE.read_text(encoding="utf-8-sig"))
     functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in functions} == names
-    queue_class = next(node for node in tree.body if isinstance(node, ast.ClassDef)
-                       and node.name == "RR_OT_export_queue")
-    queue_execute = next(node for node in queue_class.body if isinstance(node, ast.FunctionDef)
-                         and node.name == "execute")
-    queue_execute.name = "execute_export_queue"
-    functions.append(queue_execute)
+    for class_name, function_name in (
+        ("RR_OT_export_queue", "execute_export_queue"),
+        ("RR_OT_export_selected", "execute_export_selected"),
+        ("RR_OT_export_collection", "execute_export_collection"),
+    ):
+        operator_class = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                              and node.name == class_name)
+        execute = next(node for node in operator_class.body if isinstance(node, ast.FunctionDef)
+                       and node.name == "execute")
+        execute.name = function_name
+        functions.append(execute)
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(SOURCE), "exec"), namespace)
 
 
@@ -62,15 +77,18 @@ class ExportFeedbackTests(unittest.TestCase):
         self.popups = []
         self.printed = []
         self.failures = {}
+        self.resource_calls = []
         self.roots = [SimpleNamespace(name=name, select_set=lambda _selected: None)
                       for name in ("Hub_Elevator_Casing", "Hub_Elevator_Door1.L")]
 
         def popup(draw, **kwargs):
             layout = LayoutRecorder()
             draw(SimpleNamespace(layout=layout), self.context)
-            self.popups.append(dict(kwargs, lines=[entry[1]["text"] for entry in layout.events]))
+            self.popups.append(dict(kwargs, lines=[entry[1]["text"] for entry in layout.events if entry[0] == "label"],
+                                    operators=[entry[1] for entry in layout.events if entry[0] == "operator"]))
 
         def export(root, *_args, **_kwargs):
+            self.resource_calls.append((_args[1], _args[2]))
             if root.name in self.failures:
                 raise RuntimeError(self.failures[root.name])
             return root.name, "Prop", "exported"
@@ -79,7 +97,10 @@ class ExportFeedbackTests(unittest.TestCase):
             scene=SimpleNamespace(), selected_objects=list(self.roots),
             view_layer=SimpleNamespace(objects=SimpleNamespace(active=self.roots[0])),
             window_manager=SimpleNamespace(popup_menu=popup))
-        self.settings = SimpleNamespace(output_root="unused")
+        self.settings = SimpleNamespace(output_root="unused", export_mode="GENERAL",
+                                        include_model_with_export=False, include_icon_with_export=True)
+        self.context.scene.rr_builder_export_settings = self.settings
+        self.context.collection = SimpleNamespace(objects=self.roots)
         self.namespace = {
             "bpy": SimpleNamespace(app=SimpleNamespace(background=False),
                                    data=SimpleNamespace(objects={root.name: root for root in self.roots})),
@@ -89,6 +110,8 @@ class ExportFeedbackTests(unittest.TestCase):
             "migrate_reference_layout_scene": lambda _scene: None,
             "validate_standard_output_route": lambda _settings: None,
             "validate_reference_layout_settings": lambda _settings: None,
+            "prepare_export_identity": lambda root, _settings: root.name,
+            "export_mode_uses_reference_layout": lambda _settings: False,
             "expand_related_export_roots": lambda roots: roots,
             "core_roots_for_export_batch": lambda roots, *_args: roots,
             "prepare_variant_export_transactions": lambda *_args: ([], {}, []),
@@ -96,14 +119,19 @@ class ExportFeedbackTests(unittest.TestCase):
             "export_builder_asset": export,
             "finalize_variant_export_transactions": lambda *_args: ([], []),
             "completed_ordinary_export_publication": lambda *_args: ([], []),
+            "EXPORT_MODE_GENERAL": "GENERAL", "EXPORT_MODE_BUILDING": "BUILDING",
+            "get_context_export_roots": lambda _context: self.roots,
+            "get_export_roots": lambda _objects: self.roots,
         }
         load_functions(self.namespace)
 
-    def run_export(self):
+    def run_export(self, model=True, icon=False):
+        self.namespace["time"].perf_counter = mock.Mock(side_effect=[1.0, 1.5])
         return self.namespace["export_objects"](
-            self.roots, self.settings, self.context, "queue", True, False)
+            self.roots, self.settings, self.context, "queue", model, icon)
 
-    def run_queue_export(self):
+    def run_queue_export(self, model=True, icon=False):
+        self.namespace["time"].perf_counter = mock.Mock(side_effect=[1.0, 1.5])
         self.settings.export_queue = QueueCollection(
             SimpleNamespace(object_name=root.name) for root in self.roots)
         self.settings.queue_active_index = 0
@@ -114,7 +142,6 @@ class ExportFeedbackTests(unittest.TestCase):
         self.namespace.update({
             "ensure_object_mode": lambda _context: True,
             "export_mode_uses_reference_layout": lambda _settings: False,
-            "export_mode_is_standard": lambda _settings: True,
             "queue_item_object": lambda item: self.namespace["bpy"].data.objects.get(item.object_name),
             "ensure_export_identity": lambda root: (root.name, []),
             "queue_item_for_root": lambda settings, root: next(
@@ -126,7 +153,7 @@ class ExportFeedbackTests(unittest.TestCase):
             "completed_ordinary_export_publication": lambda _roots, successful, _output: (
                 ["unused/" + name for name in successful], set(successful)),
         })
-        operator = SimpleNamespace(include_model=True, include_icon=False, report=mock.Mock())
+        operator = SimpleNamespace(include_model=model, include_icon=icon, report=mock.Mock())
         return self.namespace["execute_export_queue"](operator, self.context)
 
     def test_all_failed_still_shows_count_and_actual_reasons(self):
@@ -143,6 +170,25 @@ class ExportFeedbackTests(unittest.TestCase):
         self.assertEqual({"CANCELLED"}, self.run_export())
         self.assertIn("Exported 1 from queue; failed 1", self.popups[0]["lines"][0])
         self.assertIn("Missing UV map", " ".join(self.popups[0]["lines"]))
+
+    def test_identity_conflict_has_relink_and_folder_actions(self):
+        self.failures[self.roots[0].name] = "Export identity conflict. stable ID is shared by copied roots."
+        self.assertEqual({"CANCELLED"}, self.run_export())
+        self.assertEqual(["rr_builder.export_identity_debug", "rr_builder.open_unity_export_folder"],
+                         [item["name"] for item in self.popups[0]["operators"]])
+
+    def test_core_validation_conflict_opens_repair_for_the_core(self):
+        self.namespace["ensure_object_mode"] = lambda _context: True
+        self.namespace["export_mode_uses_reference_layout"] = lambda _settings: True
+        self.namespace["get_reference_object"] = lambda _scene: self.roots[0]
+        self.namespace["validate_reference_layout_settings"] = mock.Mock(
+            side_effect=RuntimeError("Export identity conflict. stable ID is shared by copied roots."))
+        self.settings.export_queue = QueueCollection([SimpleNamespace(object_name=self.roots[0].name)])
+        operator = SimpleNamespace(include_model=True, include_icon=False, report=mock.Mock())
+        self.assertEqual({"CANCELLED"}, self.namespace["execute_export_queue"](operator, self.context))
+        self.assertEqual(self.roots[0].name, self.popups[0]["operators"][0]["properties"].target_name)
+        self.assertEqual(1, len(self.settings.export_queue))
+        self.assertEqual([], self.resource_calls)
 
     def test_failure_popup_is_bounded_and_console_keeps_full_details(self):
         root = SimpleNamespace(name="Third_Part", select_set=lambda _selected: None)
@@ -193,6 +239,35 @@ class ExportFeedbackTests(unittest.TestCase):
         self.assertIn("Exported 1, cleared 1; 1 failed items remain", self.popups[0]["lines"][0])
         self.assertIn("Missing UV map", " ".join(self.popups[0]["lines"]))
 
+    def test_standard_queue_accepts_empty_or_icon_only_operator_requests_as_model_only(self):
+        for model, icon in ((False, False), (False, True)):
+            with self.subTest(model=model, icon=icon):
+                self.resource_calls.clear()
+                self.assertEqual({"FINISHED"}, self.run_queue_export(model, icon))
+                self.assertEqual([(True, False)] * len(self.roots), self.resource_calls)
+                self.assertEqual([], self.settings.export_queue)
+                self.assertFalse(self.settings.include_model_with_export)
+                self.assertTrue(self.settings.include_icon_with_export)
+
+    def test_standard_selected_and_collection_preserve_modular_choices(self):
+        for function in ("execute_export_selected", "execute_export_collection"):
+            for model, icon in ((False, False), (False, True)):
+                with self.subTest(function=function, model=model, icon=icon):
+                    self.namespace["time"].perf_counter = mock.Mock(side_effect=[1.0, 1.5])
+                    self.resource_calls.clear()
+                    operator = SimpleNamespace(include_model=model, include_icon=icon, report=mock.Mock())
+                    self.assertEqual({"FINISHED"}, self.namespace[function](operator, self.context))
+                    self.assertEqual([(True, False)] * len(self.roots), self.resource_calls)
+                    self.assertFalse(self.settings.include_model_with_export)
+                    self.assertTrue(self.settings.include_icon_with_export)
+                    self.assertIn("model only", self.popups[-1]["lines"][0])
+
+    def test_modular_batch_keeps_explicit_icon_only_request_and_feedback(self):
+        self.settings.export_mode = "BUILDING"
+        self.assertEqual({"FINISHED"}, self.run_export(False, True))
+        self.assertEqual([(False, True)] * len(self.roots), self.resource_calls)
+        self.assertIn("icon only", self.popups[-1]["lines"][0])
+
 
 class GroupDiscoveryTests(unittest.TestCase):
     def make_panel(self, selected_count, *, visible=True, expanded=True):
@@ -226,6 +301,60 @@ class GroupDiscoveryTests(unittest.TestCase):
     def test_explicit_section_visibility_and_fold_still_respected(self):
         self.assertEqual([], self.make_panel(1, visible=False))
         self.assertEqual([], self.make_panel(1, expanded=False))
+
+
+class ExportResourceUiTests(unittest.TestCase):
+    def namespace(self):
+        namespace = {
+            "EXPORT_MODE_GENERAL": "GENERAL", "EXPORT_MODE_BUILDING": "BUILDING",
+            "is_managed_builder_bridge_output_root": lambda _path: False,
+            "draw_reference_layout_controls": lambda *_args: None,
+            "get_reference_object": lambda _scene: None,
+            "reference_layout_is_active": lambda _scene: False,
+        }
+        load_functions(namespace)
+        return namespace
+
+    def test_standard_queue_has_no_resource_toggles_and_forces_model_operator(self):
+        for mode, expected_flags in (("GENERAL", (True, False)), ("BUILDING", (False, True))):
+            with self.subTest(mode=mode):
+                settings = SimpleNamespace(
+                    export_mode=mode, include_model_with_export=False, include_icon_with_export=True,
+                    export_queue=[], queue_active_index=0, output_root="unused")
+                context = SimpleNamespace(
+                    scene=SimpleNamespace(rr_builder_reference_layout=object()), selected_objects=[],
+                    view_layer=SimpleNamespace(objects=SimpleNamespace(active=None)))
+                panel = SimpleNamespace(
+                    draw_fold_panel=lambda layout, *_args: layout,
+                    draw_export_output_row=lambda *_args: None)
+                layout = LayoutRecorder()
+                self.namespace()["draw_export_queue_box"](panel, layout, context, settings)
+                toggle_names = {entry[1]["name"] for entry in layout.events if entry[0] == "prop"}
+                resource_names = {"include_model_with_export", "include_icon_with_export"}
+                self.assertEqual(set() if mode == "GENERAL" else resource_names,
+                                 toggle_names & resource_names)
+                export = next(entry[1]["properties"] for entry in layout.events
+                              if entry[0] == "operator" and entry[1]["name"] == "rr_builder.export_queue")
+                self.assertEqual(expected_flags, (export.include_model, export.include_icon))
+                self.assertFalse(settings.include_model_with_export)
+                self.assertTrue(settings.include_icon_with_export)
+
+    def test_standard_file_menu_omits_icon_only_and_duplicate_fbx_entries(self):
+        for mode in ("GENERAL", "BUILDING"):
+            with self.subTest(mode=mode):
+                settings = SimpleNamespace(export_mode=mode)
+                context = SimpleNamespace(scene=SimpleNamespace(rr_builder_export_settings=settings))
+                layout = LayoutRecorder()
+                self.namespace()["draw_file_export_menu"](SimpleNamespace(layout=layout), context)
+                entries = [entry[1] for entry in layout.events if entry[0] == "operator"]
+                expected = (["Builder Export", "Builder Collection"] if mode == "GENERAL" else
+                            ["Builder Export", "Builder Export FBX Only", "Builder Export Icon Only",
+                             "Builder Collection"])
+                self.assertEqual(expected, [entry["text"] for entry in entries])
+                if mode == "GENERAL":
+                    self.assertTrue(all((entry["properties"].include_model,
+                                         entry["properties"].include_icon) == (True, False)
+                                        for entry in entries))
 
 
 if __name__ == "__main__":

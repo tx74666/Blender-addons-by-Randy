@@ -9,6 +9,7 @@ import hashlib
 import math
 import re
 import uuid
+from array import array
 from contextlib import contextmanager
 
 import bmesh
@@ -16,6 +17,21 @@ import bpy
 from bpy_extras import view3d_utils
 from mathutils import Matrix, Vector
 from mathutils.geometry import tessellate_polygon
+
+try:
+    from .rr_surface_text_backlight import (
+        RR_OT_configure_surface_text_backlight,
+        configure_backlight,
+        read_backlight_settings,
+        validate_backlight_settings,
+    )
+except ImportError:
+    from rr_surface_text_backlight import (
+        RR_OT_configure_surface_text_backlight,
+        configure_backlight,
+        read_backlight_settings,
+        validate_backlight_settings,
+    )
 
 
 SURFACE_TEXT_NAME = "Surface Text"
@@ -29,10 +45,64 @@ SURFACE_TEXT_EPSILON = 1.0e-8
 SURFACE_TEXT_GEOMETRY_TOLERANCE = 1.0e-7
 SURFACE_SAMPLE_PREFIX = "RR_SurfaceSample"
 SURFACE_SAMPLE_EXPORT_PREFIX = "RR_SurfaceSample_Export"
+SURFACE_SAMPLE_NAME_MAX_BYTES = 63
 SURFACE_TEXT_ROLE = "surface_text"
 SURFACE_TEXT_EXPORT_ROLE = "solid_geometry"
 SURFACE_TEXT_EXPORT_PREFIX = "RR_SurfaceText_Geometry"
 SURFACE_TEXT_FRAME_PREFIX = "RR_STFrame"
+
+
+def is_surface_sampling_helper(obj):
+    return (obj is not None and obj.type == "MESH"
+            and obj.get("rr_surface_role") == "sampling_surface")
+
+
+def configure_surface_sample_display(obj):
+    """Keep the authored sampling mesh available as an unshaded wire overlay.
+
+    WIRE alone does not hide a surface from Rendered viewport ray tracing.
+    Disable renderer visibility without disabling evaluated geometry, selection
+    or the user's per-view-layer eye state. Export aliases are separate objects
+    and keep their normal geometry visibility.
+    """
+    if not is_surface_sampling_helper(obj) or not getattr(obj, "is_editable", True):
+        return False
+    settings = {
+        "display_type": "WIRE",
+        "show_wire": True,
+        "show_all_edges": True,
+        "hide_render": True,
+        "visible_camera": False,
+        "visible_diffuse": False,
+        "visible_glossy": False,
+        "visible_transmission": False,
+        "visible_shadow": False,
+        "visible_volume_scatter": False,
+        "visible_raycast": False,
+        "hide_probe_volume": True,
+        "hide_probe_sphere": True,
+        "hide_probe_plane": True,
+    }
+    changed = False
+    for name, value in settings.items():
+        # Renderer properties differ between supported Blender versions.
+        if hasattr(obj, name) and getattr(obj, name) != value:
+            setattr(obj, name, value)
+            changed = True
+    return changed
+
+
+def repair_surface_sample_display(objects=None):
+    """Repair only owned, editable helpers; preserve names, data and bindings."""
+    changes = {"objects": [], "skipped": []}
+    for obj in list(bpy.data.objects if objects is None else objects):
+        if not is_surface_sampling_helper(obj):
+            continue
+        if not getattr(obj, "is_editable", True):
+            changes["skipped"].append(obj.name)
+        elif configure_surface_sample_display(obj):
+            changes["objects"].append(obj.name)
+    return changes
 
 
 def _surface_text_id(source):
@@ -57,9 +127,129 @@ def _source_topology_fingerprint(mesh):
     return hashlib.sha256(repr([(tuple(poly.vertices)) for poly in mesh.polygons]).encode()).hexdigest()
 
 
+def _evaluated_geometry_signature(obj, attribute_name):
+    """Copy a geometry/tag digest before freeing the evaluated temporary mesh.
+
+    Smooth shading, normals and other attributes may differ. Vertex coordinates,
+    edge/face/loop identity and the injected selected-face mapping must not.
+    """
+    expected_visibility = [(modifier.name, bool(modifier.show_viewport)) for modifier in obj.modifiers]
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    try:
+        evaluated_visibility = {modifier.name: bool(modifier.show_viewport) for modifier in evaluated.modifiers}
+        if any(evaluated_visibility.get(name) != visible for name, visible in expected_visibility):
+            raise RuntimeError("Surface Text cannot verify driven modifier visibility during its geometry check.")
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+        tagged = mesh.attributes.get(attribute_name)
+        if (tagged is None or tagged.domain != "FACE" or tagged.data_type != "INT"
+                or len(tagged.data) != len(mesh.polygons)):
+            raise RuntimeError("A Geometry Nodes modifier lost the selected-face mapping; apply and rebind the surface.")
+        digest = hashlib.sha256()
+        digest.update(repr((len(mesh.vertices), len(mesh.edges), len(mesh.polygons), len(mesh.loops))).encode())
+        for collection, field, kind, count in (
+            (mesh.vertices, "co", "f", len(mesh.vertices) * 3),
+            (mesh.edges, "vertices", "i", len(mesh.edges) * 2),
+            (mesh.loops, "vertex_index", "i", len(mesh.loops)),
+            (mesh.loops, "edge_index", "i", len(mesh.loops)),
+            (mesh.polygons, "loop_start", "i", len(mesh.polygons)),
+            (mesh.polygons, "loop_total", "i", len(mesh.polygons)),
+            (tagged.data, "value", "i", len(tagged.data)),
+        ):
+            values = array(kind, [0]) * count
+            collection.foreach_get(field, values)
+            digest.update(values.tobytes())
+        return digest.digest()
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def _node_group_has_only_shading_geometry(node_tree, visiting=None):
+    """Reject hidden non-mesh output that a Mesh-only digest cannot observe.
+
+    Follow every linked input to the active output, including both switch
+    branches. Field calculations are unrestricted; geometry-producing actions
+    must be known pass-through/shading operations. Names provide no exemption.
+    """
+    if node_tree is None:
+        return False
+    visiting = set() if visiting is None else visiting
+    key = node_tree.as_pointer()
+    if key in visiting:
+        return False
+    visiting.add(key)
+    safe_geometry = {"NodeGroupInput", "NodeReroute", "GeometryNodeSetShadeSmooth",
+                     "GeometryNodeStoreNamedAttribute", "GeometryNodeSwitch",
+                     "GeometryNodeMenuSwitch", "GeometryNodeRemoveAttribute"}
+    try:
+        pending = [node for node in node_tree.nodes
+                   if node.type == "GROUP_OUTPUT" and node.is_active_output]
+        if not pending:
+            return False
+        visited = set()
+        while pending:
+            node = pending.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            geometry_output = any(socket.type == "GEOMETRY" and socket.is_linked
+                                  for socket in node.outputs)
+            if geometry_output:
+                if node.type == "GROUP":
+                    if not _node_group_has_only_shading_geometry(node.node_tree, visiting):
+                        return False
+                elif node.bl_idname not in safe_geometry:
+                    return False
+            for socket in node.inputs:
+                pending.extend(link.from_node for link in socket.links)
+        return True
+    finally:
+        visiting.remove(key)
+
+
+def _verify_geometry_preserving_nodes(clone, attribute_name):
+    """Prove each active Nodes stage individually on the private clone.
+
+    Checking only the final stack could miss two geometry changes that cancel
+    out. Disable later stages, compare this stage on/off, and restore all clone
+    switches even on failure. The authored modifier and node tree stay intact.
+    """
+    modifiers = list(clone.modifiers)
+    visibility = [modifier.show_viewport for modifier in modifiers]
+    if not any(modifier.type == "NODES" and visible for modifier, visible in zip(modifiers, visibility)):
+        return
+    try:
+        for index, modifier in enumerate(modifiers):
+            if modifier.type != "NODES" or not visibility[index]:
+                continue
+            if not _node_group_has_only_shading_geometry(modifier.node_group):
+                raise RuntimeError(
+                    f"Surface Text cannot verify modifier '{modifier.name}' (NODES): its node group can produce or change geometry; apply it and rebind the selected region."
+                )
+            for position, item in enumerate(modifiers):
+                item.show_viewport = visibility[position] if position < index else False
+            before = _evaluated_geometry_signature(clone, attribute_name)
+            modifier.show_viewport = True
+            after = _evaluated_geometry_signature(clone, attribute_name)
+            if before != after:
+                raise RuntimeError(
+                    f"Surface Text cannot verify modifier '{modifier.name}' (NODES): it changes geometry or the selected-face mapping; apply it and rebind the selected region."
+                )
+    finally:
+        for modifier, visible in zip(modifiers, visibility):
+            modifier.show_viewport = visible
+        bpy.context.view_layer.update()
+
+
 @contextmanager
-def _evaluated_sampling_mesh(source):
-    """Evaluate tagged source faces on a private copy; never mutate the authored sample."""
+def _evaluated_sampling_mesh(source, verify_export_modifiers=True):
+    """Evaluate tagged faces privately; authoring can check viewport connectivity.
+
+    Export always keeps its stricter modifier/render-parity contract. The Add
+    operator also verifies the visible joined seam without treating a shading
+    modifier after Mirror as an unsupported authoring operation.
+    """
     sample = _surface_text_sampling_surface(source)
     target = _surface_text_target(source)
     if sample is None or target is None or target.type != "MESH":
@@ -74,31 +264,49 @@ def _evaluated_sampling_mesh(source):
         raise RuntimeError("Surface Text selected face indices are no longer valid; rebind its selected faces.")
     allowed = {"SUBSURF", "TRIANGULATE", "SIMPLE_DEFORM", "SMOOTH", "CORRECTIVE_SMOOTH",
                "LAPLACIANSMOOTH", "LATTICE", "ARMATURE", "SHRINKWRAP", "DISPLACE", "CAST",
-               "WARP", "WAVE", "WEIGHTED_NORMAL", "NORMAL_EDIT", "MIRROR"}
-    active = [modifier for modifier in target.modifiers if modifier.show_viewport or modifier.show_render]
+                "WARP", "WAVE", "WEIGHTED_NORMAL", "NORMAL_EDIT", "MIRROR", "NODES"}
+    active = [modifier for modifier in target.modifiers
+              if modifier.show_viewport or (verify_export_modifiers and modifier.show_render)]
     for modifier in active:
-        if modifier.type not in allowed or modifier.show_viewport != modifier.show_render:
+        if verify_export_modifiers and (modifier.type not in allowed or modifier.show_viewport != modifier.show_render):
             raise RuntimeError(f"Surface Text cannot verify modifier '{modifier.name}' ({modifier.type}); apply it and rebind the selected region.")
     mirrors = [modifier for modifier in active if modifier.type == "MIRROR"]
     mirror_plane = None
+    joined_mirror = bool(sample.get("rr_surface_mirror_joined", False))
+    if joined_mirror:
+        # A saved joined region is valid only while Mirror still welds a real
+        # source boundary edge. Recheck topology/settings rather than exporting
+        # two visually close but disconnected halves after a later edit.
+        bm = bmesh.new()
+        try:
+            bm.from_mesh(target.data)
+            bm.faces.ensure_lookup_table()
+            bm.normal_update()
+            surface = _selected_surface_info(target, [bm.faces[index] for index in indices])
+            candidates = _mirror_candidates(target, surface)
+            if _joined_mirror_surface(target, surface, candidates) is None:
+                raise RuntimeError("The joined Surface Text region is no longer connected by Mirror Merge; rebind its selected faces.")
+        finally:
+            bm.free()
     if mirrors:
         mirror = mirrors[0]
         axes = [axis for axis, enabled in enumerate(mirror.use_axis) if enabled]
         if len(mirrors) != 1 or len(axes) != 1 or any(mirror.use_bisect_axis) or any(mirror.use_bisect_flip_axis):
             raise RuntimeError("Surface Text needs a single non-bisect Mirror axis or an applied/rebound surface.")
-        if any(modifier.type not in {"MIRROR", "TRIANGULATE", "WEIGHTED_NORMAL", "NORMAL_EDIT"} for modifier in active):
+        if verify_export_modifiers and any(modifier.type not in {"MIRROR", "TRIANGULATE", "WEIGHTED_NORMAL", "NORMAL_EDIT", "NODES"} for modifier in active):
             raise RuntimeError("Surface Text cannot prove the selected Mirror side with this modifier stack; apply and rebind it.")
         plane_inverse = (mirror.mirror_object.matrix_world if mirror.mirror_object else target.matrix_world).inverted()
         axis = axes[0]
-        values = [(plane_inverse @ target.matrix_world @ target.data.vertices[index].co)[axis]
-                  for face_index in indices for index in target.data.polygons[face_index].vertices]
-        nonzero = [value for value in values if abs(value) > 1.0e-6]
-        if not nonzero or min(nonzero) * max(nonzero) < 0:
-            raise RuntimeError("The selected Surface Text region crosses the Mirror plane; select one unambiguous side.")
-        sign = 1 if nonzero[0] > 0 else -1
-        if str(sample.get("rr_surface_mirror_side", "Original")) != "Original":
-            sign = -sign
-        mirror_plane = (plane_inverse, axis, sign)
+        if not joined_mirror:
+            values = [(plane_inverse @ target.matrix_world @ target.data.vertices[index].co)[axis]
+                      for face_index in indices for index in target.data.polygons[face_index].vertices]
+            nonzero = [value for value in values if abs(value) > 1.0e-6]
+            if not nonzero or min(nonzero) * max(nonzero) < 0:
+                raise RuntimeError("The selected Surface Text region crosses the Mirror plane; select one unambiguous side.")
+            sign = 1 if nonzero[0] > 0 else -1
+            if str(sample.get("rr_surface_mirror_side", "Original")) != "Original":
+                sign = -sign
+            mirror_plane = (plane_inverse, axis, sign)
     clone = None
     clone_mesh = None
     evaluated = None
@@ -114,12 +322,35 @@ def _evaluated_sampling_mesh(source):
         bpy.context.scene.collection.objects.link(clone)
         clone.hide_viewport = False
         clone.hide_set(False)
+        if verify_export_modifiers:
+            _verify_geometry_preserving_nodes(clone, attribute_name)
         bpy.context.view_layer.update()
         evaluated = clone.evaluated_get(bpy.context.evaluated_depsgraph_get())
         mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=bpy.context.evaluated_depsgraph_get())
         tagged = mesh.attributes.get(attribute_name)
         if tagged is None or tagged.domain != "FACE" or len(tagged.data) != len(mesh.polygons):
             raise RuntimeError("The evaluated modifiers lost the selected-face mapping; apply and rebind the surface.")
+        if joined_mirror:
+            # Use evaluated edge identity, not coordinate proximity. Shape Keys
+            # can open a seam even when the saved Basis still passes Merge.
+            selected_faces = {polygon.index for polygon in mesh.polygons
+                              if tagged.data[polygon.index].value == 1}
+            edge_faces = {}
+            for index in selected_faces:
+                polygon = mesh.polygons[index]
+                for loop_index in polygon.loop_indices:
+                    edge_faces.setdefault(mesh.loops[loop_index].edge_index, []).append(index)
+            pending = [next(iter(selected_faces))] if selected_faces else []
+            visited = set(pending)
+            while pending:
+                polygon = mesh.polygons[pending.pop()]
+                for loop_index in polygon.loop_indices:
+                    for linked in edge_faces[mesh.loops[loop_index].edge_index]:
+                        if linked not in visited:
+                            visited.add(linked)
+                            pending.append(linked)
+            if not selected_faces or len(visited) != len(selected_faces):
+                raise RuntimeError("The evaluated joined Surface Text region is disconnected; restore Mirror Merge or rebind its selected faces.")
         inverse_sample = sample.matrix_world.inverted()
         vertices, faces = [], []
         for polygon in mesh.polygons:
@@ -175,15 +406,20 @@ def _editable_surface_descriptor(source, sample):
     # swaps shell winding, not these positions, so it does not change the split.
     solid_front_fraction = max(0.0, min(1.0,
         (1.0 + thickness_sign * float(solidify.offset)) * 0.5)) if solidify else 0.0
+    surface_offset_meters = float(shrinkwrap.offset) * scene_scale if shrinkwrap else 0.0
+    if "rr_surface_backlight_enabled" in source:
+        # Opt-in backlight and its restored disabled state use a world-space
+        # gap. Native Shrinkwrap offset remains in the Font's local units.
+        surface_offset_meters *= source.matrix_world.to_3x3().col[2].length
     material = source.active_material
-    return {
+    descriptor = {
         "editableVersion": 1, "textId": _surface_text_id(source), "text": source.data.body,
         "fontName": source.data.font.name if source.data.font else "",
         "fontSizeMeters": float(source.data.size) * source.matrix_world.to_3x3().col[0].length * scene_scale,
         "characterSpacing": float(source.data.space_character), "lineSpacing": float(source.data.space_line),
         "alignment": str(source.data.align_x), "verticalAlignment": str(source.data.align_y),
         "materialName": material.name if material else "",
-        "surfaceOffsetMeters": float(shrinkwrap.offset) * scene_scale if shrinkwrap else 0.0,
+        "surfaceOffsetMeters": surface_offset_meters,
         "solidFrontFraction": solid_front_fraction,
         "regionCenter": _vector_values(basis @ ((low + high) * 0.5)),
         "regionSize": [float(high.x - low.x), float(high.y - low.y)],
@@ -193,6 +429,9 @@ def _editable_surface_descriptor(source, sample):
         "coordinateSpace": "sampling-local-blender", "sceneUnitMeters": scene_scale,
         "frameObjectNames": surface_text_frame_names(source),
     }
+    if "rr_surface_backlight_enabled" in source:
+        descriptor["backlight"] = validate_backlight_settings(source, bpy.context.scene)
+    return descriptor
 
 
 def _scene_scale_length(scene):
@@ -403,10 +642,12 @@ def _selected_surface_info(obj, selected_faces):
     face_by_index = {face.index: face for face in selected_faces}
     record_by_index = {record["source_index"]: record for record in records}
     adjacent_dots = []
+    adjacent_pairs = []
     for face in selected_faces:
         for edge in face.edges:
             for linked_face in edge.link_faces:
                 if linked_face in selected_set and face.index < linked_face.index:
+                    adjacent_pairs.append((int(face.index), int(linked_face.index)))
                     adjacent_dots.append(
                         record_by_index[face.index]["normal"].dot(record_by_index[linked_face.index]["normal"])
                     )
@@ -440,6 +681,13 @@ def _selected_surface_info(obj, selected_faces):
             if adjacent_dots
             else 0.0
         ),
+        "boundary_edges": [
+            {"source_index": int(face.index),
+             "points": [obj.matrix_world @ vert.co for vert in edge.verts]}
+            for face in selected_faces for edge in face.edges
+            if sum(linked in selected_set for linked in edge.link_faces) == 1
+        ],
+        "adjacent_pairs": adjacent_pairs,
     }
 
 
@@ -624,6 +872,117 @@ def _surface_identity(target, surface):
     return f"{_safe_name(target.name)}_{_safe_name(side)}_{digest}"
 
 
+def _utf8_name_prefix(value, maximum_bytes):
+    return str(value).encode("utf-8")[:max(0, maximum_bytes)].decode("utf-8", "ignore")
+
+
+def _surface_sample_display_name(prefix, target_name, side, sequence):
+    """Keep the readable region/sequence suffix when a target name is long."""
+
+    target_label = re.sub(r"[\x00-\x1f\x7f]+", " ", str(target_name)).strip() or "Object"
+    side_label = re.sub(r"[\x00-\x1f\x7f]+", " ", str(side)).strip() or "Original"
+    # Region labels include Original, Mirror X/Y/Z and Joined Mirror X/Y/Z. Bound unexpected
+    # custom metadata too, while always leaving room for a target and number.
+    side_budget = SURFACE_SAMPLE_NAME_MAX_BYTES - len(prefix.encode("utf-8")) - len(f"___{sequence:02d}".encode("utf-8")) - 1
+    side_label = _utf8_name_prefix(side_label, side_budget)
+    suffix = f"_{side_label}_{sequence:02d}"
+    target_budget = SURFACE_SAMPLE_NAME_MAX_BYTES - len((prefix + "_" + suffix).encode("utf-8"))
+    target_label = _utf8_name_prefix(target_label, target_budget) or "O"
+    return f"{prefix}_{target_label}{suffix}"
+
+
+def _surface_sample_display_names(target_name, side, sample=None, mesh=None):
+    """Allocate a readable, matching sequence for the object and its mesh."""
+
+    sequence = 1
+    while True:
+        object_name = _surface_sample_display_name(SURFACE_SAMPLE_PREFIX, target_name, side, sequence)
+        mesh_name = _surface_sample_display_name(SURFACE_SAMPLE_PREFIX + "Mesh", target_name, side, sequence)
+        object_owner = bpy.data.objects.get(object_name)
+        mesh_owner = bpy.data.meshes.get(mesh_name)
+        if (object_owner is None or object_owner is sample) and (mesh_owner is None or mesh_owner is mesh):
+            return object_name, mesh_name
+        sequence += 1
+
+
+def _is_legacy_surface_sample_name(name, prefix, identity):
+    """Recognize only this add-on's original generated name and ID suffix."""
+
+    if not re.fullmatch(r".+_[0-9a-f]{10}", str(identity)):
+        return False
+    expected = f"{prefix}_{identity}"
+    if name == expected:
+        return True
+    suffix_match = re.search(r"\.\d{3,}$", name)
+    suffix = suffix_match.group(0) if suffix_match is not None else ""
+    base = name[:-len(suffix)] if suffix else name
+    if suffix and base == expected:
+        return True
+    # Blender's legacy ID limit includes its terminating null byte. The old
+    # names are ASCII, so native creation and duplicate truncation is exact.
+    maximum_bytes = 63
+    if len(expected.encode("utf-8")) > maximum_bytes - len(suffix):
+        return name == _utf8_name_prefix(expected, maximum_bytes - len(suffix)) + suffix
+    return False
+
+
+def migrate_surface_sample_display_names(objects=None):
+    """Explicitly rename legacy managed display names without changing IDs.
+
+    Preserve custom names and linked/read-only datablocks. Resolve legacy
+    name-only Font references before renaming, then synchronize those strings
+    and any verified transient alias ownership metadata. No load handler calls
+    this migration; the caller decides when to update and save an authored file.
+    """
+
+    candidates = list(bpy.data.objects if objects is None else objects)
+    all_objects = list(bpy.data.objects)
+    changes = {"objects": [], "meshes": [], "skipped": []}
+    for sample in sorted(candidates, key=lambda obj: obj.name_full):
+        if sample.type != "MESH" or sample.get("rr_surface_role") != "sampling_surface":
+            continue
+        identity = str(sample.get("rr_surface_identity", "") or "")
+        mesh = sample.data
+        rename_object = _is_legacy_surface_sample_name(sample.name, SURFACE_SAMPLE_PREFIX, identity)
+        rename_mesh = (mesh is not None and mesh.get("rr_surface_role") == "sampling_surface_mesh"
+                       and mesh.get("rr_surface_identity") == identity
+                       and _is_legacy_surface_sample_name(mesh.name, SURFACE_SAMPLE_PREFIX + "Mesh", identity))
+        if not rename_object and not rename_mesh:
+            continue
+        if not getattr(sample, "is_editable", True) or (rename_mesh and not getattr(mesh, "is_editable", True)):
+            changes["skipped"].append({"name": sample.name, "reason": "read-only datablock"})
+            continue
+        sources = [obj for obj in all_objects if obj.type == "FONT" and _surface_text_sampling_surface(obj) is sample]
+        aliases = [obj for obj in all_objects if _is_stale_sampling_alias(obj, sample)]
+        if any(not getattr(obj, "is_editable", True) for obj in sources + aliases):
+            changes["skipped"].append({"name": sample.name, "reason": "read-only reference"})
+            continue
+        target = next((_surface_text_target(source) for source in sources if _surface_text_target(source) is not None), None)
+        target = target or sample.parent or bpy.data.objects.get(str(sample.get("rr_surface_source_object", "")))
+        if target is None:
+            changes["skipped"].append({"name": sample.name, "reason": "source target unavailable"})
+            continue
+        side = str(sample.get("rr_surface_mirror_side", "Original"))
+        object_name, mesh_name = _surface_sample_display_names(target.name, side, sample, mesh)
+        for source in sources:
+            source["rr_surface_text_surface_ref"] = sample
+        if rename_object:
+            previous_name = sample.name
+            sample.name = object_name
+            changes["objects"].append({"old": previous_name, "new": sample.name})
+            for alias in aliases:
+                alias["rr_surface_source_object"] = sample.name
+        if rename_mesh and mesh.users == 1:
+            previous_name = mesh.name
+            mesh.name = mesh_name
+            changes["meshes"].append({"old": previous_name, "new": mesh.name})
+        elif rename_mesh:
+            changes["skipped"].append({"name": mesh.name, "reason": "shared mesh"})
+        for source in sources:
+            _sync_surface_text_references(source, _surface_text_target(source) or target)
+    return changes
+
+
 def _legacy_sampling_export_identity(surface_obj):
     identity = str(surface_obj.get("rr_surface_identity", "") or "")
     if not identity:
@@ -752,7 +1111,10 @@ def create_surface_text_sampling_export_aliases(root):
             alias_name = surface_sampling_export_name(surface_obj)
             existing_alias = bpy.data.objects.get(alias_name) if alias_name else None
             if existing_alias is surface_obj:
-                continue
+                raise RuntimeError(
+                    f"The sampling helper '{surface_obj.name}' uses its reserved export name. "
+                    "Rename the helper before exporting."
+                )
             if _is_stale_sampling_alias(existing_alias, surface_obj):
                 # Releases before transactional cleanup left these disposable
                 # aliases in the scene. Reclaim only an exact source match.
@@ -833,8 +1195,9 @@ def _create_surface_mesh(context, target, surface):
     """Create the persistent, source-linked mesh used as a Unity sampling surface."""
 
     identity = _surface_identity(target, surface)
-    object_name = f"{SURFACE_SAMPLE_PREFIX}_{identity}"
-    mesh_name = f"{SURFACE_SAMPLE_PREFIX}Mesh_{identity}"
+    object_name, mesh_name = _surface_sample_display_names(
+        target.name, str(surface.get("candidate_label", "Original"))
+    )
     try:
         target_inverse = target.matrix_world.inverted()
     except Exception as exc:
@@ -878,13 +1241,12 @@ def _create_surface_mesh(context, target, surface):
     surface_obj.parent = target
     surface_obj.matrix_parent_inverse = Matrix.Identity(4)
     surface_obj.matrix_basis = Matrix.Identity(4)
-    surface_obj.hide_render = True
-    surface_obj.display_type = "WIRE"
 
     right, up, normal = _text_axes(surface["normal"])
     source_matrix = target.matrix_world.copy()
     source_face_indices = [int(index) for index in surface["source_face_indices"]]
     surface_obj["rr_surface_role"] = "sampling_surface"
+    configure_surface_sample_display(surface_obj)
     surface_obj["rr_surface_identity"] = identity
     surface_obj["rr_surface_export_id"] = uuid.uuid4().hex[:16]
     surface_obj["rr_surface_source_object"] = target.name
@@ -894,6 +1256,7 @@ def _create_surface_mesh(context, target, surface):
     surface_obj["rr_surface_source_topology"] = _source_topology_fingerprint(target.data)
     surface_obj["rr_surface_connected_components"] = int(surface["connected_components"])
     surface_obj["rr_surface_mirror_side"] = str(surface.get("candidate_label", "Original"))
+    surface_obj["rr_surface_mirror_joined"] = bool(surface.get("mirror_joined", False))
     surface_obj["rr_surface_mirror_axis"] = int(surface.get("mirror_axis", -1))
     surface_obj["rr_surface_mirror_object"] = str(surface.get("mirror_object_name", ""))
     surface_obj["rr_surface_center_world"] = _vector_values(surface["center"])
@@ -914,6 +1277,7 @@ def _create_surface_mesh(context, target, surface):
     mesh["rr_surface_source_object"] = target.name
     mesh["rr_surface_source_face_count"] = int(surface["source_face_count"])
     mesh["rr_surface_mirror_side"] = str(surface.get("candidate_label", "Original"))
+    mesh["rr_surface_mirror_joined"] = bool(surface.get("mirror_joined", False))
     mesh["rr_surface_face_indices"] = source_face_indices
     return surface_obj, mesh
 
@@ -933,6 +1297,7 @@ def _annotate_text_object(context, text_obj, target, surface, surface_obj):
     ]
     text_obj["rr_surface_text_connected_components"] = int(surface["connected_components"])
     text_obj["rr_surface_text_mirror_side"] = str(surface.get("candidate_label", "Original"))
+    text_obj["rr_surface_text_mirror_joined"] = bool(surface.get("mirror_joined", False))
     text_obj["rr_surface_text_mirror_axis"] = int(surface.get("mirror_axis", -1))
     text_obj["rr_surface_text_mirror_object"] = str(surface.get("mirror_object_name", ""))
     text_obj["rr_surface_text_center_world"] = _vector_values(surface["center"])
@@ -960,14 +1325,29 @@ def _surface_text_modifier_pair(source):
     return shrinkwrap, solidify
 
 
+def _copy_binding_property(value):
+    """Own rollback values; IDProperty arrays/groups are borrowed Blender views."""
+    if isinstance(value, bpy.types.ID):
+        return value
+    if hasattr(value, "items"):
+        return {key: _copy_binding_property(item) for key, item in value.items()}
+    if hasattr(value, "to_list"):
+        return [_copy_binding_property(item) for item in value.to_list()]
+    if isinstance(value, (tuple, list)):
+        return [_copy_binding_property(item) for item in value]
+    return value
+
+
 def bind_existing_surface_text(context, source, target, surface):
     """Explicitly rebind selected faces, preserving the authored Font and its pose/settings."""
     if source is None or source.type != "FONT":
         raise RuntimeError("Choose an existing editable Font object.")
+    if not getattr(source, "is_editable", True):
+        raise RuntimeError("Make the existing Font local and editable before binding.")
     shrinkwrap, solidify = _surface_text_modifier_pair(source)
     if shrinkwrap is None or solidify is None:
         raise RuntimeError("The existing Font needs Shrinkwrap and Solidify modifiers before binding.")
-    previous_properties = dict(source.items())
+    previous_properties = {key: _copy_binding_property(value) for key, value in source.items()}
     previous_target = shrinkwrap.target
     sample = mesh = None
     try:
@@ -979,13 +1359,15 @@ def bind_existing_surface_text(context, source, target, surface):
             pass
         return sample
     except BaseException:
-        shrinkwrap.target = previous_target
-        for key in list(source.keys()):
-            if key not in previous_properties:
-                del source[key]
-        for key, value in previous_properties.items():
-            source[key] = value
-        _remove_surface_mesh(sample, mesh)
+        try:
+            shrinkwrap.target = previous_target
+            for key in list(source.keys()):
+                if key not in previous_properties:
+                    del source[key]
+            for key, value in previous_properties.items():
+                source[key] = value
+        finally:
+            _remove_surface_mesh(sample, mesh)
         raise
 
 
@@ -1494,6 +1876,123 @@ def _mirror_candidates(target, surface):
     return [original, mirrored]
 
 
+def _joined_mirror_surface(target, surface, candidates):
+    """Join only a boundary edge actually welded by the supported Mirror.
+
+    Blender compares each source vertex with its reflected partner in target
+    local coordinates, using a strict distance < merge_threshold, then moves
+    both to their midpoint. Clipping and the edit cage do not establish a weld.
+    """
+
+    if not candidates or len(candidates) != 2:
+        return None
+    mirror = target.modifiers.get(candidates[1]["mirror_modifier_name"])
+    if mirror is None or not mirror.use_mirror_merge:
+        return None
+    threshold = float(mirror.merge_threshold)
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        return None
+    reflection = candidates[1]["mirror_transform"]
+    try:
+        target_inverse = target.matrix_world.inverted()
+        plane_inverse = (mirror.mirror_object.matrix_world if mirror.mirror_object
+                         else target.matrix_world).inverted()
+    except Exception as exc:
+        raise RuntimeError("The joined Mirror surface has a non-invertible transform.") from exc
+    axis = candidates[1]["mirror_axis"]
+
+    def vertex_pair(point):
+        reflected = reflection @ point
+        local_distance = ((target_inverse @ point) - (target_inverse @ reflected)).length
+        merged = local_distance < threshold
+        if merged:
+            midpoint = (point + reflected) * 0.5
+            return midpoint, midpoint.copy(), True
+        return point.copy(), reflected, False
+
+    # The source must occupy one side. Faces entirely collapsed onto the plane
+    # can become duplicates; do not claim their reflected copies are a region.
+    sides = []
+    for record in surface["records"]:
+        nonmerged = [point for point in record["points"] if not vertex_pair(point)[2]]
+        if not nonmerged:
+            return None
+        sides.extend((plane_inverse @ point)[axis] for point in nonmerged)
+    if not sides or min(sides) * max(sides) <= 0.0:
+        return None
+
+    seam_faces = set()
+    for edge in surface.get("boundary_edges", ()):
+        first, second = [vertex_pair(point) for point in edge["points"]]
+        if (first[2] and second[2]
+                and ((target_inverse @ first[0]) - (target_inverse @ second[0])).length
+                > SURFACE_TEXT_EPSILON):
+            seam_faces.add(edge["source_index"])
+    if not seam_faces:
+        return None
+
+    normal_matrix = reflection.to_3x3().inverted().transposed()
+
+    def welded_record(source_record, points, expected_normal):
+        # Reflection reverses winding. Rebuild the geometric normal after
+        # midpoint welding, and keep the sample's winding facing outward.
+        local_points = [target_inverse @ point for point in points]
+        normal_sum = Vector((0.0, 0.0, 0.0))
+        for first, second, third in _face_triangles(local_points):
+            normal_sum += ((local_points[second] - local_points[first])
+                           .cross(local_points[third] - local_points[first]))
+        normal_sum = target_inverse.to_3x3().transposed() @ normal_sum
+        if normal_sum.length <= SURFACE_TEXT_EPSILON:
+            raise ValueError("Mirror Merge collapses a selected face; choose a non-degenerate region.")
+        if normal_sum.dot(expected_normal) < 0.0:
+            points = list(reversed(points))
+            normal_sum.negate()
+        normal = normal_sum.normalized()
+        _validate_face_shape(points, normal)
+        area, center = _polygon_area_and_center(points)
+        return {"source_index": source_record["source_index"], "points": points,
+                "area": area, "center": center, "normal": normal}
+
+    originals, reflected_records = [], []
+    for record in surface["records"]:
+        pairs = [vertex_pair(point) for point in record["points"]]
+        originals.append(welded_record(record, [pair[0] for pair in pairs], record["normal"]))
+        reflected_records.append(welded_record(
+            record, [pair[1] for pair in pairs], normal_matrix @ record["normal"]))
+    try:
+        joined = _surface_from_records(originals + reflected_records)
+    except ValueError:
+        # The two halves can each be a valid surface while their combined
+        # normals cannot define one text frame. Keep the existing side picker.
+        return None
+    if joined["normal_min_dot"] < SURFACE_TEXT_MIN_NORMAL_DOT:
+        return None
+    seam_dots = [original["normal"].dot(reflected["normal"])
+                 for original, reflected in zip(originals, reflected_records)
+                 if original["source_index"] in seam_faces]
+    adjacent_dots = list(seam_dots)
+    for records in (originals, reflected_records):
+        records_by_index = {record["source_index"]: record for record in records}
+        adjacent_dots.extend(records_by_index[first]["normal"].dot(records_by_index[second]["normal"])
+                             for first, second in surface.get("adjacent_pairs", ()))
+    adjacent_min_dot = min(adjacent_dots)
+    if adjacent_min_dot < SURFACE_TEXT_MIN_ADJACENT_NORMAL_DOT:
+        return None
+    joined.update({
+        "candidate_label": f"Joined Mirror {'XYZ'[axis]}",
+        "mirror_joined": True,
+        "mirror_axis": axis,
+        "mirror_modifier_name": mirror.name,
+        "mirror_object_name": mirror.mirror_object.name if mirror.mirror_object else "",
+        "source_face_count": surface["source_face_count"],
+        "source_face_indices": list(surface["source_face_indices"]),
+        "connected_components": 1,
+        "adjacent_min_dot": adjacent_min_dot,
+        "max_adjacent_fold_degrees": math.degrees(math.acos(max(-1.0, min(1.0, adjacent_min_dot)))),
+    })
+    return joined
+
+
 def _point_in_triangle(point, first, second, third, tolerance):
     edge_u = second - first
     edge_v = third - first
@@ -1595,7 +2094,7 @@ def _match_pick_to_candidate(hit_point, hit_normal, candidate, tolerance):
     return plane_distance + (1.0 - normal_dot) * tolerance
 
 
-def _read_surface_request(context):
+def _read_surface_request(context, join_connected_mirror=True):
     if context.mode != "EDIT_MESH" or context.object is None or context.object.type != "MESH":
         raise RuntimeError("Active object must be a Mesh in Edit Mode.")
 
@@ -1623,10 +2122,16 @@ def _read_surface_request(context):
     thickness = _meters_to_scene_units(scene, SURFACE_TEXT_THICKNESS_METERS)
     project_limit = _surface_project_limit(context, surface, clearance, thickness)
     mirror_candidates = _mirror_candidates(target, surface)
+    if join_connected_mirror:
+        joined = _joined_mirror_surface(target, surface, mirror_candidates)
+        if joined is not None:
+            surface = joined
+            project_limit = _surface_project_limit(context, surface, clearance, thickness)
+            mirror_candidates = None
     if mirror_candidates is None:
-        surface["candidate_label"] = "Original"
-        surface["mirror_axis"] = -1
-        surface["mirror_object_name"] = ""
+        surface.setdefault("candidate_label", "Original")
+        surface.setdefault("mirror_axis", -1)
+        surface.setdefault("mirror_object_name", "")
     return {
         "target": target,
         "surface": surface,
@@ -1675,6 +2180,12 @@ def _execute_surface_request(context, operator, state, request):
             surface["normal"],
         )
         _annotate_text_object(context, text_obj, target, surface, surface_obj)
+        if surface.get("mirror_joined", False):
+            # Validate the actual viewport seam, including active Shape Keys.
+            # Keep the exporter's stricter modifier contract at export time;
+            # ordinary post-Mirror shading modifiers need not block authoring.
+            with _evaluated_sampling_mesh(text_obj, verify_export_modifiers=False):
+                pass
         _select_created_text(context, text_obj)
     except Exception as exc:
         _remove_created_text(text_obj, text_data)
@@ -1687,13 +2198,22 @@ def _execute_surface_request(context, operator, state, request):
     return {"FINISHED"}
 
 
+def _search_bind_fonts(_operator, _context, edit_text):
+    """Offer editable Font objects only, retaining the name-based operator API."""
+    query = edit_text.casefold()
+    return sorted((obj.name for obj in bpy.data.objects
+                   if obj.type == "FONT" and getattr(obj, "is_editable", True)
+                   and query in obj.name.casefold()), key=str.casefold)
+
+
 class RR_OT_bind_surface_text(bpy.types.Operator):
     bl_idname = "rr_builder.bind_surface_text"
     bl_label = "Bind Existing Surface Text"
     bl_description = "Bind an existing Font to selected faces without changing its text, pose or material"
     bl_options = {"REGISTER", "UNDO"}
 
-    font_object_name: bpy.props.StringProperty(name="Existing Text")
+    font_object_name: bpy.props.StringProperty(
+        name="Existing Font", search=_search_bind_fonts, search_options={"SORT"})
     mirror_side: bpy.props.EnumProperty(name="Selected side", items=(
         ("ORIGINAL", "Original", "Use the original selected faces"),
         ("MIRRORED", "Mirrored", "Use the one supported Mirror side")), default="ORIGINAL")
@@ -1703,7 +2223,7 @@ class RR_OT_bind_surface_text(bpy.types.Operator):
         return context.mode == "EDIT_MESH" and context.object is not None and context.object.type == "MESH"
 
     def draw(self, context):
-        self.layout.prop_search(self, "font_object_name", bpy.data, "objects", text="Existing Font")
+        self.layout.prop(self, "font_object_name", text="Existing Font", icon="FONT_DATA")
         self.layout.prop(self, "mirror_side")
         self.layout.label(text="Keeps text, font, material, transform and modifier settings.")
 
@@ -1713,7 +2233,7 @@ class RR_OT_bind_surface_text(bpy.types.Operator):
     def execute(self, context):
         state = _capture_state(context)
         try:
-            request = _read_surface_request(context)
+            request = _read_surface_request(context, join_connected_mirror=False)
             source = bpy.data.objects.get(self.font_object_name)
             candidates = request["mirror_candidates"]
             if self.mirror_side == "MIRRORED" and not candidates:
@@ -1733,7 +2253,7 @@ class RR_OT_bind_surface_text(bpy.types.Operator):
 class RR_OT_add_surface_text(bpy.types.Operator):
     bl_idname = "rr_builder.add_surface_text"
     bl_label = "Add Surface Text"
-    bl_description = "Create editable centered text on one connected selected surface region with a persistent sampling mesh"
+    bl_description = "Create editable centered text on connected selected faces, including their joined Mirror side, with a persistent sampling mesh"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

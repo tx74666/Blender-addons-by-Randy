@@ -20,6 +20,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Matrix, Vector
 
 from . import limb_ik
+from . import forearm_original_inventory
 from .forearm_twist_math import corrected_vertex, profile_ratio, twist_angle
 from .forearm_twist_topology import detect_rings, selected_loop, expand_rings, capture_loop
 from . import forearm_twist_profile as profile
@@ -211,7 +212,7 @@ def _check_mesh(obj):
 
 def _resolve_rig(obj, side, *, _inventory=None):
     armature = _check_mesh(obj)
-    inventory = limb_ik._validate_inventory(armature) if _inventory is None else _inventory
+    inventory = forearm_original_inventory.validate(armature) if _inventory is None else _inventory
     rig = inventory["rigs"].get(("ARM", side))
     if rig is None:
         detected = limb_ik.analyze_armature(armature)["limbs"]["ARM"][side]
@@ -224,7 +225,31 @@ def _resolve_rig(obj, side, *, _inventory=None):
         return armature, {"chain": chain, "target": hand.bone, "fk_source": True}
     if inventory["target_rotation_version"] != limb_ik.TARGET_ROTATION_VERSION:
         raise ForearmTwistError("Rebuild Rig once to enable aligned Hand Target rotation.")
+    from . import body_original_mode
+    if body_original_mode.active(armature):
+        # Original drives the native hand directly while the generated
+        # constraints stay muted; a hidden Hand Target cannot pose this hand.
+        hand = armature.pose.bones[rig['chain'][2]]
+        if any(not constraint.mute and constraint.influence > 0 for constraint in hand.constraints):
+            raise ForearmTwistError('The Original hand is driven by another constraint; preserve that dependency before calibrating.')
+        return armature, {**rig, 'target': hand.bone, 'fk_source': True, 'original_source': True}
     return armature, rig
+
+
+def _preview_pose_locked(armature, target, rig):
+    if not rig.get('original_source'):
+        return (limb_ik._target_transform_has_driver(armature, target.name) or
+                limb_ik._target_transform_has_keyed_animation(armature, target.name))
+    # The validated Original view suspends the owned hand constraints. Their
+    # influence drivers mention this bone but do not drive its pose inputs.
+    # Actual native transform animation must still make the trial read-only.
+    paths = {target.path_from_id(field) for field in
+             ('location', 'rotation_euler', 'rotation_quaternion',
+              'rotation_axis_angle', 'rotation_mode', 'scale')}
+    animation = armature.animation_data
+    return (any(curve.data_path in paths for curve in getattr(animation, 'drivers', ())) or
+            any(curve.data_path in paths for action in limb_ik._actions_for_id(armature)
+                for curve in limb_ik._fcurves_for_action(action)))
 
 
 def _weights(obj, armature, indices):
@@ -944,7 +969,7 @@ def _prepare_runtime_records(obj):
     # All calls below are read-only until the resulting records are committed.
     # Validate the same rig once, retaining the complete safety check on every
     # update (including direct constraint edits without a depsgraph notification).
-    inventory = limb_ik._validate_inventory(arm)
+    inventory = forearm_original_inventory.validate(arm)
     resolved = {}
     for side in tuple(records):
         _arm, rig = _resolve_rig(obj, side, _inventory=inventory)
@@ -1275,8 +1300,7 @@ def start_test(context, obj, side="L", *, symmetry=False, recapture=False, rings
     if ((target.rotation_mode != "XYZ" and not rig.get("fk_source"))
             or any(target.lock_rotation) or target.lock_rotation_w):
         raise ForearmTwistError("Unlock hand rotation before calibrating; generated Targets need XYZ mode.")
-    pose_locked = (limb_ik._target_transform_has_driver(arm, target.name) or
-                   limb_ik._target_transform_has_keyed_animation(arm, target.name))
+    pose_locked = _preview_pose_locked(arm, target, rig)
     # Resolve a completed bind/rebuild before taking the preview snapshot.
     # This is normal persistent evaluation, independent of the temporary test.
     if RECORD_KEY in obj and not recapture:

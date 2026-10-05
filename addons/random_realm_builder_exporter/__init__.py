@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 46),
+    "version": (0, 2, 55),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -36,15 +36,22 @@ try:
     from . import rr_shader_mixer_ui
     from . import rr_ring_nodes
     from . import rr_standard_export_transaction
+    from . import rr_export_identity_repair
+    from . import rr_export_identity_tracking
+    from .rr_export_identity_ui import IDENTITY_REPAIR_CLASSES
+    from .rr_bake_tools_ui import BAKE_TOOLS_CLASSES, activate_temporary_pbr_targets, prepare_direct_pbr_emit
+    from . import rr_baked_material
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
     from .rr_layout_snapshot import *
     from .rr_reference_layout import *
+    from .rr_unity_device_layout import is_unity_layout_reference, register as register_unity_device_layout, unregister as unregister_unity_device_layout
     from .rr_modeling_origin import *
     from .rr_point_bookmarks import *
     from .rr_surface_text import (
         RR_OT_add_surface_text,
         RR_OT_bind_surface_text,
+        RR_OT_configure_surface_text_backlight,
         SURFACE_TEXT_EXPORT_PREFIX,
         build_surface_text_manifest,
         create_surface_text_export_meshes,
@@ -52,6 +59,8 @@ try:
         create_surface_text_sampling_export_aliases,
         create_surface_text_frame_export_aliases,
         find_surface_text_objects_for_export,
+        is_surface_sampling_helper,
+        repair_surface_sample_display,
     )
     from .rr_naming import *
     from .rr_pbr_runtime import (
@@ -73,15 +82,22 @@ except ImportError:
     import rr_shader_mixer_ui
     import rr_ring_nodes
     import rr_standard_export_transaction
+    import rr_export_identity_repair
+    import rr_export_identity_tracking
+    from rr_export_identity_ui import IDENTITY_REPAIR_CLASSES
+    from rr_bake_tools_ui import BAKE_TOOLS_CLASSES, activate_temporary_pbr_targets, prepare_direct_pbr_emit
+    import rr_baked_material
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
     from rr_layout_snapshot import *
     from rr_reference_layout import *
+    from rr_unity_device_layout import is_unity_layout_reference, register as register_unity_device_layout, unregister as unregister_unity_device_layout
     from rr_modeling_origin import *
     from rr_point_bookmarks import *
     from rr_surface_text import (
         RR_OT_add_surface_text,
         RR_OT_bind_surface_text,
+        RR_OT_configure_surface_text_backlight,
         SURFACE_TEXT_EXPORT_PREFIX,
         build_surface_text_manifest,
         create_surface_text_export_meshes,
@@ -89,6 +105,8 @@ except ImportError:
         create_surface_text_sampling_export_aliases,
         create_surface_text_frame_export_aliases,
         find_surface_text_objects_for_export,
+        is_surface_sampling_helper,
+        repair_surface_sample_display,
     )
     from rr_naming import *
     from rr_pbr_runtime import (
@@ -153,6 +171,16 @@ def export_mode_is_standard(settings):
     return bool(
         settings is not None and
         getattr(settings, "export_mode", EXPORT_MODE_BUILDING) == EXPORT_MODE_GENERAL
+    )
+
+
+def effective_export_resources(settings, requested_model=None, requested_icon=None):
+    """Standard always publishes geometry; saved resource choices belong to Modular."""
+    if export_mode_is_standard(settings):
+        return True, False
+    return (
+        getattr(settings, "include_model_with_export", True) if requested_model is None else requested_model,
+        getattr(settings, "include_icon_with_export", True) if requested_icon is None else requested_icon,
     )
 
 
@@ -590,6 +618,9 @@ def object_manager_display_name(root):
 def export_asset_id(root):
     if root is None:
         return ""
+    linked_id = sanitize_optional_id(str(root.get(EXPORT_ASSET_ID_OVERRIDE_PROP, "") or ""))
+    if linked_id:
+        return linked_id
     return object_manager_display_name(root)
 
 
@@ -623,6 +654,8 @@ def export_previous_ids(root):
 def ensure_export_identity(root, current_id=None):
     if root is None:
         return "", []
+    if is_unity_layout_reference(root):
+        raise RuntimeError("Unity layout references are preview-only and cannot own building export identities.")
 
     current_id = sanitize_id(current_id or export_asset_id(root))
     stable_id = str(root.get(EXPORT_STABLE_ID_PROP, "") or "").strip()
@@ -639,13 +672,19 @@ def ensure_export_identity(root, current_id=None):
     previous = [value for value in previous if value.lower() != current_id.lower()]
     root[EXPORT_LAST_ID_PROP] = current_id
     root[EXPORT_PREVIOUS_IDS_PROP] = json.dumps(previous, ensure_ascii=True)
+    # Only unambiguous identities can establish ownership in an older file.
+    # A Scene pointer is not inherited by Object.copy or native Shift+D.
+    if not any(obj is not root and str(obj.get(EXPORT_STABLE_ID_PROP, "") or "").strip().casefold()
+               == stable_id.casefold() for obj in bpy.data.objects):
+        rr_export_identity_tracking.remember(root)
     return stable_id, previous
 
 
 def clear_export_identity(root):
     if root is None:
         return
-    for prop in (EXPORT_STABLE_ID_PROP, EXPORT_LAST_ID_PROP, EXPORT_PREVIOUS_IDS_PROP):
+    for prop in (EXPORT_STABLE_ID_PROP, EXPORT_LAST_ID_PROP, EXPORT_PREVIOUS_IDS_PROP,
+                 EXPORT_ASSET_ID_OVERRIDE_PROP, EXPORT_FOLLOW_NAME_PROP):
         if prop in root:
             del root[prop]
 
@@ -790,7 +829,7 @@ def validate_export_identity(root, candidate_roots=None):
     if conflicts:
         details = "\n- ".join(conflicts)
         raise RuntimeError(
-            "Export identity conflict. Use Duplicate Variant for a new asset identity; "
+            "Export identity conflict. Open Diagnose / Relink in Export Queue to choose the Unity asset; "
             f"no files were written.\n- {details}"
         )
     return True
@@ -800,6 +839,191 @@ def snapshot_export_identity(root):
     if root is None:
         return "", []
     return ensure_export_identity(root, export_asset_id(root))
+
+
+def export_identity_repair_is_core(root):
+    return any(get_reference_object(scene) == root for scene in bpy.data.scenes)
+
+
+def export_identity_repair_is_group(root):
+    if is_unity_layout_reference(root):
+        return True
+    # Read saved membership only. Diagnostics must not repair Object Manager data.
+    if is_object_manager_assembly_root(root) or any(root.get(prop) for prop in (
+        OBJECT_MANAGER_ASSEMBLY_ID_PROP, OBJECT_MANAGER_ASSEMBLY_MEMBER_ROOT_PROP,
+        OBJECT_MANAGER_PARENT_ASSEMBLY_ROOT_PROP, OBJECT_MANAGER_PARENT_ASSEMBLY_ID_PROP,
+    )):
+        return True
+    parent = root.parent
+    while parent is not None:
+        if is_object_manager_assembly_root(parent):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _separate_export_identity_copy(root):
+    if (root.library is not None or not root.is_editable or export_identity_repair_is_core(root)
+            or export_identity_repair_is_group(root)):
+        raise RuntimeError(f"'{root.name}' is Core, managed or read-only. Use its ownership workflow.")
+    clear_export_identity(root)
+    for prop in ("rr_reference_marked", "rr_reference_stable_id"):
+        if prop in root:
+            del root[prop]
+    ensure_export_identity(root)
+
+
+def keep_export_identity_owner(root, settings=None):
+    """Explicitly retain this original and give legacy copies independent IDs."""
+    stable_id = str(root.get(EXPORT_STABLE_ID_PROP, "") or "").strip()
+    if not stable_id or root.library is not None or not root.is_editable or export_identity_repair_is_group(root):
+        raise RuntimeError("Choose an editable independent original object with an export identity.")
+    peers = [obj for obj in bpy.data.objects if obj is not root and
+             str(obj.get(EXPORT_STABLE_ID_PROP, "") or "").strip().casefold() == stable_id.casefold()]
+    with rr_export_identity_tracking.transaction([root, *peers]):
+        for peer in peers:
+            _separate_export_identity_copy(peer)
+        if EXPORT_FOLLOW_NAME_PROP in root:
+            del root[EXPORT_FOLLOW_NAME_PROP]
+        rr_export_identity_tracking.remember(root, replace=True)
+        # The selected original keeps its old export route, not a copy's name.
+        if settings is not None and export_mode_is_standard(settings):
+            prepare_export_identity(root, settings)
+        else:
+            route = sanitize_optional_id(str(root.get(EXPORT_ASSET_ID_OVERRIDE_PROP)
+                        or root.get(EXPORT_LAST_ID_PROP) or export_asset_id(root)))
+            root[EXPORT_ASSET_ID_OVERRIDE_PROP] = route
+            ensure_export_identity(root, route)
+        validate_export_identity(root)
+        for peer in peers:
+            validate_export_identity(peer)
+    for obj in [root, *peers]:
+        remember_object_manager_runtime_objects([obj])
+        remember_object_manager_name_sync_state(obj)
+    tag_rr_addon_view3d_redraw()
+    return peers
+
+
+def prepare_export_identity(root, settings=None):
+    """Separate proven copies before export; never guess a legacy original."""
+    if is_unity_layout_reference(root):
+        raise RuntimeError("Unity layout references are preview-only and cannot own building export identities.")
+    objects = list(bpy.data.objects)
+    stable_id = str(root.get(EXPORT_STABLE_ID_PROP, "") or "").strip()
+    peers = [obj for obj in objects if stable_id and
+             str(obj.get(EXPORT_STABLE_ID_PROP, "") or "").strip().casefold() == stable_id.casefold()]
+    with rr_export_identity_tracking.transaction(peers + [root]):
+        rr_export_identity_tracking.bootstrap(objects)
+        known, owner = rr_export_identity_tracking.ownership(stable_id)
+        if known:
+            for peer in peers:
+                if peer is not owner:
+                    _separate_export_identity_copy(peer)
+        ensure_export_identity(root)
+        validate_export_identity(root)
+        if (settings is not None and export_mode_is_standard(settings)
+                and not export_identity_repair_is_group(root) and not root.get(EXPORT_FOLLOW_NAME_PROP)):
+            if not root.get(EXPORT_ASSET_ID_OVERRIDE_PROP):
+                route = export_asset_id(root)
+                identity = str(root.get(EXPORT_STABLE_ID_PROP, "") or "").strip().casefold()
+                # Existing Standard prefabs are addressed by their old package
+                # location. Reuse it so renaming cannot create a replacement GUID.
+                candidates = [route, str(root.get(EXPORT_LAST_ID_PROP, "") or ""), *reversed(export_previous_ids(root))]
+                matched_route = False
+                output_root = bpy.path.abspath(settings.output_root)
+                for candidate in dict.fromkeys(candidates):
+                    candidate = sanitize_optional_id(candidate)
+                    if not candidate:
+                        continue
+                    manifest = read_existing_manifest(os.path.join(output_root, candidate, "manifest.json"))
+                    if str(manifest.get("stableId", "") or "").strip().casefold() == identity:
+                        route = candidate
+                        matched_route = True
+                        break
+                if not matched_route and os.path.isdir(output_root):
+                    # Stable-only older sources can recover a unique package
+                    # without depending on a remembered display name.
+                    matches = []
+                    with os.scandir(output_root) as folders:
+                        for folder in folders:
+                            if not folder.is_dir(follow_symlinks=False) or folder.name.startswith((".", "_")):
+                                continue
+                            manifest = read_existing_manifest(os.path.join(folder.path, "manifest.json"))
+                            if str(manifest.get("stableId", "") or "").strip().casefold() == identity:
+                                matches.append(folder.name)
+                    if len(matches) > 1:
+                        raise RuntimeError("Several old asset folders share this identity. Choose the original in Diagnose / Relink.")
+                    if matches:
+                        route = matches[0]
+                root[EXPORT_ASSET_ID_OVERRIDE_PROP] = route
+                ensure_export_identity(root, route)
+            validate_export_identity(root)
+        if settings is not None and export_mode_is_standard(settings):
+            # An artist-deleted object may leave a Unity package at its old
+            # path. A new Object with the same display name is a new identity,
+            # not permission to overwrite that different asset and its GUID.
+            asset_id = export_asset_id(root)
+            manifest = read_existing_manifest(os.path.join(
+                bpy.path.abspath(settings.output_root), asset_id, "manifest.json"))
+            existing_id = str(manifest.get("stableId", "") or "").strip().casefold()
+            if existing_id and existing_id != str(root[EXPORT_STABLE_ID_PROP]).casefold():
+                raise RuntimeError(
+                    f"Export identity conflict. Asset folder '{asset_id}' belongs to a different object. "
+                    "Choose its asset in Diagnose / Relink to explicitly replace it, or use a different object name. "
+                    "No files were written."
+                )
+    for peer in peers:
+        remember_object_manager_runtime_objects([peer])
+    return root[EXPORT_STABLE_ID_PROP]
+
+
+def build_unity_asset_rebind_plan(target, package_path, *, settings, detach_copies=False):
+    if not export_mode_is_standard(settings):
+        raise ValueError("Relink supports Standard independent assets. Use the group workflow for Modular assets.")
+    validate_standard_output_route(settings)
+    package = rr_export_identity_repair.read_export_package(package_path)
+    output_root = os.path.normcase(os.path.realpath(bpy.path.abspath(settings.output_root)))
+    if os.path.normcase(os.path.realpath(os.path.dirname(package["package_dir"]))) != output_root:
+        raise ValueError("Choose an asset folder inside the current Export Folder. Change the export folder first if needed.")
+    roots = live_export_identity_roots([target])
+    editable = lambda root: getattr(root, "library", None) is None and getattr(root, "is_editable", True)
+    copies = []
+    if detach_copies:
+        for root in roots:
+            if root == target or str(root.get(EXPORT_STABLE_ID_PROP, "") or "").strip().casefold() != package["stable_id"].casefold():
+                continue
+            if export_identity_repair_is_core(root):
+                raise ValueError(f"{root.name} is the actual Core owner of this Unity asset. Select that object to relink it.")
+            if not editable(root) or export_identity_repair_is_group(root):
+                raise ValueError(f"{root.name} is managed or read-only. Resolve its ownership before pairing this asset.")
+            copies.append(root)
+    plan = rr_export_identity_repair.build_rebind_plan(
+        target, package, roots, asset_id=export_asset_id, previous_ids=export_previous_ids,
+        is_core=export_identity_repair_is_core, is_group=export_identity_repair_is_group,
+        is_editable=editable, unbound_asset_id=object_manager_display_name, detach=copies,
+    )
+    plan["output_root"] = output_root
+    return plan
+
+
+def apply_unity_asset_rebind_plan(plan, settings):
+    if not export_mode_is_standard(settings) or os.path.normcase(
+        os.path.realpath(bpy.path.abspath(settings.output_root))
+    ) != plan["output_root"]:
+        raise ValueError("Export mode or folder changed since the preview; inspect the pairing again.")
+    validate_standard_output_route(settings)
+    with rr_export_identity_tracking.transaction([change["root"] for change in plan["changes"]]):
+        rr_export_identity_repair.apply_rebind_plan(plan, validate=validate_export_identity)
+        for change in plan["changes"]:
+            rr_export_identity_tracking.remember(change["root"], replace=True)
+    for change in plan["changes"]:
+        root = change["root"]
+        remember_object_manager_name_sync_state(root)
+        uid = object_manager_runtime_object_uid(root)
+        if uid is not None:
+            OBJECT_MANAGER_RUNTIME_OBJECT_UIDS.add(uid)
+    tag_rr_addon_view3d_redraw()
+    return plan
 
 
 def rename_export_asset_preserving_identity(root, new_name):
@@ -1002,7 +1226,7 @@ def set_object_manager_assembly_display_name(root, name, old_name=None, old_expo
     old_name = old_name if old_name is not None else current_object_name
     old_export_id = old_export_id or object_manager_display_name(root)
     display_name = unique_object_manager_synced_name(name, root)
-    ensure_export_identity(root, old_export_id)
+    ensure_export_identity(root, export_asset_id(root) if root.get(EXPORT_ASSET_ID_OVERRIDE_PROP) else old_export_id)
 
     assembly_id = root.get(OBJECT_MANAGER_ASSEMBLY_ID_PROP)
     unique_assembly_id = assembly_id and not any(
@@ -1053,7 +1277,7 @@ def set_object_manager_assembly_display_name(root, name, old_name=None, old_expo
                 obj[OBJECT_MANAGER_PARENT_ASSEMBLY_ID_PROP] = assembly_id
     if update_references:
         update_object_manager_name_references({old_name: display_name, current_object_name: display_name})
-    ensure_export_identity(root, display_name)
+    ensure_export_identity(root, export_asset_id(root))
     remember_object_manager_name_sync_state(root)
     root[EXPORT_NAME_HINT_DISMISSED_PROP] = False
     return display_name
@@ -1105,7 +1329,8 @@ def sync_object_manager_names():
             elif obj.name != previous[0]:
                 renames[previous[0]] = obj.name
                 if obj.get(EXPORT_STABLE_ID_PROP) or obj.get(EXPORT_LAST_ID_PROP):
-                    ensure_export_identity(obj, previous[1])
+                    if not obj.get(EXPORT_ASSET_ID_OVERRIDE_PROP):
+                        ensure_export_identity(obj, previous[1])
                     ensure_export_identity(obj, export_asset_id(obj))
                 remember_object_manager_name_sync_state(obj)
                 changed = True
@@ -1601,7 +1826,7 @@ def unique_datablock_name(datablocks, base_name):
 
 @_memoize_export_identity_lookup
 def get_asset_meshes(root):
-    if root is None:
+    if root is None or is_unity_layout_reference(root):
         return []
 
     candidates = []
@@ -1617,14 +1842,14 @@ def get_asset_meshes(root):
         if obj in seen:
             continue
         seen.add(obj)
-        if obj.type == "MESH" and not is_collision_helper(obj):
+        if obj.type == "MESH" and not is_collision_helper(obj) and not is_surface_sampling_helper(obj) and not is_unity_layout_reference(obj):
             meshes.append(obj)
     return meshes
 
 
 @_memoize_export_identity_lookup
 def get_standalone_asset_meshes(root):
-    if root is None:
+    if root is None or is_unity_layout_reference(root):
         return []
 
     candidates = [root]
@@ -1635,7 +1860,7 @@ def get_standalone_asset_meshes(root):
         if obj in seen:
             continue
         seen.add(obj)
-        if obj.type == "MESH" and not is_collision_helper(obj):
+        if obj.type == "MESH" and not is_collision_helper(obj) and not is_surface_sampling_helper(obj) and not is_unity_layout_reference(obj):
             meshes.append(obj)
     return meshes
 
@@ -1650,7 +1875,7 @@ def get_export_asset_meshes(root):
 
 
 def get_collision_meshes(root):
-    if root is None:
+    if root is None or is_unity_layout_reference(root):
         return []
 
     meshes = []
@@ -1659,7 +1884,7 @@ def get_collision_meshes(root):
     asset_mesh_names = {obj.name for obj in asset_meshes}
 
     def add_collision_mesh(obj):
-        if obj is None or obj.type != "MESH" or obj in seen or not is_collision_helper(obj):
+        if obj is None or obj.type != "MESH" or obj in seen or not is_collision_helper(obj) or is_unity_layout_reference(obj):
             return
         meshes.append(obj)
         seen.add(obj)
@@ -1698,8 +1923,10 @@ def get_export_roots(objects):
     roots = []
     seen = set()
     for obj in objects:
+        if obj is None or is_unity_layout_reference(obj):
+            continue
         root = object_manager_assembly_root_for_object(obj) or obj
-        if root is None or root in seen:
+        if root is None or root in seen or is_unity_layout_reference(root):
             continue
         roots.append(root)
         seen.add(root)
@@ -2342,6 +2569,7 @@ def object_has_inherited_rr_identity(obj):
             EXPORT_STABLE_ID_PROP,
             EXPORT_LAST_ID_PROP,
             EXPORT_PREVIOUS_IDS_PROP,
+            EXPORT_ASSET_ID_OVERRIDE_PROP,
         )
     )
 
@@ -2453,6 +2681,7 @@ def reset_object_manager_duplicate_guard_on_load(_dummy):
     reset_object_manager_duplicate_guard()
     reset_object_manager_name_sync_state()
     sync_object_manager_names()
+    register_export_identity_owners_deferred()
 
 
 @persistent
@@ -2912,10 +3141,12 @@ def expand_related_export_roots(roots):
     expanded = []
     seen = set()
     for root in roots:
+        if root is None or is_unity_layout_reference(root):
+            continue
         for candidate in expand_innerwall_pairs([root]):
             for variant in object_manager_variant_member_roots(candidate):
                 for final_root in expand_innerwall_pairs([variant]):
-                    if final_root is None or final_root.name in seen:
+                    if final_root is None or final_root.name in seen or is_unity_layout_reference(final_root):
                         continue
                     expanded.append(final_root)
                     seen.add(final_root.name)
@@ -2926,10 +3157,12 @@ def queue_roots_for_export_roots(roots):
     queued = []
     seen = set()
     for root in roots:
+        if root is None or is_unity_layout_reference(root):
+            continue
         for candidate in expand_innerwall_pairs([root]):
             group_root = object_manager_variant_group_root(candidate)
             queue_root = group_root or candidate
-            if queue_root is None or queue_root.name in seen:
+            if queue_root is None or queue_root.name in seen or is_unity_layout_reference(queue_root):
                 continue
             queued.append(queue_root)
             seen.add(queue_root.name)
@@ -3052,7 +3285,7 @@ def queue_roots(settings):
     roots = []
     for item in settings.export_queue:
         root = queue_item_object(item)
-        if root is not None:
+        if root is not None and not is_unity_layout_reference(root):
             roots.append(root)
     return roots
 
@@ -6537,6 +6770,8 @@ def prepare_group_emit_socket_bake(group_node, group_output_socket, socket_name)
 def prepare_emit_socket_bake(materials, socket_name):
     restore_actions = []
     for material in materials:
+        if not material.is_editable:
+            raise RuntimeError(f"{material.name}: automatic Bake requires an editable source material.")
         output = active_material_output_node(material)
         if output is None or material.node_tree is None:
             continue
@@ -7366,7 +7601,8 @@ def find_or_create_pbr_framework_image(material, role, resolution, output_root):
 
 def ensure_unique_pbr_framework_node_image(material, role, node, resolution, output_root):
     image = getattr(node, "image", None) if node is not None else None
-    if image is None or not pbr_framework_image_is_bake_ready(image):
+    if (image is None or not pbr_framework_image_is_bake_ready(image)
+            or tuple(image.size) != (resolution, resolution)):
         image = find_or_create_pbr_framework_image(material, role, resolution, output_root)
     else:
         image = configure_pbr_framework_image(material, role, image, output_root)
@@ -7834,6 +8070,15 @@ def prepare_next_pbr_framework_bake_target(context, settings):
         raise RuntimeError("Choose at least one texture map.")
 
     resolution = clamp_pbr_bake_size(getattr(settings, "pbr_bake_resolution", 1024))
+    for material in materials:
+        for role in roles:
+            target = find_pbr_framework_target_image_node(material, role)
+            image = getattr(target, "image", None)
+            if image is not None and tuple(image.size) != (resolution, resolution):
+                raise RuntimeError(
+                    f"{material.name}: {role['label']} is {image.size[0]} x {image.size[1]}, "
+                    f"but Size is {resolution}. Run Create Targets to create new images."
+                )
     output_root = pbr_bake_output_root(settings)
     entries_by_role = {}
     missing = []
@@ -7910,7 +8155,7 @@ def pbr_bake_progress_begin(context, total_steps):
 def pbr_bake_progress_text(step, total_steps, message):
     max_steps = max(1.0, float(total_steps))
     percent = int(round(min(max(0.0, float(step) / max_steps), 1.0) * 100.0))
-    return f"PBR Bake {percent}% - {message}"
+    return f"PBR Bake {percent}% of steps - {message}"
 
 
 def pbr_bake_progress_update(context, window_manager, step, total_steps, message, reporter=None):
@@ -7965,8 +8210,8 @@ def pbr_bake_progress_end(context, window_manager):
 
 
 def bake_selected_to_pbr(context, settings, reporter=None):
-    source_roots = get_context_export_roots(context)
-    roots = expand_related_export_roots(source_roots)
+    source_roots = get_export_roots(list(context.selected_objects))
+    roots = source_roots
     if not roots:
         raise RuntimeError("Select one or more mesh assets or group members before baking.")
 
@@ -7986,7 +8231,9 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     if not all_materials:
         raise RuntimeError("Selected meshes have no materials to bake.")
 
-    bakeable_materials = [material for material in all_materials if material_needs_pbr_bake(material)]
+    checked_materials = set(pbr_framework_filtered_materials_for_context(context, settings, all_materials))
+    bakeable_materials = [material for material in all_materials if material_needs_pbr_bake(material)
+                         and material in checked_materials]
     skipped_materials = [material.name for material in all_materials if material not in bakeable_materials]
     disabled_material_names = pbr_bake_disabled_material_names(settings)
     disabled_materials = [material.name for material in bakeable_materials if material.name in disabled_material_names]
@@ -8007,6 +8254,33 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             "output_dir": output_root,
             "files": [],
         }
+    # Mixed shader extraction currently follows a single branch. Refuse before
+    # allocating targets or rewriting any material rather than bake a false result.
+    for material in materials:
+        if not material.is_editable:
+            raise RuntimeError(f"{material.name}: automatic Bake requires an editable source material.")
+        output = active_material_output_node(material)
+        surface = output.inputs.get("Surface") if output is not None else None
+        links = list(surface.links) if surface is not None else []
+        if (len(links) != 1 or links[0].from_node.bl_idname != "ShaderNodeBsdfPrincipled"):
+            raise RuntimeError(
+                f"{material.name}: automatic Bake cannot resolve this mixed shader. "
+                "Use manual PBR targets, preview the maps, then Create Baked Material."
+            )
+        shader = links[0].from_node
+        for name in ("Alpha", "Transmission Weight", "Emission Color", "Emission Strength"):
+            socket = shader.inputs.get(name)
+            if socket is not None and socket.links:
+                raise RuntimeError(f"{material.name}: automatic opaque PBR Bake cannot transfer {name}.")
+        alpha = shader.inputs.get("Alpha")
+        transmission = shader.inputs.get("Transmission Weight")
+        emission = shader.inputs.get("Emission Color")
+        strength = shader.inputs.get("Emission Strength")
+        if ((alpha is not None and alpha.default_value < 1.0 - 1e-6)
+                or (transmission is not None and transmission.default_value > 1e-6)
+                or (emission is not None and strength is not None and strength.default_value > 1e-6
+                    and any(value > 1e-6 for value in emission.default_value[:3]))):
+            raise RuntimeError(f"{material.name}: glass, transparency and emission need a separate material workflow.")
     bake_material_set = set(materials)
     bake_mesh_objects = [
         mesh
@@ -8015,11 +8289,34 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     ]
     if not bake_mesh_objects:
         raise RuntimeError("Selected meshes have no procedural or linked materials to bake.")
+    if any(not obj.is_editable for obj in bake_mesh_objects):
+        raise RuntimeError("Automatic Bake requires editable selected mesh objects.")
+    uv_names = {material: set() for material in materials}
+    for mesh in bake_mesh_objects:
+        layer = choose_bake_uv_layer(mesh, bake_material_set)
+        if layer is None:
+            raise RuntimeError(f"{mesh.name}: unwrap a UV map before automatic Bake.")
+        for polygon in mesh.data.polygons:
+            material = material_for_polygon(mesh, polygon)
+            if material in uv_names:
+                uv_names[material].add(layer.name)
+    if any(len(names) != 1 for names in uv_names.values()):
+        raise RuntimeError("Shared Bake materials need the same UV layer name on all selected meshes.")
     bake_uv_map_names = bake_uv_map_names_by_material(bake_mesh_objects, bake_material_set)
 
     resolution = clamp_pbr_bake_size(getattr(settings, "pbr_bake_resolution", 1024))
     output_root = pbr_bake_output_root(settings)
     batch_name = object_manager_display_name(source_roots[0]) if len(source_roots) == 1 else "Selected"
+    # A new named run protects files still referenced by older baked/source maps.
+    run_index = 1
+    while True:
+        candidate = f"{sanitize_id(batch_name)}_Bake_{run_index:02d}"
+        try:
+            os.makedirs(os.path.join(output_root, candidate), exist_ok=False)
+            batch_name = candidate
+            break
+        except FileExistsError:
+            run_index += 1
     material_images = {}
     for material in materials:
         material_images[material] = {
@@ -8042,6 +8339,8 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     progress_total = len(PBR_BAKE_ROLES) + len(materials) + 1
     progress_step = 0
     progress_window_manager = pbr_bake_progress_begin(context, progress_total)
+    created_baked_materials = []
+    changed_slots = []
 
     try:
         pbr_bake_progress_update(
@@ -8071,14 +8370,15 @@ def bake_selected_to_pbr(context, settings, reporter=None):
                 f"Baking {role['label']}",
                 reporter,
             )
-            activate_bake_image_nodes(material_images, role)
+            target_restores = activate_temporary_pbr_targets(material_images, role)
             emit_restores = []
             try:
                 if role["bake_type"] == "EMIT":
-                    emit_restores = prepare_emit_socket_bake(materials, role["socket"])
+                    emit_restores = prepare_direct_pbr_emit(materials, role["socket"])
                 bake_active_meshes(role, settings)
             finally:
                 restore_actions(emit_restores)
+                restore_actions(target_restores)
             for image, path in (images[role["key"]] for images in material_images.values()):
                 image.save()
                 verify_saved_bake_image(path)
@@ -8102,14 +8402,25 @@ def bake_selected_to_pbr(context, settings, reporter=None):
                 f"Linking {material.name}",
                 reporter,
             )
-            if relink_material_to_pbr_images(material, image_by_role, bake_uv_map_names.get(material, "")):
-                relinked += 1
-                material["rr_pbr_baked_at_utc"] = datetime.now(timezone.utc).isoformat()
-                material["rr_pbr_bake_output_root"] = output_root
-                refresh_material_node_ui(material, context)
+            baked = rr_baked_material.create_baked_material(
+                material, image_by_role, uv_map_name=bake_uv_map_names.get(material, ""),
+            )
+            created_baked_materials.append((material, baked))
+            baked["rr_pbr_baked_at_utc"] = datetime.now(timezone.utc).isoformat()
+            baked["rr_pbr_bake_output_root"] = output_root
+            relinked += 1
             progress_step += 1
         if relinked != len(materials):
             raise RuntimeError(f"Baked files were saved, but only relinked {relinked}/{len(materials)} material(s).")
+        replacements = dict(created_baked_materials)
+        for obj in bake_mesh_objects:
+            for slot in obj.material_slots:
+                source = slot.material
+                if source not in replacements:
+                    continue
+                changed_slots.append((slot, slot.link, source))
+                slot.link = "OBJECT"
+                slot.material = replacements[source]
         pbr_bake_progress_update(
             context,
             progress_window_manager,
@@ -8118,6 +8429,13 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             "PBR bake complete",
             reporter,
         )
+    except Exception:
+        for slot, link, source in reversed(changed_slots):
+            slot.material = source
+            slot.link = link
+        for _source, material in reversed(created_baked_materials):
+            bpy.data.materials.remove(material)
+        raise
     finally:
         pbr_bake_progress_end(context, progress_window_manager)
         restore_mesh_uv_state(original_uv_state)
@@ -8882,6 +9200,8 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
 
 
 def export_fbx(root, model_path):
+    if root is None or is_unity_layout_reference(root):
+        raise RuntimeError("Unity layout references are preview-only and cannot be exported as building assets.")
     # Older releases leaked disposable sampling aliases. Reclaim only proven
     # aliases before taking snapshots that would retain their removed RNA IDs.
     cleanup_stale_surface_text_sampling_aliases(root)
@@ -8908,7 +9228,7 @@ def export_fbx(root, model_path):
         transient_surface_objects.extend(create_surface_text_sampling_export_aliases(root))
         transient_surface_objects.extend(create_surface_text_frame_export_aliases(root))
         export_objects.extend(transient_surface_objects)
-        export_objects = [obj for obj in dict.fromkeys(export_objects) if obj is not None]
+        export_objects = [obj for obj in dict.fromkeys(export_objects) if obj is not None and not is_unity_layout_reference(obj)]
 
         root_collection_members = set(scene.collection.objects)
         for obj in export_objects:
@@ -9752,10 +10072,14 @@ def export_builder_asset(
     if obj is None:
         raise RuntimeError("Select a mesh object or an asset root object to export.")
 
+    if is_unity_layout_reference(obj):
+        raise RuntimeError("Unity layout references are preview-only and cannot be exported as building assets.")
+
     validate_standard_output_route(settings)
-    validate_reference_layout_settings(settings)
     if not mesh_objects_have_export_geometry(get_export_asset_meshes(obj)):
         raise RuntimeError(f"{obj.name} has no exportable mesh geometry.")
+    prepare_export_identity(obj, settings)
+    validate_reference_layout_settings(settings)
     validate_export_identity(obj)
 
     # Modular and Variant exports retain their existing publication contracts.
@@ -9827,10 +10151,7 @@ def _export_builder_asset_contents(
     icon_path = os.path.join(asset_dir, "icon.png")
     manifest_path = os.path.join(asset_dir, "manifest.json")
     existing_manifest = read_existing_manifest(manifest_path)
-    if export_model is None:
-        export_model = getattr(settings, "include_model_with_export", True)
-    if include_icon is None:
-        include_icon = getattr(settings, "include_icon_with_export", True)
+    export_model, include_icon = effective_export_resources(settings, export_model, include_icon)
     if not export_model and not include_icon:
         raise RuntimeError("Enable Model, Icon, or both before exporting.")
     if include_icon and shared_icon_root is None:
@@ -10137,6 +10458,8 @@ def remove_variant_publish_claim(output_root, group_id, claim_path, writer_lease
 
 
 def prepare_variant_export_transactions(export_roots, settings):
+    for root in export_roots or []:
+        prepare_export_identity(root, settings)
     roots = validate_export_batch_identities(export_roots)
     attempted_names = {root.name for root in roots}
     transactions = []
@@ -10726,6 +11049,16 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         min=512,
         max=4096,
     )
+    pbr_bake_texel_density: bpy.props.FloatProperty(
+        name="Pixels / Meter", default=128.0, min=1.0, max=4096.0,
+        description="Target texture density; 128 is a balanced PC starting point, adjustable for viewing distance",
+    )
+    pbr_bake_uv_utilization: bpy.props.FloatProperty(
+        name="UV Coverage Estimate", default=0.7, min=0.05, max=1.0,
+        subtype="FACTOR", description="Estimated fraction of the image covered by unique UV islands, including packing gaps",
+    )
+    pbr_bake_size_summary: bpy.props.StringProperty(options={"HIDDEN"})
+    pbr_bake_size_analysis: bpy.props.StringProperty(options={"HIDDEN"})
     pbr_bake_samples: bpy.props.IntProperty(
         name="Samples",
         description="Cycles samples used by the PBR bake",
@@ -11337,18 +11670,26 @@ def load_image_for_preview(settings, context, image_path):
     return image
 
 
-def show_builder_popup(context, message, title="RR Helper", icon="INFO", details=()):
+def show_builder_popup(context, message, title="RR Helper", icon="INFO", details=(), repair_target=""):
     if bpy.app.background or context is None or context.window_manager is None:
         print(f"[{title}] {message}")
         return
 
-    lines = [message]
+    lines = textwrap.wrap(" ".join(str(message).split()), width=96, max_lines=3, placeholder="...") or [""]
     for detail in details[:2]:
         lines.extend(textwrap.wrap(" ".join(str(detail).split()), width=96, max_lines=2, placeholder="..."))
+    conflict_text = " ".join([str(message)] + [str(detail) for detail in details]).casefold()
+    identity_conflict = any(token in conflict_text for token in (
+        "identity conflict", "stable id", "previous id", "current export id", "is shared by",
+    ))
 
     def draw_popup(self, _context):
         for line in lines:
             self.layout.label(text=line)
+        if identity_conflict:
+            action = self.layout.operator("rr_builder.export_identity_debug", text="Diagnose / Relink Unity Asset", icon="LINKED")
+            action.target_name = repair_target
+            self.layout.operator("rr_builder.open_unity_export_folder", text="Open Export Folder", icon="FILE_FOLDER")
 
     context.window_manager.popup_menu(
         draw_popup,
@@ -12131,7 +12472,8 @@ class RR_OT_export_queue(bpy.types.Operator):
         ):
             self.report({"ERROR"}, "Export queue is empty.")
             return {"CANCELLED"}
-        if not self.include_model and not self.include_icon:
+        export_model, include_icon = effective_export_resources(settings, self.include_model, self.include_icon)
+        if not export_model and not include_icon:
             self.report({"ERROR"}, "Enable Model, Icon, or both before exporting.")
             return {"CANCELLED"}
         try:
@@ -12144,9 +12486,15 @@ class RR_OT_export_queue(bpy.types.Operator):
         reference = None
         if use_reference_layout:
             try:
+                core = get_reference_object(context.scene)
+                if core is not None:
+                    prepare_export_identity(core, settings)
                 reference = validate_reference_layout_settings(settings)
             except Exception as exc:
                 self.report({"ERROR"}, f"Reference validation failed: {exc}")
+                core = get_reference_object(context.scene)
+                show_builder_popup(context, f"Reference validation failed: {exc}", icon="ERROR",
+                                   repair_target=core.name if core else "")
                 return {"CANCELLED"}
 
         roots = []
@@ -12183,6 +12531,11 @@ class RR_OT_export_queue(bpy.types.Operator):
                 expanded = [candidate for candidate in expanded if candidate != reference]
             source_names_by_index[index] = {candidate.name for candidate in expanded}
             for candidate in expanded:
+                try:
+                    prepare_export_identity(candidate, settings)
+                except RuntimeError as exc:
+                    failed.append(f"{candidate.name}: {exc}")
+                    continue
                 stable_id = ensure_export_identity(candidate)[0]
                 root_key = stable_id or f"name:{candidate.name}"
                 if root_key in seen_export_roots:
@@ -12240,6 +12593,7 @@ class RR_OT_export_queue(bpy.types.Operator):
             )
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
+            show_builder_popup(context, str(exc), icon="ERROR")
             return {"CANCELLED"}
         failed.extend(transaction_failures)
         try:
@@ -12263,8 +12617,8 @@ class RR_OT_export_queue(bpy.types.Operator):
                     asset_id, asset_type, _status = export_builder_asset(
                         root,
                         export_settings,
-                        self.include_model,
-                        self.include_icon,
+                        export_model,
+                        include_icon,
                         shared_icon_root=shared_builder_icon_root(root),
                         queue_import=False,
                         icon_render_cache=icon_render_cache,
@@ -12843,12 +13197,14 @@ class RR_OT_export_selected(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.rr_builder_export_settings
-        if not self.include_model and not self.include_icon:
+        export_model, include_icon = effective_export_resources(settings, self.include_model, self.include_icon)
+        if not export_model and not include_icon:
             self.report({"ERROR"}, "Enable Model, Icon, or both before exporting.")
             return {"CANCELLED"}
 
-        settings.include_model_with_export = self.include_model
-        settings.include_icon_with_export = self.include_icon
+        if not export_mode_is_standard(settings):
+            settings.include_model_with_export = export_model
+            settings.include_icon_with_export = include_icon
         mesh_objects = get_context_export_roots(context)
 
         if not mesh_objects:
@@ -12856,7 +13212,7 @@ class RR_OT_export_selected(bpy.types.Operator):
             self.report({"ERROR"}, f"No exportable selected mesh roots. Active object is {active_name}.")
             return {"CANCELLED"}
 
-        return export_objects(mesh_objects, settings, context, "selected", self.include_model, self.include_icon)
+        return export_objects(mesh_objects, settings, context, "selected", export_model, include_icon)
 
 
 class RR_OT_export_collection(bpy.types.Operator):
@@ -12867,12 +13223,14 @@ class RR_OT_export_collection(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.rr_builder_export_settings
-        if not self.include_model and not self.include_icon:
+        export_model, include_icon = effective_export_resources(settings, self.include_model, self.include_icon)
+        if not export_model and not include_icon:
             self.report({"ERROR"}, "Enable Model, Icon, or both before exporting.")
             return {"CANCELLED"}
 
-        settings.include_model_with_export = self.include_model
-        settings.include_icon_with_export = self.include_icon
+        if not export_mode_is_standard(settings):
+            settings.include_model_with_export = export_model
+            settings.include_icon_with_export = include_icon
         collection = context.collection
         mesh_objects = get_export_roots(collection.objects)
 
@@ -12880,7 +13238,7 @@ class RR_OT_export_collection(bpy.types.Operator):
             self.report({"ERROR"}, "Active collection has no exportable mesh objects.")
             return {"CANCELLED"}
 
-        return export_objects(mesh_objects, settings, context, "collection", self.include_model, self.include_icon)
+        return export_objects(mesh_objects, settings, context, "collection", export_model, include_icon)
 
 
 class RR_OT_render_selected_icons(bpy.types.Operator):
@@ -13649,6 +14007,8 @@ class RR_OT_prepare_pbr_framework_bake_target(bpy.types.Operator):
         )
         if result["all_targets_have_content"]:
             message = f"All selected targets have content; {message}"
+        if result["role"]["key"] == "Metallic":
+            message += " Route the final metallic mask to Emission manually before Bake."
         settings.pbr_framework_status = message
         self.report({"INFO"}, settings.pbr_framework_status)
         return {"FINISHED"}
@@ -14219,11 +14579,14 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             rows=4,
         )
         export_queue = queue_box.operator("rr_builder.export_queue", text="Export", icon="EXPORT")
-        export_queue.include_model = settings.include_model_with_export
-        export_queue.include_icon = settings.include_icon_with_export
-        resource_row = queue_box.row(align=True)
-        resource_row.prop(settings, "include_model_with_export", text="Model")
-        resource_row.prop(settings, "include_icon_with_export", text="Icon")
+        export_queue.include_model, export_queue.include_icon = effective_export_resources(settings)
+        debug_row = queue_box.row(align=True)
+        debug_row.operator("rr_builder.export_identity_debug", text="Diagnose / Relink", icon="LINKED")
+        debug_row.operator("rr_builder.open_unity_export_folder", text="", icon="FILE_FOLDER")
+        if not export_mode_is_standard(settings):
+            resource_row = queue_box.row(align=True)
+            resource_row.prop(settings, "include_model_with_export", text="Model")
+            resource_row.prop(settings, "include_icon_with_export", text="Icon")
         queue_box.operator("rr_builder.create_bounding_box_collider", text="Create Box Collider", icon="MESH_CUBE")
         queue_box.operator("rr_builder.use_selected_as_collider", text="Use Selected as Collider", icon="LINKED")
         self.draw_export_output_row(queue_box, settings)
@@ -14521,11 +14884,19 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         if bake_box is None:
             return
         row = bake_box.row(align=True)
+        row.enabled = not bake_running
         down = row.operator("rr_builder.step_pbr_bake_size", text="", icon="TRIA_LEFT")
         down.direction = -1
         row.label(text=f"Texture Size: {clamp_pbr_bake_size(settings.pbr_bake_resolution)}")
         up = row.operator("rr_builder.step_pbr_bake_size", text="", icon="TRIA_RIGHT")
         up.direction = 1
+        recommend = bake_box.column(align=True)
+        recommend.enabled = not bake_running
+        recommend.prop(settings, "pbr_bake_texel_density")
+        recommend.prop(settings, "pbr_bake_uv_utilization")
+        recommend.operator("rr_builder.recommend_pbr_bake_size", text="Recommend Size", icon="DRIVER_DISTANCE")
+        if settings.pbr_bake_size_summary:
+            bake_box.label(text=settings.pbr_bake_size_summary)
 
         available_materials = pbr_framework_materials_for_context(context)
         materials = pbr_framework_filtered_materials_for_context(context, settings, available_materials)
@@ -14559,6 +14930,15 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         save_row = bake_box.row(align=True)
         save_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
         save_row.operator("rr_builder.save_pbr_framework_images", text="Save Images", icon="IMAGE_DATA")
+        baked_row = bake_box.row()
+        baked_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
+        baked_row.operator("rr_builder.create_baked_pbr_material", text="Create Baked Material", icon="MATERIAL")
+        auto_row = bake_box.row()
+        auto_row.enabled = bool(materials) and not bake_running
+        auto_row.operator("rr_builder.bake_selected_pbr", text="Auto Bake PBR (4 maps)", icon="RENDER_STILL")
+        bake_box.label(text="Bake each pass in Blender; preview maps before export.")
+        bake_box.label(text="Metallic: route final mask to Emit manually.")
+        bake_box.label(text="Auto: direct Principled only; mixed shaders use manual.")
 
         role_row = None
         for index, role in enumerate(PBR_BAKE_ROLES):
@@ -14579,7 +14959,10 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             icon = "TIME" if bake_running else ("ERROR" if bake_status.startswith("Failed:") else "CHECKMARK")
             bake_box.label(text=bake_status, icon=icon)
             if bake_running:
-                bake_box.label(text=f"Progress: {int(round(bake_progress * 100.0))}%")
+                if hasattr(bake_box, "progress"):
+                    bake_box.progress(factor=bake_progress, type="BAR", text="Bake workflow steps")
+                else:
+                    bake_box.label(text=f"Steps complete: {int(round(bake_progress * 100.0))}%")
         bake_box.label(text=f"Output: {pbr_bake_display_path(pbr_bake_output_root(settings))}")
 
     def draw_modeling_page(self, layout, context, settings):
@@ -14679,6 +15062,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             icon="FONT_DATA",
         )
         surface_text_box.operator("rr_builder.bind_surface_text", text="Bind Existing Text to Selected Faces", icon="LINKED")
+        surface_text_box.operator("rr_builder.configure_surface_text_backlight", text="Configure Backlight", icon="LIGHT")
 
     def draw_icon_page(self, layout, context, settings):
         layout = self.draw_fold_panel(layout, settings, "export_icon_expanded", "Icon")
@@ -14694,7 +15078,8 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         box = layout.box()
         box.label(text="Thumbnail Framing")
         option_row = box.row(align=True)
-        option_row.prop(settings, "include_icon_with_export", text="Include Icon")
+        if not export_mode_is_standard(settings):
+            option_row.prop(settings, "include_icon_with_export", text="Include Icon")
         option_row.prop(settings, "icon_outline_enabled", text="Outline")
         if settings.icon_outline_enabled:
             outline_controls = box.row(align=True)
@@ -14793,11 +15178,16 @@ class RR_PT_builder_exporter(bpy.types.Panel):
 
 
 def export_objects(mesh_objects, settings, context, source_label, export_model, include_icon):
+    export_model, include_icon = effective_export_resources(settings, export_model, include_icon)
     sync_object_manager_names()
     migrate_reference_layout_scene(context.scene)
     export_started = time.perf_counter()
     try:
         validate_standard_output_route(settings)
+        if export_mode_uses_reference_layout(settings):
+            core = get_reference_object(context.scene)
+            if core is not None:
+                prepare_export_identity(core, settings)
         validate_reference_layout_settings(settings)
     except Exception as exc:
         show_builder_popup(context, str(exc), title="RR Helper", icon="ERROR")
@@ -14930,6 +15320,10 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
     sync_object_manager_names()
     try:
         validate_standard_output_route(settings)
+        if export_mode_uses_reference_layout(settings):
+            core = get_reference_object(context.scene)
+            if core is not None:
+                prepare_export_identity(core, settings)
         validate_reference_layout_settings(settings)
     except Exception as exc:
         show_builder_popup(context, str(exc), title="RR Helper", icon="ERROR")
@@ -14987,6 +15381,7 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
                 if transaction is not None and transaction.get("settings") is None:
                     continue
                 export_settings = transaction["settings"] if transaction is not None else settings
+                prepare_export_identity(obj, settings)
                 validate_export_identity(obj)
                 asset_id = export_asset_id(obj)
                 asset_dir = os.path.join(export_settings.output_root, asset_id)
@@ -15149,6 +15544,12 @@ def render_icon_objects(mesh_objects, settings, context, source_label):
 def draw_file_export_menu(self, context):
     layout = self.layout
     layout.separator()
+    if export_mode_is_standard(getattr(context.scene, "rr_builder_export_settings", None)):
+        selected = layout.operator("rr_builder.export_selected", text="Builder Export")
+        selected.include_model, selected.include_icon = True, False
+        collection = layout.operator("rr_builder.export_collection", text="Builder Collection")
+        collection.include_model, collection.include_icon = True, False
+        return
     with_icons = layout.operator("rr_builder.export_selected", text="Builder Export")
     with_icons.include_model = True
     with_icons.include_icon = True
@@ -15183,6 +15584,7 @@ CLASSES = (
     RR_OT_preview_icon,
     RR_OT_preview_queue_icons,
     RR_OT_export_queue,
+    *IDENTITY_REPAIR_CLASSES,
     RR_OT_add_reference_image,
     RR_OT_refresh_unity_reference_icons,
     RR_OT_remove_reference_image,
@@ -15215,6 +15617,7 @@ CLASSES = (
     RR_OT_toggle_core,
     RR_OT_step_icon_size,
     RR_OT_step_pbr_bake_size,
+    *BAKE_TOOLS_CLASSES,
     RR_OT_toggle_pbr_bake_material,
     RR_OT_set_pbr_bake_materials,
     RR_OT_edit_icon_preview_light,
@@ -15233,6 +15636,7 @@ CLASSES = (
     RR_OT_apply_modeling_origin_point,
     RR_OT_add_surface_text,
     RR_OT_bind_surface_text,
+    RR_OT_configure_surface_text_backlight,
     RR_OT_store_point_bookmark,
     RR_OT_point_bookmark_to_cursor,
     RR_OT_clear_point_bookmark,
@@ -15256,6 +15660,34 @@ def restore_shader_mixer_index_deferred():
     return None
 
 
+@persistent
+def repair_surface_sample_display_on_load(_dummy):
+    try:
+        changes = repair_surface_sample_display()
+        if changes["objects"]:
+            print(f"[RR Helper] Restored wire-only display for {len(changes['objects'])} sampling helper(s).")
+    except Exception as exc:
+        print(f"[RR Helper] Could not repair sampling helper display: {exc}")
+
+
+def repair_surface_sample_display_deferred():
+    # addon_utils registration can run before scene data is accessible.
+    if not hasattr(bpy.data, "objects"):
+        return 0.1
+    repair_surface_sample_display_on_load(None)
+    return None
+
+
+def register_export_identity_owners_deferred():
+    if not hasattr(bpy.data, "objects"):
+        return 0.1
+    try:
+        rr_export_identity_tracking.bootstrap(list(bpy.data.objects))
+    except Exception as exc:
+        print(f"[RR Helper] Could not register export identity ownership: {exc}")
+    return None
+
+
 RR_STARTUP_DEFERRED_TIMERS = (
     (migrate_reference_layout_usage_on_load, 0.1),
     (repair_rr_normal_map_nodes_deferred, 0.2),
@@ -15263,6 +15695,8 @@ RR_STARTUP_DEFERRED_TIMERS = (
     (reset_pbr_bake_runtime_state_deferred, 0.1),
     (reset_stale_icon_framing_state_deferred, 0.1),
     (restore_shader_mixer_index_deferred, 0.1),
+    (repair_surface_sample_display_deferred, 0.1),
+    (register_export_identity_owners_deferred, 0.1),
 )
 
 
@@ -15342,6 +15776,7 @@ def register():
     register_object_manager_duplicate_keymap()
     bpy.types.Scene.rr_builder_export_settings = bpy.props.PointerProperty(type=RRBuilderExportSettings)
     bpy.types.Scene.rr_builder_reference_layout = bpy.props.PointerProperty(type=RRBuilderReferenceLayoutSettings)
+    register_unity_device_layout()
     reset_pbr_bake_runtime_state()
     bpy.types.TOPBAR_MT_file_export.append(draw_file_export_menu)
     register_scene_selection_queue_sync()
@@ -15354,20 +15789,27 @@ def register():
         bpy.app.handlers.load_post.append(migrate_reference_layout_usage_on_load)
     if reset_object_manager_duplicate_guard_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(reset_object_manager_duplicate_guard_on_load)
+    if repair_surface_sample_display_on_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(repair_surface_sample_display_on_load)
     if clear_inherited_rr_identity_before_save not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(clear_inherited_rr_identity_before_save)
     import_handlers = getattr(bpy.app.handlers, "blend_import_post", None)
     if import_handlers is not None and remember_object_manager_imported_objects not in import_handlers:
         import_handlers.append(remember_object_manager_imported_objects)
+    if import_handlers is not None and repair_surface_sample_display_on_load not in import_handlers:
+        import_handlers.append(repair_surface_sample_display_on_load)
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if sync_object_manager_names_after_history not in handlers:
             handlers.append(sync_object_manager_names_after_history)
     register_rr_startup_deferred_timers()
 
 def unregister():
+    unregister_unity_device_layout()
     import_handlers = getattr(bpy.app.handlers, "blend_import_post", None)
     if import_handlers is not None and remember_object_manager_imported_objects in import_handlers:
         import_handlers.remove(remember_object_manager_imported_objects)
+    if import_handlers is not None and repair_surface_sample_display_on_load in import_handlers:
+        import_handlers.remove(repair_surface_sample_display_on_load)
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if sync_object_manager_names_after_history in handlers:
             handlers.remove(sync_object_manager_names_after_history)
@@ -15393,6 +15835,10 @@ def unregister():
         pass
     try:
         bpy.app.handlers.load_post.remove(reset_object_manager_duplicate_guard_on_load)
+    except Exception:
+        pass
+    try:
+        bpy.app.handlers.load_post.remove(repair_surface_sample_display_on_load)
     except Exception:
         pass
     try:

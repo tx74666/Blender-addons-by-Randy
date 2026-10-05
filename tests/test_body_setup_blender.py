@@ -70,14 +70,14 @@ class BodySetupTests(unittest.TestCase):
         before = native_state(rig, body)
         result = body_setup.generate(bpy.context, rig)
         self.assertFalse(guides.overlays_enabled)
-        self.assertEqual(tuple(result['created']), planning.planner.COMPONENT_KEYS)
+        self.assertEqual(tuple(result['created']), tuple(key for key in planning.planner.COMPONENT_KEYS if key != 'SPINE'))
         check_native(self, rig, body, before)
         stable = planning.states(rig, body)
         guides.overlays_enabled = True
         result = body_setup.generate(bpy.context, rig)
         self.assertFalse(guides.overlays_enabled)
         self.assertEqual(result['created'], [])
-        self.assertEqual(tuple(result['reused']), planning.planner.COMPONENT_KEYS)
+        self.assertEqual(tuple(result['reused']), tuple(key for key in planning.planner.COMPONENT_KEYS if key != 'SPINE'))
         self.assertEqual(planning.states(rig, body), stable)
         names = rig.name, body.name
         with tempfile.TemporaryDirectory(prefix='cd-body-setup-') as folder:
@@ -213,7 +213,7 @@ class BodySetupTests(unittest.TestCase):
         rig, body = planning.fixture(eyes=False, neck=False, breasts=(), toes=False)
         before = native_state(rig, body)
         result = body_setup.generate(bpy.context, rig)
-        self.assertEqual({entry['key'] for entry in result['skipped']}, {'EYES', 'FEET_L', 'FEET_R'})
+        self.assertEqual({entry['key'] for entry in result['skipped']}, {'EYES', 'FEET_L', 'FEET_R', 'SPINE'})
         self.assertEqual(set(head_neck_visuals.validate(rig)['bindings']), {'Head'})
         self.assertEqual(set(body_detail_visuals.validate(rig)['names']), {'HIPS'})
         check_native(self, rig, body, before)

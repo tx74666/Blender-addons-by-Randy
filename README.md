@@ -4,6 +4,48 @@
 
 RR Helper 和 Character Designer 的源码、安装包及插件测试集中维护在这里。
 
+RR Helper 0.2.55 keeps ordinary Standard assets at their original Unity package
+path when Blender objects are renamed. Persistent ownership separates proven
+copies automatically and supports **Diagnose / Relink > Keep This Object's
+Identity** for older shared IDs. Deleted objects do not survive through the
+ownership registry; a recreated name cannot overwrite a different asset.
+[Workflow and validation](docs/releases/RRHelper_0.2.55_stable_export_identity_20261005.md).
+
+RR Helper 0.2.54 keeps Surface Text sampling helpers as wire overlays in rendered
+views, with no opaque surface, shadows or reflection contribution. Refresh and
+file loading repair existing owned helpers; asset previews exclude them.
+[Workflow and validation](docs/releases/RRHelper_0.2.54_wire_surface_samples_20261005.md).
+
+RR Helper 0.2.53 adds **Configure Backlight** for editable Surface Text: independent
+rear emission, wall gap and solid thickness, with settings exported to Unity.
+[Workflow and validation](docs/releases/RRHelper_0.2.53_surface_text_backlight_20261005.md).
+
+RR Helper 0.2.52 filters **Existing Font** to editable text objects and allows
+proven geometry-preserving shading, including the bundled **Smooth by Angle**,
+when expanding an existing Surface Text region. Failed binds preserve the old
+metadata and authored settings. [Workflow and validation](docs/releases/RRHelper_0.2.52_font_rebind_shading_20261005.md).
+
+RR Helper 0.2.51 creates one centered **Surface Text** across source and mirrored
+faces when Mirror Merge joins their selected boundary edge. Disconnected halves
+keep the side-picking workflow. [Geometry and validation](docs/releases/RRHelper_0.2.51_joined_mirror_surface_text_20261005.md).
+
+RR Helper 0.2.50 adds **Texture > PBR > Recommend Size** from evaluated surface
+area and adjustable texel density, plus independent **Create Baked Material**
+output. Automatic direct-Principled baking preserves the source and other users;
+complex mixed shaders use manual baking. [Workflow and validation](docs/releases/RRHelper_0.2.50_bake_size_material_20261004.md).
+
+RR Helper 0.2.49 adds **Export Queue > Diagnose / Relink**: inspect identity
+conflicts, browse named Unity asset folders, review the pairing and explicitly
+give copied objects independent identities. [Release and validation record](docs/releases/RRHelper_0.2.49_unity_asset_relink_20261004.md).
+
+RR Helper 0.2.48 gives Surface Text sampling objects and meshes readable
+target/side names with sequence numbers. Internal region and export IDs remain
+stable. [English release and validation record](docs/releases/RRHelper_0.2.48_readable_surface_names_20261004.md).
+
+RR Helper 0.2.47 makes **Standard** export models without generating icons.
+Its Export Queue no longer shows Model / Icon switches; Modular retains its
+resource choices and icon workflow. [English release and validation record](docs/releases/RRHelper_0.2.47_standard_model_only_20261003.md).
+
 RR Helper 0.2.46 uses the current multifunction **Ring Mask 0.2.1** for both
 full rings and arcs. New Ring nodes default to Sweep 360; Add Arc uses 180.
 Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
@@ -11,15 +53,33 @@ Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
 
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
-| RR Helper | 0.2.46 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.46.zip](dist/rr_helper-0.2.46.zip) |
-| Character Designer | 0.73.2 | [character_designer](addons/character_designer) | [character_designer-0.73.2.zip](dist/character_designer-0.73.2.zip) |
+| RR Helper | 0.2.55 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.55.zip](dist/rr_helper-0.2.55.zip) |
+| Character Designer | 0.76.0 | [character_designer](addons/character_designer) | [character_designer-0.76.0.zip](dist/character_designer-0.76.0.zip) |
 
-Character Designer 0.73.2 adds a per-character **Bone Display > Color Palette**
+Character Designer 0.76.0 adds independent Hair strand settings, proven mirror
+configuration sync, normalized depth controls and external Wiggle Bones preview.
+Ordinary model FBX stays unbaked and publishes a validated Hair configuration
+sidecar. [Integration contract](docs/hair_motion.md) ·
+[Blender validation and remaining Unity work](docs/releases/CharacterDesigner_0.76.0_hair_motion_20261004.md).
+
+Character Designer 0.75.0 provides a single pose-matched IK/FK switch for both
+arms and legs; FK uses the original bones directly. Individual limb settings
+remain in Advanced. Daily Spine controls use shared Bend and section FK, and
+new setups do not automatically generate optional Spine IK. Existing optional
+branches retain their animation/dependency guards.
+[Validation and artist save](docs/releases/CharacterDesigner_0.75.0_native_fk_controls_20261004.md).
+
+Character Designer 0.73.4 cleans existing owned Dress bone and generated Hook
+names, synchronizing native references and saved recovery records. New Dress
+setups use readable sequence numbers when names collide. The current X was
+refreshed and saved. [Validation and save record](docs/releases/CharacterDesigner_0.73.4_clean_dress_names_20261004.md).
+
+Character Designer 0.73.3 adds a per-character **Bone Display > Color Palette**
 for Body, Arms, Legs, Hair and Dress. Native bones and controls share each group;
 the panel shows actual Normal, Selected and Active colors. Dress defaults to
 muted pink, and wrists/hands/fingers share the arm color. Explicit edits support
 Undo and exact restoration without changing poses, geometry or the global theme.
-[Usage and validation](docs/releases/CharacterDesigner_0.73.2_bone_color_palette_20261003.md).
+[Usage and validation](docs/releases/CharacterDesigner_0.73.3_bone_color_palette_20261003.md).
 
 Character Designer 0.72.0 lets Dress originals rotate in Pose Mode. Their native
 curve and physics evaluation retains a persistent local pose correction when

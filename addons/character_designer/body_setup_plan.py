@@ -245,7 +245,6 @@ def plan(context, rig):
             put(part, 'BLOCKED', str(exc))
 
     torso = existing('TORSO', torso_controls, inventory)
-    sources = torso['sources'] if isinstance(torso, dict) else None
     if not torso:
         if hips_problem:
             put('TORSO', *hips_problem)
@@ -273,25 +272,14 @@ def plan(context, rig):
                     protected = _native_inputs(rig, sources)
                     put('TORSO', 'SKIP' if protected else 'ADD', protected or 'Add shared Bend and section controls.',
                         chain=sources, hips_name=hips)
-                    if protected:
-                        sources = None
                 except _ERRORS as exc:
                     put('TORSO', 'BLOCKED', str(exc))
 
     if not existing('SPINE', spine_ik_fk, inventory):
-        if not sources:
-            put('SPINE', 'SKIP', 'A supported Spine Controls chain is needed.')
-        else:
-            names = set(sources) | (set(torso['bones'].values()) if isinstance(torso, dict) else set())
-            try:
-                spine_ik_fk._guard_animation(context, rig, names)
-                if any((rig.data.bones[a].tail_local-rig.data.bones[b].head_local).length > 1e-5
-                       for a, b in zip(sources, sources[1:])):
-                    put('SPINE', 'SKIP', 'Spine segments do not meet; existing rest positions are preserved.')
-                else:
-                    put('SPINE', 'ADD', 'Add an IK branch in the current FK pose.')
-            except _ERRORS as exc:
-                put('SPINE', 'SKIP', str(exc))
+        # The shared Bend and section FK graph is the daily spine setup.
+        # Keep existing optional IK branches intact; adding or removing that
+        # branch remains an explicit Advanced operation with its own guards.
+        put('SPINE', 'SKIP', 'Shared Bend and section FK are used; Spine IK is optional in Advanced Setup.')
 
     if not existing('EYES', eye_controls, inventory):
         if head_problem:

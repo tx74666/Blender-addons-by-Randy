@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 from array import array
+from unittest.mock import patch
 
 import bpy
 from mathutils import Matrix, Vector
@@ -150,6 +151,63 @@ def test_topology_mismatch_refused():
     else:
         raise AssertionError('Shape-dependent mirror topology was not rejected.')
     print('PASS changing modifier topology is rejected')
+
+
+def test_evaluation_copy_early_failure_cleanup():
+    def inventory():
+        return {name: sorted((block.name, block.as_pointer()) for block in getattr(bpy.data, name))
+                for name in ('objects', 'meshes', 'shape_keys', 'actions')}
+
+    def artist_state(mesh):
+        data, keys = mesh.data, mesh.data.shape_keys
+        action = keys.animation_data.action
+        return {'data': data.as_pointer(), 'keys': keys.as_pointer(),
+                'vertices': list(worker._coordinates(data.vertices)),
+                'shapes': [(key.name, key.value, key.mute, key.relative_key.name,
+                            list(worker._coordinates(key.data))) for key in keys.key_blocks],
+                'action': action.as_pointer(), 'action_users': action.users,
+                'modifiers': [(mod.name, mod.type, mod.show_viewport) for mod in mesh.modifiers]}
+
+    original_spec = worker.importlib.util.spec_from_file_location
+    for failure in ('helper_import', 'before_clear', 'after_detach', 'after_clear'):
+        _rig, mesh = fixture()
+        mesh.data.shape_keys.key_blocks['Smile'].keyframe_insert(data_path='value', frame=1)
+        before_inventory, before_artist = inventory(), artist_state(mesh)
+
+        def failing_spec(*args, **kwargs):
+            if args[0] != 'cdesigner_mesh_copy':
+                return original_spec(*args, **kwargs)
+            if failure == 'helper_import':
+                raise ImportError('Injected evaluation preparation failure')
+            spec = original_spec(*args, **kwargs)
+            load = spec.loader.exec_module
+
+            def install_failure(module):
+                load(module)
+                clear = module.clear_copied_shape_keys
+
+                def failing_clear(source, duplicate):
+                    if failure == 'after_detach':
+                        duplicate.shape_key_clear()
+                    elif failure == 'after_clear':
+                        clear(source, duplicate)
+                    raise RuntimeError('Injected evaluation preparation failure')
+
+                module.clear_copied_shape_keys = failing_clear
+
+            spec.loader.exec_module = install_failure
+            return spec
+
+        with patch.object(worker.importlib.util, 'spec_from_file_location', side_effect=failing_spec):
+            try:
+                worker._bake_mesh(bpy.context, mesh, ['CD Forearm Twist.L'], [])
+            except (ImportError, RuntimeError) as error:
+                assert 'Injected evaluation preparation failure' in str(error), (failure, error)
+            else:
+                raise AssertionError('The injected early evaluation failure was not raised: ' + failure)
+        assert inventory() == before_inventory, (failure, before_inventory, inventory())
+        assert artist_state(mesh) == before_artist, failure
+    print('PASS early evaluation import/Key-clear failures clean exact copied IDs and preserve artist Keys/Action')
 
 
 def test_skirt_attachment_and_solidify():
@@ -411,6 +469,7 @@ def test_removed_forearm_emits_removal_marker():
 test_export_import()
 test_owned_dependency_refused()
 test_topology_mismatch_refused()
+test_evaluation_copy_early_failure_cleanup()
 test_skirt_attachment_and_solidify()
 test_normal_nodes_and_disabled_skinning()
 test_unsaved_image_buffer()

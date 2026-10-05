@@ -1,5 +1,6 @@
 """Persistent native Body/Hair/Dress display with direct native body posing."""
 import json
+import math
 from functools import lru_cache
 
 import bpy
@@ -13,10 +14,98 @@ DISPLAY_REFS = 'character_designer_original_display_refs_v1'
 DISPLAY_OWNER = 'character_designer_original_display_owner_v1'
 _CHANNELS = ('location', 'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle', 'scale')
 _LOCKS = ('lock_rotation', 'lock_rotation_w', 'lock_rotations_4d')
+_REST_FIELDS = frozenset(('matrix', 'length', 'parent', 'connected', 'inherit_scale',
+                          'inherit_rotation', 'local_location'))
+_REST_RELATIONS = ('parent', 'connected', 'inherit_scale', 'inherit_rotation', 'local_location')
+_REST_LENGTH_EPSILON = 1e-6
+_REST_MATRIX_EPSILON = 2e-6
 
 
 def active(rig):
     return bool(rig and rig.type == 'ARMATURE' and SESSION in rig)
+
+
+def _validate_session_rest(rig, saved=None, current=None):
+    """Read-only proof of this session's native Rest, allowing float roundtrips.
+
+    Mesh coordinates are deliberately absent. A real Rest edit is not accepted
+    by replacing the saved baseline, restoring bones, or removing the session.
+    ``saved`` and ``current`` may be reused within one synchronous operation.
+    """
+    if saved is None:
+        if not active(rig):
+            raise ValueError('Choose Original before checking its saved skeleton.')
+        try:
+            saved = json.loads(rig[SESSION])
+        except (ValueError, TypeError) as exc:
+            raise ValueError('The saved Original session is invalid; recover its saved file.') from exc
+    if (not isinstance(saved, dict) or type(saved.get('version')) is not int
+            or saved['version'] != 1):
+        raise ValueError('The saved Original session schema is unsupported; recover its saved file.')
+    stored_bones = saved.get('bones')
+    old = saved.get('rest')
+    if (not isinstance(stored_bones, list)
+            or any(not isinstance(name, str) or not name for name in stored_bones)
+            or len(stored_bones) != len(set(stored_bones)) or not isinstance(old, dict)
+            or not old or any(not isinstance(name, str) or not name for name in old)):
+        raise ValueError('The saved Original skeleton record is invalid; recover its saved file.')
+    actual_bones = sorted(rig.data.bones.keys())
+    if stored_bones != actual_bones:
+        removed = sorted(set(stored_bones) - set(actual_bones))
+        added = sorted(set(actual_bones) - set(stored_bones))
+        detail = ', '.join((['removed ' + ', '.join(removed[:3])] if removed else [])
+                           + (['added ' + ', '.join(added[:3])] if added else []))
+        raise ValueError('Original bone inventory changed' + (': ' + detail if detail else '')
+                         + '. Keep Original and undo an unintended bone rename/add/remove before returning.')
+    live_record = current is None
+    current = poses.native_rest(rig) if live_record else current
+    if not isinstance(current, dict) or any(not isinstance(name, str) or not name for name in current):
+        raise ValueError('The current Original Rest record is invalid; keep Original and inspect the skeleton.')
+    if set(old) != set(current):
+        changed = sorted(set(old).symmetric_difference(current))
+        raise ValueError('Original native bone ownership changed'
+                         + (': ' + ', '.join(changed[:3]) if changed else '')
+                         + '. Keep Original and restore the intended ownership before returning.')
+
+    def numeric(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def valid(entry):
+        if not isinstance(entry, dict) or set(entry) != _REST_FIELDS:
+            return False
+        matrix = entry['matrix']
+        return (numeric(entry['length']) and entry['length'] >= 0
+                and (entry['parent'] is None or isinstance(entry['parent'], str))
+                and isinstance(entry['inherit_scale'], str) and bool(entry['inherit_scale'])
+                and all(type(entry[key]) is bool for key in ('connected', 'inherit_rotation', 'local_location'))
+                and isinstance(matrix, (list, tuple)) and len(matrix) == 4
+                and all(isinstance(row, (list, tuple)) and len(row) == 4
+                        and all(numeric(value) for value in row) for row in matrix))
+
+    for name, previous in old.items():
+        now = current[name]
+        if not valid(previous):
+            raise ValueError(f'Original Rest record is invalid or non-finite at {name}; keep Original and inspect that bone.')
+        # Native RNA supplies the current field types. Equal records already
+        # prove its finite coordinates against the validated saved values;
+        # avoid a second matrix walk on the ordinary no-edit return. Explicit
+        # supplied records retain their complete schema and finite checks.
+        if live_record and previous == now:
+            continue
+        if not valid(now):
+            raise ValueError(f'Original Rest record is invalid or non-finite at {name}; keep Original and inspect that bone.')
+        relations = [key for key in _REST_RELATIONS if previous[key] != now[key]]
+        length_error = abs(previous['length'] - now['length'])
+        matrix_error = max(abs(a-b) for first, second in zip(previous['matrix'], now['matrix'])
+                           for a, b in zip(first, second))
+        if relations or length_error > _REST_LENGTH_EPSILON or matrix_error > _REST_MATRIX_EPSILON:
+            detail = ', '.join(relations + ([f'length difference {length_error:.6g}']
+                                          if length_error > _REST_LENGTH_EPSILON else [])
+                              + ([f'Rest matrix difference {matrix_error:.6g}']
+                                 if matrix_error > _REST_MATRIX_EPSILON else []))
+            raise ValueError(f'Native Rest changed at {name} ({detail}). Keep Original; undo an unintended bone edit, '
+                             'or resync the controls to the new Rest before returning. Mesh recalibration cannot repair this change.')
+    return current
 
 
 @lru_cache(maxsize=1)
@@ -150,8 +239,8 @@ def _set_native_view(context, rig, native_groups, role='ALL', *, toggle=False, c
 def show_group(context, rig, role):
     if not active(rig):
         raise ValueError('Choose Original in Bone Display first.')
-    _require(context, rig)
-    ensure_dress_editable(context, rig)
+    saved = _require(context, rig)
+    _ensure_dress_editable(context, rig, saved)
     native_groups = _native_groups(context, rig)
     if not any(native_groups[role].values()):
         raise ValueError('This character has no original bones in that group.')
@@ -287,7 +376,11 @@ def _bake_sources(context, rig, desired, entries):
 
 
 def _require(context, rig):
+    from . import forearm_twist
     display._editable(rig)
+    preview = forearm_twist._SESSION
+    if preview is not None and preview.get('armature') == rig:
+        raise ValueError('Confirm or cancel the Forearm preview before switching Original or Controls.')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ValueError('Finish the current edit or weight session, then switch Original in Object or Pose Mode.')
     if rig.override_library or rig.name not in context.view_layer.objects:
@@ -299,6 +392,8 @@ def _require(context, rig):
         display._check_object_restore(rig, saved['display'])
         for target, view in _extra_views(rig, saved):
             display._check_object_restore(target, view)
+        return saved
+    return None
 
 
 def enter(context, rig):
@@ -402,11 +497,15 @@ def _enter(context, rig, refresh):
 
 def ensure_dress_editable(context, rig):
     """Explicitly upgrade a saved display-only Original session, never on draw."""
-    _require(context, rig)
-    if not active(rig):
+    saved = _require(context, rig)
+    return _ensure_dress_editable(context, rig, saved)
+
+
+def _ensure_dress_editable(context, rig, saved):
+    """Reuse the preflight's parsed state only within its synchronous operation."""
+    if saved is None:
         return False
     raw = rig[SESSION]
-    saved = json.loads(raw)
     if 'dress_edit' in saved:
         dress_pose.validate_active(context, rig, saved['dress_edit'])
         return False
@@ -432,22 +531,35 @@ def leave(context, rig):
 
 
 def _leave(context, rig, refresh):
-    _require(context, rig)
+    from . import body_rest_resync as resync
+    saved = _require(context, rig)
     if not active(rig):
         return False
-    ensure_dress_editable(context, rig)
-    saved = json.loads(rig[SESSION])
-    rest = poses.native_rest(rig)
-    if saved['bones'] != sorted(rig.data.bones.keys()) or saved['rest'] != rest:
-        raise ValueError('The skeleton was structurally edited in Original mode; undo that edit before returning.')
+    plan = None
+    try:
+        rest = _validate_session_rest(rig, saved)
+    except ValueError:
+        # Prove the complete old graph before accepting only supported native
+        # Direct geometry edits. The plan never restores or re-planes Rest.
+        plan = resync.prepare(context, rig, saved)
+        if plan is None:
+            raise
+        rest = plan['rest']
+        if 'dress_edit' not in saved:
+            raise ValueError('Update the saved Original Dress session before adapting edited Rest.')
+    _ensure_dress_editable(context, rig, saved)
+    session_raw = rig[SESSION]
     relations = _resolve(rig, saved['constraints'])
     extra_views = _extra_views(rig, saved)
     _update(context, rig)
     desired = _pose(rig, rest)
     current_channels = _channels(rig)
-    dress_desired = dress_pose.capture(context, rig, saved['dress_edit'])
-    dress_checkpoint = dress_pose.checkpoint(context, rig, saved['dress_edit'])
-    edited = any(current_channels[name] != saved['entered_channels'][name] for name in desired)
+    # These consecutive reads share one exact proof. It must not cross the
+    # native update below or any Body/Dress mutation in the transfer.
+    dress_targets = dress_pose._resolve(context, rig, saved['dress_edit'])
+    dress_desired = dress_pose.capture(context, rig, saved['dress_edit'], targets=dress_targets)
+    dress_checkpoint = dress_pose.checkpoint(context, rig, saved['dress_edit'], targets=dress_targets)
+    edited = plan is not None or any(current_channels[name] != saved['entered_channels'][name] for name in desired)
     checkpoint = (current_channels, display._snapshot(rig), _locks(rig, saved['names']),
                   [(con, con.mute) for con, _entry in relations])
     extra_checkpoint = [(target, display._snapshot(target)) for target, _view in extra_views]
@@ -457,10 +569,13 @@ def _leave(context, rig, refresh):
         for con, entry in relations:
             con.mute = entry['mute']
         _update(context, rig)
+        forced = resync.apply(context, rig, saved, plan)
         limb_ik._validate_inventory(rig)
         changed = {name for name in desired if poses._difference(desired[name], rig.pose.bones[name].matrix) > 1e-7}
+        changed.update(forced)
         if changed and edited:
-            poses._match(context, rig, desired, changed, preserve_modes=True)
+            poses._match(context, rig, desired, changed, preserve_modes=True,
+                         precise_limbs=plan['keys'] if plan else ())
             _update(context, rig)
         _verify(rig, desired)
         dress_pose.leave(context, rig, saved['dress_edit'], desired=dress_desired)
@@ -473,6 +588,8 @@ def _leave(context, rig, refresh):
         display._completed(rig, update=False)
         refresh()
         dress_pose.verify(context, rig, saved['dress_edit'], desired=dress_desired)
+        resync.verify(context, rig, plan)
+        resync.commit(rig, plan)
         for target, _view in extra_views:
             target.pop(DISPLAY_OWNER, None)
         rig.pop(DISPLAY_REFS, None)
@@ -486,9 +603,11 @@ def _leave(context, rig, refresh):
         display._restore(rig, view)
         for target, extra_view in extra_checkpoint:
             display._restore(target, extra_view)
-        rig[SESSION] = json.dumps(saved, separators=(',', ':'))
+        rig[SESSION] = session_raw
+        resync.rollback(context, rig, plan)
         _update(context, rig)
         refresh()
+        resync.restore_correctives(plan)
         raise
     return True
 

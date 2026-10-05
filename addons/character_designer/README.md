@@ -1,6 +1,114 @@
-# Character Designer 0.73.2
+# Character Designer 0.76.0
 
-## Bone Display Color Palette (0.73.2)
+## Independent Hair strand motion (0.76.0)
+
+**Rig > Hair > Strand Motion** adds Previous / Next / Selected navigation,
+editable Front / Bangs, Side and Back / Long defaults, per-strand overrides and
+normalized root-to-tip controls. Proven mirror pairs synchronize settings while
+each chain simulates independently. Complete native, exact-geometry or unique
+graph proofs are required; unproven strands remain unpaired. Mark Left / Pair
+Right records an explicit artist choice.
+
+An external official **Wiggle Bones 1.1.2** extension provides pair/all preview.
+Stop and lifecycle guards restore author pose, native backend settings and
+Shape Key values. Binding/capture edits stop preview first; same-object
+remove/rebind preserves stable strand identities and settings across segment
+changes. Copied sources cannot claim the original identity.
+
+Ordinary game FBX remains unbaked. Configured Hair exports a versioned,
+hash-bound sidecar in the existing publication transaction. Unity Magica
+application and comparative validation remain a separate integration step;
+existing Dress physics is unchanged. See the [contract](../../docs/hair_motion.md)
+and [release validation](../../docs/releases/CharacterDesigner_0.76.0_hair_motion_20261004.md).
+
+## Fewer native solves during switches (0.75.2)
+
+Supported Direct FK chains compute the three native local bases before writing
+them together. Independent Direct IK target and Pole inputs also share their
+first evaluation. Foreign constraints, transform drivers, uncertain parent
+dependencies, reverse-foot IK and unrepresentable bases retain the established
+ordered path. Pose validation, Auto Key, native FK display, Pole guides and
+complete failure rollback remain in place.
+
+Original / Controls reuses Dress ownership proofs only for consecutive reads
+within the same operation. Every native update and final refresh still has fresh
+validation; unchanged modes, locks and constraint states avoid redundant writes.
+This preserves authored Dress corrections and intentional native Rest edits.
+Comparable background timings and GUI verification limits are recorded in the
+release note; this is not a promise of instant viewport switching.
+
+## Native FK display and unified IK guides (0.75.1)
+
+FK displays the original upper/lower/end bones and hides limb IK targets,
+Poles and connecting guides. Owned FK ring resources remain recoverable but
+no longer replace the native bones in FK. IK restores its Pole arrow and
+connecting guide together. Clicking the current mode repairs stale managed
+hide flags without matching the pose again or inserting keys. Artist custom
+shapes and collection eye/solo choices remain protected.
+
+Installed switch drivers no longer force an extra graph evaluation, and a
+completed all-limb display sync supplies the frame cache directly. Pose
+matching, validation and failure rollback remain in place. Performance
+measurements and current-scene integration are documented separately.
+
+## Native FK and compact daily controls (0.75.0)
+
+**Rig > Body > Bone Setup** has one **IK / FK** row for both arms and legs.
+FK rotates the original upper, lower and end bones directly; no second FK
+skeleton is created. The switch matches the current pose and rolls all limbs
+back if any chain fails. Auto Key retains the existing constant mode cuts and
+pose bookends. Ambiguous multi-slot or multi-layer Actions are rejected before
+writing keys. Individual limb modes, foot details and Auto Align remain in
+**Advanced**.
+
+**Original / Controls** remains the broader Body/Hair/Dress workspace choice.
+Choosing a limb mode from Original transfers the current pose back to Controls
+before matching, as one transaction. A plain Controls FK switch only changes
+arms and legs.
+
+Daily **Spine Controls** shows shared **Bend Spine** and section FK selectors.
+New Body Setup no longer generates optional Spine IK. Existing optional IK is
+preserved by Update and its switches/removal remain in Advanced; animated or
+externally referenced controls still block removal. Hair keeps its own setup.
+
+## Original calibration and local Rest adaptation (0.74.0)
+
+Forearm **Capture & Preview** in Original validates the exact paused owned
+constraints and poses the native hand. Confirm or cancel the preview before
+switching Original / Controls. Artist mesh edits remain independent of the
+skeleton check; small float roundtrips through Edit Mode no longer block return.
+
+After an intentional Edit Mode change to an existing Direct upper/lower limb
+bone, finish Edit Mode and click **Bone Display > Controls**. Supported local
+geometry edits adapt their existing controls while keeping the current author
+Rest and pose. The operation validates the old graph, current skin and bound
+surfaces, and rolls back on failure. Returning to Original uses the accepted Rest.
+
+This adaptation preserves model data, weights and asymmetric Shape Keys. It
+does not accept changed bone names, ownership, parenting, connection flags or
+incompatible animation/dependencies. Existing Pose assets and Body Calibration
+confirmations retain their checks and may require explicit retargeting or
+recalibration. Prior Direct Rest provenance remains recoverable; removing the
+controls retains the newly accepted author Rest.
+
+Ordinary returns reuse one preflight and one native Rest read. Timing evidence
+and scene integration are recorded separately from GUI response time.
+
+## Clean Dress bone names (0.73.4)
+
+Verified legacy Dress bones and their generated Hook labels now drop the owner
+UUID: `SK_Dress_857c5a_DEF_08_01` becomes `SK_Dress_DEF_08_01`.
+Ownership stays in private properties. Cleanup updates exact native bindings,
+Original/Controls snapshots and recovery records in one rollback transaction.
+Coordinates, topology, Shape Keys, group indices/weights, pose and colors stay
+unchanged. Artist labels and unrelated characters are preserved.
+
+Cleanup runs once after Refresh or file load. A destination bone/group collision,
+linked/shared animation or active Edit Weights/Bake Preview prevents unsafe
+renaming and is reported. Newly generated Dress resources reserve readable
+namespaces; a collision uses `_02`, `_03` rather than random text.
+
+## Bone Display Color Palette (0.73.3)
 
 Open **Rig / Weight > Bone Display > Color Palette** and choose **Apply Palette**
 to use the current character's saved scheme. The five groups are **Body, Arms,
@@ -160,9 +268,10 @@ in internal properties. Ordinary Blender numeric suffixes resolve name collision
 
 On add-on registration and file load, validated local legacy widget and skirt
 object/data/collection names are cleaned with their exact recovery references.
-Artist names, shared/linked data and edited ownership are preserved. Existing
-bone names and constraint names are retained to protect animation paths;
-new skirt bones and weight groups use the readable source prefix. Cleanup does
+Artist names, shared/linked data and edited ownership are preserved. Version
+0.73.4 also migrates verified legacy Dress bone names and native binding paths;
+other existing bone and constraint names are retained. New skirt bones and
+weight groups use the readable source prefix. Cleanup does
 not change geometry, weights, Shape Keys, poses or animation.
 
 ## Character Setup in Rig (0.69.2)
@@ -178,11 +287,16 @@ Folder uses Blender's built-in directory picker; **Open Folder** is a secondary
 action under **Warnings**. **Objects** shows mesh and armature counts in its
 collapsed heading instead of repeating them elsewhere.
 
-**Use Simplified Materials** opens a compact per-material checklist. Checked
-materials use the existing temporary export approximation; **Use Original**
-removes only that material's saved export choice. Original shaders and other
-material choices stay unchanged. Materials on included meshes remain available
-after disabling an approximation, and retained choices can still be cleared.
+**Use Simplified Materials** lists only materials already chosen for the temporary
+export approximation. **Add Material** opens a searchable list of other materials
+on included character meshes; **Use Original** removes only that material's saved
+choice. Retained choices can still be cleared after their material stops being
+used by the character. Original shaders and other choices stay unchanged.
+
+Export section arrows do not create scene undo snapshots. Each redraw still
+checks current bindings and helper ownership; unrelated object metadata and
+unused material slots are not inspected to build the expanded lists. Adding a
+material and starting an export independently validate the current scene.
 
 Objects, material choices and Warnings start collapsed. **Warnings** displays
 its count, actionable messages and one **Open Export Report** button when

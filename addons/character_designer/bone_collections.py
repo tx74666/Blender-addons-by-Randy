@@ -307,7 +307,7 @@ def _animation_names(armature, inventory, native, foot=None, torso=None, eyes=No
     eyes = eyes if eyes is not None else eye_controls.collection_members(armature)
     spine = spine if spine is not None else spine_ik_fk.collection_members(armature)
     ik_rigs = [rig for rig in inventory["rigs"].values()
-               if float(armature.pose.bones[rig["target"].name].get("ik_fk", 1.0)) > 0.0]
+               if float(armature.pose.bones[rig["target"].name].get("ik_fk", 1.0)) > 1.0e-6]
     # A partial blend needs both inputs visible; only full IK replaces FK.
     replaced = {name for rig in ik_rigs
                 if float(armature.pose.bones[rig["target"].name].get("ik_fk", 1.0)) >= 1.0 - 1.0e-6
@@ -321,7 +321,7 @@ def _animation_names(armature, inventory, native, foot=None, torso=None, eyes=No
               if b.get(limb_ik.ROLE_KEY) == "POLE_LINE" and not b.hide
               and b.get(limb_ik.RIG_ID_KEY) in ik_ids}
     foot_ik = {name for target, names in foot["ik"].items()
-               if float(armature.pose.bones[target].get("ik_fk", 1.0)) > 0.0
+               if float(armature.pose.bones[target].get("ik_fk", 1.0)) > 1.0e-6
                for name in names}
     # Toe Bend remains useful in either mode; the reverse-foot roll is an IK input.
     # A legacy Stable heel stays in Controls but yields its animation display to Roll.
@@ -329,6 +329,144 @@ def _animation_names(armature, inventory, native, foot=None, torso=None, eyes=No
              | foot["always"] | foot_ik | torso["always"] | eyes["always"] | spine["always"]
              | root_control.collection_members(armature)["always"])
             - foot.get("hidden_base", set()) - spine["hidden_fk"])
+
+
+def _limb_display_names(inventory, keys):
+    names = set()
+    for key in keys:
+        rig = inventory['rigs'][key]
+        names.update(rig['chain'])
+        names.update(rig[role].name for role in ('target', 'pole', 'heel', 'line') if rig.get(role))
+    return names
+
+
+def _sync_limb_flags(armature, inventory, keys):
+    from . import bone_display, limb_ik, limb_ik_fk
+    changed = 0
+    for key in keys:
+        rig = inventory['rigs'][key]
+        mode = limb_ik_fk.mode_for_rig(armature, rig)
+        ik = mode != 'FK'
+        targets = [(rig[role].name, not ik) for role in ('target', 'pole', 'heel') if rig.get(role)]
+        if rig.get('line'):
+            targets.append((rig['line'].name,
+                            not ik or limb_ik._control_shape_style(rig['pole']) == 'SPHERE'))
+        if mode != 'IK':
+            # Native chains can also be shown through the artist's Original
+            # collection eye. Never force-hide them merely for choosing IK.
+            targets.extend((name, False) for name in rig['chain'])
+        for name, hidden in targets:
+            bone = armature.data.bones[name]
+            pb = armature.pose.bones[name]
+            if bone.hide != hidden or (hasattr(pb, 'hide') and pb.hide != hidden):
+                bone_display._set_hidden(armature, bone, hidden)
+                changed += 1
+            if not hidden and name in rig['chain'] and bone.hide_select:
+                bone.hide_select = False
+                changed += 1
+    return changed
+
+
+def _managed_body_layout(armature):
+    if not armature.data.get(PROFILE_KEY):
+        return None
+    if armature.data.get(AUTO_KEY) == 0:
+        raise ValueError('Automatic Body visibility is disabled; restore its managed layout before switching limb display.')
+    if not has_layout_backup(armature):
+        raise ValueError('The managed Body display has no recovery layout; organize Bone Collections first.')
+    collection = body_collection(armature)
+    if collection is None:
+        raise ValueError('The managed Body collection is missing; organize Bone Collections first.')
+    backup = _load_backup(armature)
+    saved = next((record for record in backup['managed'] if record['name'] == collection.name), None)
+    current = _collection_record(collection)
+    if saved is None or any(current[field] != saved[field] for field in ('parent', 'properties', 'bones')):
+        raise ValueError('The managed Body collection was repurposed; preserve that layout before switching limb display.')
+    return collection, backup, saved
+
+
+def _managed_body_membership(armature, inventory, layout):
+    from . import eye_controls, foot_controls, hair_bones_rig as hair, torso_controls, spine_ik_fk, root_control
+    collection, backup, saved = layout
+    foot, torso = foot_controls.collection_members(armature), torso_controls.collection_members(armature)
+    eyes, spine = eye_controls.collection_members(armature), spine_ik_fk.collection_members(armature)
+    generated = ({bone.name for bone in inventory['bones']} | foot['generated'] | torso['generated']
+                 | eyes['generated'] | spine['generated'] | root_control.collection_members(armature)['generated'])
+    hair_names = {bone.name for bone in armature.data.bones if bone.get(hair.OWNER_KEY) == hair.OWNER_VALUE}
+    hair_group = armature.data.collections_all.get('Hair')
+    if hair_group is not None:
+        stack = [hair_group]
+        while stack:
+            group = stack.pop()
+            hair_names.update(group.bones.keys())
+            stack.extend(group.children)
+    native = _native_body_names(armature, generated, hair_names)
+    return collection, backup, saved, _animation_names(armature, inventory, native, foot, torso, eyes, spine)
+
+
+def sync_limb_display(armature, inventory=None, *, keys=None, force_flags=False):
+    """Explicit mode display handoff, keeping native collection eye/solo state.
+
+    Callers may pass their verified inventory. Frame following reuses this same
+    policy, while explicit button presses can also repair stale pose hide flags.
+    Display failures restore their exact pointers, flags and saved membership.
+    """
+    from . import limb_fk_visuals, limb_ik
+    _structural_edit_guard(armature)
+    inventory = inventory if inventory is not None else limb_ik._validate_inventory(armature)
+    selected = tuple(inventory['rigs']) if keys is None else tuple(keys)
+    if any(key not in inventory['rigs'] for key in selected):
+        raise ValueError('A requested limb has no valid owned display setup.')
+    managed = _managed_body_layout(armature)
+    names = _limb_display_names(inventory, selected)
+    before = {name: (armature.data.bones[name].hide, armature.data.bones[name].hide_select,
+                     getattr(armature.pose.bones[name], 'hide', None)) for name in names}
+    shapes = limb_fk_visuals.native_display_snapshot(armature)
+    raw_backup = armature.data.get(BACKUP_KEY)
+    backup_refs = _copy_property(armature.data.get(BACKUP_REFS_KEY, {}))
+    membership = set(managed[0].bones.keys()) if managed else None
+    try:
+        shapes_changed = limb_fk_visuals.sync_native_display(armature, inventory, keys=selected)
+        flags_changed = _sync_limb_flags(armature, inventory, selected) if force_flags else 0
+        # Pole style and hide flags feed the Stable guide membership. Resolve
+        # component membership once, after those flags are final.
+        if managed:
+            managed = _managed_body_membership(armature, inventory, managed)
+        membership_changed = bool(managed and managed[3] != membership)
+        if membership_changed:
+            collection, backup, saved, desired = managed
+            _assign_exact(collection, armature.data, desired)
+            saved.update(_collection_record(collection))
+            _write_backup(armature, backup)
+            # Only names changed: the exact typed ID reference table must stay
+            # stable so primitive display checkpoints can restore its JSON.
+            if _copy_property(armature.data.get(BACKUP_REFS_KEY, {})) != backup_refs:
+                raise ValueError('Updating Body display unexpectedly changed saved ID references; no display changes were kept.')
+        if set(selected) == set(inventory['rigs']) and managed:
+            _FRAME_CACHE[armature.as_pointer()] = _display_frame_state(armature, managed[0])
+        else:
+            _FRAME_CACHE.pop(armature.as_pointer(), None)
+        return {'shapes_changed': shapes_changed, 'flags_changed': flags_changed,
+                'membership_changed': membership_changed}
+    except Exception:
+        limb_fk_visuals.restore_native_display(armature, shapes)
+        for name, (hidden, selectable, pose_hidden) in before.items():
+            armature.data.bones[name].hide = hidden
+            armature.data.bones[name].hide_select = selectable
+            if pose_hidden is not None:
+                armature.pose.bones[name].hide = pose_hidden
+        if managed and set(managed[0].bones.keys()) != membership:
+            _assign_exact(managed[0], armature.data, membership)
+        if raw_backup is None:
+            armature.data.pop(BACKUP_KEY, None)
+        else:
+            armature.data[BACKUP_KEY] = raw_backup
+        if backup_refs:
+            armature.data[BACKUP_REFS_KEY] = backup_refs
+        else:
+            armature.data.pop(BACKUP_REFS_KEY, None)
+        _FRAME_CACHE.pop(armature.as_pointer(), None)
+        raise
 
 
 def show_original_after_removal(armature):
@@ -616,10 +754,22 @@ def finish_rig_edit(armature, previous, *, failed=False):
             simplify_body_collections(armature, original_layout=previous)
 
 
+def _display_frame_state(armature, collection):
+    from . import limb_fk_visuals, limb_ik, spine_ik_fk
+    modes = tuple((pb.name, ("IK" if pb.get("ik_fk", 1.0) >= 1.0 - 1.0e-6
+                            else "FK" if pb.get("ik_fk", 1.0) <= 1.0e-6 else "BLEND")
+                   if isinstance(pb.get("ik_fk", 1.0), (int, float)) else None)
+                  for pb in armature.pose.bones
+                  if (pb.bone.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
+                      and pb.bone.get(limb_ik.ROLE_KEY) in {"HAND_IK", "FOOT_IK"})
+                  or (pb.bone.get(limb_ik.OWNER_KEY) == spine_ik_fk.OWNER_VALUE and "ik_fk" in pb))
+    return modes, tuple(sorted(collection.bones.keys())), armature.data.get(limb_fk_visuals.NATIVE_DISPLAY_KEY)
+
+
 @bpy.app.handlers.persistent
-def _frame_visibility(scene, _depsgraph=None, *, objects=None):
+def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventory=None):
     """Follow keyed modes without changing the artist's visible/solo switches."""
-    from . import eye_controls, foot_controls, hair_bones_rig as hair, limb_ik, torso_controls, spine_ik_fk, root_control
+    from . import limb_fk_visuals, limb_ik, spine_ik_fk
     for armature in scene.objects if objects is None else objects:
         if 'character_designer_body_original_mode_v1' in armature:
             continue
@@ -634,52 +784,25 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None):
         collection = body_collection(armature)
         if collection is None:
             continue
-        modes = tuple((pb.name, ("IK" if pb.get("ik_fk", 1.0) >= 1.0 - 1.0e-6
-                                else "FK" if pb.get("ik_fk", 1.0) <= 1.0e-6 else "BLEND")
-                       if isinstance(pb.get("ik_fk", 1.0), (int, float)) else None)
-                      for pb in armature.pose.bones
-                      if (pb.bone.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
-                          and pb.bone.get(limb_ik.ROLE_KEY) in {"HAND_IK", "FOOT_IK"})
-                      or (pb.bone.get(limb_ik.OWNER_KEY) == spine_ik_fk.OWNER_VALUE and "ik_fk" in pb))
-        membership = tuple(sorted(collection.bones.keys()))
         key = armature.as_pointer()
-        state = (modes, membership)
-        if _FRAME_CACHE.get(key) == state:
+        state = _display_frame_state(armature, collection)
+        modes = state[0]
+        previous = _FRAME_CACHE.get(key)
+        if previous == state:
             continue
         # Cache unsuccessful cases too: no repeated errors or retries per frame.
         _FRAME_CACHE[key] = state
         try:
-            backup = _load_backup(armature)
-            saved = next(record for record in backup["managed"] if record["name"] == collection.name)
-            current = _collection_record(collection)
-            if any(current[field] != saved[field] for field in ("parent", "properties", "bones")):
-                # A user-repurposed collection is theirs; a frame change never overwrites it.
-                continue
-            inventory = limb_ik._validate_inventory(armature)
-            foot = foot_controls.collection_members(armature)
-            torso = torso_controls.collection_members(armature)
-            eyes = eye_controls.collection_members(armature)
-            spine = spine_ik_fk.collection_members(armature)
-            generated = ({bone.name for bone in inventory["bones"]} | foot["generated"] | torso["generated"]
-                         | eyes["generated"] | spine["generated"] | root_control.collection_members(armature)["generated"])
-            hair_names = {b.name for b in armature.data.bones if b.get(hair.OWNER_KEY) == hair.OWNER_VALUE}
-            hair_group = armature.data.collections_all.get("Hair")
-            if hair_group is not None:
-                stack = [hair_group]
-                while stack:
-                    current = stack.pop()
-                    hair_names.update(b.name for b in current.bones)
-                    stack.extend(current.children)
-            native = _native_body_names(armature, generated, hair_names)
-            desired = _animation_names(armature, inventory, native, foot, torso, eyes, spine)
-            if desired != set(membership):
-                _assign_exact(collection, armature.data, desired)
-                # Update only our Body record, not artist edits to other collections.
-                saved.update(_collection_record(collection))
-                _write_backup(armature, backup)
-            _FRAME_CACHE[key] = (modes, tuple(sorted(desired)))
+            # A synchronous single-rig transaction may reuse its immediately
+            # preceding strict validation. Playback still validates for itself.
+            inventory = (verified_inventory if verified_inventory is not None
+                         and objects is not None and len(objects) == 1 else
+                         limb_ik._validate_inventory(armature))
+            sync_limb_display(armature, inventory, force_flags=bool(previous and previous[0] != modes))
+            _FRAME_CACHE[key] = _display_frame_state(armature, collection)
         except Exception:
             # The explicit rig tools report validation errors. Playback stays uninterrupted.
+            _FRAME_CACHE[key] = state
             continue
 
 

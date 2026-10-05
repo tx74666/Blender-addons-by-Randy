@@ -1,7 +1,8 @@
-# Character Designer 0.73.2 — per-character bone color palette
+# Character Designer 0.73.3 — per-character bone color palette
 
-Date: 2026-10-03, Asia/Shanghai. Owner: X / Character Designer. Validation,
-packaging, deployment and artist-scene save results are pending final recording.
+Date: 2026-10-03, Asia/Shanghai. Owner: X / Character Designer. Native validation,
+packaging, deployment, live refresh and artist-scene save are complete. The final
+saved X was independently read back with its pre-change model and pose baseline.
 
 ## Behavior and use
 
@@ -65,21 +66,52 @@ Version 0.73.2 copies RGBA into static swatches instead. Editable RGB properties
 are used only inside the running dialog. The regression test rejects any panel
 property bound to a temporary operator and checks all 15 copied color widgets.
 Crash evidence remains in X/Validation/bone_palette_20261003/X_palette_dialog_crash.txt.
+Version 0.73.3 also uses COLOR_GAMMA in the dialog, matching native bone display
+RGB semantics without changing stored colors or the character's saved scheme.
 
 Final results and evidence paths:
 
 | Check | Result / evidence |
 | --- | --- |
-| Five-group native/control membership and protected-data checks | 8 native palette cases pass, Blender 5.1.0; X/Validation/bone_palette_20261003/native_tests_8_final.log |
+| Five-group native/control membership and protected-data checks | 8 native palette cases pass, Blender 5.1.0, including COLOR_GAMMA; X/Validation/bone_palette_20261003/native_tests_8_gamma.log |
 | Per-group edits, current-color display and operator Undo contract | Passed in the palette suite; RGB tolerances account for Blender byte quantization |
 | Save/reopen, rename and strict restore | Passed in the palette suite, including dedicated-to-shared Dress recovery |
 | Invalid ownership/recovery records and injected write rollback | Passed; third-write failure restores the full checkpoint; direct and nested artist references still block Dress migration |
 | New controls/native Dress inheritance, shared migration and Dress removal | Passed; migration uses its existing solver tolerance while palette-only protected data remains exact |
 | Existing UI and controller-color regressions | UI routing 6, Head/Neck 4, Body detail 5, shared Dress safety 7 pass; total native cases this release: 30 |
-| Source package and verified Blender-version/project deployment checks | Pending final 0.73.2 rebuild and deployment checks |
-| Artist-scene refresh, authorized palette changes and save verification | Pending |
+| Source package and verified Blender-version/project deployment checks | 0.73.3 package: 133 files, 998,056 bytes. Blender 5.1, Blender 5.2 and X deployment checks each report zero differences; 5.2 was not a native GUI/regression target this release |
+| Live artist UI | Refresh and Apply completed in Blender 5.1.0; Dress Escape/Cancel and Arms Cancel return to the panel without a crash, all 15 static swatches redraw, native Undo/Redo restores palette state |
+| Artist-scene save and protection | Native Saved X.blend confirmation; 2026-10-03 21:25:24.519 +08:00, 32,317,033 bytes. Recovered saved readback passes against actual_x_before_palette.json; 598 raw meshes, 4 armatures and their protected channels/relationships retained; all 71 evaluated meshes have zero position error |
+| Character scheme | Body 20, Arms 42, Legs 16, Hair 128, Dress 51: 257 colored bones; 33 native Dress bones use soft pink, wrists/hands share Arms. 2,163 foreign/helper bone colors remain unchanged |
+| Eye/Hair texture recovery | Opened the artist X rather than a Temp auto-save, then used native Make Paths Absolute. Eye and both Hair images resolve to their original files; all 6 previously existing external images and material-image bindings are preserved. No packing or texture replacement |
 
-This note makes no GUI latency, FPS, memory or theme-hue claim. Runtime versions,
-test counts, real-model limits, deployment state and artist save state must be
-recorded from completed evidence before final delivery. Local packaging or
-deployment does not imply a commit, push or public release.
+During live recovery, the first saved readback caught cleared pose rotations.
+Native Undo History contained Clear Pose Rotation after selection operations;
+its origin was not established. The Make Paths Absolute history state preceding
+that operation restored the authored pose and selection. Palette was reapplied
+and the artist saved again. The failed readback and pose diagnosis remain intact;
+the succeeding evidence is saved_artist_palette_recovered_readback.json. No pose
+protection checks were relaxed. The final saved file SHA256 is
+6927aa8ca0ff1b4a4c1a18663d3e7af617f4f7a52d855023907f3f3ca3b532df.
+
+The final texture audit records unchanged input SHA/mtime and dirty=true in its
+isolated runtime, including after a read-only reopen. That runtime flag is not a
+disk-content comparison: the [Blender 5.1 getter](https://github.com/blender/blender/blob/v5.1.0/source/blender/makesrna/intern/rna_main.cc#L56)
+returns the WindowManager's file_saved flag. Initial texture comparisons that
+required dirty=false are retained as failed evidence. Save verification instead
+uses the native save confirmation and the strict protected readback of the same
+disk SHA. The explicit saved-verification comparison passes with that readback
+and an unchanged current disk fingerprint, retaining all dirty flags:
+texture_paths_verified_saved_disk_comparison.json. Raw texture evidence is
+texture_paths_after_save_reopen_readonly.json;
+pre-existing missing unpacked references Ref.png, Shoe.png and ShoeFront.png
+remain outside this Eye/Hair repair. Relative paths in a Temp recovery file were
+the observed failure mechanism; moving the external assets can still invalidate
+absolute paths.
+
+Dress Normal/Selected/Active stored RGB bytes are (173,110,140), (224,156,189),
+and (255,207,230). This note makes no GUI latency, FPS or memory improvement
+claim. Background verification did not modify or save the artist file. The
+pre-change artist backup remains before_live_change/X_before_palette.blend.
+Model/reasoning effort for this release are unrecorded. Changes, packaging and
+deployment are local; there is no commit, push, PR or public release.

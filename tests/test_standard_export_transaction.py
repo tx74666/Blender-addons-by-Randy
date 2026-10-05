@@ -23,6 +23,12 @@ SPEC = importlib.util.spec_from_file_location(
 transaction = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(transaction)
 
+LAYOUT_SPEC = importlib.util.spec_from_file_location(
+    "rr_unity_device_layout", ADDON / "rr_unity_device_layout.py"
+)
+layout_contract = importlib.util.module_from_spec(LAYOUT_SPEC)
+LAYOUT_SPEC.loader.exec_module(layout_contract)
+
 
 def tree_bytes(root):
     return {
@@ -236,6 +242,8 @@ class StandardExportTransactionTests(unittest.TestCase):
 
 class ExporterBoundaryTests(unittest.TestCase):
     def extract(self, name, namespace):
+        if name == "export_builder_asset":
+            namespace["is_unity_layout_reference"] = layout_contract.is_unity_layout_reference
         tree = ast.parse((ADDON / "__init__.py").read_text(encoding="utf-8-sig"))
         node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
         exec(compile(ast.Module(body=[node], type_ignores=[]), str(ADDON / "__init__.py"), "exec"), namespace)
@@ -488,6 +496,7 @@ class ModelIconContractTests(unittest.TestCase):
         self.write_old()
         self.surface_calls = []
         self.model_exports = []
+        self.icon_renders = []
         self.import_requests = []
         self.root = SimpleNamespace(name="Renamed Authoring Node")
         self.settings = SimpleNamespace(
@@ -507,6 +516,10 @@ class ModelIconContractTests(unittest.TestCase):
         def write_snapshot(root, path):
             Path(path).write_bytes(b"fresh snapshot")
             return path
+
+        def render_icon(root, settings, path, **kwargs):
+            self.icon_renders.append(root.name)
+            Path(path).write_bytes(b"fresh icon")
 
         self.namespace = {
             "os": os, "json": json, "uuid": uuid, "datetime": datetime, "timezone": timezone,
@@ -529,7 +542,7 @@ class ModelIconContractTests(unittest.TestCase):
             "export_fbx": export_fbx, "write_surface_text_source_snapshot": write_snapshot,
             "build_material_map_manifest": lambda *args: ([{"material": "FreshLit"}], []),
             "object_manager_variant_group_root": lambda root: None,
-            "render_or_copy_shared_icon": lambda root, settings, path, **kwargs: Path(path).write_bytes(b"fresh icon"),
+            "render_or_copy_shared_icon": render_icon,
             "queue_unity_builder_import": lambda paths: self.import_requests.extend(paths),
             "EXPORT_MODE_BUILDING": "BUILDING", "EXPORT_MODE_GENERAL": "GENERAL",
         }
@@ -537,6 +550,7 @@ class ModelIconContractTests(unittest.TestCase):
         names = {
             "write_manifest", "read_existing_manifest", "_export_builder_asset_contents",
             "render_icon_objects", "existing_uv_export_contract", "export_mode_is_standard",
+            "effective_export_resources",
         }
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
         self.assertEqual(names, {node.name for node in functions})
@@ -605,7 +619,45 @@ class ModelIconContractTests(unittest.TestCase):
         self.assertEqual([self.root.name], self.model_exports)
         self.assert_fresh_model(manifest)
 
+    def assert_standard_model_only(self, result, manifest):
+        self.assertEqual("exported", result[2])
+        self.assertEqual(["model"], manifest["exportedResources"])
+        self.assertEqual([self.root.name], self.model_exports)
+        self.assertEqual([], self.icon_renders)
+        self.assertEqual([], self.import_requests)
+        self.assertEqual(b"old icon", (self.package / "icon.png").read_bytes())
+        self.assert_fresh_model(manifest)
+
+    def test_standard_ignores_saved_model_and_icon_choices_without_erasing_them(self):
+        for model, icon in ((False, False), (False, True), (True, True)):
+            with self.subTest(saved_model=model, saved_icon=icon):
+                self.settings.include_model_with_export = model
+                self.settings.include_icon_with_export = icon
+                self.write_old()
+                self.model_exports.clear()
+                self.surface_calls.clear()
+                self.icon_renders.clear()
+                result, manifest = self.run_contents()
+                self.assert_standard_model_only(result, manifest)
+                self.assertEqual(model, self.settings.include_model_with_export)
+                self.assertEqual(icon, self.settings.include_icon_with_export)
+
+    def test_standard_overrides_explicit_icon_only_and_empty_requests(self):
+        self.settings.include_model_with_export = False
+        self.settings.include_icon_with_export = True
+        for model, icon in ((False, False), (False, True), (True, True)):
+            with self.subTest(requested_model=model, requested_icon=icon):
+                self.write_old()
+                self.model_exports.clear()
+                self.surface_calls.clear()
+                self.icon_renders.clear()
+                result, manifest = self.run_contents(model=model, icon=icon)
+                self.assert_standard_model_only(result, manifest)
+                self.assertFalse(self.settings.include_model_with_export)
+                self.assertTrue(self.settings.include_icon_with_export)
+
     def test_model_and_icon_refresh_both_resources_despite_legacy_skip(self):
+        self.settings.export_mode = "BUILDING"
         self.settings.include_icon_with_export = True
         _, manifest = self.run_contents()
         self.assertEqual(["model", "icon"], manifest["exportedResources"])
@@ -613,19 +665,19 @@ class ModelIconContractTests(unittest.TestCase):
         self.assertEqual(b"fresh icon", (self.package / "icon.png").read_bytes())
         self.assert_fresh_model(manifest)
 
-    def test_icon_only_preserves_model_contract_in_both_modes(self):
+    def test_modular_icon_only_preserves_model_contract(self):
+        self.settings.export_mode = "BUILDING"
         self.settings.include_model_with_export = False
         self.settings.include_icon_with_export = True
-        for mode in ("GENERAL", "BUILDING"):
-            with self.subTest(mode=mode):
-                self.settings.export_mode = mode
-                _, manifest = self.run_contents()
-                self.assertEqual(["icon"], manifest["exportedResources"])
-                self.assertEqual(b"fresh icon", (self.package / "icon.png").read_bytes())
-                self.assert_cached_contract(manifest)
+        _, manifest = self.run_contents()
+        self.assertEqual(["icon"], manifest["exportedResources"])
+        self.assertEqual(b"fresh icon", (self.package / "icon.png").read_bytes())
+        self.assertEqual([self.root.name], self.icon_renders)
+        self.assert_cached_contract(manifest)
         self.assertEqual([str(self.manifest_path)], self.import_requests)
 
     def test_icon_only_does_not_invent_missing_model_source_fields(self):
+        self.settings.export_mode = "BUILDING"
         for field in ("sourceBlend", "sourceObject", "surfaceText"):
             self.old.pop(field)
         self.write_old()
@@ -633,6 +685,7 @@ class ModelIconContractTests(unittest.TestCase):
         self.assert_cached_contract(manifest)
 
     def test_icon_only_preserves_explicit_empty_surface_text(self):
+        self.settings.export_mode = "BUILDING"
         self.old["surfaceText"] = []
         self.write_old()
         _, manifest = self.run_contents(model=False, icon=True)
@@ -648,6 +701,7 @@ class ModelIconContractTests(unittest.TestCase):
         self.assert_identity_preserved(manifest)
 
     def test_no_resource_request_leaves_existing_package_untouched(self):
+        self.settings.export_mode = "BUILDING"
         original = tree_bytes(self.package)
         with self.assertRaisesRegex(RuntimeError, "Enable Model, Icon"):
             self.run_contents(model=False, icon=False)
@@ -655,6 +709,7 @@ class ModelIconContractTests(unittest.TestCase):
         self.assertEqual([], self.model_exports)
 
     def run_separate_icon_renderer(self):
+        self.settings.export_mode = "BUILDING"
         noop = lambda *args, **kwargs: None
         self.namespace.update({
             "sync_object_manager_names": noop, "validate_standard_output_route": noop,

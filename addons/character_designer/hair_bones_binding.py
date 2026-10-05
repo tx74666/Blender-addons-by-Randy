@@ -17,6 +17,7 @@ from . import hair_bones_rig as rig
 from . import hair_bones_topology as topology
 from . import hair_bones_variants as variants
 from . import control_colors
+from . import hair_motion_lifecycle as motion_lifecycle
 from .selected_bone_weights import _capture_vertex_groups, _restore_vertex_groups
 
 BINDING_KEY = "character_designer_hair_binding_v1"
@@ -223,6 +224,7 @@ def _modifier_move(source, modifier, index):
 
 def bind_hair(context, source, plans, *, bone_count=4, armature=None):
     """Bind the original mesh; record only changes owned by this operation."""
+    motion_lifecycle.before_mutation(context, source)
     if variants.source_for(source) is not source:
         raise rig.HairBonesRigError("Return to the original hair mesh before binding.")
     if is_bound(source) or rig._read_records(source):
@@ -249,6 +251,7 @@ def bind_hair(context, source, plans, *, bone_count=4, armature=None):
     front_before = target.show_in_front
     old_groups = None
     result = None
+    motion_identity = motion_lifecycle.snapshot(source)
     try:
         rig._mode(context, source, "OBJECT")
         old_groups = _capture_vertex_groups(source)
@@ -322,6 +325,7 @@ def bind_hair(context, source, plans, *, bone_count=4, armature=None):
         if existing and modifier_before:
             _modifier_move(source, existing, modifier_before["index"])
         target.show_in_front = front_before
+        motion_lifecycle.restore(source, motion_identity)
         rig._restore_context(context, source, state)
         raise
 
@@ -487,6 +491,7 @@ def _restore_owned_bones(context, armature, states):
 
 def remove_hair_binding(context, source):
     """Remove owned hair bones and restore only the binding's previous state."""
+    motion_lifecycle.before_mutation(context, source)
     data = _read(source)
     armature = source.get(rig.RIG_KEY)
     rig._validate_object(context, source)
@@ -515,8 +520,11 @@ def remove_hair_binding(context, source):
     modifier_index = tuple(source.modifiers).index(modifier)
     rig._mode(context, source, "OBJECT")
     current_groups = _capture_vertex_groups(source)
+    motion_identity = motion_lifecycle.snapshot(source)
     mirror = armature.data.use_mirror_x
+    bone_deletion_started = False
     try:
+        motion_lifecycle.remember_before_remove(source)
         # Restore all fallible weights/transforms before deleting any bone.
         _restore_touched_weights(source, data["groups"], data["affected_groups"])
         for saved in data["mirrors"]:
@@ -527,19 +535,22 @@ def remove_hair_binding(context, source):
         armature.data.use_mirror_x = False
         rig._mode(context, armature, "EDIT")
         for name in reversed(data["bones"]):
+            bone_deletion_started = True
             armature.data.edit_bones.remove(armature.data.edit_bones[name])
         rig._mode(context, source, "OBJECT")
         context.view_layer.update()
     except Exception as exc:
         errors = []
         try:
-            _restore_owned_bones(context, armature, bone_states)
+            if bone_deletion_started:
+                _restore_owned_bones(context, armature, bone_states)
             rig._mode(context, source, "OBJECT")
             _restore_vertex_groups(source, current_groups)
             _restore_parent(source, parent_state, current_parent)
             for item, flag in current_mirrors:
                 item.use_mirror_vertex_groups = flag
             _modifier_move(source, modifier, modifier_index)
+            motion_lifecycle.restore(source, motion_identity)
             rig._restore_context(context, source, state)
         except Exception as rollback:
             errors.append(str(rollback))
@@ -714,6 +725,7 @@ def _reveal_source(context, source):
 
 
 def remove_generated_copies(context, source):
+    motion_lifecycle.before_mutation(context, source)
     """Delete verified historical copies, retaining and revealing the source."""
     if source is None or source.type != "MESH" or variants.source_for(source) is not source:
         raise rig.HairBonesRigError("Choose the original hair mesh for copy cleanup.")

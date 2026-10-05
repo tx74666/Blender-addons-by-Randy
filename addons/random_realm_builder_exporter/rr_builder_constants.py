@@ -143,6 +143,8 @@ EXPORT_NAME_HINT_DISMISSED_PROP = "rr_export_name_hint_dismissed"
 EXPORT_STABLE_ID_PROP = "rr_export_stable_id"
 EXPORT_LAST_ID_PROP = "rr_export_last_id"
 EXPORT_PREVIOUS_IDS_PROP = "rr_export_previous_ids"
+EXPORT_ASSET_ID_OVERRIDE_PROP = "rr_export_asset_id_override"
+EXPORT_FOLLOW_NAME_PROP = "rr_export_follow_object_name"
 EXPORT_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*_\d+x\d+x\d+$")
 
 

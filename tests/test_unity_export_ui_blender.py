@@ -37,6 +37,7 @@ def mesh(name):
 class Layout:
     def __init__(self):
         self.buttons, self.fields, self.labels = [], [], []
+        self.operator_properties = []
         self.boxes = 0
     def row(self, **_kwargs): return self
     def box(self):
@@ -52,7 +53,13 @@ class Layout:
         category, name = identifier.split('.')
         prop = getattr(getattr(bpy.ops, category), name).get_rna_type()
         self.buttons.append((identifier, kwargs, self.__dict__.get('operator_context')))
-        return SimpleNamespace()
+        properties = SimpleNamespace()
+        self.operator_properties.append((identifier, properties))
+        return properties
+
+    def sections(self):
+        return [properties.section for identifier, properties in self.operator_properties
+                if identifier == 'character_designer.unity_export_section']
 
 
 class WindowManager:
@@ -88,8 +95,9 @@ class FakeExport:
     def __getattr__(self, name): return getattr(unity_export, name)
     def export_running(self): return self.running
     def bound_meshes(self, *_args): return [body, bound]
-    def _collection_scope(self, *_args):
-        return {'rigs': {main}, 'helpers': set(), 'eligible': [body, bound]}
+    def _collection_scope(self, *_args, **_kwargs):
+        return {'rigs': {main}, 'helpers': set(), 'eligible': [body, bound],
+                'bindings': {body: {main}, bound: {main}, extra: set()}}
     def collect_character(self, *_args, **_kwargs): return {'objects': self.objects, 'warnings': []}
     def begin_export(self, *_args):
         if self.running: raise ValueError('Already running')
@@ -137,6 +145,21 @@ for name in ('show_objects', 'show_warnings', 'show_materials'):
     assert prop.default is False and not prop.is_skip_save, name
     assert getattr(config, name) is False, name
 
+# Disclosure actions update the same saved rig settings without adding scene
+# Undo entries or appearing in the operator search menu.
+section_operator = ui.CHARACTERDESIGNER_OT_unity_export_section
+assert 'INTERNAL' in section_operator.bl_options and 'UNDO' not in section_operator.bl_options
+assert bpy.ops.character_designer.unity_export_section.get_rna_type().properties['section'].type == 'STRING'
+for section, field in (('OBJECTS', 'show_objects'), ('MATERIALS', 'show_materials'),
+                       ('WARNINGS', 'show_warnings')):
+    before = {name: getattr(config, name) for name in ('show_objects', 'show_materials', 'show_warnings')}
+    assert bpy.ops.character_designer.unity_export_section(section=section) == {'FINISHED'}
+    assert getattr(config, field) is not before[field]
+    assert all(getattr(config, name) == value for name, value in before.items() if name != field)
+    assert config.directory == '//UnityTarget/' and second.character_designer_unity_export.directory == ''
+    assert bpy.ops.character_designer.unity_export_section(section=section) == {'FINISHED'}
+    assert {name: getattr(config, name) for name in before} == before
+
 bpy.ops.object.select_all(action='DESELECT')
 extra.select_set(True)
 bpy.context.view_layer.objects.active = extra
@@ -149,6 +172,11 @@ def rejected(operation, expected):
         assert expected in str(exc), str(exc)
     else:
         assert result == {'CANCELLED'}, result
+
+
+flags_before = tuple(getattr(config, name) for name in ('show_objects', 'show_materials', 'show_warnings'))
+rejected(lambda: bpy.ops.character_designer.unity_export_section(section='UNKNOWN'), 'Unknown export section')
+assert tuple(getattr(config, name) for name in ('show_objects', 'show_materials', 'show_warnings')) == flags_before
 
 
 # Legacy actions cannot bypass the live Armature qualification, even when a
@@ -242,20 +270,171 @@ assert [entry.material for entry in config.simple_materials] == [cloth]
 config.simple_materials.add().material = stale
 config.show_materials = True
 layout = Layout()
-ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
+with patch.object(ui, '_material_choices', side_effect=AssertionError('Panel enumerated material slots')):
+    ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
 material_buttons = [kwargs for identifier, kwargs, _context in layout.buttons
                     if identifier == 'character_designer.unity_simple_material']
-assert {item['text'] for item in material_buttons if item.get('icon', '').startswith('CHECKBOX_')} == {
-    'Skin', 'Cloth', 'Stale Choice'}
+assert 'MATERIALS' in layout.sections() and 'show_materials' not in layout.fields
+assert [label for label in layout.labels if label in {'Skin', 'Cloth', 'Stale Choice'}] == ['Cloth', 'Stale Choice']
+assert not any(item.get('icon', '').startswith('CHECKBOX_') for item in material_buttons)
 assert len([item for item in material_buttons if item.get('text') == 'Use Original']) == 2
+assert any(identifier == 'character_designer.unity_choose_simple_material'
+           and kwargs.get('text') == 'Add Material' and operator_context == 'INVOKE_DEFAULT'
+           for identifier, kwargs, operator_context in layout.buttons)
+assert [properties.material_name for identifier, properties in layout.operator_properties
+        if identifier == 'character_designer.unity_simple_material'] == ['Cloth', 'Stale Choice']
+assert all(not properties.enabled for identifier, properties in layout.operator_properties
+           if identifier == 'character_designer.unity_simple_material')
 assert bpy.ops.character_designer.unity_simple_material(material_name=stale.name, enabled=False) == {'FINISHED'}
 assert bpy.ops.character_designer.unity_simple_material(material_name=cloth.name, enabled=False) == {'FINISHED'}
 assert not config.simple_materials
 assert [shader_state(material) for material in (skin, cloth, stale)] == shaders_before
 assert body.data.materials[0] == skin and bound.data.materials[0] == cloth
+
+# Exercise the real chooser methods with native character/material data and a
+# recording WM. Only opening the actual search popup is replaced.
+class SearchContext:
+    def __init__(self):
+        self.popups = []
+        self.window_manager = SimpleNamespace(invoke_search_popup=self.popups.append)
+    def __getattr__(self, name): return getattr(bpy.context, name)
+
+
+class MaterialChooser:
+    invoke = ui.CHARACTERDESIGNER_OT_unity_choose_simple_material.invoke
+    execute = ui.CHARACTERDESIGNER_OT_unity_choose_simple_material.execute
+    cancel = ui.CHARACTERDESIGNER_OT_unity_choose_simple_material.cancel
+    def __init__(self): self.reports = []; self.material_name = ''; self.search_token = ''
+    def report(self, severity, message): self.reports.append((severity, message))
+
+
+assert ui.CHARACTERDESIGNER_OT_unity_choose_simple_material.bl_property == 'material_name'
+assert bpy.ops.character_designer.unity_choose_simple_material.get_rna_type().properties['material_name'].type == 'ENUM'
+assert bpy.ops.character_designer.unity_choose_simple_material.get_rna_type().properties['search_token'].is_skip_save
+assert not ui._SIMPLE_MATERIAL_SEARCH
+search_context = SearchContext()
+late = bpy.data.materials.new('Late Included Material')
+bound.data.materials.append(late)
+chooser = MaterialChooser()
+with patch.object(ui, '_material_choices', wraps=ui._material_choices) as choices, \
+     patch.object(unity_export, 'collect_character', wraps=unity_export.collect_character) as collection:
+    assert chooser.invoke(search_context, None) == {'RUNNING_MODAL'}
+    assert choices.call_count == collection.call_count == 1
+assert search_context.popups == [chooser]
+assert [item[0] for item in chooser._material_items] == ['Cloth', 'Late Included Material', 'Skin']
+assert ui._SIMPLE_MATERIAL_SEARCH[chooser.search_token] is chooser._material_items
+with patch.object(ui, '_material_choices', side_effect=AssertionError('Enum callback rescanned materials')), \
+     patch.object(unity_export, 'collect_character', side_effect=AssertionError('Enum callback recollected scene')):
+    for _repeat in range(3):
+        assert ui._simple_material_search_items(chooser, search_context) is chooser._material_items
+
+# bpy.ops allocates the registered operator and its real dynamic EnumProperty.
+# A temporary execute callback routes its original invoke to the recording WM,
+# so enum assignment is native without opening a search popup in background.
+native_enum_proof = []
+native_chooser_class = ui.CHARACTERDESIGNER_OT_unity_choose_simple_material
+native_invoke = native_chooser_class.invoke
+def probe_native_enum(operator, _context):
+    native_context = SearchContext()
+    cache_before = dict(ui._SIMPLE_MATERIAL_SEARCH)
+    try:
+        with patch.object(ui, '_material_choices', wraps=ui._material_choices) as choices, \
+             patch.object(unity_export, 'collect_character', wraps=unity_export.collect_character) as collection:
+            assert native_invoke(operator, native_context, None) == {'RUNNING_MODAL'}
+            assert choices.call_count == collection.call_count == 1
+        assert native_context.popups == [operator]
+        items = operator._material_items
+        assert operator.search_token not in cache_before
+        properties = operator.properties
+        assert isinstance(properties, bpy.types.OperatorProperties)
+        assert properties.search_token == operator.search_token
+        with patch.object(ui, '_material_choices', side_effect=AssertionError('Native enum callback scanned')), \
+             patch.object(unity_export, 'collect_character', side_effect=AssertionError('Native enum callback collected')):
+            for _repeat in range(3):
+                assert ui._simple_material_search_items(properties, native_context) is items
+            for name, _label, _description in items:
+                operator.material_name = name
+                assert operator.material_name == properties.material_name == name
+            try:
+                operator.material_name = 'Not An Included Fixture Material'
+            except (TypeError, ValueError):
+                pass
+            else:
+                raise AssertionError('Native enum accepted an absent material choice')
+        native_enum_proof.append(tuple(item[0] for item in items))
+    finally:
+        native_chooser_class.cancel(operator, native_context)
+        assert ui._SIMPLE_MATERIAL_SEARCH == cache_before, 'Native popup cancel leaked or cleared another popup'
+        assert ui._simple_material_search_items(operator.properties, native_context) == ()
+    return {'FINISHED'}
+with patch.object(native_chooser_class, 'execute', probe_native_enum):
+    assert bpy.ops.character_designer.unity_choose_simple_material('EXEC_DEFAULT') == {'FINISHED'}
+assert native_enum_proof == [('Cloth', 'Late Included Material', 'Skin')]
+assert not config.simple_materials, 'Native enum probe changed saved material choices'
+bound.data.materials.pop(index=1)
+chooser.material_name = late.name
+assert chooser.execute(search_context) == {'CANCELLED'}
+assert 'not used by an included character mesh' in chooser.reports[-1][1]
+assert not config.simple_materials
+assert not ui._SIMPLE_MATERIAL_SEARCH
+bpy.data.materials.remove(late)
+
+chooser = MaterialChooser()
+assert chooser.invoke(search_context, None) == {'RUNNING_MODAL'}
+chooser.material_name = cloth.name
+bound.modifiers['Armature'].show_viewport = False
+assert chooser.execute(search_context) == {'CANCELLED'}
+assert 'not used by an included character mesh' in chooser.reports[-1][1]
+assert not config.simple_materials
+assert not ui._SIMPLE_MATERIAL_SEARCH
+bound.modifiers['Armature'].show_viewport = True
+
+chooser = MaterialChooser()
+assert chooser.invoke(search_context, None) == {'RUNNING_MODAL'}
+chooser.material_name = skin.name
+bpy.context.scene.character_designer_setup.rig = second
+assert chooser.execute(search_context) == {'CANCELLED'}
+assert 'character changed' in chooser.reports[-1][1]
+assert not second.character_designer_unity_export.simple_materials
+assert not ui._SIMPLE_MATERIAL_SEARCH
+bpy.context.scene.character_designer_setup.rig = main
+
+chooser = MaterialChooser()
+assert chooser.invoke(search_context, None) == {'RUNNING_MODAL'}
+chooser.material_name = cloth.name
+missing_index = len(config.extras)
+config.extras.add().enabled = True
+assert chooser.execute(search_context) == {'CANCELLED'}
+assert 'saved export reference is missing' in chooser.reports[-1][1]
+assert not config.simple_materials
+assert not ui._SIMPLE_MATERIAL_SEARCH
+assert bpy.ops.character_designer.unity_remove_extra(index=missing_index) == {'FINISHED'}
+chooser = MaterialChooser()
+assert chooser.invoke(search_context, None) == {'RUNNING_MODAL'}
+chooser.material_name = cloth.name
+with patch.object(unity_export, 'collect_character', wraps=unity_export.collect_character) as collection:
+    assert chooser.execute(search_context) == {'FINISHED'}
+    assert collection.call_count == 1
+assert [entry.material for entry in config.simple_materials] == [cloth]
+assert not ui._SIMPLE_MATERIAL_SEARCH
+assert [shader_state(material) for material in (skin, cloth, stale)] == shaders_before
+assert body.data.materials[0] == skin and tuple(bound.data.materials) == (cloth,)
+blocked_chooser = MaterialChooser()
+with patch.object(unity_export, 'export_running', return_value=True), \
+     patch.object(unity_export, 'collect_character', side_effect=AssertionError('Running export chooser collected scene')):
+    assert blocked_chooser.invoke(search_context, None) == {'CANCELLED'}
+assert blocked_chooser not in search_context.popups
+assert not ui._SIMPLE_MATERIAL_SEARCH
+
+cancelled_chooser = MaterialChooser()
+assert cancelled_chooser.invoke(search_context, None) == {'RUNNING_MODAL'}
+assert ui._simple_material_search_items(cancelled_chooser, search_context)
+cancelled_chooser.cancel(search_context)
+assert not ui._SIMPLE_MATERIAL_SEARCH
+assert ui._simple_material_search_items(cancelled_chooser, search_context) == ()
 assert bpy.ops.character_designer.unity_simple_material(material_name=cloth.name, enabled=True) == {'FINISHED'}
 config.show_materials = False
-print('PASS registered per-material choices, stale removal, and unchanged source shaders', flush=True)
+print('PASS selected-only material body, fresh searchable chooser, guarded acceptance, stale removal and unchanged shaders', flush=True)
 
 fake = FakeExport()
 with patch.object(ui, '_exporter', return_value=fake):
@@ -268,6 +447,8 @@ with patch.object(ui, '_exporter', return_value=fake):
         export_button = next(item for item in layout.buttons if item[0] == 'character_designer.unity_export')
         assert export_button[2] == 'INVOKE_DEFAULT'
         assert 'rig' in layout.fields and 'directory' in layout.fields
+        assert 'OBJECTS' in layout.sections() and 'MATERIALS' in layout.sections()
+        assert not {'show_objects', 'show_materials', 'show_warnings'} & set(layout.fields)
         assert not any(item[0] == 'character_designer.unity_add_selected' for item in layout.buttons)
         assert 'object' not in layout.fields and 'enabled' not in layout.fields
         assert extra.name not in layout.labels
@@ -339,7 +520,7 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
         assert 'Forearm correction is Blender-only; not included in Unity.' in shown, shown
         assert 'skipped' not in shown and '9 warning' not in shown, shown
         assert 'Preserve Volume' not in shown and 'Old files retained' not in shown, shown
-        assert 'show_warnings' in layout.fields
+        assert 'WARNINGS' in layout.sections() and 'show_warnings' not in layout.fields
         actions = {identifier for identifier, _kwargs, _context in layout.buttons}
         assert 'character_designer.unity_locate_unweighted' in actions
         assert 'character_designer.unity_simple_material' in actions
@@ -351,6 +532,7 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
             ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
             assert status in layout.labels, layout.labels
             assert 'show_warnings' not in layout.fields, layout.fields
+            assert 'WARNINGS' not in layout.sections(), layout.sections()
             assert 'Exported · 3 warning(s)' not in layout.labels
         operator = Modal()
         operator._result(config, {'filepath': 'Cosha.fbx', 'report_path': str(report_path),
@@ -373,6 +555,7 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
             ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
             assert 'Exported successfully' not in layout.labels
             assert 'show_warnings' not in layout.fields
+            assert 'WARNINGS' not in layout.sections()
             assert not any(label.startswith('Warnings') for label in layout.labels)
             assert layout.boxes == 0, 'Notice-only report created an empty warning area'
             assert not any(identifier == 'character_designer.unity_open_path'
@@ -383,6 +566,7 @@ with tempfile.TemporaryDirectory(prefix='cd-export-message-ui-') as temporary:
         ui.CHARACTERDESIGNER_PT_unity_export.draw(SimpleNamespace(layout=layout), bpy.context)
         assert 'Exported successfully' not in layout.labels
         assert 'show_warnings' not in layout.fields and layout.boxes == 0
+        assert 'WARNINGS' not in layout.sections()
 print('PASS actionable mixed warnings, unchanged full reports, hidden empty warnings, no path buttons and failure/cancel precedence', flush=True)
 
 with tempfile.TemporaryDirectory(prefix='cd-export-ui-') as temporary:
@@ -398,7 +582,11 @@ with tempfile.TemporaryDirectory(prefix='cd-export-ui-') as temporary:
     assert not other.simple_materials
     assert not any(getattr(other, name) for name in ('show_objects', 'show_materials', 'show_warnings'))
 print('PASS save/reopen preserves separate rig destinations, foldouts and material choices', flush=True)
+unregister_chooser = MaterialChooser()
+assert unregister_chooser.invoke(SearchContext(), None) == {'RUNNING_MODAL'}
+assert ui._SIMPLE_MATERIAL_SEARCH
 character_designer.unregister()
+assert not ui._SIMPLE_MATERIAL_SEARCH, 'Unregister retained transient material search entries'
 assert not hasattr(bpy.types.Object, 'character_designer_unity_export')
 assert not hasattr(bpy.types, 'CHARACTERDESIGNER_PT_unity_export')
 print('UNITY_EXPORT_UI_PASSED', flush=True)

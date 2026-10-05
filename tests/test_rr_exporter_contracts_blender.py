@@ -673,9 +673,14 @@ class ExporterUvContractTests(unittest.TestCase):
             self.assertNotIn(exporter.EXPORT_LAST_ID_PROP, copied)
             self.assertNotIn(exporter.EXPORT_PREVIOUS_IDS_PROP, copied)
 
-    def test_native_copy_with_shared_stable_id_is_rejected_before_manifest(self):
+    def test_legacy_copy_without_recorded_owner_is_rejected_before_manifest(self):
         root, _, _, _ = make_quad("NativeCopy_200x10x200")
-        stable_id, _ = exporter.snapshot_export_identity(root)
+        # An older file has no persistent ownership record. It is unsafe to
+        # guess which of two Objects should retain the published asset.
+        stable_id = "rr_asset_legacy_shared_copy_fixture"
+        root[exporter.EXPORT_STABLE_ID_PROP] = stable_id
+        root[exporter.EXPORT_LAST_ID_PROP] = exporter.export_asset_id(root)
+        root[exporter.EXPORT_PREVIOUS_IDS_PROP] = "[]"
         copied = root.copy()
         copied.data = root.data.copy()
         copied.name = "NativeCopyVariant_200x10x200"
@@ -2091,20 +2096,33 @@ class ExporterUvContractTests(unittest.TestCase):
                     profile_name="Default",
                     use_reference_layout=False,
                     skip_existing_exports=False,
+                    include_model_with_export=False,
+                    include_icon_with_export=True,
                 )
-                exporter.export_builder_asset(
-                    obj,
-                    settings,
-                    export_model=True,
-                    include_icon=False,
-                    queue_import=True,
-                )
+                with mock.patch.object(exporter, "render_or_copy_shared_icon",
+                                       side_effect=AssertionError("Standard must not render an icon")):
+                    exporter.export_builder_asset(
+                        obj,
+                        settings,
+                        export_model=False,
+                        include_icon=True,
+                        queue_import=True,
+                    )
                 manifest_path = os.path.join(
                     temp_dir,
                     exporter.export_asset_id(obj),
                     "manifest.json",
                 )
                 self.assertTrue(os.path.isfile(manifest_path))
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                self.assertEqual(["model"], manifest["exportedResources"])
+                self.assertEqual("", manifest["iconFile"])
+                model_path = os.path.join(os.path.dirname(manifest_path), manifest["modelFile"])
+                with open(model_path, "rb") as handle:
+                    self.assertEqual(hashlib.sha256(handle.read()).hexdigest(), manifest["uvExport"]["modelSha256"])
+                self.assertFalse(os.path.exists(os.path.join(os.path.dirname(manifest_path), "icon.png")))
+                self.assertEqual((False, True), (settings.include_model_with_export, settings.include_icon_with_export))
                 self.assertEqual(queued, [])
         finally:
             exporter.queue_unity_builder_import = original_queue

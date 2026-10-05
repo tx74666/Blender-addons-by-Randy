@@ -7,6 +7,7 @@ No rest bones, helper objects or per-frame Python pose handlers are added.
 """
 import json
 import math
+import hashlib
 
 from mathutils import Matrix
 from . import skirt_rig as skirt, limb_ik
@@ -30,7 +31,8 @@ def _channels(pb):
 
 
 def _restore(pb, state):
-    pb.rotation_mode = state['mode']
+    if pb.rotation_mode != state['mode']:
+        pb.rotation_mode = state['mode']
     for key, value in state['channels'].items():
         if tuple(getattr(pb, key)) != tuple(value):
             setattr(pb, key, value)
@@ -43,13 +45,36 @@ def _locks(pb):
 
 def _restore_locks(pb, state):
     for key, value in state.items():
-        setattr(pb, key, value)
+        current = getattr(pb, key)
+        same = tuple(current) == tuple(value) if hasattr(current, '__len__') else current == value
+        if not same:
+            setattr(pb, key, value)
 
 
 def _update(context, targets):
+    if not targets:
+        return
     for target in targets:
         target.update_tag(refresh={'OBJECT'})
     context.view_layer.update()
+
+
+def _surface(source, target, record, *, prove=True):
+    """Keep the surface output running during Original posing and protect its graph."""
+    from . import skirt_physics
+    backend = skirt_physics.backend(record)
+    if backend == skirt_physics.LEGACY_BACKEND:
+        return None, None
+    service = skirt_physics._surface_module()
+    if prove:
+        service.validate(source, target, record)
+    physics = record['physics']
+    identity = {'backend': backend, 'surface': physics.get('surface'),
+                'proxy': physics.get('proxy'), 'tracker': physics.get('tracker'),
+                'rows': physics.get('rows'), 'columns': physics.get('columns')}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
+    return service, digest
 
 
 def _inventory(context, main):
@@ -197,6 +222,9 @@ def _resolve(context, main, entries):
         parents = {name: target.data.bones[name].parent.name if target.data.bones[name].parent else '' for name in names}
         if set(entry['names']) != names or entry['rest'] != rest or entry['parents'] != parents:
             raise ValueError('The Dress originals were structurally edited; undo that edit before returning.')
+        _service, identity = _surface(source, target, record, prove=False)
+        if entry.get('surface_installation') != identity:
+            raise ValueError('The Dress surface setup changed in Original; restore it before returning.')
         relations = _relations(target, source, record, working=True)
         result.append((entry, target, source, record, relations))
     if set(inventory) != {entry['owner'] for entry in entries}:
@@ -207,6 +235,7 @@ def _resolve(context, main, entries):
 def validate_active(context, main, entries):
     """Refuse edits to isolated setup state before returning to Controls."""
     for entry, _target, _source, _record, relations in _resolve(context, main, entries):
+        _surface(_source, _target, _record)
         for pb, copy, rotation in relations:
             state = entry['constraints'][pb.name]
             if (copy.mix_mode != 'BEFORE_FULL' or copy.mute != state['manual_mute']
@@ -221,9 +250,10 @@ def prepare(context, main):
         from . import bone_display
         bone_display._editable(target)
         relations = _relations(target, source, record)
+        _service, surface_identity = _surface(source, target, record)
         evaluated = target.evaluated_get(context.evaluated_depsgraph_get())
         names = sorted({pb.name for pb, _copy, _rot in relations} | {record['controls']['waist']})
-        entries.append({'owner': owner, 'names': names,
+        entries.append({'owner': owner, 'names': names, 'surface_installation': surface_identity,
                         'rest': _rest(target, names),
                         'parents': {name: target.data.bones[name].parent.name if target.data.bones[name].parent else '' for name in names},
                         'channels': {name: _channels(target.pose.bones[name]) for name in names},
@@ -235,13 +265,22 @@ def prepare(context, main):
     return entries
 
 
-def checkpoint(context, main, entries):
-    return [{'entry': entry, 'target': target, 'source': source,
-             'channels': {name: _channels(target.pose.bones[name]) for name in entry['names']},
-             'locks': {name: _locks(target.pose.bones[name]) for name in entry['names']},
-             'constraints': [(copy, copy.mute, copy.mix_mode, rot, rot.mute) for _pb, copy, rot in relations],
-             'corrections': source.get(CORRECTIONS)}
-            for entry, target, source, _record, relations in _resolve(context, main, entries)]
+def checkpoint(context, main, entries, *, targets=None):
+    """Reuse a proof only across consecutive reads before any native update."""
+    targets = _resolve(context, main, entries) if targets is None else targets
+    saved = []
+    for entry, target, source, record, relations in targets:
+        item = {'entry': entry, 'target': target, 'source': source,
+                'channels': {name: _channels(target.pose.bones[name]) for name in entry['names']},
+                'locks': {name: _locks(target.pose.bones[name]) for name in entry['names']},
+                'constraints': [(copy, copy.mute, copy.mix_mode, rot, rot.mute) for _pb, copy, rot in relations],
+                'corrections': source.get(CORRECTIONS)}
+        service, _identity = _surface(source, target, record, prove=False)
+        if service is not None:
+            item.update(surface=service, surface_record=json.loads(json.dumps(record)),
+                        surface_state=service.capture_mode(source, record))
+        saved.append(item)
+    return saved
 
 
 def rollback(context, state):
@@ -250,17 +289,25 @@ def rollback(context, state):
             _restore(saved['target'].pose.bones[name], value)
             _restore_locks(saved['target'].pose.bones[name], saved['locks'][name])
         for copy, muted, mode, rotation, physics_mute in saved['constraints']:
-            copy.mix_mode, copy.mute, rotation.mute = mode, muted, physics_mute
+            if copy.mix_mode != mode:
+                copy.mix_mode = mode
+            if copy.mute != muted:
+                copy.mute = muted
+            if rotation.mute != physics_mute:
+                rotation.mute = physics_mute
         if saved['corrections'] is None:
             saved['source'].pop(CORRECTIONS, None)
         else:
             saved['source'][CORRECTIONS] = saved['corrections']
+        if 'surface' in saved:
+            saved['surface'].restore_mode(saved['source'], saved['surface_record'], saved['surface_state'])
     _update(context, {saved['target'] for saved in state})
 
 
 def verify(context, main, entries, desired=None):
     worst = 0.0
     for entry, target, _source, _record, _relations in _resolve(context, main, entries):
+        _surface(_source, target, _record)
         expected = desired.get(entry['owner']) if desired is not None else {name: Matrix(value) for name, value in entry['pose'].items()}
         evaluated = target.evaluated_get(context.evaluated_depsgraph_get())
         for name, matrix in expected.items():
@@ -272,10 +319,11 @@ def verify(context, main, entries, desired=None):
     return worst
 
 
-def capture(context, main, entries):
-    """Capture final evaluated Dress pose before any Body transfer changes."""
+def capture(context, main, entries, *, targets=None):
+    """Capture evaluated pose, reusing only an immediately preceding proof."""
     result = {}
-    for entry, target, _source, _record, _relations in _resolve(context, main, entries):
+    targets = _resolve(context, main, entries) if targets is None else targets
+    for entry, target, _source, _record, _relations in targets:
         evaluated = target.evaluated_get(context.evaluated_depsgraph_get())
         result[entry['owner']] = {name: evaluated.pose.bones[name].matrix.copy() for name in entry['names']}
     return result
@@ -296,7 +344,7 @@ def _preserve(context, main, entries, wanted):
     """
     targets = _resolve(context, main, entries)
     for _attempt in range(3):
-        actual = capture(context, main, entries)
+        actual = capture(context, main, entries, targets=targets)
         if max((_difference(matrix, actual[owner][name]) for owner, names in wanted.items()
                 for name, matrix in names.items()), default=0.0) <= 2e-6:
             break
@@ -315,9 +363,13 @@ def _preserve(context, main, entries, wanted):
         if not assignments:
             break
         for pb, copy, proposal in assignments:
-            copy.mix_mode = 'BEFORE_FULL'
+            if copy.mix_mode != 'BEFORE_FULL':
+                copy.mix_mode = 'BEFORE_FULL'
             pb.matrix_basis = proposal
         _update(context, {target for _entry, target, _source, _record, _relations in targets})
+        # Native updates may run callbacks that edit ownership or constraints.
+        # Never carry the previous proof into the next evaluated capture.
+        targets = _resolve(context, main, entries)
 
 
 def enter(context, main, entries):
@@ -330,11 +382,16 @@ def enter(context, main, entries):
             # lose spline-induced shear and move connected child bones.
             if pb.name not in correction['bones']:
                 pb.matrix_basis = Matrix.Identity(4)
-            copy.mix_mode = 'BEFORE_FULL'
+            if copy.mix_mode != 'BEFORE_FULL':
+                copy.mix_mode = 'BEFORE_FULL'
         for name in entry['names']:
             pb = target.pose.bones[name]
-            pb.lock_rotation = (False, False, False)
-            pb.lock_rotation_w = pb.lock_rotations_4d = False
+            if any(pb.lock_rotation):
+                pb.lock_rotation = (False, False, False)
+            if pb.lock_rotation_w:
+                pb.lock_rotation_w = False
+            if pb.lock_rotations_4d:
+                pb.lock_rotations_4d = False
     _update(context, {target for _entry, target, _source, _record, _relations in targets})
     _preserve(context, main, entries,
               {entry['owner']: {name: Matrix(value) for name, value in entry['pose'].items()} for entry in entries})
@@ -354,16 +411,21 @@ def leave(context, main, entries, desired=None):
             _restore_locks(target.pose.bones[name], entry['locks'][name])
         for pb, copy, rotation in relations:
             state = entry['constraints'][pb.name]
-            copy.mute, rotation.mute = state['manual_mute'], state['physics_mute']
+            if copy.mute != state['manual_mute']:
+                copy.mute = state['manual_mute']
+            if rotation.mute != state['physics_mute']:
+                rotation.mute = state['physics_mute']
             changed = _difference(pb.matrix_basis, Matrix(entry['entered_basis'][pb.name])) > 1e-7
             if not changed:
-                copy.mix_mode = state['mix_mode']
+                if copy.mix_mode != state['mix_mode']:
+                    copy.mix_mode = state['mix_mode']
                 _restore(pb, entry['channels'][pb.name])
                 continue
             if pb.name not in correction['bones']:
                 correction['bones'][pb.name] = {'mix_mode': state['mix_mode'],
                                                'channels': entry['channels'][pb.name]}
-            copy.mix_mode = 'BEFORE_FULL'
+            if copy.mix_mode != 'BEFORE_FULL':
+                copy.mix_mode = 'BEFORE_FULL'
             count += 1
         if correction['bones']:
             source[CORRECTIONS] = json.dumps(correction, separators=(',', ':'))
