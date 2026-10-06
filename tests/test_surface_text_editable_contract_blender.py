@@ -172,6 +172,63 @@ class SurfaceTextEditableContractTests(unittest.TestCase):
         self.assertEqual(maps[0]["material"], self.text.active_material.name)
         self.assertFalse(warnings)
 
+    def test_rear_slot_selection_does_not_replace_authored_front_material(self):
+        front = self.text.material_slots[0].material
+        front.name = "Banner"
+        settings = surface.configure_backlight(bpy.context, self.text, enabled=True)
+        self.text.active_material_index = settings["backMaterialIndex"]
+        descriptor = self.descriptor()
+        self.assertEqual(descriptor["materialName"], "Banner")
+        self.assertTrue(descriptor["backlight"]["enabled"])
+        self.assertEqual(descriptor["backlight"]["backMaterialIndex"], 1)
+        self.assertEqual(self.text.active_material_index, 1)
+        self.assertEqual([style.material_index for style in self.text.data.body_format], [0] * 5)
+
+    def test_unused_slot_selection_cannot_change_single_glyph_front_material(self):
+        front = self.text.material_slots[0].material
+        unused = bpy.data.materials.new("Unused Artist Finish")
+        self.text.data.materials.append(unused)
+        settings = surface.configure_backlight(bpy.context, self.text, enabled=True)
+        for index in (0, 1, settings["backMaterialIndex"]):
+            with self.subTest(active_slot=index):
+                self.text.active_material_index = index
+                self.assertEqual(self.descriptor()["materialName"], front.name)
+                self.assertEqual(self.text.active_material_index, index)
+
+    def test_object_linked_glyph_front_overrides_curve_material(self):
+        override = bpy.data.materials.new("Object Linked Front")
+        self.text.material_slots[0].link = "OBJECT"
+        self.text.material_slots[0].material = override
+        settings = surface.configure_backlight(bpy.context, self.text, enabled=True)
+        self.text.active_material_index = settings["backMaterialIndex"]
+        self.assertEqual(self.descriptor()["materialName"], override.name)
+        self.assertEqual(self.text.material_slots[0].link, "OBJECT")
+
+    def test_zero_front_emission_remains_an_explicit_material_contract_value(self):
+        front = self.text.material_slots[0].material
+        front.node_tree.nodes.get("Principled BSDF").inputs["Emission Strength"].default_value = 0.0
+        settings = surface.configure_backlight(bpy.context, self.text, enabled=True, strength=0.0)
+        self.text.active_material_index = settings["backMaterialIndex"]
+        descriptor = self.descriptor()
+        contracts = exporter.build_material_surface_contracts(self.root)
+        self.assertEqual(descriptor["materialName"], front.name)
+        self.assertIn("emissionStrength", contracts[front.name])
+        self.assertEqual(contracts[front.name]["emissionStrength"], 0.0)
+        self.assertEqual(descriptor["backlight"]["strength"], 0.0)
+
+    def test_multiple_glyph_fronts_keep_used_artist_choice_and_exclude_rear(self):
+        first = self.text.material_slots[0].material
+        second = bpy.data.materials.new("Second Glyph Front")
+        self.text.data.materials.append(second)
+        self.text.data.body_format[1].material_index = 1
+        original_indices = [style.material_index for style in self.text.data.body_format]
+        settings = surface.configure_backlight(bpy.context, self.text, enabled=True)
+        self.text.active_material_index = 1
+        self.assertEqual(self.descriptor()["materialName"], second.name)
+        self.text.active_material_index = settings["backMaterialIndex"]
+        self.assertEqual(self.descriptor()["materialName"], first.name)
+        self.assertEqual([style.material_index for style in self.text.data.body_format], original_indices)
+
     def test_linked_emission_is_reported_not_faked_as_a_constant(self):
         material = self.text.active_material
         nodes = material.node_tree.nodes

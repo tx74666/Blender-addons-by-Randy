@@ -134,7 +134,7 @@ class CollectionTests(unittest.TestCase):
         self.collection = self.load(name, 'animation_worklist_collection')
         self.implementation = {file: '1' * 64 for file in (
             'animation_export.py', 'animation_export_worker.py', 'unity_export_worker.py',
-            'animation_worklist_fingerprint.py')}
+            'animation_worklist_fingerprint.py', 'dress_export_snapshot.py')}
         self.collection.export_implementation = Mock(side_effect=lambda: deepcopy(self.implementation))
         self.addCleanup(self.cleanup_batch)
 

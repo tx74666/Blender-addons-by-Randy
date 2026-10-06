@@ -65,6 +65,12 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
     # copied into this small skeletal snapshot. Audit those reverse links here.
     from . import animation_export_worker as worker
     from .unity_export_worker import _is_control
+    from . import dress_export_snapshot
+    try:
+        dress_surfaces = dress_export_snapshot.capture_animation_surfaces(context, rig, action)
+        dress_scene_roots = dress_export_snapshot.snapshot_scene_roots(dress_surfaces)
+    except (ValueError, TypeError) as error:
+        raise AnimationExportError('Dress skeletal export boundary: ' + str(error)) from error
     omitted = worker._omitted_channels(rig, action, next((s for s in action.slots if s.handle == slot), None))
     discarded = {bone.name for bone in rig.data.bones if bone.use_deform and _is_control(bone)}
     if discarded:
@@ -88,6 +94,7 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
         'sample_rate': float(rate), 'unit_scale': context.scene.unit_settings.scale_length,
         'loop': bool(loop), 'name': action.name, 'stage': str(stage), 'filename': filename,
         'unsupported_channels': omitted,
+        'dress_surfaces': dress_surfaces,
     }
     if export_rig_name is not None:
         spec['export_rig_name'] = export_rig_name
@@ -100,7 +107,9 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
         if hair_wiggle_adapter.status(context).get('active'):
             hair_wiggle_adapter.stop_preview(context, reason='Animation export ends transient Hair preview.')
         snapshot = root / 'animation.blend'
-        bpy.data.libraries.write(str(snapshot), {rig, action}, path_remap='ABSOLUTE', compress=True)
+        spec['dress_snapshot_path'] = str(snapshot)
+        bpy.data.libraries.write(str(snapshot), {rig, action} | dress_scene_roots,
+                                path_remap='ABSOLUTE', compress=True)
         (root / 'job.json').write_text(json.dumps(spec), encoding='utf-8')
         job['log'] = (root / 'worker.log').open('w', encoding='utf-8')
         command = [bpy.app.binary_path, '--background', '--factory-startup', '--disable-autoexec',

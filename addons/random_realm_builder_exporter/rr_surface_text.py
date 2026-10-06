@@ -379,6 +379,33 @@ def _evaluated_sampling_mesh(source, verify_export_modifiers=True):
             bpy.data.meshes.remove(clone_mesh)
 
 
+def _surface_text_front_material(source):
+    """Read the glyph material, independently of the inspected material slot.
+
+    The editable contract has one representative front material. Preserve an
+    artist's active choice when multiple glyph materials really use it, but
+    never select an unused slot or the dedicated Solidify rear-emission slot.
+    """
+    rear = source.get("rr_surface_backlight_material_ref")
+    front_slots = {
+        index: slot.material for index, slot in enumerate(source.material_slots)
+        if slot.material is not None and slot.material is not rear
+        and slot.material.get("rr_surface_backlight_role") != "rear_emission"
+    }
+    used = []
+    for character, style in zip(source.data.body, source.data.body_format):
+        index = style.material_index
+        if not character.isspace() and index in front_slots and index not in used:
+            used.append(index)
+    if used:
+        active = source.active_material_index
+        index = active if active in used else used[0]
+        return front_slots[index]
+    # Empty text or an unassigned glyph has no authored front to inspect.
+    # A stable first front slot keeps the fallback independent of UI selection.
+    return next(iter(front_slots.values()), None)
+
+
 def _editable_surface_descriptor(source, sample):
     if sample is None or sample.get("rr_surface_role") != "sampling_surface":
         return {"editableVersion": 0, "editableError": "Bind this existing Font to a selected surface region first."}
@@ -411,7 +438,7 @@ def _editable_surface_descriptor(source, sample):
         # Opt-in backlight and its restored disabled state use a world-space
         # gap. Native Shrinkwrap offset remains in the Font's local units.
         surface_offset_meters *= source.matrix_world.to_3x3().col[2].length
-    material = source.active_material
+    material = _surface_text_front_material(source)
     descriptor = {
         "editableVersion": 1, "textId": _surface_text_id(source), "text": source.data.body,
         "fontName": source.data.font.name if source.data.font else "",

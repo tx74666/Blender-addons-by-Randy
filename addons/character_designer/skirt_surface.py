@@ -24,6 +24,11 @@ OBJECT_ROLES = frozenset({"CLOTH_PROXY", "BODY_ATTACHMENT", "NEUTRAL_RIG",
                           "NEUTRAL_WIRE", "NEUTRAL_SURFACE", "TRACKER"})
 NODE_ROLE = "DELTA_NODE_GROUP"
 VERSION = 1
+NEUTRAL_MANUAL_KEY = "character_designer_neutral_manual_v1"
+NEUTRAL_MANUAL_LEGACY = "LEGACY_SPLINE"
+NEUTRAL_MANUAL_FK = "REST_FK"
+NEUTRAL_MANUAL_CHART = "OBJECT_IDENTITY_BONE_REST_V1"
+_REFERENCE_UPGRADE_LIMIT_M = 5.0e-5
 COLLIDER_CONTRACT_VERSION = 2
 PIN_GROUP = "CD Waist Pin"
 BODY_MASK = "CD Body Waist Attachment"
@@ -176,6 +181,146 @@ def _neutral(bone):
     bone.rotation_quaternion = (1., 0., 0., 0.)
     bone.rotation_axis_angle = (0., 0., 1., 0.)
     bone.scale = (1., 1., 1.)
+
+
+def _neutral_manual_record(surface):
+    value = surface.get("neutral_manual")
+    if value is None:
+        _require("neutral_manual" not in surface, "The saved neutral Manual expression is invalid.")
+        return NEUTRAL_MANUAL_LEGACY
+    _require(isinstance(value, dict) and set(value) == {"version", "strategy", "chart", "bases", "rest", "parents"}
+             and type(value["version"]) is int and value["version"] == 1
+             and value["strategy"] == NEUTRAL_MANUAL_FK and value["chart"] == NEUTRAL_MANUAL_CHART
+             and isinstance(value["bases"], dict) and isinstance(value["rest"], str)
+             and isinstance(value["parents"], dict), "The saved neutral Manual expression is unsupported.")
+    for basis in value["bases"].values():
+        _require(isinstance(basis, list) and len(basis) == 4
+                 and all(isinstance(row, list) and len(row) == 4 for row in basis)
+                 and all(type(item) in (int, float) and math.isfinite(item) for row in basis for item in row),
+                 "The neutral Manual FK basis is incomplete or nonfinite.")
+    return NEUTRAL_MANUAL_FK
+
+
+def _neutral_manual_proof(reference, record):
+    surface = record["physics"]["surface"]
+    strategy = _neutral_manual_record(surface)
+    manual = {name for chain in record["chains"] for name in chain["manual"]}
+    if strategy == NEUTRAL_MANUAL_LEGACY:
+        _require(NEUTRAL_MANUAL_KEY not in reference, "An uncommitted neutral Manual expression must be rolled back.")
+        wires = surface["roles"]["NEUTRAL_WIRE"]
+        for index, chain in enumerate(record["chains"]):
+            for name in chain["manual"]:
+                constraints = list(reference.pose.bones[name].constraints)
+                terminal = name == chain["manual"][-1]
+                _require((not constraints if not terminal else len(constraints) == 1
+                          and constraints[0].type == "SPLINE_IK" and constraints[0].target == bpy.data.objects[wires[index]]),
+                         "Restore the exact legacy neutral Manual spline expression.")
+        return
+    value = surface["neutral_manual"]
+    names = set(reference.data.bones.keys())
+    _require(set(value["bases"]) == manual and set(value["parents"]) == names
+             and value["rest"] == _digest(_rest(reference, names))
+             and value["parents"] == {bone.name: bone.parent.name if bone.parent else None for bone in reference.data.bones}
+             and reference.get(NEUTRAL_MANUAL_KEY) == _json(value),
+             "Restore the saved neutral Manual FK Rest and hierarchy proof.")
+    _require(all(not reference.pose.bones[name].constraints
+                 and _matrix(reference.pose.bones[name].matrix_basis) == value["bases"][name] for name in manual),
+             "Preserve the fixed neutral Manual FK channels before continuing.")
+
+
+def _fixed_neutral_manual(context, reference, wires, record):
+    """Solve default Manual once in a private identity-object native Rest chart.
+
+    No artist pose/object, main Rest, frame, Action, Cloth or cache is changed.
+    Fixed local FK is not a claim of arbitrary affine/shear spline equivalence;
+    explicit migration must also pass its actual current-pose surface guard.
+    """
+    target = reference.constraints[0].target if reference.constraints else None
+    _require(reference.get(ROLE_KEY) == "NEUTRAL_RIG" and target is not None and reference != target
+             and reference.data != target.data and reference.data.users == 1
+             and reference.data.pose_position == "POSE", "Use a new independent owned neutral reference.")
+    manual = [name for chain in record["chains"] for name in chain["manual"]]
+    terminal = {chain["manual"][-1]: wire for chain, wire in zip(record["chains"], wires)}
+    _require(len(wires) == record["chain_count"] and len(terminal) == len(wires), "Restore every default neutral wire.")
+    splines = []
+    for name in manual:
+        constraints = list(reference.pose.bones[name].constraints)
+        if name in terminal:
+            _require(len(constraints) == 1 and constraints[0].type == "SPLINE_IK"
+                     and constraints[0].target == terminal[name] and not constraints[0].mute
+                     and constraints[0].influence == 1., "Preserve custom neutral Manual constraints.")
+            splines.append((reference.pose.bones[name], constraints[0]))
+        else:
+            _require(not constraints, "Preserve extra neutral Manual constraints.")
+    rest = _rest(reference, reference.data.bones.keys())
+    parents = {bone.name: bone.parent.name if bone.parent else None for bone in reference.data.bones}
+    channels = {bone.name: {field: list(getattr(bone, field)) for field in _CHANNELS} for bone in reference.pose.bones}
+    parent = (reference.parent, reference.parent_type, reference.parent_bone,
+              reference.matrix_parent_inverse.copy(), reference.matrix_basis.copy())
+    constraints = list(reference.constraints) + [item for bone in reference.pose.bones for item in bone.constraints]
+    mutes = [(item, item.mute) for item in constraints]
+    drivers = [(item, item.mute) for item in reference.animation_data.drivers] if reference.animation_data else []
+    succeeded, bases = False, {}
+    try:
+        reference.parent = None
+        reference.matrix_parent_inverse = reference.matrix_basis = Matrix.Identity(4)
+        for bone in reference.pose.bones:
+            _neutral(bone)
+        for item in constraints:
+            item.mute = item.type != "SPLINE_IK"
+        for curve, _mute in drivers:
+            curve.mute = True
+        reference.update_tag()
+        context.view_layer.update()
+        graph = context.evaluated_depsgraph_get()
+        posed = reference.evaluated_get(graph)
+        _require(_distance(posed.matrix_world, Matrix.Identity(4)) <= _LIMIT,
+                 "The private neutral object did not reach its identity Rest chart.")
+        neutral_controls = set(_manual_names(record)) - set(manual)
+        upstream = set(_ancestors(target, record)) | {record["controls"]["waist"]}
+        _require(all(_distance(posed.pose.bones[name].matrix, posed.data.bones[name].matrix_local) <= _LIMIT
+                     for name in neutral_controls | upstream), "The default neutral Body/control chart is not native Rest.")
+        desired = {bone.name: bone.matrix.copy() for bone in posed.pose.bones}
+        for name in manual:
+            bone = reference.pose.bones[name]
+            options = {"parent_matrix": desired[bone.parent.name],
+                       "parent_matrix_local": bone.parent.bone.matrix_local} if bone.parent else {}
+            bases[name] = bone.bone.convert_local_to_pose(desired[name], bone.bone.matrix_local, invert=True, **options)
+            _require(all(math.isfinite(item) for row in bases[name] for item in row), "Nonfinite default neutral FK basis.")
+        for _bone, spline in splines:
+            spline.mute = True
+        for name, basis in bases.items():
+            reference.pose.bones[name].matrix_basis = basis
+        reference.update_tag()
+        context.view_layer.update()
+        posed = reference.evaluated_get(context.evaluated_depsgraph_get())
+        _require(max(_distance(posed.pose.bones[name].matrix, desired[name]) for name in manual) <= 4.0e-5,
+                 "The neutral Rest spline cannot be represented by native FK channels; no fallback was applied.")
+        bases = {name: _matrix(reference.pose.bones[name].matrix_basis) for name in manual}
+        succeeded = True
+    finally:
+        reference.parent, reference.parent_type, reference.parent_bone = parent[:3]
+        reference.matrix_parent_inverse, reference.matrix_basis = parent[3:]
+        for bone in reference.pose.bones:
+            if not succeeded or bone.name not in bases:
+                for field, value in channels[bone.name].items():
+                    setattr(bone, field, value)
+        for item, mute in mutes:
+            item.mute = mute
+        for curve, mute in drivers:
+            curve.mute = mute
+    # No evaluation between restored live inputs and deletion of only our solvers.
+    for bone, spline in splines:
+        bone.constraints.remove(spline)
+    _require(_rest(reference, reference.data.bones.keys()) == rest
+             and {bone.name: bone.parent.name if bone.parent else None for bone in reference.data.bones} == parents,
+             "Fixed neutral Manual changed exact bone Rest or hierarchy.")
+    expression = {"version": 1, "strategy": NEUTRAL_MANUAL_FK, "chart": NEUTRAL_MANUAL_CHART,
+                  "bases": bases, "rest": _digest(rest), "parents": parents}
+    reference[NEUTRAL_MANUAL_KEY] = _json(expression)
+    reference.update_tag()
+    context.view_layer.update()
+    return expression
 
 
 def _clear(collection):
@@ -405,6 +550,237 @@ def _nojump(before, after, context):
              "Native Dress binding changed the neutral surface; the installation was rolled back.")
 
 
+def _reference_upgrade_errors(before, after, metres):
+    _require(type(metres) in (int, float) and math.isfinite(metres) and metres > 0.,
+             "Use a finite positive scene unit for the neutral reference upgrade.")
+    result = {}
+    for key in ("H0", "O", "C"):
+        first, second = before[key], after[key]
+        _require(first and len(first) == len(second), "The reference upgrade changed native vertex count/order.")
+        values = [math.dist(tuple(a), tuple(b)) * metres for a, b in zip(first, second)]
+        _require(all(math.isfinite(value) for value in values), "Nonfinite reference upgrade geometry.")
+        result[key] = max(values)
+    _require(result["H0"] <= _REFERENCE_UPGRADE_LIMIT_M and result["O"] <= _REFERENCE_UPGRADE_LIMIT_M
+             and result["C"] == 0.,
+             "The default neutral FK reference differs from this Body pose, or Cloth changed; the upgrade was refused.")
+    return result
+
+
+def _sealed_reference_upgrade(physics, cache):
+    bounds = physics.get("baked_range")
+    _require(cache.is_baked and not cache.is_baking and not cache.use_external
+             and isinstance(bounds, list) and len(bounds) == 2
+             and all(type(value) is int for value in bounds) and bounds[0] <= bounds[1]
+             and bounds == [cache.frame_start, cache.frame_end],
+             "Bake and seal the local Dress cache before upgrading its neutral reference. "
+             "An empty, unsealed or external solver state cannot be rolled back; no cache was changed.")
+
+
+def _upgrade_inputs(context, source, rig, record, cloth):
+    """Content guard for the original channels/assets; no frame or artist writes."""
+    from . import limb_ik
+
+    def curves(action):
+        return [{"rna": _rna(curve), "keys": [_rna(point) for point in curve.keyframe_points],
+                 "samples": [_rna(point) for point in curve.sampled_points],
+                 "modifiers": [{"rna": _rna(item), "collections": {
+                     prop.identifier: [_rna(child) for child in getattr(item, prop.identifier)]
+                     for prop in item.bl_rna.properties if prop.type == "COLLECTION"}} for item in curve.modifiers]}
+                for curve in limb_ik._fcurves_for_action(action)]
+
+    def keys(owner):
+        value = owner.data.shape_keys
+        if value is None:
+            return None
+        return {"id": _id(value), "rna": _rna(value), "drivers": _drivers(value),
+                "blocks": [{"rna": _rna(block), "points": [list(point.co) for point in block.data],
+                            "relative": block.relative_key.name} for block in value.key_blocks]}
+
+    body = bpy.data.objects[record["physics"]["surface"]["body"]]
+    cache = cloth.point_cache
+    return _digest({"frame": [context.scene.frame_current, context.scene.frame_subframe],
+        "source": _source_contract(source, record), "source_keys": keys(source),
+        "body": {"frame": _frame(body), "basis": _basis(body), "topology": _topology(body.data),
+                 "groups": _groups(body), "keys": keys(body), "modifiers": [_rna(item, {"is_active"}) for item in body.modifiers]},
+        "main": {"rest": _rest(rig, rig.data.bones.keys()),
+                 "parents": {bone.name: bone.parent.name if bone.parent else None for bone in rig.data.bones},
+                 "frame": _frame(rig), "drivers": _drivers(rig),
+                 "channels": {bone.name: {"mode": bone.rotation_mode,
+                     "values": {field: list(getattr(bone, field)) for field in _CHANNELS}} for bone in rig.pose.bones}},
+        "actions": {action.name: {"rna": _rna(action), "slots": [_rna(slot) for slot in getattr(action, "slots", ())],
+                                   "curves": curves(action)} for action in bpy.data.actions},
+        "cloth": {"settings": _rna(cloth.settings), "collision": _rna(cloth.collision_settings),
+                  "effectors": _rna(cloth.settings.effector_weights), "cache": _rna(cache),
+                  "is_baked": cache.is_baked, "is_baking": cache.is_baking,
+                  "baked_range": record["physics"].get("baked_range")}})
+
+
+def _spline_snapshot(constraint):
+    values = {}
+    for prop in constraint.bl_rna.properties:
+        name = prop.identifier
+        if name == "rna_type" or prop.is_readonly or prop.type == "COLLECTION":
+            continue
+        value = getattr(constraint, name)
+        if prop.type == "POINTER":
+            _require(value is None or isinstance(value, bpy.types.ID), "Unsupported neutral spline pointer.")
+        elif getattr(prop, "is_array", False):
+            value = list(value)
+        elif isinstance(value, set):
+            value = set(value)
+        values[name] = value
+    return values
+
+
+def _clear_reference_upgrade(tx, source, preview):
+    if preview is not None and preview.data.shape_keys is not None:
+        from .mesh_copy import clear_copied_shape_keys
+        clear_copied_shape_keys(source, preview)
+        tx.forget_copied_key(preview.data)
+    tx.rollback()  # ID cleanup only; never restore_context/frame_set/artist writes.
+
+
+def upgrade_neutral_manual(context, source):
+    """Explicit transactional legacy-neutral upgrade; never called by validate/UI.
+
+    Existing helper IDs, native Cloth bindings/cache, main channels, Rest, Keys,
+    author Actions and export roles survive. Only default neutral Manual FK is
+    committed. Unsupported current-pose affine differences fail at 50um.
+    """
+    skirt._require_controls_for_setup(source)
+    record = skirt.read_record(source)
+    _require(record is not None and record.get("physics", {}).get("backend") == BACKEND,
+             "Install the native Dress surface before upgrading its neutral reference.")
+    rig = source[skirt.RIG_KEY]
+    _installation_context_preflight(context, source, rig, bpy.data.objects[record["physics"]["surface"]["body"]])
+    actual, cloth = validate(source, rig, record)
+    if _neutral_manual_record(record["physics"]["surface"]) == NEUTRAL_MANUAL_FK:
+        return record
+    reference = _object(record, "NEUTRAL_RIG", source)
+    neutral = _object(record, "NEUTRAL_SURFACE", source)
+    wires = [bpy.data.objects[name] for name in record["physics"]["surface"]["roles"]["NEUTRAL_WIRE"]]
+    home, _collection = _home_memberships(record, [reference, neutral] + wires)
+    _require(context.scene == home, "Upgrade from the saved Dress installation Scene.")
+    _sealed_reference_upgrade(record["physics"], cloth.point_cache)
+    _scene_reference_guard(home, (reference, reference.data))
+    helpers = [bpy.data.objects[name] for names in record["physics"]["surface"]["roles"].values() for name in names]
+    _outside_users((reference, reference.data), set(helpers) | {obj.data for obj in helpers} | {home, home.collection})
+    manual = [name for chain in record["chains"] for name in chain["manual"]]
+    before_channels = {name: {field: list(getattr(reference.pose.bones[name], field)) for field in _CHANNELS} for name in manual}
+    old_splines = {chain["manual"][-1]: _spline_snapshot(reference.pose.bones[chain["manual"][-1]].constraints[0])
+                   for chain in record["chains"]}
+    original_raw = source[skirt.RECORD_KEY]
+    reference_contract = _helper_contract(reference)
+    guard = _upgrade_inputs(context, source, rig, record, cloth)
+    before = {key: _points(obj, context) for key, obj in (("H0", neutral), ("O", source), ("C", actual))}
+    tx = _Transaction(context, source)
+    changed, success, cleared = False, False, False
+    preview = None
+    try:
+        candidate = tx.copy(reference, "CD Neutral FK Candidate · " + source.name, home.collection)
+        _tag(candidate, source, record, "NEUTRAL_RIG")
+        _require(candidate.data.users == 1 and _rest(candidate, candidate.data.bones.keys())
+                 == _rest(reference, reference.data.bones.keys()), "The candidate changed exact neutral Rest.")
+        originals = {item.as_pointer() for owner in [reference] + list(reference.pose.bones) for item in owner.constraints}
+        _require(all(item.as_pointer() not in originals for owner in [candidate] + list(candidate.pose.bones) for item in owner.constraints),
+                 "The candidate shares native constraint storage.")
+        old_drivers = {curve.as_pointer() for curve in reference.animation_data.drivers}
+        _require(all(curve.as_pointer() not in old_drivers for curve in candidate.animation_data.drivers),
+                 "The candidate shares native driver storage.")
+        for bone in candidate.pose.bones:
+            for item in bone.constraints:
+                for field in ("target", "space_object", "pole_target"):
+                    if hasattr(item, field) and getattr(item, field) == reference:
+                        setattr(item, field, candidate)
+        candidate_wires = []
+        for chain, wire in zip(record["chains"], wires):
+            copied = tx.copy(wire, "CD Neutral FK Candidate · " + wire.name, home.collection)
+            _tag(copied, source, record, "NEUTRAL_WIRE")
+            copied.parent = candidate
+            for item in copied.modifiers:
+                item.object = candidate
+            candidate.pose.bones[chain["manual"][-1]].constraints[0].target = copied
+            candidate_wires.append(copied)
+        expression = _fixed_neutral_manual(context, candidate, candidate_wires, record)
+        candidate_mesh = tx.copy(neutral, "CD Neutral FK Candidate Surface · " + source.name, home.collection)
+        _tag(candidate_mesh, source, record, "NEUTRAL_SURFACE")
+        candidate_mesh.modifiers[0].object = candidate
+        overlay = _overlay(source, record)
+        preview = tx.copy(source, "CD Neutral FK Upgrade Preview · " + source.name, home.collection)
+        for owner in (preview, preview.data, preview.data.shape_keys):
+            if owner is not None:
+                for key in list(owner.keys()):
+                    del owner[key]
+        group = overlay.node_group.copy()
+        tx.nodes.append(group)
+        for key in list(group.keys()):
+            del group[key]
+        preview.modifiers[overlay.name].node_group = group
+        group.nodes["Reference"].inputs["Object"].default_value = candidate_mesh
+        _node_verify(group, actual, candidate_mesh)
+        _require(overlay.node_group.users == group.users == 1, "Preserve the original unique Dress overlay.")
+        for obj in tx.objects:
+            obj.hide_render, obj.hide_select = True, True
+            obj.hide_set(True)
+        context.view_layer.update()
+        _reference_upgrade_errors(before, {key: _points(obj, context) for key, obj in
+            (("H0", candidate_mesh), ("O", preview), ("C", actual))}, context.scene.unit_settings.scale_length)
+        _require(_helper_contract(reference) == reference_contract and _upgrade_inputs(context, source, rig, record, cloth) == guard,
+                 "Candidate construction changed original inputs or the sealed Cloth cache.")
+        # Remove all fallible private Key/ID allocations before touching the old expression.
+        _clear_reference_upgrade(tx, source, preview)
+        cleared = True
+        context.view_layer.update()
+        _require(_helper_contract(reference) == reference_contract and _upgrade_inputs(context, source, rig, record, cloth) == guard,
+                 "Candidate cleanup changed original inputs or the sealed Cloth cache.")
+        # Commit only after private Rest/current-pose/output/input proofs succeed.
+        changed = True
+        for name, basis in expression["bases"].items():
+            reference.pose.bones[name].matrix_basis = Matrix(basis)
+        for name in old_splines:
+            reference.pose.bones[name].constraints.remove(reference.pose.bones[name].constraints[0])
+        expression["bases"] = {name: _matrix(reference.pose.bones[name].matrix_basis) for name in manual}
+        reference[NEUTRAL_MANUAL_KEY] = _json(expression)
+        updated = copy.deepcopy(record)
+        updated["physics"]["surface"]["neutral_manual"] = expression
+        updated["physics"]["surface"]["contracts"][reference.name] = _helper_contract(reference)
+        skirt.write_record(source, updated)
+        reference.update_tag()
+        context.view_layer.update()
+        _reference_upgrade_errors(before, {key: _points(obj, context) for key, obj in
+            (("H0", neutral), ("O", source), ("C", actual))}, context.scene.unit_settings.scale_length)
+        _require(_upgrade_inputs(context, source, rig, updated, cloth) == guard,
+                 "The reference commit changed author inputs or the sealed Cloth cache.")
+        validate(source, rig, updated)
+        success = True
+        return updated
+    finally:
+        if not cleared:
+            _clear_reference_upgrade(tx, source, preview)
+            cleared = True
+        if changed and not success:
+            reference.pop(NEUTRAL_MANUAL_KEY, None)
+            for name, values in before_channels.items():
+                bone = reference.pose.bones[name]
+                for field, value in values.items():
+                    setattr(bone, field, value)
+            for name, values in old_splines.items():
+                bone = reference.pose.bones[name]
+                _clear(bone.constraints)
+                spline = bone.constraints.new("SPLINE_IK")
+                for field, value in values.items():
+                    setattr(spline, field, value)
+            reference.update_tag()
+            source[skirt.RECORD_KEY] = original_raw
+        if not success:
+            context.view_layer.update()
+            final = skirt.read_record(source)
+            _require(_upgrade_inputs(context, source, rig, final, cloth) == guard,
+                     "Neutral reference cleanup could not prove the original input/cache protection.")
+            _require(_helper_contract(reference) == reference_contract, "The neutral reference rollback was incomplete.")
+            validate(source, rig, final)
+
+
 def _generated_wire(source, rig, record, index):
     chain = record["chains"][index]
     wire = bpy.data.objects.get(chain["curve"])
@@ -514,6 +890,7 @@ def _reference(context, source, rig, record, tracker, destination, tx):
             variable.name, variable.type = "physics", "SINGLE_PROP"
             _control, identifier, path = skirt.physics_control(source)
             variable.targets[0].id, variable.targets[0].data_path = identifier, path
+    _fixed_neutral_manual(context, reference, wires, record)
     reference.hide_render = True
     reference.hide_set(True)
     return reference, wires, ancestors
@@ -666,6 +1043,8 @@ def _helper_contract(obj, *, dynamic_pin=False):
         result["drivers"] = _drivers(obj)
         result["channels"] = {bone.name: {"mode": bone.rotation_mode, "values": {name: list(getattr(bone, name)) for name in _CHANNELS}}
                               for bone in obj.pose.bones}
+        if NEUTRAL_MANUAL_KEY in obj:
+            result["neutral_manual"] = obj[NEUTRAL_MANUAL_KEY]
     return result
 
 
@@ -907,6 +1286,7 @@ def _surface_record(record):
                      for names in roles.values()), "Restore the exact Dress surface role inventory.")
     names = [name for values in roles.values() for name in values]
     _require(len(names) == len(set(names)), "A Dress surface object is assigned to more than one role.")
+    _neutral_manual_record(surface)
     return surface
 
 
@@ -1029,6 +1409,7 @@ def validate(source, rig, record):
         _follow_proof(reference.pose.bones[name].constraints[0], rig, name)
     _require(_rest(rig, _owned_bones(record) | set(surface["upstream_bones"])) == surface["source_rest"],
              "The Dress Rest or upstream Body hierarchy changed. Recalibrate explicitly.")
+    _neutral_manual_proof(reference, record)
     for chain_index, chain in enumerate(record["chains"]):
         for segment, name in enumerate(chain["phys"]):
             constraints = list(rig.pose.bones[name].constraints)
@@ -1279,6 +1660,7 @@ def install(context, source, *, body=None, capability=None):
                  "NEUTRAL_RIG": [reference.name], "NEUTRAL_WIRE": [wire.name for wire in wires],
                  "NEUTRAL_SURFACE": [neutral.name], "TRACKER": [tracker.name]}
         surface = {"version": VERSION, "owner": record["owner"], "home_scene": context.scene.name,
+                   "neutral_manual": json.loads(reference[NEUTRAL_MANUAL_KEY]),
                    "roles": roles, "tracker": tracker.name,
                    "pin_group": pin.name, "cloth_modifier": cloth.name, "overlay": overlay.name,
                    "node_group": group.name, "body": body.name, "body_topology": _digest(_topology(body.data)),

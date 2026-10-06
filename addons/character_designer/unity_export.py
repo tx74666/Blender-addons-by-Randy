@@ -146,6 +146,19 @@ def _dress_publication(job, result):
         raise ExportError('The worker did not preserve the captured Dress static export boundary; no files were published.')
 
 
+def _model_snapshot_datablocks(objects, dress_surfaces):
+    """Retain native Dress membership proof without expanding FBX selection."""
+    roots = set(objects)
+    if not dress_surfaces:
+        return roots
+    try:
+        from .dress_export_snapshot import snapshot_scene_roots
+        roots.update(snapshot_scene_roots(dress_surfaces))
+    except (ImportError, ValueError, RuntimeError, ReferenceError) as exc:
+        raise ExportError('The Dress snapshot cannot preserve its native Scene proof: ' + str(exc)) from exc
+    return roots
+
+
 def _hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -491,7 +504,8 @@ def begin_export(context, rig, config):
             'image_buffers': _image_buffers(objects, root),
         }
         snapshot = root / 'character.blend'
-        bpy.data.libraries.write(str(snapshot), set(objects), path_remap='ABSOLUTE', fake_user=False, compress=True)
+        bpy.data.libraries.write(str(snapshot), _model_snapshot_datablocks(objects, dress_surfaces),
+                                 path_remap='ABSOLUTE', fake_user=False, compress=True)
         (root / 'job.json').write_text(json.dumps(specification, ensure_ascii=False), encoding='utf-8')
         log = open(root / 'worker.log', 'w', encoding='utf-8')
         job['log'] = log

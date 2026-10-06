@@ -53,8 +53,8 @@ class RR_OT_keep_export_identity_owner(bpy.types.Operator):
     bl_label = "Keep This Object's Identity"
     bl_description = "Keep the original object's export identity and give its copies independent identities"
     bl_options = {"REGISTER", "UNDO"}
-    target_name: bpy.props.StringProperty(options={"HIDDEN"})
-    target_uid: bpy.props.StringProperty(options={"HIDDEN"})
+    target_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    target_uid: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     def execute(self, context):
         rr = _main()
@@ -95,7 +95,7 @@ class RR_OT_copy_export_diagnostics(bpy.types.Operator):
     bl_idname = "rr_builder.copy_export_diagnostics"
     bl_label = "Copy Export Diagnostics"
     bl_description = "Copy readable export details and identity conflicts for debugging"
-    target_name: bpy.props.StringProperty(options={"HIDDEN"})
+    target_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     def execute(self, context):
         rr = _main()
@@ -123,7 +123,9 @@ class RR_OT_export_identity_debug(bpy.types.Operator):
     bl_idname = "rr_builder.export_identity_debug"
     bl_label = "Export Diagnostics / Relink"
     bl_description = "Inspect conflicts and locate the existing Unity asset to pair with this object"
-    target_name: bpy.props.StringProperty(options={"HIDDEN"})
+    # Each new diagnosis starts from today's active Object. Only a caller's
+    # explicit target may override it, never Blender's previous dialog history.
+    target_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     def invoke(self, context, event):
         rr = _main()
@@ -187,8 +189,8 @@ class RR_OT_choose_unity_export_asset(bpy.types.Operator):
     bl_description = "Choose the asset's named folder inside the current Unity export directory"
     directory: bpy.props.StringProperty(name="Asset Folder", subtype="DIR_PATH")
     filter_folder: bpy.props.BoolProperty(default=True, options={"HIDDEN"})
-    target_name: bpy.props.StringProperty(options={"HIDDEN"})
-    target_uid: bpy.props.StringProperty(options={"HIDDEN"})
+    target_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    target_uid: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     def invoke(self, context, event):
         try:
@@ -219,8 +221,8 @@ class RR_OT_rebind_unity_asset(bpy.types.Operator):
     bl_idname = "rr_builder.rebind_unity_asset"
     bl_label = "Confirm Unity Asset Pairing"
     bl_options = {"REGISTER", "UNDO"}
-    target_name: bpy.props.StringProperty(options={"HIDDEN"})
-    target_uid: bpy.props.StringProperty(options={"HIDDEN"})
+    target_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    target_uid: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     package_path: bpy.props.StringProperty(subtype="DIR_PATH", options={"HIDDEN"})
     detach_copies: bpy.props.BoolProperty(
         name="Give the listed copies independent export identities", default=False,
@@ -279,8 +281,8 @@ class RR_OT_use_object_export_name(bpy.types.Operator):
     bl_idname = "rr_builder.use_object_export_name"
     bl_label = "Use Object Name for Export"
     bl_options = {"REGISTER", "UNDO"}
-    target_name: bpy.props.StringProperty(options={"HIDDEN"})
-    target_uid: bpy.props.StringProperty(options={"HIDDEN"})
+    target_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    target_uid: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     def invoke(self, context, event):
         try:

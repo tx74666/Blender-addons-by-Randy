@@ -550,7 +550,10 @@ def import_package(payload, anchor, base_directory):
                 mesh = bpy.data.meshes.new("Unity Layout Screen")
                 _tag(mesh, reference_id, token)
                 vertices = [-width, -height, 0., width, -height, 0., width, height, 0., -width, height, 0.]
-                mesh.from_pydata(_triples(unity_to_blender_vertices(vertices, scale)), [], [(0, 2, 1), (0, 3, 2)])
+                # Unity UI's readable face is -Z. Reflect its winding with the
+                # vertices, just like ordinary mesh parts, so it remains front-facing.
+                faces = _triples(unity_triangles_to_blender([0, 2, 1, 0, 3, 2]))
+                mesh.from_pydata(_triples(unity_to_blender_vertices(vertices, scale)), [], faces)
                 uv = mesh.uv_layers.new(name="UVMap")
                 corners = [(0., 0.), (1., 0.), (1., 1.), (0., 1.)]
                 for loop in mesh.loops:
@@ -580,7 +583,9 @@ def import_package(payload, anchor, base_directory):
             _parent_relative(previous, anchor, staged_root.matrix_parent_inverse.copy())
             previous.show_name = staged_root.show_name
             for child in list(staged_root.children):
-                child.parent = previous
+                # Blender's parent setter clears the inverse. Preserve the staged
+                # PART/SCREEN relative frame while reusing the existing device root.
+                _parent_relative(child, previous, child.matrix_parent_inverse.copy())
             new_objects[(identity, "ROOT", -1)] = previous
             keep.add(previous)
         for obj in created:
@@ -750,5 +755,4 @@ def unregister():
     for cls in reversed(CLASSES):
         if getattr(cls, "is_registered", False):
             bpy.utils.unregister_class(cls)
-
 

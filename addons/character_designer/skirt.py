@@ -305,9 +305,20 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
         had_setup = False
         built = False
         try:
-            _restore_preview(context, source)
             record = _rig().read_record(source)
             had_setup = record is not None
+            update_capability = None
+            if had_setup and self.actual_surface:
+                # Read and validate saved intent before restoring a preview or
+                # changing the native graph. Only an explicit legacy Manual
+                # upgrade enables Automatic; existing Both/Physics modes stay.
+                from . import skirt_motion_profiles
+                backend = _physics().backend(record)
+                saved_profile = skirt_motion_profiles.read(source, record)
+                if (backend == _physics().LEGACY_BACKEND and saved_profile is not None
+                        and saved_profile["capability"] == "MANUAL"):
+                    update_capability = "BOTH"
+            _restore_preview(context, source)
             settings.source = source
             capability = settings.capability
             # Preserve existing scripts that explicitly opted out of physics.
@@ -317,7 +328,7 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
                 # Explicitly update this installed graph, independent of the
                 # creation panel's dimensions or generation preset.
                 _rig()._require_controls_for_setup(source)
-                _add_requested_physics(context, source, self.actual_surface)
+                _add_requested_physics(context, source, self.actual_surface, capability=update_capability)
             else:
                 armature, bone = (None, '') if had_setup else _desired_attachment(context, source)
                 record = _rig().build_skirt(

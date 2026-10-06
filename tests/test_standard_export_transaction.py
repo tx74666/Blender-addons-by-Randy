@@ -259,7 +259,8 @@ class ExporterBoundaryTests(unittest.TestCase):
             "validate_reference_layout_settings": lambda value: None,
             "mesh_objects_have_export_geometry": lambda value: True,
             "get_export_asset_meshes": lambda value: [],
-            "validate_export_identity": lambda value: None,
+            "prepare_export_identity": lambda obj, settings: events.append("prepare_identity"),
+            "validate_export_identity": lambda value: events.append("validate_identity"),
             "export_asset_id": lambda obj: "Wall_A",
             "variant_export_transaction_parent": lambda value: "transactions",
             "ExportSettingsOutputRootProxy": lambda value, root: SimpleNamespace(output_root=root),
@@ -278,12 +279,12 @@ class ExporterBoundaryTests(unittest.TestCase):
         namespace["rr_standard_export_transaction"] = SimpleNamespace(export_package=publish)
         export = self.extract("export_builder_asset", namespace)
         self.assertEqual("result", export(SimpleNamespace(variant=None), settings))
-        self.assertEqual([("staged", False), "committed", "retire"], events)
+        self.assertEqual(["prepare_identity", "validate_identity", ("staged", False), "committed", "retire"], events)
         for standard, variant in ((False, None), (True, object())):
             events.clear()
             settings.standard = standard
             export(SimpleNamespace(variant=variant), settings)
-            self.assertEqual([("output", True)], events)
+            self.assertEqual(["prepare_identity", "validate_identity", ("output", True)], events)
 
     def test_library_and_custom_staging_routes_remain_allowed(self):
         namespace = {
@@ -300,23 +301,37 @@ class ExporterBoundaryTests(unittest.TestCase):
             validate(SimpleNamespace(output_root=namespace["UNITY_TEMP_OUTPUT_ROOT"]))
 
     def test_identity_failure_happens_before_transaction_creation(self):
-        transaction_started = []
-        def reject_identity(obj):
-            raise RuntimeError("duplicate export identity")
-        namespace = {
-            "validate_standard_output_route": lambda value: None,
-            "validate_reference_layout_settings": lambda value: None,
-            "mesh_objects_have_export_geometry": lambda value: True,
-            "get_export_asset_meshes": lambda value: [],
-            "validate_export_identity": reject_identity,
-            "rr_standard_export_transaction": SimpleNamespace(
-                export_package=lambda *args: transaction_started.append(True)
-            ),
-        }
-        export = self.extract("export_builder_asset", namespace)
-        with self.assertRaisesRegex(RuntimeError, "duplicate export identity"):
-            export(object(), SimpleNamespace(output_root="unused"))
-        self.assertEqual([], transaction_started)
+        for failure_stage in ("prepare", "validate"):
+            with self.subTest(failure_stage=failure_stage):
+                transaction_started = []
+                identity_calls = []
+
+                def prepare_identity(obj, settings):
+                    identity_calls.append("prepare")
+                    if failure_stage == "prepare":
+                        raise RuntimeError("duplicate export identity")
+
+                def reject_identity(obj):
+                    identity_calls.append("validate")
+                    raise RuntimeError("duplicate export identity")
+
+                namespace = {
+                    "validate_standard_output_route": lambda value: None,
+                    "validate_reference_layout_settings": lambda value: None,
+                    "mesh_objects_have_export_geometry": lambda value: True,
+                    "get_export_asset_meshes": lambda value: [],
+                    "prepare_export_identity": prepare_identity,
+                    "validate_export_identity": reject_identity,
+                    "rr_standard_export_transaction": SimpleNamespace(
+                        export_package=lambda *args: transaction_started.append(True)
+                    ),
+                }
+                export = self.extract("export_builder_asset", namespace)
+                with self.assertRaisesRegex(RuntimeError, "duplicate export identity"):
+                    export(object(), SimpleNamespace(output_root="unused"))
+                expected_calls = ["prepare"] if failure_stage == "prepare" else ["prepare", "validate"]
+                self.assertEqual(expected_calls, identity_calls)
+                self.assertEqual([], transaction_started)
 
     def test_surface_snapshot_timeout_cleans_temporary_library(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -711,18 +726,24 @@ class ModelIconContractTests(unittest.TestCase):
     def run_separate_icon_renderer(self):
         self.settings.export_mode = "BUILDING"
         noop = lambda *args, **kwargs: None
+        prepared = []
+        popups = []
         self.namespace.update({
             "sync_object_manager_names": noop, "validate_standard_output_route": noop,
-            "validate_reference_layout_settings": noop, "show_builder_popup": noop,
+            "validate_reference_layout_settings": noop,
+            "get_reference_object": lambda scene: None,
+            "prepare_export_identity": lambda obj, settings: prepared.append((obj, settings)),
+            "show_builder_popup": lambda context, message, **kwargs: popups.append((message, kwargs.get("icon"))),
             "expand_related_export_roots": lambda roots: roots,
             "prepare_variant_export_transactions": lambda *args: ([], {}, []),
             "finalize_variant_export_transactions": lambda *args: (set(), []),
             "queue_item_for_root": lambda *args: None, "load_image_for_preview": noop,
         })
         self.namespace["bpy"].ops = SimpleNamespace(object=SimpleNamespace(select_all=noop))
-        context = SimpleNamespace(view_layer=SimpleNamespace(objects=SimpleNamespace(active=None)), selected_objects=[])
+        context = SimpleNamespace(scene=SimpleNamespace(), view_layer=SimpleNamespace(objects=SimpleNamespace(active=None)), selected_objects=[])
         result = self.namespace["render_icon_objects"]([self.root], self.settings, context, "selected")
-        self.assertEqual({"FINISHED"}, result)
+        self.assertEqual({"FINISHED"}, result, popups)
+        self.assertEqual([(self.root, self.settings)], prepared)
         return json.loads(self.manifest_path.read_text(encoding="utf-8"))
 
     def test_separate_icon_renderer_preserves_model_contract(self):

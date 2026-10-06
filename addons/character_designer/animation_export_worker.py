@@ -15,6 +15,7 @@ from array import array
 from pathlib import Path
 import sys
 import traceback
+import types
 import uuid
 
 import bpy
@@ -212,6 +213,17 @@ def _model_helpers():
     return module
 
 
+def _dress_snapshot_helpers():
+    # Load only the sibling services, without add-on UI registration in a
+    # factory-startup worker. The host uses the regular package directly.
+    package_name = '_cdesigner_animation_export_services'
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(Path(__file__).parent)]
+        sys.modules[package_name] = package
+    return importlib.import_module(package_name + '.dress_export_snapshot')
+
+
 def _write_curve(bag, path, component, frames, values):
     curve = bag.fcurves.new(data_path=path, index=component)
     curve.keyframe_points.add(len(frames))
@@ -240,6 +252,16 @@ def export_job(job):
         raise AnimationExportError('The selected armature is missing from the snapshot.')
     if action is None or rig.mode != 'OBJECT' and rig.mode != 'POSE':
         raise AnimationExportError('Choose an existing Action and finish armature Edit Mode before export.')
+    # A surface's native home Scene survives as an explicit library root. Prove
+    # and omit its physical contribution before linking a new evaluation Scene,
+    # setting a frame, or forcing any depsgraph evaluation. Manual/Original
+    # channels remain available to the selected skeletal Action.
+    try:
+        dress_surfaces = _dress_snapshot_helpers().prepare_animation_snapshot(
+            rig, job.get('dress_surfaces', []), action,
+            private_snapshot=job.get('dress_snapshot_path'))
+    except (ValueError, TypeError) as error:
+        raise AnimationExportError('Dress skeletal export boundary: ' + str(error)) from error
     if rig.library or rig.data.library or rig.parent or rig.data.pose_position != 'POSE':
         raise AnimationExportError('Animation export needs a local, unparented armature in Pose Position.')
     export_name = _export_rig_name(job.get('export_rig_name', rig.name))
@@ -298,7 +320,10 @@ def export_job(job):
     _check_external_dependencies(rig)
     omitted = sorted(set(_omitted_channels(rig, action, slot) + job.get('unsupported_channels', [])))
     warnings = ['Animation-only export contains skeleton motion; meshes, materials, Shape Keys, cloth simulation, and animation events are not exported.',
-                'Only the selected Action/slot is evaluated; rig NLA is disabled. Unkeyed controls use the snapshot values.']
+                 'Only the selected Action/slot is evaluated; rig NLA is disabled. Unkeyed controls use the snapshot values.']
+    if dress_surfaces:
+        warnings.append('Dress surface simulation and its fitted bone rotations are omitted; '
+                        'native manual/Original pose animation is retained.')
     if omitted:
         warnings.append('Additional animated channels were omitted from this bones-only clip; see unsupported_channels.')
     helpers = _model_helpers()
@@ -473,6 +498,7 @@ def export_job(job):
         'bones': cleaned, 'root_bones': [bone.name for bone in export_rig.data.bones if bone.parent is None],
         'origin': list(origin), 'unit_scale': unit_scale, 'maximum_bake_matrix_error': maximum_error,
         'source_curve_count': curve_count, 'unsupported_channels': omitted, 'warnings': warnings,
+        'dress_surfaces': dress_surfaces,
         'limitation': 'One selected Action, baked skeleton motion only. No meshes, shape animation, physics or events.',
         'sha256': _sha256(destination),
     }

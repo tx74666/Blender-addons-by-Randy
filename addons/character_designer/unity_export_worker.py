@@ -460,8 +460,8 @@ def _clean_skeleton(context, obj, objects):
     context.view_layer.objects.active = obj
     bpy.ops.object.mode_set(mode='EDIT')
     try:
-        matrices = {bone.name: bone.matrix.copy() for bone in obj.data.edit_bones if bone.name in names}
-        lengths = {bone.name: bone.length for bone in obj.data.edit_bones if bone.name in names}
+        geometry = {bone.name: (bone.head.copy(), bone.tail.copy(), bone.roll)
+                    for bone in obj.data.edit_bones if bone.name in names}
         parents = {}
         for name in names:
             parent = obj.data.edit_bones[name].parent
@@ -477,8 +477,17 @@ def _clean_skeleton(context, obj, objects):
                 obj.data.edit_bones.remove(bone)
         for name in names:
             bone = obj.data.edit_bones[name]
-            bone.matrix = matrices[name]
-            bone.length = lengths[name]
+            # Parenting uses Armature-space geometry. Avoid decomposing the
+            # bone's own matrix back into an axis/roll: native matrix/roll
+            # roundtrips can reverse its roll by pi. Restore only
+            # native geometry fields that actually changed during filtering.
+            head, tail, roll = geometry[name]
+            if bone.head != head:
+                bone.head = head
+            if bone.tail != tail:
+                bone.tail = tail
+            if bone.roll != roll:
+                bone.roll = roll
     finally:
         bpy.ops.object.mode_set(mode='OBJECT')
     obj.data.pose_position = 'REST'

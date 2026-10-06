@@ -246,7 +246,7 @@ def main():
             "load_post": tuple(sorted((
                 "reset_pbr_bake_runtime_state_on_load", "repair_rr_normal_map_nodes_on_load",
                 "migrate_reference_layout_usage_on_load", "reset_object_manager_duplicate_guard_on_load",
-                "_on_reload",
+                "repair_surface_sample_display_on_load", "_on_reload",
             ))),
             "save_pre": ("_before_save_or_render", "clear_inherited_rr_identity_before_save"),
             "undo_post": ("_on_reload", "sync_object_manager_names_after_history"),
@@ -255,7 +255,9 @@ def main():
             "render_pre": ("_before_save_or_render",),
         }
         if hasattr(bpy.app.handlers, "blend_import_post"):
-            expected_handlers["blend_import_post"] = ("remember_object_manager_imported_objects",)
+            expected_handlers["blend_import_post"] = (
+                "remember_object_manager_imported_objects", "repair_surface_sample_display_on_load",
+            )
         expected_keys = baseline_keys + len(module.OBJECT_MANAGER_DUPLICATE_KEYMAPS)
         expected_menus = {"NODE_MT_add": (),
                           "NODE_MT_context_menu": ("draw_context_menu", "draw_context_menu")}

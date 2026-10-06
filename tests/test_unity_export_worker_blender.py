@@ -1,6 +1,7 @@
 """Real FBX export/reimport checks, run with Blender --factory-startup -b."""
 import importlib.util
 import json
+import math
 from pathlib import Path
 import tempfile
 from array import array
@@ -466,6 +467,83 @@ def test_removed_forearm_emits_removal_marker():
     print('PASS removed forearm emits an empty matching-FBX sidecar to clear prior runtime correction')
 
 
+def test_clean_skeleton_preserves_native_cosha_roll():
+    # These actual Cosha geometries expose the native near-pi roll flip caused
+    # by rewriting EditBone.matrix even when filtering has not moved the bone.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    arm = bpy.data.armatures.new('Cosha Rest Regression Data')
+    rig = bpy.data.objects.new('Cosha Rest Regression', arm)
+    bpy.context.scene.collection.objects.link(rig)
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    root = arm.edit_bones.new('CTRL_master')
+    root.head, root.tail = (0, 0, 0), (0, 0, 0.2)
+    root.use_deform = False
+    hips = arm.edit_bones.new('Hips')
+    hips.head, hips.tail, hips.parent = (0, 0, 0.2), (0, 0, 0.4), root
+    hips.use_deform = True
+    bridge = arm.edit_bones.new('CTRL_bridge')
+    bridge.head, bridge.tail, bridge.parent = (0, 0, 0.4), (0, 0.1, 0.4), hips
+    bridge.use_deform = False
+    geometries = {
+        'shin.R': ((-0.09694115072488785, 0.06386806070804596, 0.6524592041969299),
+                   (-0.09949608147144318, 0.060485754162073135, -0.021930769085884094),
+                   1.574584722518921),
+        'thigh.L': ((0.09480436891317368, 0.09454359859228134, 1.2164766788482666),
+                    (0.09694115072488785, 0.06386806070804596, 0.6524592041969299),
+                    1.5670078992843628),
+        'hand.R': ((-0.5040974020957947, 0.06748819351196289, 1.2489454746246338),
+                   (-0.5401939749717712, 0.06766103953123093, 1.2075296640396118),
+                   -0.940944492816925),
+    }
+    native_rolls = {}
+    for name, (head, tail, roll) in geometries.items():
+        bone = arm.edit_bones.new(name)
+        bone.head, bone.tail, bone.roll, bone.parent = head, tail, roll, bridge
+        bone.use_deform = True
+        native_rolls[name] = float(bone.roll)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for name in ('CTRL_master', 'CTRL_bridge'):
+        arm.bones[name]['character_designer_owner'] = 'limb_ik'
+
+    def native_rest():
+        result = {}
+        for bone in arm.bones:
+            axis = (bone.tail_local - bone.head_local).normalized()
+            _axis, roll = bpy.types.Bone.AxisRollFromMatrix(bone.matrix_local.to_3x3(), axis=axis)
+            result[bone.name] = {
+                'matrix': tuple(tuple(float(value) for value in row) for row in bone.matrix_local),
+                'head': tuple(float(value) for value in bone.head_local),
+                'tail': tuple(float(value) for value in bone.tail_local),
+                'roll': float(roll),
+            }
+        return result
+
+    before = native_rest()  # Actual Bone.matrix_local before _clean_skeleton.
+    expected = {'Hips', *geometries}
+    assert set(bone.name for bone in arm.bones if bone.use_deform) == expected
+    retained = worker._clean_skeleton(bpy.context, rig, objects=[rig])
+    assert retained == sorted(expected), retained
+    assert set(arm.bones.keys()) == expected
+    assert set(bone.name for bone in arm.bones if bone.use_deform) == expected
+    assert arm.bones['Hips'].parent is None
+    assert all(arm.bones[name].parent == arm.bones['Hips'] for name in geometries)
+    after = native_rest()
+    for name in sorted(expected):
+        original, cleaned = before[name], after[name]
+        matrix_error = max(abs(original['matrix'][row][col] - cleaned['matrix'][row][col])
+                           for row in range(4) for col in range(4))
+        assert matrix_error <= 3e-6, (name, 'native Rest matrix changed', matrix_error)
+        assert max(abs(a - b) for a, b in zip(original['head'], cleaned['head'])) <= 3e-6, (name, 'head')
+        assert max(abs(a - b) for a, b in zip(original['tail'], cleaned['tail'])) <= 3e-6, (name, 'tail')
+        roll_error = abs((cleaned['roll'] - original['roll'] + math.pi) % math.tau - math.pi)
+        assert roll_error <= 3e-6, (name, 'native roll changed', roll_error)
+        if name in native_rolls:
+            assert abs((cleaned['roll'] - native_rolls[name] + math.pi) % math.tau - math.pi) <= 3e-6, name
+    print('PASS actual Cosha shin/hand/thigh Rest and roll survive native control filtering and nearest retained parenting')
+
+
 test_export_import()
 test_owned_dependency_refused()
 test_topology_mismatch_refused()
@@ -477,4 +555,5 @@ test_unused_texture_export_and_required_missing_texture()
 test_texture_group_output_reachability()
 test_unweighted_vertices_diagnostic()
 test_removed_forearm_emits_removal_marker()
+test_clean_skeleton_preserves_native_cosha_roll()
 print('UNITY_WORKER_TESTS_OK')

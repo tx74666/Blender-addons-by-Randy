@@ -25,7 +25,7 @@ def export_implementation():
     root = Path(__file__).resolve().parent
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in (
         'animation_export.py', 'animation_export_worker.py', 'unity_export_worker.py',
-        'animation_worklist_fingerprint.py')}
+        'animation_worklist_fingerprint.py', 'dress_export_snapshot.py')}
 
 
 def item_fingerprint(context, item):

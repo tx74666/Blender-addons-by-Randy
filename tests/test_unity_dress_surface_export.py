@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1] / 'addons/character_designer'
@@ -19,7 +21,7 @@ BACKEND = 'ACTUAL_SURFACE_DELTA_V1'
 
 
 def runtime(filename, names):
-    scope = {'json': json, 'Path': Path}
+    scope = {'json': json, 'Path': Path, '__file__': str(ROOT / filename)}
     tree = ast.parse((ROOT / filename).read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if
              isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names
@@ -55,7 +57,8 @@ class StaticDressExport(unittest.TestCase):
     def setUp(self):
         self.export = runtime('unity_export.py', {
             'ExportError', '_dress_record', '_dress_surface_helper', '_capture_dress_surfaces',
-            '_dress_publication', '_descends', '_binding_armatures', '_character_armatures',
+            '_dress_publication', '_model_snapshot_datablocks', 'begin_export',
+            '_descends', '_binding_armatures', '_character_armatures',
             '_helpers', '_bound_meshes', '_collection_scope'})
         self.worker = runtime('unity_export_worker.py', {
             'ExportError', '_dress_backend_source', '_capture_dress_snapshot', '_strip_dress_snapshot', 'export_job'})
@@ -99,6 +102,83 @@ class StaticDressExport(unittest.TestCase):
         self.worker['_dress_services'] = lambda: self.calls.append(('service',)) or self.service
 
     def save_record(self): self.source.metadata[RECORD] = json.dumps(self.record)
+
+    def test_snapshot_scene_roots_preserve_exact_fbx_inventory(self):
+        home = Object('Source Scene', 'SCENE')
+        service = ModuleType('_dress_test.dress_export_snapshot')
+        captured = []
+        service.snapshot_scene_roots = lambda proofs: captured.append(proofs) or {home}
+        with patch.dict(sys.modules, {'_dress_test.dress_export_snapshot': service}):
+            roots = self.export['_model_snapshot_datablocks']([self.rig, self.source], [self.proof])
+            self.assertEqual(roots, {self.rig, self.source, home})
+            self.assertEqual(captured, [[self.proof]])
+        self.assertEqual(self.export['_model_snapshot_datablocks']([self.rig, self.source], []),
+                         {self.rig, self.source})  # Ordinary/legacy snapshots need no service.
+
+    def test_public_snapshot_writes_scene_proof_but_not_fbx_selection(self):
+        self._public_snapshot_case()
+
+    def test_public_snapshot_proof_failure_does_not_launch_or_change_asset_id(self):
+        self._public_snapshot_case(failure=True)
+
+    def _public_snapshot_case(self, *, failure=False):
+        home = Object('Source Scene', 'SCENE')
+        service = ModuleType('_dress_test.dress_export_snapshot')
+        def scene_roots(proofs):
+            self.assertEqual(proofs, [self.proof])
+            if failure:
+                raise ValueError('Changed native Scene membership')
+            return {home}
+        service.snapshot_scene_roots = scene_roots
+        hair = ModuleType('_dress_test.hair_wiggle_adapter')
+        hair.status = lambda _context: {'active': False}
+        forearm = ModuleType('_dress_test.unity_forearm')
+        package = sys.modules['_dress_test']
+        writes, launches = [], []
+        def write(path, roots, **options):
+            writes.append((set(roots), options))
+            Path(path).write_bytes(b'Private pure-test snapshot; not native Blender evidence')
+        def launch(command, **_options):
+            launches.append(command)
+            return SimpleNamespace(pid=0)
+        context = SimpleNamespace(mode='OBJECT', scene=SimpleNamespace(
+            unit_settings=SimpleNamespace(scale_length=1.0)))
+        config = SimpleNamespace(asset_id='', simple_materials=[])
+        original = copy.deepcopy(self.source.native_inputs)
+        with tempfile.TemporaryDirectory(prefix='cdesigner-snapshot-transport-') as target:
+            self.export.update(_ACTIVE_JOB=None, time=time, uuid=uuid, tempfile=tempfile,
+                export_running=lambda: False,
+                collect_character=lambda *_: {'objects': [self.rig, self.source], 'warnings': []},
+                _target=lambda *_: (Path(target), 'Character.fbx'), _previous=lambda *_: None,
+                _capture_hair_motion=lambda *_: [], _owned_keys=lambda *_: {},
+                _image_buffers=lambda *_: {},
+                bpy=SimpleNamespace(app=SimpleNamespace(binary_path='NotLaunchedBlender'),
+                    data=SimpleNamespace(libraries=SimpleNamespace(write=write))),
+                subprocess=SimpleNamespace(Popen=launch, STDOUT=-2))
+            modules = {'_dress_test.dress_export_snapshot': service,
+                       '_dress_test.hair_wiggle_adapter': hair, '_dress_test.unity_forearm': forearm}
+            with patch.dict(sys.modules, modules), patch.object(package, 'hair_wiggle_adapter', hair, create=True), \
+                    patch.object(package, 'unity_forearm', forearm, create=True):
+                if failure:
+                    with self.assertRaisesRegex(self.export['ExportError'], 'native Scene proof'):
+                        self.export['begin_export'](context, self.rig, config)
+                    self.assertEqual(writes, [])
+                    self.assertEqual(launches, [])
+                    self.assertEqual(config.asset_id, '')
+                    self.assertIsNone(self.export['_ACTIVE_JOB'])
+                else:
+                    job = self.export['begin_export'](context, self.rig, config)
+                    try:
+                        specification = json.loads((job['root'] / 'job.json').read_text(encoding='utf-8'))
+                        self.assertEqual(writes[0][0], {self.rig, self.source, home})
+                        self.assertEqual(specification['objects'], [self.rig.name, self.source.name])
+                        self.assertEqual(specification['dress_surfaces'], [self.proof])
+                        self.assertEqual(len(launches), 1)
+                    finally:
+                        job['log'].close()
+                        job['temporary'].cleanup()
+                        self.export['_ACTIVE_JOB'] = None
+        self.assertEqual(self.source.native_inputs, original)
 
     def helper(self, name, role, kind='MESH'):
         metadata = {OWNER: 'dress-owner', SOURCE: self.source}

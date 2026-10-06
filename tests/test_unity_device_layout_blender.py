@@ -21,10 +21,11 @@ import uuid
 
 try:
     import bpy
-    from mathutils import Matrix
+    from mathutils import Matrix, Vector
 except ImportError:
     bpy = None
     Matrix = None
+    Vector = None
 
 _test_directory = str(Path(__file__).resolve().parent)
 _fixture_spec = importlib.util.spec_from_file_location(
@@ -232,10 +233,45 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
         self.assertEqual(len(preview.data.vertices), 4)
         self.assertEqual(len(preview.data.polygons), 2)
         self.assertEqual(len(preview.data.uv_layers.active.data), 6)
+        self.assertEqual([tuple(face.vertices) for face in preview.data.polygons], [(0, 1, 2), (0, 2, 3)])
+        for face in preview.data.polygons:
+            self.assertGreater(face.normal.dot(Vector((0.0, 1.0, 0.0))), 0.99999,
+                               "The readable Unity -Z face must become the Blender +Y front face.")
+        screen_uv = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        for loop in preview.data.loops:
+            self.assertEqual(tuple(preview.data.uv_layers.active.data[loop.index].uv), screen_uv[loop.vertex_index],
+                             "Correcting winding must not mirror or rotate the PNG UVs.")
         textures = [node.image for node in preview.material_slots[0].material.node_tree.nodes if node.type == "TEX_IMAGE"]
         self.assertEqual(len(textures), 1)
         self.assertTrue(layout.is_unity_layout_reference(textures[0]))
         self.assertIsNotNone(textures[0].packed_file)
+
+        # Unity +90deg Y with nonuniform scale: its readable -Z face becomes
+        # Unity -X, hence Blender +X. Reimport must preserve that facing and UVs.
+        self.payload["devices"][0]["screenPreview"]["relativeMatrix"] = [
+            0.0, 0.0, 3.0, 0.3, 0.0, 2.0, 0.0, 0.4,
+            -1.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0,
+        ]
+        self.payload["devices"][0]["parts"][0]["relativeMatrix"][11] = 0.25
+        collection = self.do_import()["collection"]
+        preview = self.one(collection, "SCREEN")
+        screen_frame = Matrix(((0.0, 3.0, 0.0, -0.3), (-1.0, 0.0, 0.0, -0.5),
+                               (0.0, 0.0, 2.0, 0.4), (0.0, 0.0, 0.0, 1.0)))
+        self.assert_matrix(preview.matrix_parent_inverse, screen_frame)
+        self.assert_matrix(preview.matrix_basis, Matrix.Identity(4))
+        self.assert_matrix(preview.matrix_world, screen_frame)
+        part = self.one(collection, "PART", self.payload["devices"][0]["id"])
+        self.assert_matrix(part.matrix_world, Matrix.Translation((0.0, -0.25, 0.0)))
+        normal_transform = preview.matrix_world.to_3x3().inverted().transposed()
+        for face in preview.data.polygons:
+            front = (normal_transform @ face.normal).normalized()
+            self.assertGreater(front.dot(Vector((1.0, 0.0, 0.0))), 0.99999)
+        expected_corners = [(-0.3, -1.5, -0.6), (-0.3, 0.5, -0.6),
+                            (-0.3, 0.5, 1.4), (-0.3, -1.5, 1.4)]
+        for vertex, expected in zip(preview.data.vertices, expected_corners):
+            self.assertLess((preview.matrix_world @ vertex.co - Vector(expected)).length, 1e-5)
+        for loop in preview.data.loops:
+            self.assertEqual(tuple(preview.data.uv_layers.active.data[loop.index].uv), screen_uv[loop.vertex_index])
 
     def test_core_anchor_unit_scale_and_parent_inverse_keep_shear_and_local_geometry(self):
         self.scene.unit_settings.system = "METRIC"
@@ -618,4 +654,3 @@ if __name__ == "__main__":
     else:
         print(serialized)
     raise SystemExit(0 if result.wasSuccessful() else 1)
-
