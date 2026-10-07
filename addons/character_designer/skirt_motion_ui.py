@@ -99,7 +99,10 @@ class CHARACTERDESIGNER_OT_dress_motion_mode(Operator):
         except (ValueError, RuntimeError, ReferenceError) as error:
             _report(self, context, str(error), error=True)
             return {"CANCELLED"}
-        _report(self, context, f"Dress motion: {self.mode.title()}.")
+        if (_record.get("physics") or {}).get("backend") == "DIRECT_MAIN_CLOTH_V1" and self.mode == "MANUAL":
+            _report(self, context, "Showing the input before Cloth. The saved simulation is retained.")
+        else:
+            _report(self, context, f"Dress motion: {self.mode.title()}.")
         return {"FINISHED"}
 
 
@@ -236,6 +239,8 @@ def _metadata_controls(source):
 
 
 def _metadata_mode(source, record, profile):
+    if (record.get("physics") or {}).get("backend") == "DIRECT_MAIN_CLOTH_V1":
+        return profile["mode"] if profile is not None else "MANUAL"
     rig = source.get(_rig().RIG_KEY)
     holder = rig
     if rig is not None and record.get("shared"):
@@ -258,10 +263,17 @@ def draw_motion(layout, context, source, record):
         box.label(text="Saved motion settings need review.", icon="ERROR")
         return
     has_physics = bool(record.get("physics"))
+    direct = (record.get("physics") or {}).get("backend") == "DIRECT_MAIN_CLOTH_V1"
     capability = profile["capability"] if profile else ("BOTH" if has_physics else "MANUAL")
     mode = _metadata_mode(source, record, profile)
     idle = _skirt()._idle(context)
     controls = _metadata_controls(source)
+    state = None
+    if direct:
+        try:
+            state = json.loads(source.get("character_designer_dress_direct_state_v1", "null"))
+        except (ValueError, TypeError):
+            pass
     column = box.column(align=True)
     column.enabled = idle and controls
     row = column.row(align=True)
@@ -273,6 +285,9 @@ def draw_motion(layout, context, source, record):
     manual.enabled = capability != "PHYSICS"
     manual.operator("character_designer.dress_motion_mode", text="Manual",
                     depress=mode == "MANUAL").mode = "MANUAL"
+    if direct:
+        box.label(text="Auto follows playback; no Dress keys needed.")
+        box.label(text="Paused edits: Reset, then play from start.", icon="INFO")
     if not has_physics:
         box.label(text="Manual controls ready. Add Physics + Colliders for automatic motion.", icon="INFO")
     else:
@@ -282,13 +297,23 @@ def draw_motion(layout, context, source, record):
         tune.enabled = not baked
         tune.operator("character_designer.dress_motion_tuning", text="Tuning", icon="PREFERENCES")
         row.operator("character_designer.dress_motion_reset", text="Reset", icon="LOOP_BACK")
-        row.operator("character_designer.skirt_bake_physics", text="Bake", icon="REC")
+        bake = row.row(align=True)
+        bake.enabled = (not direct or (mode == "AUTOMATIC" and isinstance(state, dict)
+                        and state.get("mode") == "AUTOMATIC" and state.get("editing") is False
+                        and state.get("pending") is False))
+        bake.operator("character_designer.skirt_bake_physics", text="Bake", icon="REC")
         if baked:
-            box.label(text="Baked motion. Reset before changing tuning.", icon="INFO")
+            box.label(text=("After manual changes, Reset and bake again." if direct else
+                            "Baked motion. Reset before changing tuning."), icon="INFO")
     if not idle:
         box.label(text="Baking Dress motion. Esc cancels.", icon="INFO")
     elif not controls:
         box.label(text="Switch to Controls to adjust Dress motion.", icon="INFO")
+    elif direct:
+        if not isinstance(state, dict):
+            box.label(text="Dress preview state needs review.", icon="ERROR")
+        elif state.get("pending"):
+            box.label(text="Edited pose is awaiting Reset.", icon="INFO")
 
 
 DRESS_MOTION_CLASSES = (

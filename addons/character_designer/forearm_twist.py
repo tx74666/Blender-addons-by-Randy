@@ -225,24 +225,26 @@ def _resolve_rig(obj, side, *, _inventory=None):
         return armature, {"chain": chain, "target": hand.bone, "fk_source": True}
     if inventory["target_rotation_version"] != limb_ik.TARGET_ROTATION_VERSION:
         raise ForearmTwistError("Rebuild Rig once to enable aligned Hand Target rotation.")
-    from . import body_original_mode
-    if body_original_mode.active(armature):
-        # Original drives the native hand directly while the generated
-        # constraints stay muted; a hidden Hand Target cannot pose this hand.
+    from . import body_original_mode, limb_ik_fk
+    original = body_original_mode.active(armature)
+    if original or limb_ik_fk.mode_for_rig(armature, rig) == 'FK':
+        # Both Original and native FK drive the hand directly. The generated
+        # target is hidden/inactive and cannot pose this hand for calibration.
         hand = armature.pose.bones[rig['chain'][2]]
         if any(not constraint.mute and constraint.influence > 0 for constraint in hand.constraints):
-            raise ForearmTwistError('The Original hand is driven by another constraint; preserve that dependency before calibrating.')
-        return armature, {**rig, 'target': hand.bone, 'fk_source': True, 'original_source': True}
+            raise ForearmTwistError('The native hand is driven by another constraint; preserve that dependency before calibrating.')
+        return armature, {**rig, 'target': hand.bone, 'fk_source': True,
+                          'native_source': True, 'original_source': original}
     return armature, rig
 
 
 def _preview_pose_locked(armature, target, rig):
-    if not rig.get('original_source'):
+    if not (rig.get('native_source') or rig.get('original_source')):
         return (limb_ik._target_transform_has_driver(armature, target.name) or
                 limb_ik._target_transform_has_keyed_animation(armature, target.name))
-    # The validated Original view suspends the owned hand constraints. Their
-    # influence drivers mention this bone but do not drive its pose inputs.
-    # Actual native transform animation must still make the trial read-only.
+    # Owned hand constraints may be suspended or have zero FK influence. Their
+    # influence drivers mention this bone but do not drive its native inputs.
+    # Actual transform animation must still make the trial read-only.
     paths = {target.path_from_id(field) for field in
              ('location', 'rotation_euler', 'rotation_quaternion',
               'rotation_axis_angle', 'rotation_mode', 'scale')}

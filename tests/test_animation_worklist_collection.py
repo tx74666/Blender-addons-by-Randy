@@ -132,9 +132,10 @@ class CollectionTests(unittest.TestCase):
             setattr(package, module.__name__.rsplit('.', 1)[1], module)
         self.queue_module = self.load(name, 'animation_worklist_queue')
         self.collection = self.load(name, 'animation_worklist_collection')
+        self.real_export_implementation = self.collection.export_implementation
         self.implementation = {file: '1' * 64 for file in (
             'animation_export.py', 'animation_export_worker.py', 'unity_export_worker.py',
-            'animation_worklist_fingerprint.py', 'dress_export_snapshot.py')}
+            'animation_worklist_fingerprint.py', 'dress_export_snapshot.py', 'dress_export_guard.py')}
         self.collection.export_implementation = Mock(side_effect=lambda: deepcopy(self.implementation))
         self.addCleanup(self.cleanup_batch)
 
@@ -314,6 +315,34 @@ class CollectionTests(unittest.TestCase):
         self.item.sync_selected = False
         self.collection.scan_changes(self.context)
         self.assertFalse(self.item.sync_selected)
+
+    def test_actual_guard_bytes_change_implementation_and_invalidate_receipt(self):
+        # Execute the actual IO fingerprint and actual receipt/scan functions;
+        # only their __file__ root points to a private copy of the runtime files.
+        folder = self.folder / 'implementation'
+        folder.mkdir()
+        names = self.real_export_implementation().keys()
+        for name in names:
+            (folder / name).write_bytes((SOURCE / name).read_bytes())
+        with patch.object(self.collection, '__file__', str(folder / 'animation_worklist_collection.py')), \
+                patch.object(self.collection, 'export_implementation', self.real_export_implementation):
+            before = self.collection.export_implementation()
+            self.implementation = before
+            self.publish_receipt()
+            saved_receipt = self.item.last_synced_receipt
+            self.collection.scan_changes(self.context)
+            self.assertEqual(self.item.scan_state, 'UNCHANGED')
+            self.assertIsNotNone(self.collection._receipt(self.item, self.link, before))
+            guard = folder / 'dress_export_guard.py'
+            guard.write_bytes(guard.read_bytes() + b'\n# changed private guard bytes\n')
+            after = self.collection.export_implementation()
+            self.assertEqual([name for name in before if before[name] != after[name]], ['dress_export_guard.py'])
+            self.assertIsNone(self.collection._receipt(self.item, self.link, after))
+            self.collection.scan_changes(self.context)
+            self.assertEqual(self.item.scan_state, 'UNKNOWN')
+            self.assertEqual(self.item.last_synced_receipt, saved_receipt)
+            self.worklist.activate.assert_not_called()
+            self.worklist.sync.assert_not_called()
 
     def test_missing_or_modified_published_output_cannot_claim_unchanged(self):
         self.publish_receipt()

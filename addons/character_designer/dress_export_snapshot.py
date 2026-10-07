@@ -21,6 +21,7 @@ def _record(source):
     raw = source.get(RECORD_KEY)
     if raw is None:
         return None
+    direct_pending = False
     try:
         if source.type != 'MESH' or type(raw) is not str:
             raise ValueError()
@@ -33,12 +34,17 @@ def _record(source):
         if type(physics) is not dict:
             raise ValueError()
         backend = physics.get('backend', 'LEGACY_CAGE')
+        if backend == 'DIRECT_MAIN_CLOTH_V1':
+            direct_pending = True
+            raise ValueError('Direct Dress skeletal export validation is pending. Preserve its editable source and vertex physics.')
         if backend == 'LEGACY_CAGE' and 'surface' not in physics:
             return None
         if backend != BACKEND:
             raise ValueError()
         return record
     except (ValueError, TypeError) as error:
+        if direct_pending:
+            raise ValueError(source.name + ': ' + str(error)) from error
         raise ValueError(source.name + ': restore the saved Dress backend before export.') from error
 
 
@@ -49,21 +55,33 @@ def _service():
     return skirt_surface
 
 
+def _service_for_record(record):
+    backend = record['physics'].get('backend')
+    if backend == BACKEND:
+        return _service()
+    if backend == 'DIRECT_MAIN_CLOTH_V1':
+        from . import skirt_surface_direct
+        if skirt_surface_direct.BACKEND != backend:
+            raise ValueError('Restore the validated Direct Dress snapshot service.')
+        return skirt_surface_direct
+    raise ValueError('Restore the validated Dress snapshot backend.')
+
+
 def capture_animation_surfaces(context, rig, selected_action=None):
     """Capture only actual surfaces whose native skinning rig is the selected rig."""
     result = []
-    service = None
     # Rig ID properties/owned bones may reference another linked Scene's Dress
     # source too. Audit the same selected-rig closure the library writer keeps.
     for source in sorted(bpy.data.objects, key=lambda item: item.name):
         if source.type != 'MESH' or source.get(RIG_KEY) != rig:
             continue
-        if _record(source) is None:
+        record = _record(source)
+        if record is None:
             continue
-        service = service or _service()
+        service = _service_for_record(record)
         proof = json.loads(json.dumps(service.export_capture(source), allow_nan=False))
         _influence_animation_guard(source, selected_action)
-        _physical_animation_guard(source, _record(source), selected_action)
+        _physical_animation_guard(source, record, selected_action)
         result.append(proof)
     return result
 
@@ -73,7 +91,6 @@ def _proved_sources(proofs):
         raise ValueError('The captured Dress surface inventory must be a list.')
     if not proofs:
         return []
-    service = _service()
     result, names = [], set()
     for proof in proofs:
         if type(proof) is not dict or type(proof.get('source')) is not str:
@@ -85,7 +102,7 @@ def _proved_sources(proofs):
         record = _record(source)
         if record is None:
             raise ValueError(source.name + ': the captured Dress backend changed.')
-        service.validate_snapshot(source, proof)
+        _service_for_record(record).validate_snapshot(source, proof)
         result.append((source, record, proof))
     return result
 
@@ -191,18 +208,34 @@ All properties beneath the planned constraints are guarded, not just ``mute``.
     from . import skirt_rig
     rig = source.get(RIG_KEY)
     roles = record['physics']['surface']['roles']
-    cloth = bpy.data.objects[roles['CLOTH_PROXY'][0]].modifiers.get(record['physics']['surface']['cloth_modifier'])
-    neutral = bpy.data.objects[roles['NEUTRAL_RIG'][0]]
-    _holder, driver_identifier, influence_path = skirt_rig.physics_control(source)
+    direct = record['physics'].get('backend') == 'DIRECT_MAIN_CLOTH_V1'
+    cloth_object = bpy.data.objects[roles['CLOTH_PROXY'][0]]
+    cloth = ((cloth_object.modifiers[-1] if cloth_object.modifiers else None) if direct
+             else cloth_object.modifiers.get(record['physics']['surface']['cloth_modifier']))
+    holder, driver_identifier, influence_path = skirt_rig.physics_control(source)
+    if direct:
+        # A proved Direct graph already pauses its old bone-physics writer.
+        # Keep the native Manual/Spline IK/Hook input outside this endpoint plan.
+        influence = holder.get('physics_influence')
+        if type(influence) not in (int, float) or influence != 0.:
+            raise ValueError(source.name + ': Direct physics_influence must remain numeric zero before skeletal export.')
+        _influence_animation_guard(source, selected_action)
+        identifiers = (rig,)
+    else:
+        identifiers = (rig, bpy.data.objects[roles['NEUTRAL_RIG'][0]])
     owned = []
-    for identifier in (rig, neutral):
+    for identifier in identifiers:
         for chain in record['chains']:
-            for names, deform in ((chain['def'], True), (chain['phys'], False)):
-                for name in names:
+            endpoints = ((chain['def'], True),) if direct else ((chain['def'], True), (chain['phys'], False))
+            for names, deform in endpoints:
+                for offset, name in enumerate(names):
                     bone = identifier.pose.bones[name]
                     constraint = (bone.constraints.get('Skirt physics delta') if deform else bone.constraints[0])
                     if constraint is None:
                         raise ValueError(source.name + ': the proved Dress physical endpoint is missing.')
+                    if direct and (constraint.type != 'COPY_ROTATION' or constraint.target != rig
+                                   or constraint.subtarget != chain['phys'][offset] or not constraint.mute):
+                        raise ValueError(source.name + ': the old Direct physical Copy Rotation must remain paused and unchanged.')
                     index = next(index for index, item in enumerate(bone.constraints) if item == constraint)
                     aliases = (constraint.path_from_id(), bone.path_from_id() + '.constraints[' + str(index) + ']')
                     owned.append((identifier, constraint, aliases, deform))
@@ -253,16 +286,15 @@ this function in the artist's Blender process.
             raise ValueError('A captured Dress surface has a different skeletal rig.')
         _influence_animation_guard(source, selected_action)
         cloth, constraints = _physical_animation_guard(source, record, selected_action)
-        plans.append((source, record, proof, cloth, constraints))
-    service = _service() if plans else None
+        plans.append((source, record, proof, cloth, constraints, _service_for_record(record)))
     # Strip before muting: each strip validates its unchanged source graph again.
     # Multiple independent Dress subsets on one rig have all passed preflight.
-    for source, _record_value, proof, _cloth, _constraints in plans:
+    for source, _record_value, proof, _cloth, _constraints, service in plans:
         service.strip_export_snapshot(source, proof)
-    for _source, _record_value, _proof, cloth, constraints in plans:
+    for _source, _record_value, _proof, cloth, constraints, _service_value in plans:
         cloth.show_viewport = cloth.show_render = False
         for constraint in constraints:
             constraint.mute = True
-    return [{'source': source.name, 'owner': record['owner'], 'backend': BACKEND,
+    return [{'source': source.name, 'owner': record['owner'], 'backend': record['physics']['backend'],
              'simulation_baked': False, 'physics_omitted': True,
-             'manual_original_preserved': True} for source, record, _proof, _cloth, _constraints in plans]
+              'manual_original_preserved': True} for source, record, _proof, _cloth, _constraints, _service_value in plans]

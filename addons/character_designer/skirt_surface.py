@@ -58,6 +58,10 @@ _LINKS = (("Input", "Geometry", "Set Position", "Geometry"),
           ("Difference", "Vector", "Overlay", 1),
           ("Overlay", "Vector", "Set Position", "Position"),
           ("Set Position", "Geometry", "Output", "Geometry"))
+# Blender node-class registration bounds describe editor layout, not geometry.
+# Keep this exact list narrow: other writable node RNA remains part of the graph.
+_NODE_LAYOUT_BOUNDS = frozenset({"bl_width_default", "bl_width_min", "bl_width_max",
+                                 "bl_height_default", "bl_height_min", "bl_height_max"})
 
 
 class SkirtSurfaceError(ValueError):
@@ -981,12 +985,30 @@ def _node_group(actual, reference, source, record, tx):
 def _node_content(group):
     return {"interface": [{"name": item.name, "type": item.socket_type, "direction": item.in_out}
                           for item in group.interface.items_tree if item.item_type == "SOCKET"],
-            "nodes": {node.name: {"type": node.bl_idname, "rna": _rna(node, {"location", "width", "height", "select", "label"}),
+            "nodes": {node.name: {"type": node.bl_idname, "rna": _rna(node, {"location", "width", "height", "select", "label"} | _NODE_LAYOUT_BOUNDS),
                                   "inputs": {str(index): _rna(socket, {"hide", "hide_value"})
                                              for index, socket in enumerate(node.inputs)}} for node in group.nodes},
             "links": [[link.from_node.name, list(link.from_node.outputs).index(link.from_socket),
                        link.to_node.name, list(link.to_node.inputs).index(link.to_socket), link.is_valid]
                       for link in group.links]}
+
+
+def _node_contract_equal(saved, current):
+    """Compare semantic graph contents, retaining old records without rewriting.
+
+    Old Blender versions included class layout bounds in saved node RNA. Remove
+    only those same six fields from both comparison copies. Socket values, types,
+    interface, links and all other node fields keep their exact existing check.
+    """
+    def content(value):
+        result = copy.deepcopy(value)
+        if isinstance(result, dict) and isinstance(result.get("nodes"), dict):
+            for node in result["nodes"].values():
+                if isinstance(node, dict) and isinstance(node.get("rna"), dict):
+                    for name in _NODE_LAYOUT_BOUNDS:
+                        node["rna"].pop(name, None)
+        return result
+    return content(saved) == content(current)
 
 
 def _node_verify(group, actual, neutral):
@@ -1298,7 +1320,8 @@ def _overlay(source, record):
              and group is not None and group.get(ROLE_KEY) == NODE_ROLE and group.get(skirt.OWNER_KEY) == record["owner"]
              and group.get(skirt.SOURCE_KEY) == source and group.users == 1,
              "Restore the unique owned Dress surface overlay and node group.")
-    _require(_node_content(group) == surface["node_contract"], "Preserve the edited Dress node graph before continuing.")
+    _require(_node_contract_equal(surface["node_contract"], _node_content(group)),
+             "Preserve the edited Dress node graph before continuing.")
     return modifier
 
 

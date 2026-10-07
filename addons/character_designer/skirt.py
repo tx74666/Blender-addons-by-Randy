@@ -31,8 +31,10 @@ def _add_requested_physics(context, source, actual_surface, *, capability=None):
         return physics.add_physics(context, source)
     setup = _setup().settings(context)
     body = setup.body if setup is not None else None
+    if body is None or body.type != "MESH":
+        raise ValueError("Choose the actual Body mesh in Character Setup before adding Direct Dress physics.")
     return physics.add_physics(context, source,
-                               backend=physics.ACTUAL_SURFACE_BACKEND, body=body, capability=capability)
+                               backend=physics.DIRECT_SURFACE_BACKEND, body=body, capability=capability)
 
 
 def _setup():
@@ -341,7 +343,7 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
                 if capability != "MANUAL":
                     _add_requested_physics(context, source, self.actual_surface, capability=capability)
             from . import skirt_motion_tuning
-            if not (self.actual_surface and _physics().backend(_rig().read_record(source)) == _physics().ACTUAL_SURFACE_BACKEND):
+            if not (self.actual_surface and _physics().backend(_rig().read_record(source)) in _physics().SURFACE_BACKENDS):
                 skirt_motion_tuning.initialize(source, capability=capability if not had_setup else None, context=context)
             _rig().select_controls(context, source)
             record = _rig().read_record(source) or record
@@ -479,14 +481,72 @@ class CHARACTERDESIGNER_OT_skirt_add_physics(Operator):
         return _idle(context) and _has_setup(context) and not _has_physics(context)
 
     def execute(self, context):
+        new_direct = False
+        selection_state = None
         try:
             source = _source(context)
-            _settings(context).source = source
+            settings = _settings(context)
+            if self.actual_surface:
+                physics, rig_service = _physics(), _rig()
+                original_record = rig_service.read_record(source)
+                if physics.backend(original_record) != physics.DIRECT_SURFACE_BACKEND:
+                    provider = physics._surface_module(backend_name=physics.DIRECT_SURFACE_BACKEND)
+                    rig = source[rig_service.RIG_KEY]
+                    control = rig.data.bones[original_record["controls"]["waist"]]
+                    pose_control = rig.pose.bones[control.name]
+                    selection_state = {
+                        "context": rig_service._context_state(context), "source": settings.source,
+                        "selected": [(bone, bone.select) for bone in rig.pose.bones],
+                        "active": rig.data.bones.active, "hidden": rig.hide_get(),
+                        "control_hidden": control.hide,
+                        "pose_hidden": pose_control.hide if hasattr(pose_control, "hide") else None,
+                        "collections": [(collection, collection.is_visible) for collection in control.collections],
+                        "modifiers": [(modifier, modifier.is_active) for modifier in source.modifiers],
+                    }
+            settings.source = source
             _add_requested_physics(context, source, self.actual_surface, capability="BOTH")
+            new_direct = selection_state is not None
             from . import skirt_motion_tuning
             if not self.actual_surface:
                 skirt_motion_tuning.initialize(source, capability="BOTH", context=context)
-            _rig().select_controls(context, source)
+            try:
+                _rig().select_controls(context, source)
+            except (ValueError, RuntimeError) as exc:
+                if not new_direct:
+                    raise
+                failures = []
+                try:
+                    record = rig_service.read_record(source)
+                    plan = provider.preflight_remove(context, source, rig, record)
+                    provider.commit_remove(source, plan)
+                except Exception as rollback_error:
+                    failures.append("Direct installation: " + str(rollback_error))
+                try:
+                    rig_service._restore_context(context, selection_state["context"])
+                except Exception as rollback_error:
+                    failures.append("object context: " + str(rollback_error))
+                try:
+                    for bone, selected in selection_state["selected"]:
+                        bone.select = selected
+                    rig.data.bones.active = selection_state["active"]
+                    for collection, visible in selection_state["collections"]:
+                        collection.is_visible = visible
+                    control.hide = selection_state["control_hidden"]
+                    if selection_state["pose_hidden"] is not None:
+                        pose_control.hide = selection_state["pose_hidden"]
+                    rig.hide_set(selection_state["hidden"])
+                except Exception as rollback_error:
+                    failures.append("control selection/display: " + str(rollback_error))
+                try:
+                    settings.source = selection_state["source"]
+                    for modifier, active in selection_state["modifiers"]:
+                        modifier.is_active = active
+                except Exception as rollback_error:
+                    failures.append("source selection/modifier UI: " + str(rollback_error))
+                _report(self, context, str(exc), error=True)
+                for failure in failures:
+                    _report(self, context, "Direct rollback needs recovery: " + failure, error=True)
+                return {"CANCELLED"}
         except (ValueError, RuntimeError) as exc:
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
@@ -540,8 +600,8 @@ class CHARACTERDESIGNER_OT_skirt_select_colliders(Operator):
             surface = None
             body = None
             updated = record
-            if record["physics"].get("backend") == "ACTUAL_SURFACE_DELTA_V1":
-                from . import skirt_surface as surface
+            if _physics().backend(record) in _physics().SURFACE_BACKENDS:
+                surface = _physics()._surface_module(record)
                 updated, candidates, body = surface.prepare_collider_fitting(source, rig, record)
             else:
                 cache = cloth.point_cache
@@ -981,7 +1041,7 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
             row.operator('character_designer.clear_dress_corrections',
                          text='Selected').scope = 'SELECTED'
         physics = record.get("physics") or {}
-        actual_surface = physics.get("backend") == "ACTUAL_SURFACE_DELTA_V1"
+        actual_surface = physics.get("backend") in _physics().SURFACE_BACKENDS
         if not physics:
             layout.operator("character_designer.skirt_add_physics", icon="PHYSICS").actual_surface = True
         elif not actual_surface and physics.get("backend", "LEGACY_CAGE") == "LEGACY_CAGE":
@@ -1016,7 +1076,10 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
                     box.operator("character_designer.skirt_bake_animation", icon="ACTION")
                     if _last_bake(source):
                         box.operator("character_designer.skirt_preview_bake", icon="PLAY")
-                box.label(text="Baked physics retains manual shaping and Dress pose corrections.")
+                if physics.get("backend") == "DIRECT_MAIN_CLOTH_V1":
+                    box.label(text="Manual shapes the input before Cloth.")
+                else:
+                    box.label(text="Baked physics retains manual shaping and Dress pose corrections.")
         layout.separator()
         remove_row = layout.row()
         remove_row.alert = True

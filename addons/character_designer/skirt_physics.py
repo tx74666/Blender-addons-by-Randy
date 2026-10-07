@@ -17,6 +17,8 @@ from .skirt_topology import sample_fit
 
 LEGACY_BACKEND = "LEGACY_CAGE"
 ACTUAL_SURFACE_BACKEND = "ACTUAL_SURFACE_DELTA_V1"
+DIRECT_SURFACE_BACKEND = "DIRECT_MAIN_CLOTH_V1"
+SURFACE_BACKENDS = frozenset({ACTUAL_SURFACE_BACKEND, DIRECT_SURFACE_BACKEND})
 
 
 class SkirtPhysicsError(ValueError):
@@ -31,7 +33,7 @@ def _record_backend(record):
     if not isinstance(physics, dict):
         raise SkirtPhysicsError("The saved Dress physics backend is unreadable.")
     value = physics.get("backend", LEGACY_BACKEND)
-    if type(value) is not str or value not in {LEGACY_BACKEND, ACTUAL_SURFACE_BACKEND}:
+    if type(value) is not str or value not in SURFACE_BACKENDS | {LEGACY_BACKEND}:
         raise SkirtPhysicsError("Unknown Dress physics backend; preserve its saved setup.")
     return value
 
@@ -40,13 +42,19 @@ def backend(record):
     return _record_backend(record)
 
 
-def _surface_module():
+def _surface_module(record=None, *, backend_name=None):
     # Legacy load, drawing and physics operations do not import the new service.
     try:
-        from . import skirt_surface
+        selected = backend(record) if record is not None else (backend_name or ACTUAL_SURFACE_BACKEND)
+        if selected == DIRECT_SURFACE_BACKEND:
+            from . import skirt_surface_direct as skirt_surface
+        elif selected == ACTUAL_SURFACE_BACKEND:
+            from . import skirt_surface
+        else:
+            raise SkirtPhysicsError("This Dress has no surface backend.")
     except ImportError as error:
         raise SkirtPhysicsError("The installed Dress surface service is unavailable; restore the validated add-on.") from error
-    if getattr(skirt_surface, "BACKEND", None) != ACTUAL_SURFACE_BACKEND:
+    if getattr(skirt_surface, "BACKEND", None) != selected:
         raise SkirtPhysicsError("The installed Dress surface service has a different backend contract.")
     return skirt_surface
 
@@ -196,17 +204,17 @@ def _make_colliders(context, source, rig, record, collection):
 
 def add_physics(context, source, *, backend=None, body=None, capability=None):
     """Keep legacy callers unchanged; surface installation is an explicit transaction."""
-    if backend is not None and (type(backend) is not str or backend not in {LEGACY_BACKEND, ACTUAL_SURFACE_BACKEND}):
+    if backend is not None and (type(backend) is not str or backend not in SURFACE_BACKENDS | {LEGACY_BACKEND}):
         raise SkirtPhysicsError("Unknown requested Dress physics backend.")
     skirt_rig._require_controls_for_setup(source)
     record, rig = _record(source)
     current_backend = _record_backend(record)
-    if backend == ACTUAL_SURFACE_BACKEND:
+    if backend in SURFACE_BACKENDS:
         # The service owns the entire installation/upgrade transaction, including
         # any legacy starting graph. Do not commit a partial legacy upgrade here.
         intent = {} if capability is None else {"capability": capability}
-        return _surface_module().install(context, source, body=body, **intent)
-    if backend == LEGACY_BACKEND and current_backend == ACTUAL_SURFACE_BACKEND:
+        return _surface_module(backend_name=backend).install(context, source, body=body, **intent)
+    if backend == LEGACY_BACKEND and current_backend in SURFACE_BACKENDS:
         raise SkirtPhysicsError("Remove or explicitly rebuild the Dress surface setup before changing its backend.")
     if record.get("physics"):
         validate_physics(source)
@@ -569,8 +577,8 @@ def _verify_physics_graph(source, rig, record):
 
 def _physics_graph(source, rig, record):
     try:
-        if backend(record) == ACTUAL_SURFACE_BACKEND:
-            return _surface_module().validate(source, rig, record)
+        if backend(record) in SURFACE_BACKENDS:
+            return _surface_module(record).validate(source, rig, record)
         return _verify_physics_graph(source, rig, record)
     except (KeyError, TypeError, AttributeError, IndexError, OverflowError) as error:
         raise SkirtPhysicsError('The saved Dress physics graph is incomplete; restore its saved file.') from error
@@ -611,6 +619,9 @@ def reset_simulation(context, source):
     cache = cloth.point_cache
     start = cache.frame_start
     saved_frame, saved_subframe = context.scene.frame_current, context.scene.frame_subframe
+    direct = backend(record) == DIRECT_SURFACE_BACKEND
+    service = _surface_module(record) if direct else None
+    saved_mode = service.capture_mode(source, record) if direct else None
     try:
         with context.temp_override(object=proxy, active_object=proxy, point_cache=cache):
             if cache.is_baked:
@@ -620,13 +631,28 @@ def reset_simulation(context, source):
         cache.frame_step = cache.frame_step
         context.scene.frame_set(start - 1)
         context.scene.frame_set(start)
+        if direct:
+            service.reset_completed(context, source, record)
         context.view_layer.update()
         _require(not cache.is_baked, 'The Dress cache remained baked after Reset.')
         record['physics']['baked_range'] = None
         skirt_rig.write_record(source, record)
         return {'start': start, 'is_baked': False}
-    except Exception:
-        context.scene.frame_set(saved_frame, subframe=saved_subframe)
+    except Exception as error:
+        restore_errors = []
+        if direct:
+            try:
+                service.restore_mode(source, record, saved_mode)
+            except Exception as restore_error:
+                restore_errors.append(str(restore_error))
+        try:
+            context.scene.frame_set(saved_frame, subframe=saved_subframe)
+        except Exception as restore_error:
+            restore_errors.append(str(restore_error))
+        if restore_errors:
+            raise SkirtPhysicsError(
+                'Dress Reset failed; preview/frame restoration also failed: '
+                + '; '.join(restore_errors)) from error
         raise
 
 
@@ -740,8 +766,10 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
         raise SkirtPhysicsError("Bake at most 20,001 frames in one operation.")
     record, rig = _record(source)
     proxy, cloth = _cloth(record)
-    if backend(record) == ACTUAL_SURFACE_BACKEND and kind == "ANIMATION":
+    if backend(record) in SURFACE_BACKENDS and kind == "ANIMATION":
         raise SkirtPhysicsError("The Dress surface uses a per-vertex Cloth result. Bake its simulation; a bone-only animation copy cannot preserve that result.")
+    if backend(record) == DIRECT_SURFACE_BACKEND:
+        _surface_module(record).require_bake_ready(source, record)
     saved_frame = context.scene.frame_current
     saved_subframe = context.scene.frame_subframe
     saved_active = context.view_layer.objects.active
@@ -813,8 +841,8 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
         record["physics"]["baked_range"] = [start, end]
         skirt_rig.write_record(source, record)
         result = {"start": start, "end": end, "frames": total, "kind": kind}
-        if backend(record) == ACTUAL_SURFACE_BACKEND:
-            result.update(backend=ACTUAL_SURFACE_BACKEND, surface=proxy.name)
+        if backend(record) in SURFACE_BACKENDS:
+            result.update(backend=backend(record), surface=proxy.name)
         if export:
             output = export[1]
             if output.animation_data and output.animation_data.action:

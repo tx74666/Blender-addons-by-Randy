@@ -676,7 +676,7 @@ def _refine_calibrated_reach(context, armature, inventory, rig, desired):
 
 
 def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=None,
-                calibrated_rest=False, precise=False):
+                calibrated_rest=False, precise=False, sync_display=True):
     """Switch one limb and match its evaluated pose; restore everything on error."""
     if mode not in {"IK", "FK"}:
         raise _error("Choose IK or FK.")
@@ -691,7 +691,9 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
     from . import bone_collections, bone_display
     # Original.leave uses this matcher while its saved workspace is still
     # active. Its outer transaction owns the final display handoff.
-    sync_display = 'character_designer_body_original_mode_v1' not in armature
+    # Construction also defers display until its outer rig-layout transaction
+    # has restored Body collections. Interactive callers retain strict checks.
+    sync_display = sync_display and 'character_designer_body_original_mode_v1' not in armature
     target = armature.pose.bones[rig["target"].name]
     old_mode = mode_for_rig(armature, rig)
     if old_mode == mode and desired_pose is None:

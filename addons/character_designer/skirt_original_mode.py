@@ -65,7 +65,7 @@ def _surface(source, target, record, *, prove=True):
     backend = skirt_physics.backend(record)
     if backend == skirt_physics.LEGACY_BACKEND:
         return None, None
-    service = skirt_physics._surface_module()
+    service = skirt_physics._surface_module(record)
     if prove:
         service.validate(source, target, record)
     physics = record['physics']
@@ -375,6 +375,9 @@ def _preserve(context, main, entries, wanted):
 def enter(context, main, entries):
     targets = _resolve(context, main, entries)
     for entry, target, _source, _record, relations in targets:
+        service, _identity = _surface(_source, target, _record, prove=False)
+        if service is not None and getattr(service, 'BACKEND', None) == 'DIRECT_MAIN_CLOTH_V1':
+            service.set_editing(_source, _record, True)
         correction = _corrections(_source, _record)
         for pb, copy, rotation in relations:
             # REPLACE previously discarded these dormant channels. Identity is
@@ -442,6 +445,10 @@ def leave(context, main, entries, desired=None):
         if correction['bones']:
             source[CORRECTIONS] = json.dumps(correction, separators=(',', ':'))
     verify(context, main, entries, desired)
+    for _entry, target, source, record, _relations in targets:
+        service, _identity = _surface(source, target, record, prove=False)
+        if service is not None and getattr(service, 'BACKEND', None) == 'DIRECT_MAIN_CLOTH_V1':
+            service.set_editing(source, record, False)
     return count
 
 

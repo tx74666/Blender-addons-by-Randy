@@ -5,10 +5,13 @@ native evaluation only; graph, Cloth collision and persistence require Blender.
 """
 import ast
 import copy
+from contextlib import nullcontext
 import importlib.util
 import json
 import math
 from pathlib import Path
+import sys
+import types
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -28,9 +31,15 @@ def functions(filename, names, scope):
 
 
 def physics_scope():
-    scope = {"LEGACY_BACKEND": "LEGACY_CAGE", "ACTUAL_SURFACE_BACKEND": "ACTUAL_SURFACE_DELTA_V1"}
+    constants = {"LEGACY_BACKEND", "ACTUAL_SURFACE_BACKEND", "DIRECT_SURFACE_BACKEND", "SURFACE_BACKENDS"}
+    tree = ast.parse((ROOT / "skirt_physics.py").read_text(encoding="utf-8"))
+    nodes = [node for node in tree.body if isinstance(node, ast.Assign)
+             and any(isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+    assert {target.id for node in nodes for target in node.targets if isinstance(target, ast.Name)} == constants
+    scope = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "skirt_physics.py"), "exec"), scope)
     return functions("skirt_physics.py", {"SkirtPhysicsError", "_record_backend", "backend", "_physics_graph",
-                                         "add_physics", "bake_steps"}, scope)
+                                         "_surface_module", "add_physics", "bake_steps"}, scope)
 
 
 def fit(count=15):
@@ -87,10 +96,16 @@ class BackendDispatch(unittest.TestCase):
     def setUp(self):
         self.scope = physics_scope()
         self.calls = []
+        self.selected = []
         self.scope["_verify_physics_graph"] = lambda *args: self.calls.append("legacy") or ("oldProxy", "oldCloth")
         self.service = SimpleNamespace(validate=lambda *args: self.calls.append("surface") or ("C", "cloth"),
                                        install=lambda *args, **kwargs: self.calls.append(("install", kwargs)) or "installed")
-        self.scope["_surface_module"] = lambda: self.calls.append("import") or self.service
+        self.scope["_surface_module"] = self.surface_module
+
+    def surface_module(self, record=None, *, backend_name=None):
+        self.selected.append(self.scope["backend"](record) if record is not None else backend_name)
+        self.calls.append("import")
+        return self.service
 
     def test_legacy_without_marker_does_not_load_surface_and_actual_dispatches(self):
         self.assertEqual(self.scope["_physics_graph"]("S", "rig", {"physics": {}}), ("oldProxy", "oldCloth"))
@@ -106,6 +121,37 @@ class BackendDispatch(unittest.TestCase):
                 self.scope["_physics_graph"]("S", "rig", {"physics": {"backend": value}})
         self.assertEqual(self.calls, [])
 
+    def test_direct_validation_and_explicit_install_keep_the_selected_backend(self):
+        direct = self.scope["DIRECT_SURFACE_BACKEND"]
+        self.assertEqual(self.scope["_physics_graph"]("S", "rig", {"physics": {"backend": direct}}), ("C", "cloth"))
+        self.assertEqual(self.selected, [direct])
+        self.scope["skirt_rig"] = SimpleNamespace(_require_controls_for_setup=lambda *_: None)
+        self.scope["_record"] = lambda *_: ({}, "rig")
+        self.scope["add_physics"](None, "S", backend=direct, body="Body", capability="BOTH")
+        self.assertEqual(self.selected, [direct, direct])
+        self.assertEqual(self.calls[-1], ("install", {"body": "Body", "capability": "BOTH"}))
+
+    def test_real_record_aware_module_loader_preserves_delta_and_refuses_wrong_service(self):
+        scope = physics_scope()
+        package_name = "_surface_dispatch_pure_fixture"
+        package = types.ModuleType(package_name)
+        package.__path__ = []
+        actual = types.ModuleType(package_name + ".skirt_surface")
+        actual.BACKEND = scope["ACTUAL_SURFACE_BACKEND"]
+        direct = types.ModuleType(package_name + ".skirt_surface_direct")
+        direct.BACKEND = scope["DIRECT_SURFACE_BACKEND"]
+        package.skirt_surface, package.skirt_surface_direct = actual, direct
+        scope["__package__"] = package_name
+        with patch.dict(sys.modules, {package_name: package, actual.__name__: actual, direct.__name__: direct}):
+            self.assertIs(scope["_surface_module"](), actual)
+            self.assertIs(scope["_surface_module"]({"physics": {"backend": direct.BACKEND}}), direct)
+            self.assertIs(scope["_surface_module"](backend_name=actual.BACKEND), actual)
+            direct.BACKEND = actual.BACKEND
+            with self.assertRaisesRegex(scope["SkirtPhysicsError"], "different backend"):
+                scope["_surface_module"]({"physics": {"backend": scope["DIRECT_SURFACE_BACKEND"]}})
+            with self.assertRaises(scope["SkirtPhysicsError"]):
+                scope["_surface_module"]({"physics": {"backend": "UNRECOGNIZED"}})
+
     def test_explicit_install_delegates_before_any_legacy_creation(self):
         self.scope["skirt_rig"] = SimpleNamespace(_require_controls_for_setup=lambda *_: None)
         self.scope["_record"] = lambda *_: ({}, "rig")
@@ -120,11 +166,12 @@ class BackendDispatch(unittest.TestCase):
 
     def test_actual_bone_copy_is_rejected_before_cache_or_context_mutation(self):
         self.scope["skirt_rig"] = SimpleNamespace(_require_controls_for_setup=lambda *_: None)
-        self.scope["_record"] = lambda *_: ({"physics": {"backend": self.scope["ACTUAL_SURFACE_BACKEND"]}}, "rig")
         self.scope["_cloth"] = lambda *_: ("C", "cloth")
         self.scope["clear_cache"] = lambda *_: self.fail("Cache must remain untouched")
-        with self.assertRaisesRegex(self.scope["SkirtPhysicsError"], "bone-only"):
-            next(self.scope["bake_steps"](None, "S", 1, 10, kind="ANIMATION"))
+        for backend in self.scope["SURFACE_BACKENDS"]:
+            self.scope["_record"] = lambda *_, selected=backend: ({"physics": {"backend": selected}}, "rig")
+            with self.subTest(backend=backend), self.assertRaisesRegex(self.scope["SkirtPhysicsError"], "bone-only"):
+                next(self.scope["bake_steps"](None, "S", 1, 10, kind="ANIMATION"))
 
 
 class Rig(dict):
@@ -174,7 +221,7 @@ class AtomicModes(unittest.TestCase):
         self.sources = [self.make_source(str(i)) for i in range(3)]
         self.surface = SimpleNamespace(capture_mode=lambda source, _record: source["overlay"],
                                        set_mode=self.set_mode, restore_mode=self.restore_mode)
-        self.physics._surface_module = lambda: self.surface
+        self.physics._surface_module = lambda record=None, **_kwargs: self.surface
         self.physics.validate_physics = self.validate
         self.physics.clear_cache = lambda *_: self.fail("A mode-only transaction must not clear cache")
         self.skirt = SimpleNamespace(RECORD_KEY="record", RIG_KEY="rig", read_record=lambda source: json.loads(source["record"]),
@@ -339,6 +386,252 @@ class AtomicModes(unittest.TestCase):
         self.runtime["_restore"](item)
         self.assertEqual(self.runtime["_weights"](proxy, item["group"]), original)
         self.assertEqual(self.state(), before)
+
+
+class DirectModes(unittest.TestCase):
+    def setUp(self):
+        # Keep the existing Delta fixture and tests intact. Only the saved
+        # backend, independent output-mode contract and old influence differ.
+        self.fixture = AtomicModes(methodName="test_mode_only_success_retains_sealed_C_cache_and_switches_both_displays")
+        self.fixture.setUp()
+        self.runtime = self.fixture.runtime
+        self.context = self.fixture.context
+        self.sources = self.fixture.sources
+        for source in self.sources:
+            record = json.loads(source["record"])
+            record["physics"]["backend"] = self.fixture.physics.DIRECT_SURFACE_BACKEND
+            source["record"] = json.dumps(record)
+            source["rig"]["physics_influence"] = 0.
+        self.fixture.physics.validate_physics = self.validate
+        self.fixture.surface.set_mode = self.set_mode
+
+    def validate(self, source):
+        record = json.loads(source["record"])
+        profile = profiles.read(source, record)
+        if source["rig"]["physics_influence"] != 0.:
+            raise self.fixture.physics.SkirtPhysicsError("Direct input must not reopen old bone physics")
+        active = profile is not None and profile["mode"] == "AUTOMATIC"
+        if profile is None or source["overlay"] != (active, active):
+            raise self.fixture.physics.SkirtPhysicsError("Direct saved mode differs from its native output")
+        return record, source["rig"], source["proxy"], source["cloth"]
+
+    def set_mode(self, source, record, mode):
+        self.assertEqual(source["rig"]["physics_influence"], 0., "Old physics must stay zero even during the native setter")
+        return self.fixture.set_mode(source, record, mode)
+
+    def manual_only(self):
+        source = self.sources[0]
+        record = json.loads(source["record"])
+        profiles.write(source, profiles.fresh(record, capability="MANUAL", mode="MANUAL"), record)
+        source["overlay"] = (False, False)
+        return source
+
+    def test_manual_and_automatic_switch_output_without_old_bone_physics_or_cache_clear(self):
+        before_bakes = [source["cloth"].point_cache.is_baked for source in self.sources]
+        for mode in ("MANUAL", "AUTOMATIC"):
+            result = self.runtime["apply"](self.context, self.sources, mode=mode)
+            self.assertTrue(all(profile["mode"] == mode for profile in result))
+            self.assertTrue(all(source["overlay"] == (mode == "AUTOMATIC",) * 2 for source in self.sources))
+            self.assertTrue(all(source["rig"]["physics_influence"] == 0. for source in self.sources))
+            self.assertEqual([source["cloth"].point_cache.is_baked for source in self.sources], before_bakes)
+
+    def test_direct_auto_promotion_commits_native_endpoint_and_profile_together(self):
+        source = self.manual_only()
+        result = self.runtime["initialize"](source, capability="BOTH", context=self.context)
+        self.assertEqual((result["capability"], result["mode"]), ("BOTH", "AUTOMATIC"))
+        self.assertEqual(source["overlay"], (True, True))
+        self.assertEqual(source["rig"]["physics_influence"], 0.)
+        self.assertTrue(source["cloth"].point_cache.is_baked)
+        self.validate(source)
+
+    def test_direct_auto_promotion_late_failure_restores_manual_profile_native_output_and_cache(self):
+        source = self.manual_only()
+        before = self.fixture.state()
+        original = self.fixture.physics.validate_physics
+
+        def fail_automatic(item):
+            record = json.loads(item["record"])
+            profile = profiles.read(item, record)
+            if item is source and profile["mode"] == "AUTOMATIC":
+                raise RuntimeError("Direct post-update endpoint rejected")
+            return original(item)
+
+        self.fixture.physics.validate_physics = fail_automatic
+        with self.assertRaisesRegex(RuntimeError, "post-update endpoint"):
+            self.runtime["initialize"](source, capability="BOTH", context=self.context)
+        self.assertEqual(self.fixture.state(), before)
+
+    def test_second_direct_source_failure_restores_every_touched_mode(self):
+        before = self.fixture.state()
+        self.fixture.fail_source = self.sources[1]
+        with self.assertRaisesRegex(RuntimeError, "partial overlay"):
+            self.runtime["apply"](self.context, self.sources, mode="MANUAL")
+        self.assertEqual(self.fixture.state(), before)
+        self.assertEqual(self.fixture.surface_calls, [("set", "0"), ("set", "1"), ("restore", "1"), ("restore", "0")])
+
+    def test_missing_direct_profile_cannot_be_reconstructed_from_zero_old_influence(self):
+        source = self.sources[0]
+        source.pop(profiles.PROFILE_KEY)
+        def state():
+            return [(item["record"], item.get(profiles.PROFILE_KEY), item["overlay"],
+                     item["rig"]["physics_influence"], item["cloth"].point_cache.is_baked)
+                    for item in self.sources]
+
+        before = state()
+        with self.assertRaisesRegex(profiles.DressMotionError, "Restore the Direct Dress motion profile"):
+            self.runtime["_profile"](source, json.loads(source["record"]), source["rig"], source["cloth"])
+        self.assertEqual(state(), before)
+
+
+class PendingDirectExport(unittest.TestCase):
+    def readers(self):
+        for filename, function_name in (("unity_export.py", "_dress_record"),
+                                        ("unity_export_worker.py", "_dress_backend_source"),
+                                        ("dress_export_snapshot.py", "_record")):
+            scope = {"json": json}
+            tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
+            constants = {"_DRESS_RECORD_KEY", "_DRESS_BACKEND", "_DRESS_ROLES", "RECORD_KEY", "BACKEND"}
+            nodes = [node for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+            nodes.extend(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ExportError")
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / filename), "exec"), scope)
+            functions(filename, {function_name}, scope)
+            yield filename, scope[function_name]
+
+    def source(self, backend):
+        obj = Source()
+        obj.name, obj.type = "Dress", "MESH"
+        obj["character_designer_skirt_v1"] = json.dumps({"version": 1, "owner": "owned", "physics": {
+            "backend": backend, "surface": {"version": 1, "roles": {}}, "colliders": []}})
+        return obj
+
+    def test_new_direct_export_fails_closed_and_keeps_its_pending_validation_reason(self):
+        for filename, reader in self.readers():
+            with self.subTest(reader=filename), self.assertRaisesRegex(ValueError, "Direct Dress.*pending"):
+                reader(self.source("DIRECT_MAIN_CLOTH_V1"))
+
+    def test_unknown_backend_rejected_and_existing_delta_metadata_still_readable(self):
+        for filename, reader in self.readers():
+            with self.subTest(reader=filename):
+                with self.assertRaises(ValueError):
+                    reader(self.source("UNRECOGNIZED"))
+                self.assertTrue(reader(self.source("ACTUAL_SURFACE_DELTA_V1")))
+
+
+class ResetDispatch(unittest.TestCase):
+    def setUp(self):
+        self.runtime = physics_scope()
+        functions("skirt_physics.py", {"reset_simulation", "_require"}, self.runtime)
+        self.events = []
+        self.source = Source()
+        self.record = {"physics": {"backend": self.runtime["DIRECT_SURFACE_BACKEND"], "baked_range": [1, 60]}}
+        self.cache = SimpleNamespace(is_baked=True, frame_start=1, frame_step=1)
+        self.cloth = SimpleNamespace(point_cache=self.cache)
+        self.scene = SimpleNamespace(frame_current=39, frame_subframe=.25, frame_set=self.frame_set)
+        self.context = SimpleNamespace(scene=self.scene, temp_override=lambda **_kwargs: nullcontext(),
+                                       view_layer=SimpleNamespace(update=self.update))
+        self.mode = {"pending": True, "socket": False, "cloth_flags": (False, False)}
+        self.fail_hook = self.fail_update = self.fail_restore = False
+        self.service = SimpleNamespace(capture_mode=self.capture_mode, reset_completed=self.reset_completed,
+                                       restore_mode=self.restore_mode)
+        self.runtime.update(skirt_rig=SimpleNamespace(_require_controls_for_setup=lambda _source: None,
+                                                      write_record=self.write_record),
+                            validate_physics=lambda _source: (self.record, "Rig", "C", self.cloth),
+                            _surface_module=self.module,
+                            bpy=SimpleNamespace(ops=SimpleNamespace(ptcache=SimpleNamespace(free_bake=self.free_bake))))
+
+    def module(self, record):
+        self.assertIs(record, self.record)
+        self.events.append("service")
+        return self.service
+
+    def capture_mode(self, source, record):
+        self.assertIs(source, self.source)
+        self.assertIs(record, self.record)
+        self.events.append("capture")
+        return copy.deepcopy(self.mode)
+
+    def free_bake(self):
+        self.events.append("free")
+        self.cache.is_baked = False
+        return {"FINISHED"}
+
+    def frame_set(self, frame, *, subframe=0.):
+        self.events.append(("frame", frame, subframe))
+        self.scene.frame_current, self.scene.frame_subframe = frame, subframe
+
+    def reset_completed(self, context, source, record):
+        self.assertIs(context, self.context)
+        self.assertIs(source, self.source)
+        self.assertIs(record, self.record)
+        self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (1, 0.))
+        self.assertFalse(self.cache.is_baked)
+        self.events.append("reset_hook")
+        self.mode.update(pending=False, socket=True, cloth_flags=(True, True))
+        if self.fail_hook:
+            raise RuntimeError("Partial Direct reset endpoint write")
+
+    def update(self):
+        self.events.append("update")
+        if self.fail_update:
+            raise RuntimeError("Reset evaluation rejected")
+
+    def restore_mode(self, source, record, state):
+        # Match both real service ABIs; a one-argument call must fail this test.
+        self.assertIs(source, self.source)
+        self.assertIs(record, self.record)
+        self.events.append("restore_mode")
+        if self.fail_restore:
+            raise RuntimeError("Preview restoration rejected")
+        self.mode = copy.deepcopy(state)
+
+    def write_record(self, source, record):
+        self.assertIs(source, self.source)
+        self.assertIs(record, self.record)
+        self.events.append("write")
+
+    def test_direct_reset_releases_cache_then_resumes_only_at_start_before_update(self):
+        result = self.runtime["reset_simulation"](self.context, self.source)
+        self.assertEqual(result, {"start": 1, "is_baked": False})
+        self.assertEqual(self.events, ["service", "capture", "free", ("frame", 0, 0.),
+                                       ("frame", 1, 0.), "reset_hook", "update", "write"])
+        self.assertEqual(self.mode, {"pending": False, "socket": True, "cloth_flags": (True, True)})
+        self.assertIsNone(self.record["physics"]["baked_range"])
+
+    def test_partial_hook_failure_restores_preview_and_exact_author_frame_but_not_released_payload(self):
+        before = copy.deepcopy(self.mode)
+        self.fail_hook = True
+        with self.assertRaisesRegex(RuntimeError, "Partial Direct reset"):
+            self.runtime["reset_simulation"](self.context, self.source)
+        self.assertEqual(self.mode, before)
+        self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
+        self.assertEqual(self.events[-2:], ["restore_mode", ("frame", 39, .25)])
+        self.assertFalse(self.cache.is_baked, "An explicit Reset cannot restore the freed cache payload")
+        self.assertNotIn("write", self.events)
+
+    def test_late_update_failure_restores_changed_native_endpoint(self):
+        before = copy.deepcopy(self.mode)
+        self.fail_update = True
+        with self.assertRaisesRegex(RuntimeError, "Reset evaluation rejected"):
+            self.runtime["reset_simulation"](self.context, self.source)
+        self.assertEqual(self.mode, before)
+        self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
+        self.assertNotIn("write", self.events)
+
+    def test_restore_failure_still_attempts_author_frame_and_retains_initial_cause(self):
+        self.fail_hook = self.fail_restore = True
+        with self.assertRaisesRegex(self.runtime["SkirtPhysicsError"], "Preview restoration rejected") as captured:
+            self.runtime["reset_simulation"](self.context, self.source)
+        self.assertRegex(str(captured.exception.__cause__), "Partial Direct reset")
+        self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
+        self.assertEqual(self.events[-2:], ["restore_mode", ("frame", 39, .25)])
+
+    def test_existing_delta_reset_does_not_load_direct_service_or_modify_preview(self):
+        self.record["physics"]["backend"] = self.runtime["ACTUAL_SURFACE_BACKEND"]
+        before = copy.deepcopy(self.mode)
+        self.runtime["reset_simulation"](self.context, self.source)
+        self.assertEqual(self.events, ["free", ("frame", 0, 0.), ("frame", 1, 0.), "update", "write"])
+        self.assertEqual(self.mode, before)
 
 
 if __name__ == "__main__":

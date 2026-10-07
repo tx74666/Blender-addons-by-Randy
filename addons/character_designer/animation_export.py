@@ -46,6 +46,12 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
         raise AnimationExportError('Leave Edit Mode and NLA Tweak Mode before exporting an Action.')
     if action is None or action.library:
         raise AnimationExportError('Choose a local editable Action.')
+    from . import dress_export_guard
+    try:
+        direct_admission = dress_export_guard.animation_host_admission(
+            bpy.data.objects, rig, action, _slot(rig, action))
+    except (ValueError, TypeError) as error:
+        raise AnimationExportError(str(error)) from error
     if not all(math.isfinite(value) for value in (frame_start, frame_end)) or frame_end <= frame_start:
         raise AnimationExportError('End Frame must be after Start Frame.')
     fps = context.scene.render.fps / context.scene.render.fps_base
@@ -110,6 +116,7 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
         spec['dress_snapshot_path'] = str(snapshot)
         bpy.data.libraries.write(str(snapshot), {rig, action} | dress_scene_roots,
                                 path_remap='ABSOLUTE', compress=True)
+        spec[dress_export_guard.JOB_KEY] = dress_export_guard.bind_animation_snapshot(direct_admission, snapshot)
         (root / 'job.json').write_text(json.dumps(spec), encoding='utf-8')
         job['log'] = (root / 'worker.log').open('w', encoding='utf-8')
         command = [bpy.app.binary_path, '--background', '--factory-startup', '--disable-autoexec',

@@ -1,4 +1,12 @@
-# Character Designer 0.76.0
+# Character Designer 0.77.2
+
+## Applying a hand Pose while a controller is selected (0.77.2)
+
+A legacy native Pose such as **Fist** applies its recorded bones when the
+current selection contains none of its destinations. Your original selection
+and active bone are restored. Selecting some of the recorded fingers still
+applies only that subset; Shift-double-click preserves opposite-side matching.
+The Pose's data and the current IK/FK mode remain unchanged.
 
 ## Independent Hair strand motion (0.76.0)
 

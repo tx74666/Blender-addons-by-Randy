@@ -38,6 +38,16 @@ class ExportError(ValueError):
     pass
 
 
+def _direct_export_guard():
+    name = '_cdesigner_direct_export_guard_v1'
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name('dress_export_guard.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return sys.modules[name]
+
+
 def _dress_backend_source(obj):
     """Light snapshot inventory; no proof imports for legacy or normal meshes."""
     if obj.type != 'MESH' or _DRESS_RECORD_KEY not in obj:
@@ -55,6 +65,8 @@ def _dress_backend_source(obj):
         if type(physics) is not dict:
             raise ValueError()
         backend = physics.get('backend', 'LEGACY_CAGE')
+        if backend == 'DIRECT_MAIN_CLOTH_V1':
+            raise ExportError(f'{obj.name}: Direct Dress export validation is pending; this worker cannot publish its vertex physics as skeletal animation.')
         if backend == 'LEGACY_CAGE':
             if 'surface' in physics:
                 raise ValueError()
@@ -62,6 +74,8 @@ def _dress_backend_source(obj):
         if type(backend) is not str or backend != _DRESS_BACKEND:
             raise ValueError()
         return True
+    except ExportError:
+        raise
     except (ValueError, TypeError, KeyError) as exc:
         raise ExportError(f'{obj.name}: saved Dress backend metadata is invalid.') from exc
 
@@ -870,6 +884,11 @@ def _export_textures(objects, stage, warnings):
 
 
 def export_job(job):
+    # Admission precedes directories and all native snapshot mutations.
+    try:
+        _direct_export_guard().reject_model_snapshot(job, bpy.data.objects)
+    except (ValueError, TypeError) as error:
+        raise ExportError(str(error)) from error
     stage = Path(job['stage']).resolve()
     stage.mkdir(parents=True, exist_ok=True)
     filename = job['filename']

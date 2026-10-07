@@ -2,7 +2,8 @@
 
 No frame handler, bone transform, original Action or skin weight is written.
 An existing sealed cache must be reset before changing material parameters;
-mode switches retain that cache so a baked simulation can be manually refined.
+mode switches retain that cache. Direct Manual previews the input; its edits
+require an explicit Reset and replay instead of changing the sealed result.
 """
 import copy
 import math
@@ -56,7 +57,7 @@ def _native(record, cloth, previous=None):
 
 def _profile(source, record, rig, cloth, *, capability=None):
     physics, skirt = _modules()
-    if physics.backend(record) == physics.ACTUAL_SURFACE_BACKEND:
+    if physics.backend(record) in physics.SURFACE_BACKENDS:
         holder, _driver_id, _path = skirt.physics_control(source)
         value = holder.get("physics_influence", 0.0)
         if type(value) not in (int, float) or value not in (0.0, 1.0):
@@ -69,6 +70,8 @@ def _profile(source, record, rig, cloth, *, capability=None):
             else:
                 raise profiles.DressMotionError("Use the existing Dress generation choice; its saved controls are retained.")
         return profiles.edited(previous, record, _native(record, cloth, previous) if cloth else {})
+    if physics.backend(record) == physics.DIRECT_SURFACE_BACKEND:
+        raise profiles.DressMotionError("Restore the Direct Dress motion profile before tuning; its old bone-physics influence is not its surface mode.")
     holder, _driver_id, _path = skirt.physics_control(source)
     value = holder.get("physics_influence", 0.0)
     if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
@@ -92,13 +95,15 @@ def initialize(source, *, capability=None, context=None):
         record, rig, proxy, cloth = physics.validate_physics(source)
     profile = _profile(source, record, rig, cloth, capability=capability)
     holder, _driver_id, path = skirt.physics_control(source)
-    surface_change = (physics.backend(record) == physics.ACTUAL_SURFACE_BACKEND
-                      and holder.get("physics_influence") != float(profile["mode"] == "AUTOMATIC"))
+    previous = profiles.read(source, record)
+    direct = physics.backend(record) == physics.DIRECT_SURFACE_BACKEND
+    surface_change = ((direct and previous is not None and previous["mode"] != profile["mode"])
+                      or (physics.backend(record) == physics.ACTUAL_SURFACE_BACKEND
+                          and holder.get("physics_influence") != float(profile["mode"] == "AUTOMATIC")))
     if not surface_change:
         return profiles.write(source, profile, record)
     # Adding physics to a Manual-only setup promotes its capability. Commit
     # the saved mode and both native endpoints together, retaining the cache.
-    previous = profiles.read(source, record)
     if not (previous and previous["capability"] == "MANUAL" and capability == "BOTH"):
         raise profiles.DressMotionError("The saved Dress mode differs from its native output; restore it before initializing.")
     skirt._require_controls_for_setup(source)
@@ -109,7 +114,7 @@ def initialize(source, *, capability=None, context=None):
     item = _snapshot(source, copy.deepcopy(record), rig, proxy, cloth)
     item["change_native"] = False
     try:
-        holder["physics_influence"] = float(profile["mode"] == "AUTOMATIC")
+        holder["physics_influence"] = 0.0 if direct else float(profile["mode"] == "AUTOMATIC")
         item["surface"].set_mode(source, record, profile["mode"])
         result = profiles.write(source, profile, record)
         rig.update_tag(refresh={"OBJECT"})
@@ -189,8 +194,8 @@ def _snapshot(source, record, rig, proxy, cloth):
     snapshot = {"source": source, "record": record, "rig": rig, "proxy": proxy, "cloth": cloth,
                 "profile": source.get(profiles.PROFILE_KEY), "record_raw": source[skirt.RECORD_KEY],
                 "holder": holder, "influence": holder.get("physics_influence"), "path": path}
-    if physics.backend(record) == physics.ACTUAL_SURFACE_BACKEND:
-        snapshot["surface"] = physics._surface_module()
+    if physics.backend(record) in physics.SURFACE_BACKENDS:
+        snapshot["surface"] = physics._surface_module(record)
         snapshot["surface_mode"] = snapshot["surface"].capture_mode(source, record)
     if cloth:
         group = proxy.vertex_groups.get(cloth.settings.vertex_group_mass)
@@ -269,7 +274,7 @@ def _apply_native(item, values, changes):
     if set(changes) & {"waist_depth", "transition", "recovery"}:
         service, _skirt = _modules()
         weights = (profiles.surface_pin_weights(values, item["record"]["fit"], physics["rows"], physics["columns"])
-                   if service.backend(item["record"]) == service.ACTUAL_SURFACE_BACKEND
+                   if service.backend(item["record"]) in service.SURFACE_BACKENDS
                    else profiles.pin_weights(values, physics["rows"], physics["columns"]))
         _set_weights(item["proxy"], item["group"], weights)
         physics["pin_weights"] = _weights(item["proxy"], item["group"])
@@ -322,7 +327,11 @@ def apply(context, sources, changes=None, *, mode=None):
                 # Verify written native goals and graph before exposing success.
                 physics.validate_physics(item["source"])
             if mode is not None:
-                item["holder"]["physics_influence"] = float(mode == "AUTOMATIC")
+                # Direct Cloth is the final vertex writer; reopening the old
+                # bone physics here would feed its output back into its input.
+                item["holder"]["physics_influence"] = (
+                    0.0 if physics.backend(item["record"]) == physics.DIRECT_SURFACE_BACKEND
+                    else float(mode == "AUTOMATIC"))
                 if "surface_mode" in item:
                     item["surface"].set_mode(item["source"], item["record"], mode)
             profiles.write(item["source"], item["after"], item["record"])

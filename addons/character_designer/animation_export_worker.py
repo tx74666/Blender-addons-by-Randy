@@ -36,6 +36,16 @@ class AnimationExportError(ValueError):
     pass
 
 
+def _direct_export_guard():
+    name = '_cdesigner_direct_export_guard_v1'
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name('dress_export_guard.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return sys.modules[name]
+
+
 def _sha256(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -234,6 +244,13 @@ def _write_curve(bag, path, component, frames, values):
 
 
 def export_job(job):
+    # Check new host reverse-link proof before Wiggle, Scenes or frame seeks.
+    try:
+        _direct_export_guard().verify_animation_snapshot(
+            job, bpy.data.objects, bpy.data.objects.get(job.get('rig', '')),
+            bpy.data.actions.get(job.get('action', '')), bpy.data.filepath)
+    except (ValueError, TypeError) as error:
+        raise AnimationExportError(str(error)) from error
     # This disposable worker samples the explicit Action. Transient Wiggle
     # motion must never become animation keys through background frame events.
     for scene in bpy.data.scenes:

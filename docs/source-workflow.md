@@ -29,4 +29,22 @@ Blender 正在运行时，修改代码后使用插件的 Refresh Add-on，或重
 只想检查时运行 `--check`，不会写文件。另一台机器可以用 `--addons-dir` 指定安装目录。
 ZIP 是带版本号的发布产物；改变源码后需重新打包，它不会随源文件自动更新。
 
+## 部分改动发布
+
+多项工作共用源码、其中一些尚未验收时，可冻结「已批准底版＋本次已验收改动」
+并生成完整 SHA256 清单。运行时代码仍在 canonical 仓库开发；冻结目录只是发布输入，
+不能作为新的开发副本。清单需记录底版来源、批准文件的前后哈希及排除的待验收改动。
+
+打包、部署和检查都必须显式指定同一个清单：
+
+```powershell
+python tools/build_releases.py --module character_designer --projection 'D:\path\release_projection.json'
+python tools/deploy_local.py --module character_designer --blender-version 5.2 --project-addons 'D:\Blender\Projects\Character\X\addons' --projection 'D:\path\release_projection.json'
+python tools/deploy_local.py --module character_designer --blender-version 5.2 --project-addons 'D:\Blender\Projects\Character\X\addons' --projection 'D:\path\release_projection.json' --check
+```
+
+工具校验完整文件集合、哈希和版本后使用同一份字节快照。`RELEASE_PROJECTION_MATCH`
+表示安装与该批准清单一致，不表示与包含其他待验收改动的整个工作树一致。
+省略 `--projection` 时仍沿用上面的完整 canonical 发布流程。
+
 仓库与 X 项目的 `AGENTS.md` 已记录上述开发入口，避免以后又从安装副本开始修改。

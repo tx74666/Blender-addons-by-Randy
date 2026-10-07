@@ -5633,7 +5633,7 @@ def _build_plans(
             for plan in missing:
                 limb_ik_fk.switch_limb(context,armature,(plan.chain.kind,plan.chain.side),'IK',
                     keyframe=False,desired_pose={n:source_pose_before[n] for n in plan.chain.names},
-                    calibrated_rest=True)
+                    calibrated_rest=True,sync_display=False)
         replanned_bones = {
             name
             for plan in missing
@@ -9028,6 +9028,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
             return
         from . import body_setup_ui, body_calibration_ui, body_original_mode
         armature = body_original_mode.display.character_rig(context)
+        from .control_pose_capture import draw as draw_pose_capture
+        draw_pose_capture(layout, context)
         if body_original_mode.active(armature):
             _draw_body_limb_modes(layout, context, armature)
             return

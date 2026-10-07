@@ -15,17 +15,7 @@ import tempfile
 import uuid
 
 from build_releases import PACKAGES, ROOT, version_of
-
-
-def shipped_files(folder):
-    return {
-        path.relative_to(folder): path
-        for path in folder.rglob("*")
-        if path.is_file()
-        and not any(part.startswith(".") or part == "__pycache__"
-                    for part in path.relative_to(folder).parts)
-        and path.suffix not in {".pyc", ".pyo"}
-    }
+from release_projection import load_source, shipped_files
 
 
 def main():
@@ -35,6 +25,8 @@ def main():
     parser.add_argument("--project-addons", type=Path, help="Also update an X project Character Designer copy")
     parser.add_argument("--module", action="append", choices=tuple(PACKAGES),
                         help="Deploy/check only this module; repeat to select several")
+    parser.add_argument("--projection", type=Path,
+                        help="Deploy/check a complete hash-locked approved projection manifest for one --module")
     parser.add_argument("--check", action="store_true", help="Report differences without writing")
     args = parser.parse_args()
     if args.addons_dir is None:
@@ -44,27 +36,32 @@ def main():
     else:
         addons = args.addons_dir
     selected_modules = tuple(dict.fromkeys(args.module or PACKAGES))
+    if args.projection and len(selected_modules) != 1:
+        parser.error("--projection requires exactly one --module")
     jobs = [(module, addons / module) for module in selected_modules]
     if args.project_addons and "character_designer" in selected_modules:
         jobs.append(("character_designer", args.project_addons / "character_designer"))
 
+    sources = {module: load_source(module, args.projection, root=ROOT) for module in selected_modules}
     plans = []
     for module, target in jobs:
-        source = ROOT / "addons" / module
-        if target.resolve() == source.resolve():
+        effective = sources[module]
+        source = effective.root
+        if target.resolve() in {source.resolve(), (ROOT / "addons" / module).resolve()}:
             raise ValueError(f"Destination is the canonical source itself: {target}")
         if (target / "__init__.py").is_file():
             installed_version = tuple(map(int, version_of(target).split(".")))
-            source_version = tuple(map(int, version_of(source).split(".")))
+            source_version = tuple(map(int, effective.version.split(".")))
             if installed_version > source_version:
+                source_label = "selected projection" if args.projection else "canonical"
                 raise ValueError(
-                    f"Installed {module} {version_of(target)} is newer than the canonical "
-                    f"{version_of(source)}; select the intended --module or reconcile its source first."
+                    f"Installed {module} {version_of(target)} is newer than the {source_label} "
+                    f"{effective.version}; select the intended --module or reconcile its source first."
                 )
-        files = shipped_files(source)
-        for relative, path in files.items():
+        files = effective.files
+        for relative, content in files.items():
             if relative.suffix == ".py":
-                ast.parse(path.read_bytes(), filename=str(path))
+                ast.parse(content, filename=str(source / relative))
             destination = target / relative
             if not destination.resolve().is_relative_to(target.resolve()):
                 raise ValueError(f"Destination file resolves outside its add-on: {destination}")
@@ -72,14 +69,14 @@ def main():
                   if "__pycache__" not in p.parts} - set(files)
         if extras:
             raise ValueError(f"Extra Python modules in {target}; review them before deploying: {sorted(map(str, extras))}")
-        changed = [relative for relative, path in files.items()
-                   if not (target / relative).is_file() or path.read_bytes() != (target / relative).read_bytes()]
-        plans.append((module, source, target, files, changed))
+        changed = [relative for relative, content in files.items()
+                   if not (target / relative).is_file() or content != (target / relative).read_bytes()]
+        plans.append((module, effective, target, files, changed))
 
     backup_root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "CodexBackups" / "addon-deploy"
     backup = backup_root / (datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8])
     changes = []
-    for index, (module, source, target, files, changed) in enumerate(plans):
+    for index, (module, effective, target, files, changed) in enumerate(plans):
         if not args.check:
             for relative in changed:
                 destination = target / relative
@@ -93,17 +90,20 @@ def main():
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".deploy-", suffix=".tmp", delete=False) as handle:
                     temporary = Path(handle.name)
-                    handle.write(files[relative].read_bytes())
+                    handle.write(files[relative])
                 os.replace(temporary, destination)
-            assert all(path.read_bytes() == (target / relative).read_bytes() for relative, path in files.items())
-        print(json.dumps({"module": module, "version": version_of(source), "source": str(source),
-                          "destination": str(target), "files": len(files),
-                          "different_files" if args.check else "updated_files": len(changed)}, ensure_ascii=False))
+            assert all(content == (target / relative).read_bytes() for relative, content in files.items())
+        report = {"module": module, "version": effective.version, "source": str(effective.root),
+                  "destination": str(target), "files": len(files),
+                  "different_files" if args.check else "updated_files": len(changed)}
+        if effective.projection_sha256:
+            report["projection_sha256"] = effective.projection_sha256
+        print(json.dumps(report, ensure_ascii=False))
     if changes:
         print(f"Previous files and deployment record: {backup}")
     if args.check and any(plan[4] for plan in plans):
         raise SystemExit(1)
-    print("SOURCE_DEPLOYMENT_MATCH" if not args.check or not any(plan[4] for plan in plans) else "MISMATCH")
+    print("RELEASE_PROJECTION_MATCH" if args.projection else "SOURCE_DEPLOYMENT_MATCH")
 
 
 if __name__ == "__main__":

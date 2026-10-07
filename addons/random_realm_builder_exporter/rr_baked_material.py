@@ -6,6 +6,7 @@ Source materials, shared images, and object material slots are never changed.
 """
 
 import json
+import math
 import os
 import struct
 import zlib
@@ -13,8 +14,8 @@ import zlib
 import bpy
 
 
-_ROLES = ("BaseColor", "Roughness", "Metallic", "Normal")
-_COLORSPACES = {role: "sRGB" if role == "BaseColor" else "Non-Color" for role in _ROLES}
+_ROLES = ("BaseColor", "Roughness", "Metallic", "Normal", "Emission", "RingBase", "RingMask")
+_COLORSPACES = {role: "sRGB" if role in {"BaseColor", "RingBase"} else "Non-Color" for role in _ROLES}
 _NAME_BYTES = 63
 
 
@@ -73,7 +74,9 @@ def validate_baked_images(images_by_role):
     if not isinstance(images_by_role, dict) or "BaseColor" not in images_by_role:
         raise ValueError("A saved Base Color map is required to create a baked material.")
     if any(role not in _ROLES for role in images_by_role):
-        raise ValueError("Choose only BaseColor, Roughness, Metallic, and Normal maps.")
+        raise ValueError("Choose only supported PBR and Ring bake maps.")
+    if ("RingBase" in images_by_role) != ("RingMask" in images_by_role):
+        raise ValueError("Ring Base and Ring Mask must be supplied together.")
     normalized = {}
     for role, value in images_by_role.items():
         supplied_path = ""
@@ -117,7 +120,7 @@ def _display_name(source_name):
         sequence += 1
 
 
-def _populate_material(material, images, uv_map_name):
+def _populate_material(material, images, uv_map_name, emission_strength, ring_color, ring_emission_strength):
     material.use_nodes = True
     tree = material.node_tree
     tree.nodes.clear()
@@ -135,6 +138,7 @@ def _populate_material(material, images, uv_map_name):
         uv_node.name = "Bake UV Map"
         uv_node.uv_map = uv_map_name
         uv_node.location = (-650, 0)
+    image_nodes = {}
     for index, role in enumerate(_ROLES):
         if role not in images:
             continue
@@ -142,6 +146,7 @@ def _populate_material(material, images, uv_map_name):
         node.name = "Base Color" if role == "BaseColor" else role
         node.label = node.name
         node.image = images[role]
+        image_nodes[role] = node
         node.location = (-350, -index * 220)
         if uv_node is not None:
             tree.links.new(uv_node.outputs["UV"], node.inputs["Vector"])
@@ -156,12 +161,65 @@ def _populate_material(material, images, uv_map_name):
                     setattr(normal, attribute, setting)
             tree.links.new(node.outputs["Color"], normal.inputs["Color"])
             tree.links.new(normal.outputs["Normal"], principled.inputs["Normal"])
+        elif role in {"Emission", "RingBase", "RingMask"}:
+            # These are combined below; the full BaseColor stays available for
+            # manual preview and compatibility with older export consumers.
+            pass
         else:
             socket = "Base Color" if role == "BaseColor" else role
             tree.links.new(node.outputs["Color"], principled.inputs[socket])
 
+    def scaled_color(color_socket, strength, name):
+        value = tree.nodes.new("ShaderNodeValue")
+        value.name = name
+        value.label = name
+        value.outputs[0].default_value = strength
+        multiply = tree.nodes.new("ShaderNodeMixRGB")
+        multiply.blend_type = "MULTIPLY"
+        multiply.inputs[0].default_value = 1.0
+        tree.links.new(color_socket, multiply.inputs[1])
+        tree.links.new(value.outputs[0], multiply.inputs[2])
+        return multiply.outputs[0]
 
-def create_baked_material(source, images_by_role, *, uv_map_name=""):
+    emission_socket = None
+    if "Emission" in image_nodes:
+        emission_socket = scaled_color(image_nodes["Emission"].outputs["Color"], emission_strength, "Emission Strength")
+    if "RingMask" in image_nodes:
+        color = tree.nodes.new("ShaderNodeRGB")
+        color.name = "Ring Color"
+        color.label = "Ring Color"
+        color.outputs[0].default_value = ring_color
+        ring = tree.nodes.new("ShaderNodeMixRGB")
+        ring.name = "Ring Pattern Color"
+        ring.blend_type = "MULTIPLY"
+        ring.inputs[0].default_value = 1.0
+        tree.links.new(image_nodes["RingMask"].outputs["Color"], ring.inputs[1])
+        tree.links.new(color.outputs[0], ring.inputs[2])
+        add = tree.nodes.new("ShaderNodeMixRGB")
+        add.name = "Floor and Ring Color"
+        add.blend_type = "ADD"
+        add.inputs[0].default_value = 1.0
+        tree.links.new(image_nodes["RingBase"].outputs["Color"], add.inputs[1])
+        tree.links.new(ring.outputs[0], add.inputs[2])
+        tree.links.new(add.outputs[0], principled.inputs["Base Color"])
+        ring_emission = scaled_color(ring.outputs[0], ring_emission_strength, "Ring Emission Strength")
+        if emission_socket is None:
+            emission_socket = ring_emission
+        else:
+            combined = tree.nodes.new("ShaderNodeMixRGB")
+            combined.name = "Background and Ring Emission"
+            combined.blend_type = "ADD"
+            combined.inputs[0].default_value = 1.0
+            tree.links.new(emission_socket, combined.inputs[1])
+            tree.links.new(ring_emission, combined.inputs[2])
+            emission_socket = combined.outputs[0]
+    if emission_socket is not None:
+        tree.links.new(emission_socket, principled.inputs["Emission Color"])
+        principled.inputs["Emission Strength"].default_value = 1.0
+
+
+def create_baked_material(source, images_by_role, *, uv_map_name="", emission_strength=1.0,
+                          ring_color=None, ring_emission_strength=0.0, source_identity=None):
     """Create only a new clean opaque material; never assign it to any object.
 
     Images are validated before creation and are shared without modification.
@@ -171,19 +229,33 @@ def create_baked_material(source, images_by_role, *, uv_map_name=""):
         raise ValueError("Choose an existing source material.")
     if not isinstance(uv_map_name, str):
         raise ValueError("The bake UV map name must be text.")
+    source_identity = source.name if source_identity is None else source_identity
+    if not isinstance(source_identity, str) or not source_identity.strip():
+        raise ValueError("The bake source identity must be nonempty text.")
     images = validate_baked_images(images_by_role)
+    ring_color = tuple(ring_color or (1.0, 1.0, 1.0, 1.0))
+    if len(ring_color) != 4 or any(not math.isfinite(float(value)) or value < 0 for value in ring_color):
+        raise ValueError("Ring Color must contain four finite nonnegative channels.")
+    if any(not math.isfinite(float(value)) or value < 0 for value in (emission_strength, ring_emission_strength)):
+        raise ValueError("Emission strength must be finite and nonnegative.")
     name = _display_name(source.name)
     material = None
     try:
         material = bpy.data.materials.new(name)
         if material.name != name:
             raise ValueError("The baked material name changed during creation; try again.")
-        _populate_material(material, images, uv_map_name)
+        _populate_material(material, images, uv_map_name, emission_strength, ring_color, ring_emission_strength)
         material.use_fake_user = True
+        material["rr_pbr_baked_source_material"] = source
+        material["rr_pbr_baked_source_identity"] = source_identity
         material["rr_pbr_baked_source_name"] = source.name
         material["rr_pbr_baked_roles"] = json.dumps([role for role in _ROLES if role in images])
         material["rr_pbr_baked_uv_map"] = uv_map_name
         material["rr_pbr_baked_quality"] = "preview_required"
+        material["rr_pbr_baked_emission_strength"] = float(emission_strength)
+        if "RingMask" in images:
+            material["rr_pbr_baked_ring_color"] = list(ring_color)
+            material["rr_pbr_baked_ring_emission_strength"] = float(ring_emission_strength)
         return material
     except Exception:
         if material is not None:

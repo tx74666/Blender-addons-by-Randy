@@ -127,6 +127,16 @@ class BakeToolsNativeTests(unittest.TestCase):
     def complete_saved_targets(self, source):
         return {key: self.saved_target(source, key) for key in ("BaseColor", "Roughness", "Metallic")}
 
+    def test_legacy_manual_targets_keep_four_maps_and_emission_can_be_enabled(self):
+        self.settings.pbr_framework_use_role_filter = False
+        self.assertEqual({"BaseColor", "Roughness", "Metallic", "Normal"},
+                         rr.pbr_framework_selected_role_keys(self.settings))
+        self.assertEqual({"FINISHED"}, bpy.ops.rr_builder.select_pbr_bake_target(role_key="Emission"))
+        self.assertEqual({"BaseColor", "Roughness", "Metallic", "Normal", "Emission"},
+                         rr.pbr_framework_selected_role_keys(self.settings))
+        self.assertEqual({"FINISHED"}, bpy.ops.rr_builder.select_pbr_bake_target(role_key="Emission"))
+        self.assertNotIn("Emission", rr.pbr_framework_selected_role_keys(self.settings))
+
     def test_evaluated_mirror_nonuniform_scale_and_scene_units_use_actual_world_area(self):
         source = material("Floor")
         obj = quad("Floor", source, x=1)
@@ -294,23 +304,22 @@ class BakeToolsNativeTests(unittest.TestCase):
         self.assertEqual(source_graph, graph_state(source))
         self.assertEqual(saved_image, image_state(image))
 
-    def test_automatic_mixed_shader_is_refused_before_image_allocation_or_source_changes(self):
+    def test_automatic_unsupported_shader_is_refused_before_image_allocation_or_source_changes(self):
         source = material("MixedSource")
         obj = quad("MixedAsset", source)
         tree = source.node_tree
         shader = next(node for node in tree.nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
         output = next(node for node in tree.nodes if node.bl_idname == "ShaderNodeOutputMaterial")
-        mix = tree.nodes.new("ShaderNodeMixShader")
-        mix.inputs[0].default_value = 0.35
+        mix = tree.nodes.new("ShaderNodeAddShader")
+        tree.links.new(shader.outputs["BSDF"], mix.inputs[0])
         tree.links.new(shader.outputs["BSDF"], mix.inputs[1])
-        tree.links.new(shader.outputs["BSDF"], mix.inputs[2])
         tree.links.new(mix.outputs[0], output.inputs["Surface"])
         select_only(obj)
         before, source_graph = scene_state(), graph_state(source)
         images, materials = set(bpy.data.images), set(bpy.data.materials)
         with mock.patch.object(rr, "create_bake_image") as allocate, \
                 mock.patch.object(rr, "bake_active_meshes") as bake:
-            with self.assertRaisesRegex(RuntimeError, "mixed shader"):
+            with self.assertRaisesRegex(ValueError, "Unsupported Surface shader"):
                 rr.bake_selected_to_pbr(bpy.context, self.settings)
             allocate.assert_not_called()
             bake.assert_not_called()
@@ -354,21 +363,31 @@ class BakeToolsNativeTests(unittest.TestCase):
         def fake_bake(role, _settings):
             key = role["key"]
             visited.append(key)
-            active_surface = output.inputs["Surface"].links[0].from_node
+            # Source users must keep their exact graph even during the bake;
+            # only this selected object's slot temporarily uses the copy.
+            self.assertEqual(shader, output.inputs["Surface"].links[0].from_node)
+            self.assertEqual(source, other.material_slots[0].material)
+            active_material = selected.material_slots[0].material
+            self.assertNotEqual(source, active_material)
+            active_tree = active_material.node_tree
+            active_output = next(node for node in active_tree.nodes if node.bl_idname == "ShaderNodeOutputMaterial")
+            active_surface = active_output.inputs["Surface"].links[0].from_node
             if key == "Normal":
-                self.assertEqual(shader, active_surface)
+                self.assertEqual("ShaderNodeBsdfPrincipled", active_surface.bl_idname)
             else:
                 self.assertEqual("ShaderNodeEmission", active_surface.bl_idname)
                 color_input = active_surface.inputs["Color"]
                 if key == "BaseColor":
-                    self.assertEqual(noise, color_input.links[0].from_node)
+                    self.assertEqual(noise.name, color_input.links[0].from_node.name)
                 else:
                     self.assertFalse(color_input.links)
-                    expected = original_values[0 if key == "Roughness" else 1]
+                    expected = (original_values[0] if key == "Roughness" else
+                                original_values[1] if key == "Metallic" else 0.0)
                     self.assertAlmostEqual(expected, color_input.default_value[0])
-            image = tree.nodes.active.image
+            image = active_tree.nodes.active.image
             color = {"BaseColor": [0.2, 0.4, 0.6, 1], "Roughness": [0.23, 0.23, 0.23, 1],
-                     "Metallic": [0.67, 0.67, 0.67, 1], "Normal": [0.5, 0.5, 1, 1]}[key]
+                     "Metallic": [0.67, 0.67, 0.67, 1], "Normal": [0.5, 0.5, 1, 1],
+                     "Emission": [0, 0, 0, 1]}[key]
             image.pixels[:] = color * 4
 
         with mock.patch.object(rr, "clamp_pbr_bake_size", return_value=2), \
@@ -377,7 +396,7 @@ class BakeToolsNativeTests(unittest.TestCase):
         self.assertEqual([role["key"] for role in rr.PBR_BAKE_ROLES], visited)
         self.assertEqual(1, result["material_count"])
         self.assertEqual(1, result["relinked_count"])
-        self.assertEqual(4, result["image_count"])
+        self.assertEqual(5, result["image_count"])
         self.assertTrue(all(Path(path).is_file() for path in result["files"]))
         created = set(bpy.data.materials) - old_materials
         self.assertEqual(1, len(created))

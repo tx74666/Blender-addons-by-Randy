@@ -54,7 +54,19 @@ Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.55 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.55.zip](dist/rr_helper-0.2.55.zip) |
-| Character Designer | 0.76.0 | [character_designer](addons/character_designer) | [character_designer-0.76.0.zip](dist/character_designer-0.76.0.zip) |
+| Character Designer | 0.77.2 | [character_designer](addons/character_designer) | [character_designer-0.77.2.zip](dist/character_designer-0.77.2.zip) |
+
+Character Designer 0.77.2 makes a legacy hand Pose apply when an unrelated arm
+or controller is selected, while preserving intentional partial finger
+selection and mirrored application. The artist's selection and active bone are
+restored after the native operation.
+[Workflow and validation](docs/releases/CharacterDesigner_0.77.2_fist_selection_20261007.md).
+
+Character Designer 0.77.1 adds **Save Pose** in Animation and Body setup. Native
+bones and their public controls resolve to one saved region in **Current File**;
+fingers are optional. Applying a saved Pose matches the current controls and
+keeps the current IK/FK or Original mode, with complete rollback on failure.
+[Workflow and validation](docs/releases/CharacterDesigner_0.77.1_pose_capture_sync_20261007.md).
 
 Character Designer 0.76.0 adds independent Hair strand settings, proven mirror
 configuration sync, normalized depth controls and external Wiggle Bones preview.

@@ -15,6 +15,7 @@ from mathutils import Euler, Matrix, Quaternion, Vector
 from . import limb_ik, limb_ik_fk as match
 
 BASELINE = 'character_designer_pose_rest_v1'
+ASSET_METADATA = 'character_designer_pose_asset_v1'
 _PATH = re.compile(r'^pose\.bones\[("(?:\\.|[^"\\])*")\]\.([a-z_]+)$')
 _BONE_PATH = re.compile(r'^pose\.bones\[("(?:\\.|[^"\\])*")\]')
 _TRANSFORMS = {'location': 3, 'rotation_euler': 3, 'rotation_quaternion': 4, 'rotation_axis_angle': 4, 'scale': 3}
@@ -44,13 +45,38 @@ def capture_baseline(rig):
         rig[BASELINE] = json.dumps({'version': 1, 'object': rig.name, 'rest': native_rest(rig)})
 
 
-def _compatible(rig, names):
-    if BASELINE not in rig:
+def asset_metadata(action):
+    """Only our versioned native assets opt into mode-independent matching."""
+    if ASSET_METADATA not in action:
+        return None
+    try:
+        saved = json.loads(action[ASSET_METADATA])
+        if (not isinstance(saved, dict) or type(saved.get('version')) is not int
+                or saved['version'] != 1 or not isinstance(saved.get('rest'), dict)
+                or not saved['rest'] or not isinstance(saved.get('source_object'), str)
+                or not saved['source_object'] or not isinstance(saved.get('source_slot'), str)
+                or not saved['source_slot'] or not isinstance(saved.get('names'), list)
+                or not saved['names'] or any(not isinstance(n, str) or not n for n in saved['names'])
+                or len(saved['names']) != len(set(saved['names']))):
+            raise ValueError
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError('This saved Pose has invalid compatibility data; no changes were applied.') from exc
+    return saved
+
+
+def _compatible(rig, names, metadata=None):
+    if metadata is None and BASELINE not in rig:
         raise ValueError('Run Update once to record this rig\'s native Pose compatibility baseline.')
-    saved = json.loads(rig[BASELINE])
+    saved = metadata if metadata is not None else json.loads(rig[BASELINE])
     current = native_rest(rig)
     if set(current) != set(saved['rest']):
-        raise ValueError('Native skeleton structure changed since Generate; this Pose was not applied.')
+        raise ValueError('Native skeleton structure differs from this Pose\'s baseline; this Pose was not applied.')
+    if metadata is not None:
+        # Reuse the complete Rest schema proof; generated controls may have been
+        # rebuilt or renamed, so only the authoring native skeleton is compared.
+        from . import body_original_mode as original
+        original._validate_session_rest(rig, {'version': 1, 'bones': sorted(rig.data.bones.keys()),
+                                              'rest': saved['rest']}, current=current)
     # Check the whole source skeleton: a changed ancestor also changes a local pose.
     for name, old in saved['rest'].items():
         now = current[name]
@@ -67,8 +93,10 @@ def _compatible(rig, names):
 def _curves(action, rig):
     from .animation_retarget import _curves as curves
     slots = [s for s in action.slots if s.target_id_type == 'OBJECT']
+    metadata = asset_metadata(action)
     origin = json.loads(rig.get(BASELINE, '{}')).get('object', rig.name)
-    candidates = [s for s in slots if s.identifier in {'OB' + rig.name, 'OB' + origin}]
+    identifiers = {metadata['source_slot']} if metadata else {'OB' + rig.name, 'OB' + origin}
+    candidates = [s for s in slots if s.identifier in identifiers]
     if slots and len(candidates) != 1:
         raise ValueError('This Pose was saved for another or an ambiguous rig; its source skeleton cannot be verified.')
     return curves(action, candidates[0] if candidates else None)
@@ -101,6 +129,9 @@ def channels(action, rig):
         if not math.isfinite(value):
             raise ValueError('This Pose contains non-finite transforms.')
         result.setdefault(name, {}).setdefault(prop, {})[index] = value
+    metadata = asset_metadata(action)
+    if metadata is not None and set(result) != set(metadata['names']):
+        raise ValueError('This saved Pose\'s bone channels differ from its recorded region; no changes were applied.')
     return result
 
 
@@ -109,9 +140,9 @@ def _convert(bone, matrix, parent_matrix, *, invert=False):
     return bone.convert_local_to_pose(matrix, bone.matrix_local, invert=invert, **kwargs)
 
 
-def desired_pose(rig, values):
+def desired_pose(rig, values, metadata=None):
     """Apply only keyed channels to evaluated native FK space, then propagate."""
-    _compatible(rig, values)
+    _compatible(rig, values, metadata)
     current = {p.name: p.matrix.copy() for p in rig.pose.bones}
     native = native_rest(rig)
     result = {}
@@ -156,19 +187,24 @@ def _difference(a, b):
 
 @contextmanager
 def _transaction(context, rig):
-    from . import bone_collections
+    from . import bone_collections, bone_display
+    from . import body_original_mode as original
+    session = rig.get(original.SESSION)
     before = {p.name: (p.rotation_mode, p.matrix_basis.copy(), p.get('ik_fk')) for p in rig.pose.bones}
     channels_before = {p.name: {key: list(getattr(p,key)) for key in _TRANSFORMS} for p in rig.pose.bones}
     mutes = [(con, con.mute) for pb in rig.pose.bones for con in pb.constraints]
     bends = {p.name: {k: list(getattr(p,k)) if size>1 else getattr(p,k) for k,size in _BBONE.items()}
              for p in rig.pose.bones}
     layout = bone_collections.snapshot_layout(rig)
+    display = bone_display._snapshot(rig)
     had_animation = rig.animation_data is not None
     old_action = rig.animation_data.action if had_animation else None
     old_slot = rig.animation_data.action_slot if had_animation else None
     try:
         yield before
     except Exception:
+        if session is not None:
+            rig[original.SESSION] = session
         for con, mute in mutes:
             con.mute = mute
         if rig.animation_data:
@@ -192,6 +228,8 @@ def _transaction(context, rig):
             for key, value in bends[name].items():
                 setattr(pb, key, value)
         bone_collections.restore_layout(rig, layout)
+        bone_display._restore(rig, display)
+        bone_collections._FRAME_CACHE.clear()
         match._update(context, rig)
         raise
 
@@ -207,6 +245,8 @@ def _auto_key(context, rig, before, values):
     animation = rig.animation_data_create()
     previous, slot = animation.action, animation.action_slot
     staged = previous.copy() if previous else bpy.data.actions.new(rig.name + ' Poses')
+    if ASSET_METADATA in staged:
+        del staged[ASSET_METADATA]
     if staged.asset_data:
         staged.asset_clear()
     staged.use_fake_user = False
@@ -228,7 +268,7 @@ def _auto_key(context, rig, before, values):
             _insert_key(pb, path, frame)
 
 
-def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limbs=()):
+def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limbs=(), sync_controls=False):
     from . import torso_controls, spine_ik_fk, eye_controls, bone_collections, root_control
     inventory = limb_ik._validate_inventory(rig)
     torso, spine, eyes = torso_controls.validate(rig), spine_ik_fk.validate(rig), eye_controls.validate(rig)
@@ -255,7 +295,7 @@ def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limb
                     raise limb_ik.LimbIKError('The saved spine pose needs exact FK matching.')
             except limb_ik.LimbIKError:
                 if preserve_modes:
-                    raise ValueError('This Original spine pose cannot return to the saved IK mode without a jump; keep Original or undo the last pose edit.')
+                    raise ValueError('This spine pose cannot match the current IK mode without a jump; use FK for this pose or undo the last pose edit.')
                 for name, basis in dormant.items():
                     rig.pose.bones[name].matrix_basis = basis
                 spine_ik_fk._match_fk(context, rig, spine, desired)
@@ -268,6 +308,14 @@ def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limb
         if match.VERSION_KEY not in rig.pose.bones[entry['target'].name].bone:
             raise ValueError('Update this legacy rig before applying Pose assets through its controls.')
         match.switch_limb(context, rig, key, 'FK', keyframe=False, desired_pose=wanted)
+        if previous == 'FK' and sync_controls:
+            # Seed the dormant target and Pole through the same matching path.
+            # This enables IK briefly; FK must take over again before verification.
+            match._match_ik(context, rig, inventory, entry, wanted,
+                            precise=key in precise_limbs)
+            match._match_fk(context, rig, entry, wanted)
+            match._match_toe(context, rig, entry, wanted)
+            match._verify(rig, wanted)
         if previous != 'FK':
             try:
                 match.switch_limb(context, rig, key, 'IK', keyframe=False, desired_pose=wanted,
@@ -280,7 +328,7 @@ def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limb
                     raise limb_ik.LimbIKError('The saved limb pose needs exact FK matching.')
             except limb_ik.LimbIKError:
                 if preserve_modes:
-                    raise ValueError('This Original limb pose cannot return to the saved IK mode without a jump; keep Original or undo the last pose edit.')
+                    raise ValueError('This limb pose cannot match the current IK mode without a jump; use FK for this pose or undo the last pose edit.')
                 # Some authored FK twist/stretch cannot be expressed by this IK
                 # solver. Keep an exact FK match and its visible FK controls.
                 # Position dormant IK controls too; no user mode switch needed.
@@ -339,15 +387,57 @@ def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limb
 
 
 def apply(context, rig, action):
-    return apply_channels(context, rig, channels(action, rig))
+    return apply_channels(context, rig, channels(action, rig), metadata=asset_metadata(action))
 
 
-def apply_channels(context, rig, values):
+def _match_original(context, rig, desired, changed, *, preserve_modes=False):
+    """Validate controllers with live constraints, then resume native editing.
+
+    Original's paused constraints must not make an invalid IK solve appear to
+    match. Keep its display/locks and Dress session intact; publish matched Body
+    channels into its existing return checkpoint only after complete validation.
+    """
+    from . import body_original_mode as original
+    saved = original._require(context, rig)
+    original._validate_session_rest(rig, saved)
+    relations = original._resolve(rig, saved['constraints'])
+    original._restore_channels(rig, saved['channels'])
+    for con, entry in relations:
+        con.mute = entry['mute']
+    match._update(context, rig)
+    changed = set(changed) | {n for n in desired if _difference(desired[n], rig.pose.bones[n].matrix) > 1e-7}
+    modes = _match(context, rig, desired, changed, sync_controls=True, preserve_modes=preserve_modes)
+    saved['channels'] = original._channels(rig)
+    for con, _entry in relations:
+        con.mute = True
+    match._update(context, rig)
+    original._bake_sources(context, rig, desired, saved['constraints'])
+    original._verify(rig, desired)
+    saved['entered_channels'] = original._channels(rig)
+    rig[original.SESSION] = json.dumps(saved, separators=(',', ':'))
+    return modes
+
+
+def apply_channels(context, rig, values, *, metadata=None):
+    from . import forearm_twist
+    with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
+        try:
+            return _apply_channels(context, rig, values, metadata=metadata, refresh=refresh)
+        except Exception:
+            refresh()
+            raise
+
+
+def _apply_channels(context, rig, values, *, metadata=None, refresh=lambda: None):
+    from . import body_original_mode as original
     if context.mode not in {'OBJECT', 'POSE'} or rig.library or rig.data.library or rig.data.users != 1:
         raise ValueError('Apply this Pose to a local, single-user rig in Object or Pose Mode.')
     match._update(context, rig)
-    desired = desired_pose(rig, values)
+    desired = desired_pose(rig, values, metadata)
     changed = {name for name, matrix in desired.items() if _difference(matrix, rig.pose.bones[name].matrix) > 1e-7}
+    if metadata is not None:
+        # Even an identical visible pose must synchronize stale dormant controls.
+        changed.update(values)
     # Drivers on artist transform channels cannot be safely overwritten by a pose.
     if rig.animation_data:
         bbone_paths = {rig.pose.bones[n].path_from_id(prop) for n, fields in values.items()
@@ -357,7 +447,12 @@ def apply_channels(context, rig, values):
                    and any('.' + p in curve.data_path for p in ('location', 'rotation_', 'scale')) for name in changed):
                 raise ValueError('A transform driver controls this Pose region; no changes were applied.')
     with _transaction(context, rig) as before:
-        modes = _match(context, rig, desired, changed)
+        if original.active(rig):
+            modes = _match_original(context, rig, desired, changed, preserve_modes=metadata is not None)
+        elif metadata is not None:
+            modes = _match(context, rig, desired, changed, sync_controls=True, preserve_modes=True)
+        else:
+            modes = _match(context, rig, desired, changed)
         for name, fields in values.items():
             pb = rig.pose.bones[name]
             for prop, entries in fields.items():
@@ -376,16 +471,28 @@ def apply_channels(context, rig, values):
                     if any(abs((current if _BBONE[prop] == 1 else current[i]) - v) > 2e-6 for i, v in entries.items()):
                         raise ValueError(f'{name}: Blender could not apply {prop}; Pose was rolled back.')
         _auto_key(context, rig, before, values)
+        refresh()
     return {'bones': len(values), 'modes': modes}
+
+
+class _AssetChannels(dict):
+    def __init__(self, values, metadata):
+        super().__init__(values)
+        self.metadata = metadata
 
 
 def _asset_channels(asset, rig):
     def read(action):
+        metadata = asset_metadata(action)
         native = set(native_rest(rig))
         names = {ast.literal_eval(found[1]) for curve in _curves(action, rig)
                  if (found := _BONE_PATH.match(curve.data_path))}
         if names - set(rig.pose.bones.keys()):
             raise ValueError('This Pose refers to missing bones; no changes were applied.')
+        if metadata is not None:
+            if names - native:
+                raise ValueError('This saved Pose contains generated-control channels; no changes were applied.')
+            return _AssetChannels(channels(action, rig), metadata)
         return None if names - native else channels(action, rig)
     if asset.local_id:
         return read(asset.local_id)
@@ -416,26 +523,33 @@ def _needs_control_matching(rig, values, flipped=False):
 
 
 def _apply_native(context, values, flipped):
-    # Blender filters the flipped Action by destination selection. If only the
-    # authored side is selected, mirror that subset for this call, then restore
-    # the artist's selection before the wrapper's undo step is recorded.
+    # Blender filters Action channels by destination selection. A selected
+    # arm/controller can exclude every finger in an otherwise valid hand Pose.
+    # Keep intentional partial selections; use the Pose's destinations only
+    # when the artist's selection has no overlap. Mirror an authored-side
+    # subset before considering that fallback.
     rig = context.object
     selections = [(pb if hasattr(pb, 'select') else pb.bone) for pb in rig.pose.bones]
     before = [(bone, bone.select) for bone in selections]
+    active = rig.data.bones.active
     selected = {bone.name for bone, state in before if state}
     sources = {name for name in values if bpy.utils.flip_name(name) != name}
     targets = {bpy.utils.flip_name(name) for name in sources}
+    destinations = {bpy.utils.flip_name(name) if flipped else name for name in values}
     transfer = flipped and bool(selected & sources) and not bool(selected & targets)
+    fallback = bool(destinations and selected) and not transfer and not bool(selected & destinations)
     try:
-        if transfer:
-            wanted = (selected - sources) | {bpy.utils.flip_name(name) for name in selected & sources}
+        if transfer or fallback:
+            wanted = ((selected - sources) | {bpy.utils.flip_name(name) for name in selected & sources}
+                      if transfer else destinations)
             for bone in selections:
                 bone.select = bone.name in wanted
         return bpy.ops.poselib.apply_pose_asset(flipped=flipped)
     finally:
-        if transfer:
+        if transfer or fallback:
             for bone, state in before:
                 bone.select = state
+            rig.data.bones.active = active
 
 
 class CHARACTERDESIGNER_OT_apply_control_pose(bpy.types.Operator):
@@ -454,24 +568,32 @@ class CHARACTERDESIGNER_OT_apply_control_pose(bpy.types.Operator):
 
     def execute(self, context):
         from . import body_setup
-        if not body_setup.has_generated(context.object):
+        local = getattr(context.asset, 'local_id', None)
+        managed = local is not None and ASSET_METADATA in local
+        if not body_setup.has_generated(context.object) and not managed:
             return bpy.ops.poselib.apply_pose_asset(flipped=self.flipped)
         asset = context.asset
         try:
             values = _asset_channels(asset, context.object)
             if values is None:
                 return bpy.ops.poselib.apply_pose_asset(flipped=self.flipped)
-            if not _needs_control_matching(context.object, values, self.flipped):
+            metadata = getattr(values, 'metadata', None)
+            if metadata is None and not _needs_control_matching(context.object, values, self.flipped):
                 # Control-authored assets and unconstrained native channels
                 # already work through Blender, including rigs predating the
-                # generated-control Rest baseline. Preserve native selection,
+                # generated-control Rest baseline. Resolve an unrelated
+                # selection while preserving native partial selection,
                 # mirror, auto-key and undo behavior for those assets.
                 return _apply_native(context, values, self.flipped)
             if self.flipped:
                 from .control_pose_mirror import mirrored_channels
                 match._update(context, context.object)
-                values = mirrored_channels(context.object, values)
-            apply_channels(context, context.object, values)
+                values = (mirrored_channels(context.object, values, metadata=metadata) if metadata is not None
+                          else mirrored_channels(context.object, values))
+            if metadata is not None:
+                apply_channels(context, context.object, values, metadata=metadata)
+            else:
+                apply_channels(context, context.object, values)
             return {'FINISHED'}
         except (ValueError, RuntimeError, KeyError, TypeError) as exc:
             self.report({'WARNING'}, str(exc))

@@ -93,7 +93,7 @@ def _limbs(context, rig, kwargs):
         names = [item[role] for role in limb_ik.ROLES]
         desired = {name: skin[name] @ rig.data.bones[name].matrix_local for name in names}
         limb_ik_fk.switch_limb(context, rig, (item['kind'], item['side']), 'IK',
-                               keyframe=False, desired_pose=desired)
+                               keyframe=False, desired_pose=desired, sync_display=False)
 
 
 def _add(context, rig, entry):

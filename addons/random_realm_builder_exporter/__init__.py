@@ -41,6 +41,7 @@ try:
     from .rr_export_identity_ui import IDENTITY_REPAIR_CLASSES
     from .rr_bake_tools_ui import BAKE_TOOLS_CLASSES, activate_temporary_pbr_targets, prepare_direct_pbr_emit
     from . import rr_baked_material
+    from . import rr_pbr_shader_bake
     from . import rr_unity_uv_export as rr_unity_uv_export_contract
     from .rr_builder_constants import *
     from .rr_layout_snapshot import *
@@ -87,6 +88,7 @@ except ImportError:
     from rr_export_identity_ui import IDENTITY_REPAIR_CLASSES
     from rr_bake_tools_ui import BAKE_TOOLS_CLASSES, activate_temporary_pbr_targets, prepare_direct_pbr_emit
     import rr_baked_material
+    import rr_pbr_shader_bake
     import rr_unity_uv_export as rr_unity_uv_export_contract
     from rr_builder_constants import *
     from rr_layout_snapshot import *
@@ -5553,6 +5555,27 @@ def build_material_surface_contract(material):
     if principled is None:
         return None
 
+    if material.get("rr_pbr_baked_roles"):
+        # Final baked channels are textures, so their linked inputs must not
+        # suppress the material contract or multiply an old source tint twice.
+        def control(name, fallback):
+            node = material.node_tree.nodes.get(name)
+            return node.outputs[0].default_value if node is not None and node.outputs else fallback
+        contract = {
+            "contractVersion": 2, "baseColor": [1.0, 1.0, 1.0, 1.0],
+            "metallic": 0.0, "roughness": 0.5, "ior": 1.5,
+            "transmissionWeight": 0.0, "alpha": 1.0, "transparent": False,
+            "normalStrength": 1.0, "emissionColor": [1.0, 1.0, 1.0, 1.0],
+            "emissionStrength": rounded_manifest_float(control(
+                "Emission Strength", material.get("rr_pbr_baked_emission_strength", 0.0))),
+        }
+        if "rr_pbr_baked_ring_color" in material:
+            contract["ringColor"] = [rounded_manifest_float(value) for value in control(
+                "Ring Color", material["rr_pbr_baked_ring_color"])]
+            contract["ringEmissionStrength"] = rounded_manifest_float(control(
+                "Ring Emission Strength", material.get("rr_pbr_baked_ring_emission_strength", 0.0)))
+        return contract
+
     base_color_socket = principled.inputs.get("Base Color")
     base_color = (
         base_color_socket.default_value
@@ -6263,6 +6286,16 @@ PBR_BAKE_ROLES = (
         "pass_filter": None,
         "colorspace": "Non-Color",
     },
+    {
+        "key": "Emission", "label": "Emission", "socket": "Emission",
+        "bake_type": "EMIT", "pass_filter": None, "colorspace": "Non-Color",
+    },
+)
+PBR_RING_BAKE_ROLES = (
+    {"key": "RingBase", "label": "Ring Base", "socket": "RingBase",
+     "bake_type": "EMIT", "pass_filter": None, "colorspace": "sRGB"},
+    {"key": "RingMask", "label": "Ring Mask", "socket": "RingMask",
+     "bake_type": "EMIT", "pass_filter": None, "colorspace": "Non-Color"},
 )
 PBR_FRAMEWORK_KIND_PROP = "rr_pbr_framework_kind"
 PBR_FRAMEWORK_ROLE_PROP = "rr_pbr_framework_role"
@@ -6271,6 +6304,7 @@ PBR_FRAMEWORK_NATIVE_BAKE_TYPES = {
     "Roughness": "ROUGHNESS",
     "Metallic": "EMIT",
     "Normal": "NORMAL",
+    "Emission": "EMIT",
 }
 
 
@@ -7509,7 +7543,9 @@ def pbr_framework_role_keys():
 def pbr_framework_selected_role_keys(settings):
     all_keys = pbr_framework_role_keys()
     if settings is None or not getattr(settings, "pbr_framework_use_role_filter", False):
-        return set(all_keys)
+        # Existing manual target sets contain four maps. Emission is opt-in here;
+        # Auto Bake selects its own complete five/seven-map contract.
+        return set(all_keys) - {"Emission"}
     value = getattr(settings, "pbr_framework_selected_roles", "") or ""
     return {line.strip() for line in value.splitlines() if line.strip()} & all_keys
 
@@ -8231,13 +8267,57 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     if not all_materials:
         raise RuntimeError("Selected meshes have no materials to bake.")
 
+    def is_baked_result(material):
+        return any(key in material for key in (
+            "rr_pbr_baked_roles", "rr_pbr_baked_source_material", "rr_pbr_baked_source_name"))
+
+    def original_bake_source(assigned):
+        # A persistent ID reference survives renames and .blend save/reload.
+        # Only older results without that reference use the saved source name.
+        source = assigned
+        visited = set()
+        while is_baked_result(source):
+            if source in visited:
+                raise RuntimeError(f"{assigned.name}: baked source references form a cycle; choose the original material.")
+            visited.add(source)
+            if "rr_pbr_baked_source_material" in source:
+                original = source.get("rr_pbr_baked_source_material")
+            else:
+                original = bpy.data.materials.get(source.get("rr_pbr_baked_source_name", ""))
+            if not isinstance(original, bpy.types.Material) or bpy.data.materials.get(original.name) != original:
+                raise RuntimeError(f"{assigned.name}: the original bake material is missing; restore or assign its source before baking.")
+            source = original
+        return source
+
     checked_materials = set(pbr_framework_filtered_materials_for_context(context, settings, all_materials))
-    bakeable_materials = [material for material in all_materials if material_needs_pbr_bake(material)
-                         and material in checked_materials]
+    bakeable_materials = [material for material in all_materials
+                         if material in checked_materials
+                         and (is_baked_result(material) or material_needs_pbr_bake(material))]
     skipped_materials = [material.name for material in all_materials if material not in bakeable_materials]
     disabled_material_names = pbr_bake_disabled_material_names(settings)
-    disabled_materials = [material.name for material in bakeable_materials if material.name in disabled_material_names]
-    materials = [material for material in bakeable_materials if material.name not in disabled_material_names]
+    disabled_materials = []
+    assigned_sources = {}
+    source_identities = {}
+    saved_source_identities = {}
+    for assigned in bakeable_materials:
+        if assigned.name in disabled_material_names:
+            disabled_materials.append(assigned.name)
+            continue
+        source = original_bake_source(assigned)
+        if source.name in disabled_material_names:
+            disabled_materials.append(assigned.name)
+            continue
+        assigned_sources[assigned] = source
+        source_identities.setdefault(source, source.name)
+        if is_baked_result(assigned):
+            identity = assigned.get("rr_pbr_baked_source_identity") or assigned.get("rr_pbr_baked_source_name")
+            if not isinstance(identity, str) or not identity.strip():
+                raise RuntimeError(f"{assigned.name}: its saved bake source identity is missing; assign the original material.")
+            if source in saved_source_identities and saved_source_identities[source] != identity:
+                raise RuntimeError(f"{assigned.name}: multiple baked results disagree about their source identity; assign the original material.")
+            saved_source_identities[source] = identity
+            source_identities[source] = identity
+    materials = list(dict.fromkeys(assigned_sources.values()))
     if not materials:
         output_root = pbr_bake_output_root(settings)
         return {
@@ -8254,34 +8334,15 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             "output_dir": output_root,
             "files": [],
         }
-    # Mixed shader extraction currently follows a single branch. Refuse before
-    # allocating targets or rewriting any material rather than bake a false result.
-    for material in materials:
-        if not material.is_editable:
-            raise RuntimeError(f"{material.name}: automatic Bake requires an editable source material.")
-        output = active_material_output_node(material)
-        surface = output.inputs.get("Surface") if output is not None else None
-        links = list(surface.links) if surface is not None else []
-        if (len(links) != 1 or links[0].from_node.bl_idname != "ShaderNodeBsdfPrincipled"):
-            raise RuntimeError(
-                f"{material.name}: automatic Bake cannot resolve this mixed shader. "
-                "Use manual PBR targets, preview the maps, then Create Baked Material."
-            )
-        shader = links[0].from_node
-        for name in ("Alpha", "Transmission Weight", "Emission Color", "Emission Strength"):
-            socket = shader.inputs.get(name)
-            if socket is not None and socket.links:
-                raise RuntimeError(f"{material.name}: automatic opaque PBR Bake cannot transfer {name}.")
-        alpha = shader.inputs.get("Alpha")
-        transmission = shader.inputs.get("Transmission Weight")
-        emission = shader.inputs.get("Emission Color")
-        strength = shader.inputs.get("Emission Strength")
-        if ((alpha is not None and alpha.default_value < 1.0 - 1e-6)
-                or (transmission is not None and transmission.default_value > 1e-6)
-                or (emission is not None and strength is not None and strength.default_value > 1e-6
-                    and any(value > 1e-6 for value in emission.default_value[:3]))):
-            raise RuntimeError(f"{material.name}: glass, transparency and emission need a separate material workflow.")
-    bake_material_set = set(materials)
+    # Validate the entire reachable shader graph before allocating bake maps.
+    # The bake module works on per-instance material/group copies, never on
+    # shared source graphs or on the first shader branch it happens to find.
+    material_plans = {material: rr_pbr_shader_bake.analyze_material(material) for material in materials}
+    bake_roles = PBR_BAKE_ROLES + (PBR_RING_BAKE_ROLES if any(
+        plan["has_ring"] for plan in material_plans.values()) else ())
+    # UV selection and UI filters describe the currently assigned slots. Plans,
+    # copied shader graphs and final replacements describe the original source.
+    bake_material_set = set(assigned_sources)
     bake_mesh_objects = [
         mesh
         for mesh in mesh_objects
@@ -8297,12 +8358,12 @@ def bake_selected_to_pbr(context, settings, reporter=None):
         if layer is None:
             raise RuntimeError(f"{mesh.name}: unwrap a UV map before automatic Bake.")
         for polygon in mesh.data.polygons:
-            material = material_for_polygon(mesh, polygon)
-            if material in uv_names:
-                uv_names[material].add(layer.name)
+            assigned = material_for_polygon(mesh, polygon)
+            if assigned in assigned_sources:
+                uv_names[assigned_sources[assigned]].add(layer.name)
     if any(len(names) != 1 for names in uv_names.values()):
         raise RuntimeError("Shared Bake materials need the same UV layer name on all selected meshes.")
-    bake_uv_map_names = bake_uv_map_names_by_material(bake_mesh_objects, bake_material_set)
+    bake_uv_map_names = {material: next(iter(names)) for material, names in uv_names.items()}
 
     resolution = clamp_pbr_bake_size(getattr(settings, "pbr_bake_resolution", 1024))
     output_root = pbr_bake_output_root(settings)
@@ -8321,7 +8382,8 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     for material in materials:
         material_images[material] = {
             role["key"]: create_bake_image(material, batch_name, role, resolution, output_root)
-            for role in PBR_BAKE_ROLES
+            for role in bake_roles
+            if role not in PBR_RING_BAKE_ROLES or material_plans[material]["has_ring"]
         }
     output_files = [
         path
@@ -8336,7 +8398,7 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     original_active = context.view_layer.objects.active
     original_selection = list(context.selected_objects)
     original_uv_state = capture_mesh_uv_state(bake_mesh_objects)
-    progress_total = len(PBR_BAKE_ROLES) + len(materials) + 1
+    progress_total = len(bake_roles) + len(materials) + 1
     progress_step = 0
     progress_window_manager = pbr_bake_progress_begin(context, progress_total)
     created_baked_materials = []
@@ -8361,25 +8423,63 @@ def bake_selected_to_pbr(context, settings, reporter=None):
         context.view_layer.objects.active = bake_mesh_objects[0]
         apply_bake_uv_layers(bake_mesh_objects, bake_material_set)
 
-        for role in PBR_BAKE_ROLES:
+        for role in bake_roles:
             pbr_bake_progress_update(
-                context,
-                progress_window_manager,
-                progress_step + 0.5,
-                progress_total,
-                f"Baking {role['label']}",
-                reporter,
+                context, progress_window_manager, progress_step + 0.5,
+                progress_total, f"Baking {role['label']}", reporter,
             )
-            target_restores = activate_temporary_pbr_targets(material_images, role)
-            emit_restores = []
-            try:
-                if role["bake_type"] == "EMIT":
-                    emit_restores = prepare_direct_pbr_emit(materials, role["socket"])
-                bake_active_meshes(role, settings)
-            finally:
-                restore_actions(emit_restores)
-                restore_actions(target_restores)
-            for image, path in (images[role["key"]] for images in material_images.values()):
+            role_materials = [material for material in materials if role["key"] in material_images[material]]
+            with rr_pbr_shader_bake.cloned_materials(role_materials, role) as copies:
+                temporary_slots = []
+                target_restores = []
+                scratch_materials = {}
+                scratch_image = None
+                try:
+                    for mesh in bake_mesh_objects:
+                        for slot in mesh.material_slots:
+                            original = slot.material
+                            source = assigned_sources.get(original)
+                            if source in copies:
+                                target_material = copies[source]
+                            else:
+                                # Cycles requires a target for every material
+                                # slot of a participating mesh. Unchecked and
+                                # non-Ring slots bake into disposable copies.
+                                if scratch_image is None:
+                                    scratch_image = bpy.data.images.new(
+                                        "RR Bake Scratch", width=resolution, height=resolution,
+                                        alpha=True, float_buffer=False)
+                                    scratch_image.colorspace_settings.name = "Non-Color"
+                                if original not in scratch_materials:
+                                    scratch = original.copy() if original else bpy.data.materials.new("RR Bake Scratch")
+                                    scratch_materials[original] = scratch
+                                    scratch.use_fake_user = False
+                                    scratch.use_nodes = True
+                                    target = scratch.node_tree.nodes.new("ShaderNodeTexImage")
+                                    target.image = scratch_image
+                                    scratch.node_tree.nodes.active = target
+                                target_material = scratch_materials[original]
+                            temporary_slots.append((slot, slot.link, original))
+                            slot.link = "OBJECT"
+                            slot.material = target_material
+                    targets = {copies[material]: material_images[material] for material in role_materials}
+                    target_restores = activate_temporary_pbr_targets(targets, role)
+                    bake_active_meshes(role, settings)
+                finally:
+                    try:
+                        restore_actions(target_restores)
+                    finally:
+                        # Target cleanup failure must not leave an object using
+                        # a copy which the context manager is about to dispose.
+                        for slot, link, original in reversed(temporary_slots):
+                            slot.material = original
+                            slot.link = link
+                        for scratch in scratch_materials.values():
+                            bpy.data.materials.remove(scratch, do_unlink=True)
+                        if scratch_image is not None:
+                            bpy.data.images.remove(scratch_image, do_unlink=True)
+            for material in role_materials:
+                image, path = material_images[material][role["key"]]
                 image.save()
                 verify_saved_bake_image(path)
             progress_step += 1
@@ -8404,6 +8504,10 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             )
             baked = rr_baked_material.create_baked_material(
                 material, image_by_role, uv_map_name=bake_uv_map_names.get(material, ""),
+                source_identity=source_identities[material],
+                emission_strength=material_plans[material]["emission_strength"],
+                ring_color=material_plans[material].get("ring_color"),
+                ring_emission_strength=material_plans[material].get("ring_emission_strength", 0.0),
             )
             created_baked_materials.append((material, baked))
             baked["rr_pbr_baked_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -8415,10 +8519,11 @@ def bake_selected_to_pbr(context, settings, reporter=None):
         replacements = dict(created_baked_materials)
         for obj in bake_mesh_objects:
             for slot in obj.material_slots:
-                source = slot.material
+                assigned = slot.material
+                source = assigned_sources.get(assigned)
                 if source not in replacements:
                     continue
-                changed_slots.append((slot, slot.link, source))
+                changed_slots.append((slot, slot.link, assigned))
                 slot.link = "OBJECT"
                 slot.material = replacements[source]
         pbr_bake_progress_update(
@@ -8456,7 +8561,7 @@ def bake_selected_to_pbr(context, settings, reporter=None):
         "skipped_materials": skipped_materials,
         "disabled_material_count": len(disabled_materials),
         "disabled_materials": disabled_materials,
-        "image_count": len(materials) * len(PBR_BAKE_ROLES),
+        "image_count": sum(len(images) for images in material_images.values()),
         "relinked_count": relinked,
         "output_root": output_root,
         "output_dir": output_dir,
@@ -9157,7 +9262,7 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
 
             seen_materials.add(material.name)
             principled = directly_connected_principled_node(material)
-            if principled is not None and any(
+            if principled is not None and not material.get("rr_pbr_baked_roles") and any(
                 socket is not None and socket.is_linked
                 for socket in (principled.inputs.get("Emission Color") or principled.inputs.get("Emission"),
                                principled.inputs.get("Emission Strength"))
@@ -9166,6 +9271,10 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
             base_node = find_image_node(material, ("basecolor", "base_color", "albedo", "diffuse", "diff"))
             rough_node = find_image_node(material, ("roughness", "rough"))
             normal_node = find_image_node(material, ("normal", "nor_gl", "nor", "nrm"))
+            metallic_node = find_image_node(material, ("metallic", "metalness"))
+            emission_node = find_image_node(material, ("emission",))
+            ring_base_node = material.node_tree.nodes.get("RingBase") if material.node_tree else None
+            ring_mask_node = material.node_tree.nodes.get("RingMask") if material.node_tree else None
             if normal_node is not None and image_node_matches(normal_node, ("height", "disp", "displacement", "bump")):
                 warnings.append(
                     f"{root.name}: material '{material.name}' image '{normal_node.image.name}' looks like height/bump, not normal; skipped normal export."
@@ -9173,6 +9282,9 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
                 normal_node = None
 
             entry = {"material": material.name}
+            if material.get("rr_pbr_baked_roles"):
+                entry["sourceMaterial"] = str(material.get("rr_pbr_baked_source_identity")
+                                               or material.get("rr_pbr_baked_source_name") or material.name)
             surface = surface_contracts.get(material.name)
             if surface is not None:
                 entry["surface"] = surface
@@ -9191,6 +9303,16 @@ def build_material_map_manifest(root, asset_dir, surface_contracts=None):
                 entry["normal"] = copy_image_for_manifest(
                     root.name, material, "Normal", normal_node.image, texture_dir, used_names, warnings
                 )
+
+            for key, role, node in (("metallic", "Metallic", metallic_node),
+                                    ("emission", "Emission", emission_node),
+                                    ("ringBase", "RingBase", ring_base_node),
+                                    ("ringMask", "RingMask", ring_mask_node)):
+                if node is not None and getattr(node, "image", None) is not None:
+                    entry[key] = copy_image_for_manifest(
+                        root.name, material, role, node.image, texture_dir, used_names, warnings)
+                    if key == "emission":
+                        entry["emissionLinear"] = node.image.colorspace_settings.name == "Non-Color"
 
             entry = {key: value for key, value in entry.items() if value is not None and value != ""}
             if len(entry) > 1:
@@ -11075,6 +11197,7 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
         max=128,
         options={"HIDDEN"},
     )
+    pbr_bake_advanced: bpy.props.BoolProperty(name="Advanced Bake Settings", default=False)
     pbr_bake_output_root: bpy.props.StringProperty(
         name="Output",
         description="Folder for baked PBR maps",
@@ -14054,10 +14177,7 @@ class RR_OT_select_pbr_bake_target(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.rr_builder_export_settings
-        if getattr(settings, "pbr_framework_use_role_filter", False):
-            keys = pbr_framework_selected_role_keys(settings)
-        else:
-            keys = pbr_framework_role_keys()
+        keys = pbr_framework_selected_role_keys(settings)
         if self.role_key in keys:
             keys.discard(self.role_key)
         else:
@@ -14073,7 +14193,7 @@ class RR_OT_select_pbr_bake_target(bpy.types.Operator):
 class RR_OT_bake_selected_pbr(bpy.types.Operator):
     bl_idname = "rr_builder.bake_selected_pbr"
     bl_label = "Bake PBR"
-    bl_description = "Bake selected procedural materials to Base Color, Roughness, Metallic, and Normal maps"
+    bl_description = "Bake procedural PBR and emission maps, preserving editable Ring color and emission strength for Unity"
 
     _timer = None
     _started = False
@@ -14890,10 +15010,8 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         row.label(text=f"Texture Size: {clamp_pbr_bake_size(settings.pbr_bake_resolution)}")
         up = row.operator("rr_builder.step_pbr_bake_size", text="", icon="TRIA_RIGHT")
         up.direction = 1
-        recommend = bake_box.column(align=True)
+        recommend = bake_box.row()
         recommend.enabled = not bake_running
-        recommend.prop(settings, "pbr_bake_texel_density")
-        recommend.prop(settings, "pbr_bake_uv_utilization")
         recommend.operator("rr_builder.recommend_pbr_bake_size", text="Recommend Size", icon="DRIVER_DISTANCE")
         if settings.pbr_bake_size_summary:
             bake_box.label(text=settings.pbr_bake_size_summary)
@@ -14922,35 +15040,43 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             else:
                 material_box.label(text="Select mesh or group", icon="INFO")
 
-        selected_role_keys = pbr_framework_selected_role_keys(settings)
-        target_row = bake_box.row(align=True)
-        target_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
-        target_row.operator("rr_builder.create_pbr_framework", text="Create Targets", icon="NODETREE")
-        target_row.operator("rr_builder.prepare_pbr_framework_bake_target", text="Prepare Bake", icon="RENDER_STILL")
-        save_row = bake_box.row(align=True)
-        save_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
-        save_row.operator("rr_builder.save_pbr_framework_images", text="Save Images", icon="IMAGE_DATA")
-        baked_row = bake_box.row()
-        baked_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
-        baked_row.operator("rr_builder.create_baked_pbr_material", text="Create Baked Material", icon="MATERIAL")
         auto_row = bake_box.row()
         auto_row.enabled = bool(materials) and not bake_running
-        auto_row.operator("rr_builder.bake_selected_pbr", text="Auto Bake PBR (4 maps)", icon="RENDER_STILL")
-        bake_box.label(text="Bake each pass in Blender; preview maps before export.")
-        bake_box.label(text="Metallic: route final mask to Emit manually.")
-        bake_box.label(text="Auto: direct Principled only; mixed shaders use manual.")
-
-        role_row = None
-        for index, role in enumerate(PBR_BAKE_ROLES):
-            if index % 2 == 0:
-                role_row = bake_box.row(align=True)
-                role_row.enabled = bool(materials) and not bake_running
-            op = role_row.operator(
-                "rr_builder.select_pbr_bake_target",
-                text=role["label"],
-                depress=role["key"] in selected_role_keys,
-            )
-            op.role_key = role["key"]
+        auto_row.operator("rr_builder.bake_selected_pbr", text="Bake PBR for Unity", icon="RENDER_STILL")
+        bake_box.label(text="Fixed pattern; Ring color and glow stay editable.")
+        bake_box.label(text="Preview maps, then export Model in the Queue.")
+        bake_box.prop(settings, "pbr_bake_advanced")
+        if settings.pbr_bake_advanced:
+            advanced = bake_box.column(align=True)
+            advanced.enabled = not bake_running
+            advanced.prop(settings, "pbr_bake_texel_density")
+            advanced.prop(settings, "pbr_bake_uv_utilization")
+            advanced.prop(settings, "pbr_bake_samples")
+            advanced.prop(settings, "pbr_bake_margin", text="Margin (pixels)")
+            advanced.prop(settings, "pbr_bake_output_root")
+            bake_box.label(text="Manual targets")
+            selected_role_keys = pbr_framework_selected_role_keys(settings)
+            target_row = bake_box.row(align=True)
+            target_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
+            target_row.operator("rr_builder.create_pbr_framework", text="Create Targets", icon="NODETREE")
+            target_row.operator("rr_builder.prepare_pbr_framework_bake_target", text="Prepare Bake", icon="RENDER_STILL")
+            save_row = bake_box.row(align=True)
+            save_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
+            save_row.operator("rr_builder.save_pbr_framework_images", text="Save Images", icon="IMAGE_DATA")
+            baked_row = bake_box.row()
+            baked_row.enabled = bool(materials) and bool(selected_role_keys) and not bake_running
+            baked_row.operator("rr_builder.create_baked_pbr_material", text="Create Baked Material", icon="MATERIAL")
+            role_row = None
+            for index, role in enumerate(PBR_BAKE_ROLES):
+                if index % 2 == 0:
+                    role_row = bake_box.row(align=True)
+                    role_row.enabled = bool(materials) and not bake_running
+                op = role_row.operator(
+                    "rr_builder.select_pbr_bake_target",
+                    text=role["label"],
+                    depress=role["key"] in selected_role_keys,
+                )
+                op.role_key = role["key"]
 
         if settings.pbr_framework_status:
             icon = "ERROR" if settings.pbr_framework_status.startswith("Failed:") else "CHECKMARK"

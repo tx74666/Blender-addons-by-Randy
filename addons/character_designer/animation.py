@@ -721,6 +721,8 @@ class CHARACTERDESIGNER_PT_animation(Panel):
     def draw(self, context):
         layout = self.layout
         settings = _settings(context)
+        from .control_pose_capture import draw as draw_pose_capture
+        draw_pose_capture(layout, context)
         from .animation_worklist_ui import draw_worklist
         draw_worklist(layout, context)
         worklist = context.scene.character_designer_animation_worklist

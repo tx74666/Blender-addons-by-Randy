@@ -22,7 +22,8 @@ def physics_module():
                 if (isinstance(node, (ast.FunctionDef, ast.ClassDef))
                     and node.name in {"_record_backend", "backend", "SkirtPhysicsError"})
                 or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
-                    and target.id in {"LEGACY_BACKEND", "ACTUAL_SURFACE_BACKEND"} for target in node.targets))]
+                    and target.id in {"LEGACY_BACKEND", "ACTUAL_SURFACE_BACKEND",
+                                      "DIRECT_SURFACE_BACKEND", "SURFACE_BACKENDS"} for target in node.targets))]
     space = {}
     exec(compile(ast.Module(body=selected, type_ignores=[]), "skirt_physics.py", "exec"), space)
     return types.SimpleNamespace(**space)
@@ -37,12 +38,15 @@ class UpdateIntent(unittest.TestCase):
             profiles.write(source, profiles.fresh(record, capability=capability, mode=mode), record)
         calls, reports = [], []
         physics = physics_module()
-        body = object()
+        body = types.SimpleNamespace(type="MESH", name="Explicit saved Body pointer")
 
         def add(context, chosen, **kwargs):
             calls.append(("native install", chosen, kwargs))
             if fail: raise ValueError("Deliberate native installation failure")
-            record["physics"]["backend"] = physics.ACTUAL_SURFACE_BACKEND
+            requested = kwargs.get("backend", physics.LEGACY_BACKEND)
+            if requested == physics.DIRECT_SURFACE_BACKEND and physics.backend(record) == physics.ACTUAL_SURFACE_BACKEND:
+                raise ValueError("DELTA-to-Direct migration is not validated.")
+            record["physics"]["backend"] = requested
             return record
 
         physics.add_physics = add
@@ -79,25 +83,26 @@ class UpdateIntent(unittest.TestCase):
             with mock.patch.dict(sys.modules, modules): return operator.execute(object())
 
         return types.SimpleNamespace(source=source, record=record, calls=calls, reports=reports,
-                                     body=body, settings=settings, execute=execute)
+                                     body=body, settings=settings, execute=execute, setup=setup,
+                                     transport=space["_add_requested_physics"], physics=physics)
 
-    def test_public_legacy_manual_upgrade_passes_both_through_actual_transport(self):
+    def test_public_legacy_manual_upgrade_passes_both_through_direct_transport(self):
         f = self.fixture()
         raw = f.source[profiles.PROFILE_KEY]
         self.assertEqual(f.execute(), {"FINISHED"})
         native = [call for call in f.calls if call[0] == "native install"]
         self.assertEqual(len(native), 1)
         self.assertIs(native[0][1], f.source)
-        self.assertEqual(native[0][2], {"backend": "ACTUAL_SURFACE_DELTA_V1", "body": f.body, "capability": "BOTH"})
+        self.assertEqual(native[0][2], {"backend": "DIRECT_MAIN_CLOTH_V1", "body": f.body, "capability": "BOTH"})
         # Caller passes intent; the tested native transaction owns any write.
         self.assertEqual(f.source[profiles.PROFILE_KEY], raw)
         self.assertEqual((f.record["chain_count"], f.record["segment_count"]), (8, 4))
 
-    def test_existing_both_manual_physics_and_actual_semantics_pass_no_new_intent(self):
+    def test_existing_both_manual_physics_and_direct_semantics_pass_no_new_intent(self):
         for capability, mode, backend in (("BOTH", "MANUAL", "LEGACY_CAGE"),
                                          ("PHYSICS", "AUTOMATIC", "LEGACY_CAGE"),
-                                         ("MANUAL", "MANUAL", "ACTUAL_SURFACE_DELTA_V1"),
-                                         ("BOTH", "MANUAL", "ACTUAL_SURFACE_DELTA_V1")):
+                                         ("MANUAL", "MANUAL", "DIRECT_MAIN_CLOTH_V1"),
+                                         ("BOTH", "MANUAL", "DIRECT_MAIN_CLOTH_V1")):
             with self.subTest(capability=capability, mode=mode, backend=backend):
                 f = self.fixture(capability=capability, mode=mode, backend=backend)
                 raw = f.source[profiles.PROFILE_KEY]
@@ -105,6 +110,46 @@ class UpdateIntent(unittest.TestCase):
                 native = next(call for call in f.calls if call[0] == "native install")
                 self.assertIsNone(native[2]["capability"])
                 self.assertEqual(f.source[profiles.PROFILE_KEY], raw)
+
+    def test_direct_request_rejects_missing_or_nonmesh_setup_body_before_native_call(self):
+        for state in (None, types.SimpleNamespace(body=None),
+                      types.SimpleNamespace(body=types.SimpleNamespace(type="ARMATURE"))):
+            with self.subTest(state=state):
+                f = self.fixture()
+                f.setup.settings = lambda _context, state=state: state
+                before = copy.deepcopy(f.source)
+                with self.assertRaisesRegex(ValueError, "actual Body mesh in Character Setup"):
+                    f.transport(object(), f.source, True, capability="BOTH")
+                self.assertEqual(f.calls, [])
+                self.assertEqual(f.source, before)
+
+    def test_scripted_legacy_false_transport_does_not_read_setup_or_add_new_kwargs(self):
+        f = self.fixture()
+        def unsupported(_context):
+            self.fail("Legacy scripted call must not read Character Setup")
+        f.setup.settings = unsupported
+        f.transport(object(), f.source, False, capability="BOTH")
+        native = [call for call in f.calls if call[0] == "native install"]
+        self.assertEqual(len(native), 1)
+        self.assertIs(native[0][1], f.source)
+        self.assertEqual(native[0][2], {})
+
+    def test_public_existing_delta_request_is_not_silently_migrated(self):
+        for capability in ("MANUAL", "BOTH"):
+            with self.subTest(capability=capability):
+                f = self.fixture(capability=capability, backend="ACTUAL_SURFACE_DELTA_V1")
+                before_source, before_record = copy.deepcopy(f.source), copy.deepcopy(f.record)
+                self.assertEqual(f.execute(), {"CANCELLED"})
+                native = [call for call in f.calls if call[0] == "native install"]
+                self.assertEqual(len(native), 1)
+                self.assertEqual(native[0][2]["backend"], "DIRECT_MAIN_CLOTH_V1")
+                self.assertIs(native[0][2]["body"], f.body)
+                self.assertIsNone(native[0][2]["capability"])
+                self.assertEqual(f.source, before_source)
+                self.assertEqual(f.record, before_record)
+                self.assertNotIn(("select",), f.calls)
+                self.assertNotIn(("remember",), f.calls)
+                self.assertIn("DELTA-to-Direct migration", f.reports[-1][0])
 
     def test_absent_saved_profile_does_not_invent_creation_intent(self):
         f = self.fixture(saved=False)

@@ -52,6 +52,8 @@ def _dress_record(obj):
         if type(physics) is not dict:
             raise ValueError()
         backend = physics.get('backend', 'LEGACY_CAGE')
+        if backend == 'DIRECT_MAIN_CLOTH_V1':
+            raise ExportError(f'{obj.name}: Direct Dress export validation is pending. Keep the editable source; baked vertex physics cannot be returned as a bone-only animation.')
         if backend == 'LEGACY_CAGE':
             if 'surface' in physics:
                 raise ValueError()
@@ -77,6 +79,8 @@ def _dress_record(obj):
                 or len(colliders) != len(set(colliders))):
             raise ValueError()
         return record
+    except ExportError:
+        raise
     except (ValueError, TypeError, KeyError) as exc:
         raise ExportError(f'{obj.name}: saved Dress surface metadata is invalid; restore its owned setup before export.') from exc
 
@@ -456,6 +460,12 @@ def begin_export(context, rig, config):
         raise ExportError('A character export is already running.')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ExportError('Finish Edit Mode before exporting; the current pose is preserved.')
+    # Direct refusal must precede even transient author preview restoration.
+    from . import dress_export_guard
+    try:
+        dress_export_guard.reject_model_sources(collect_character(context, rig, config)['objects'])
+    except (ValueError, TypeError) as error:
+        raise ExportError(str(error)) from error
     from . import hair_wiggle_adapter
     if hair_wiggle_adapter.status(context)['active']:
         try:

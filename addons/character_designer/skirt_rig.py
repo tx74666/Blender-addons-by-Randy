@@ -949,9 +949,9 @@ def select_controls(context, obj, level="ALL"):
 def _surface_remove_plan(context, source, rig, record):
     """Prove exact surface dependencies before either removal branch mutates."""
     from . import skirt_physics
-    if skirt_physics.backend(record) != skirt_physics.ACTUAL_SURFACE_BACKEND:
+    if skirt_physics.backend(record) not in skirt_physics.SURFACE_BACKENDS:
         return None, None
-    service = skirt_physics._surface_module()
+    service = skirt_physics._surface_module(record)
     return service, service.preflight_remove(context, source, rig, record)
 
 

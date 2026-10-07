@@ -1,0 +1,1771 @@
+{
+  "provenance": {
+    "difference_count": 15,
+    "native_raw_disk_source_protection_exact": true,
+    "native_report_sha256": "0d084528b2b782a80150b96168c17f66de382befcf64e5ec15cfc0aa854f2995",
+    "native_version": [
+      5,
+      2,
+      0
+    ],
+    "scope": "Exact saved/native node contract from protected read-only Blender5.2 diagnosis; no effect acceptance"
+  },
+  "runtime": {
+    "interface": [
+      {
+        "direction": "OUTPUT",
+        "name": "Geometry",
+        "type": "NodeSocketGeometry"
+      },
+      {
+        "direction": "INPUT",
+        "name": "Geometry",
+        "type": "NodeSocketGeometry"
+      }
+    ],
+    "links": [
+      [
+        "Input",
+        0,
+        "Set Position",
+        0,
+        true
+      ],
+      [
+        "Cloth",
+        4,
+        "Cloth Index",
+        0,
+        true
+      ],
+      [
+        "Reference",
+        4,
+        "Reference Index",
+        0,
+        true
+      ],
+      [
+        "Position",
+        0,
+        "Cloth Index",
+        1,
+        true
+      ],
+      [
+        "Position",
+        0,
+        "Reference Index",
+        1,
+        true
+      ],
+      [
+        "Index",
+        0,
+        "Cloth Index",
+        2,
+        true
+      ],
+      [
+        "Index",
+        0,
+        "Reference Index",
+        2,
+        true
+      ],
+      [
+        "Cloth Index",
+        0,
+        "Difference",
+        0,
+        true
+      ],
+      [
+        "Reference Index",
+        0,
+        "Difference",
+        1,
+        true
+      ],
+      [
+        "Position",
+        0,
+        "Overlay",
+        0,
+        true
+      ],
+      [
+        "Difference",
+        0,
+        "Overlay",
+        1,
+        true
+      ],
+      [
+        "Overlay",
+        0,
+        "Set Position",
+        2,
+        true
+      ],
+      [
+        "Set Position",
+        0,
+        "Output",
+        0,
+        true
+      ]
+    ],
+    "nodes": {
+      "Cloth": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketObject",
+            "bl_label": "Object",
+            "bl_subtype_label": "None",
+            "default_value": {
+              "name": "CD Actual Dress Cloth · Dress",
+              "type": "Object"
+            },
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Object",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "OBJECT"
+          },
+          "1": {
+            "bl_idname": "NodeSocketBool",
+            "bl_label": "Boolean",
+            "bl_subtype_label": "None",
+            "default_value": false,
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "As Instance",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "BOOLEAN"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve information from an object",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeObjectInfo",
+          "bl_label": "Object Info",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Cloth",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "transform_space": "RELATIVE",
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeObjectInfo"
+      },
+      "Cloth Index": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Value",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketInt",
+            "bl_label": "Integer",
+            "bl_subtype_label": "None",
+            "default_value": 0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Index",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "INT"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve values from specific geometry elements",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeSampleIndex",
+          "bl_label": "Sample Index",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "clamp": false,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "data_type": "FLOAT_VECTOR",
+          "domain": "POINT",
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Cloth Index",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeSampleIndex"
+      },
+      "Difference": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "3": {
+            "bl_idname": "NodeSocketFloat",
+            "bl_label": "Float",
+            "bl_subtype_label": "None",
+            "default_value": 1.0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Scale",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VALUE"
+          }
+        },
+        "rna": {
+          "bl_description": "Perform vector math operation",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "ShaderNodeVectorMath",
+          "bl_label": "Vector Math",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Difference",
+          "operation": "SUBTRACT",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "ShaderNodeVectorMath"
+      },
+      "Index": {
+        "inputs": {},
+        "rna": {
+          "bl_description": "Retrieve an integer value indicating the position of each element in the list, starting at zero",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeInputIndex",
+          "bl_label": "Index",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Index",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeInputIndex"
+      },
+      "Input": {
+        "inputs": {},
+        "rna": {
+          "bl_description": "Expose connected data from inside a node group as inputs to its interface",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "NodeGroupInput",
+          "bl_label": "Group Input",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Input",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "NodeGroupInput"
+      },
+      "Output": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVirtual",
+            "bl_label": "",
+            "bl_subtype_label": "",
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 4095,
+            "name": "",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "CUSTOM"
+          }
+        },
+        "rna": {
+          "bl_description": "Output data from inside of a node group",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "NodeGroupOutput",
+          "bl_label": "Group Output",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "is_active_output": true,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Output",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "NodeGroupOutput"
+      },
+      "Overlay": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "3": {
+            "bl_idname": "NodeSocketFloat",
+            "bl_label": "Float",
+            "bl_subtype_label": "None",
+            "default_value": 1.0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Scale",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VALUE"
+          }
+        },
+        "rna": {
+          "bl_description": "Perform vector math operation",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "ShaderNodeVectorMath",
+          "bl_label": "Vector Math",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Overlay",
+          "operation": "ADD",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "ShaderNodeVectorMath"
+      },
+      "Position": {
+        "inputs": {},
+        "rna": {
+          "bl_description": "Retrieve a vector indicating the location of each element",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeInputPosition",
+          "bl_label": "Position",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Position",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeInputPosition"
+      },
+      "Reference": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketObject",
+            "bl_label": "Object",
+            "bl_subtype_label": "None",
+            "default_value": {
+              "name": "CD Neutral Dress Surface · Dress",
+              "type": "Object"
+            },
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Object",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "OBJECT"
+          },
+          "1": {
+            "bl_idname": "NodeSocketBool",
+            "bl_label": "Boolean",
+            "bl_subtype_label": "None",
+            "default_value": false,
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "As Instance",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "BOOLEAN"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve information from an object",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeObjectInfo",
+          "bl_label": "Object Info",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Reference",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "transform_space": "RELATIVE",
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeObjectInfo"
+      },
+      "Reference Index": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Value",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketInt",
+            "bl_label": "Integer",
+            "bl_subtype_label": "None",
+            "default_value": 0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Index",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "INT"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve values from specific geometry elements",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeSampleIndex",
+          "bl_label": "Sample Index",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "clamp": false,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "data_type": "FLOAT_VECTOR",
+          "domain": "POINT",
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Reference Index",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeSampleIndex"
+      },
+      "Set Position": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketBool",
+            "bl_label": "Boolean",
+            "bl_subtype_label": "None",
+            "default_value": true,
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Selection",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "BOOLEAN"
+          },
+          "2": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Position",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "3": {
+            "bl_idname": "NodeSocketVectorTranslation",
+            "bl_label": "Vector",
+            "bl_subtype_label": "Translation",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Offset",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          }
+        },
+        "rna": {
+          "bl_description": "Set the location of each point",
+          "bl_height_default": 100.0,
+          "bl_height_max": 3.4028234663852886e+38,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeSetPosition",
+          "bl_label": "Set Position",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Set Position",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeSetPosition"
+      }
+    }
+  },
+  "saved": {
+    "interface": [
+      {
+        "direction": "OUTPUT",
+        "name": "Geometry",
+        "type": "NodeSocketGeometry"
+      },
+      {
+        "direction": "INPUT",
+        "name": "Geometry",
+        "type": "NodeSocketGeometry"
+      }
+    ],
+    "links": [
+      [
+        "Input",
+        0,
+        "Set Position",
+        0,
+        true
+      ],
+      [
+        "Cloth",
+        4,
+        "Cloth Index",
+        0,
+        true
+      ],
+      [
+        "Reference",
+        4,
+        "Reference Index",
+        0,
+        true
+      ],
+      [
+        "Position",
+        0,
+        "Cloth Index",
+        1,
+        true
+      ],
+      [
+        "Position",
+        0,
+        "Reference Index",
+        1,
+        true
+      ],
+      [
+        "Index",
+        0,
+        "Cloth Index",
+        2,
+        true
+      ],
+      [
+        "Index",
+        0,
+        "Reference Index",
+        2,
+        true
+      ],
+      [
+        "Cloth Index",
+        0,
+        "Difference",
+        0,
+        true
+      ],
+      [
+        "Reference Index",
+        0,
+        "Difference",
+        1,
+        true
+      ],
+      [
+        "Position",
+        0,
+        "Overlay",
+        0,
+        true
+      ],
+      [
+        "Difference",
+        0,
+        "Overlay",
+        1,
+        true
+      ],
+      [
+        "Overlay",
+        0,
+        "Set Position",
+        2,
+        true
+      ],
+      [
+        "Set Position",
+        0,
+        "Output",
+        0,
+        true
+      ]
+    ],
+    "nodes": {
+      "Cloth": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketObject",
+            "bl_label": "Object",
+            "bl_subtype_label": "None",
+            "default_value": {
+              "name": "CD Actual Dress Cloth · Dress",
+              "type": "Object"
+            },
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Object",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "OBJECT"
+          },
+          "1": {
+            "bl_idname": "NodeSocketBool",
+            "bl_label": "Boolean",
+            "bl_subtype_label": "None",
+            "default_value": false,
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "As Instance",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "BOOLEAN"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve information from an object",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeObjectInfo",
+          "bl_label": "Object Info",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Cloth",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "transform_space": "RELATIVE",
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeObjectInfo"
+      },
+      "Cloth Index": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Value",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketInt",
+            "bl_label": "Integer",
+            "bl_subtype_label": "None",
+            "default_value": 0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Index",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "INT"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve values from specific geometry elements",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeSampleIndex",
+          "bl_label": "Sample Index",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "clamp": false,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "data_type": "FLOAT_VECTOR",
+          "domain": "POINT",
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Cloth Index",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeSampleIndex"
+      },
+      "Difference": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "3": {
+            "bl_idname": "NodeSocketFloat",
+            "bl_label": "Float",
+            "bl_subtype_label": "None",
+            "default_value": 1.0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Scale",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VALUE"
+          }
+        },
+        "rna": {
+          "bl_description": "Perform vector math operation",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "ShaderNodeVectorMath",
+          "bl_label": "Vector Math",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Difference",
+          "operation": "SUBTRACT",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "ShaderNodeVectorMath"
+      },
+      "Index": {
+        "inputs": {},
+        "rna": {
+          "bl_description": "Retrieve an integer value indicating the position of each element in the list, starting at zero",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeInputIndex",
+          "bl_label": "Index",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Index",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeInputIndex"
+      },
+      "Input": {
+        "inputs": {},
+        "rna": {
+          "bl_description": "Expose connected data from inside a node group as inputs to its interface",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "NodeGroupInput",
+          "bl_label": "Group Input",
+          "bl_width_default": 140.0,
+          "bl_width_max": 400.0,
+          "bl_width_min": 80.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Input",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "NodeGroupInput"
+      },
+      "Output": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVirtual",
+            "bl_label": "",
+            "bl_subtype_label": "",
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 4095,
+            "name": "",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "CUSTOM"
+          }
+        },
+        "rna": {
+          "bl_description": "Output data from inside of a node group",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "NodeGroupOutput",
+          "bl_label": "Group Output",
+          "bl_width_default": 140.0,
+          "bl_width_max": 400.0,
+          "bl_width_min": 80.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "is_active_output": true,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Output",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "NodeGroupOutput"
+      },
+      "Overlay": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Vector",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "3": {
+            "bl_idname": "NodeSocketFloat",
+            "bl_label": "Float",
+            "bl_subtype_label": "None",
+            "default_value": 1.0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": false,
+            "link_limit": 1,
+            "name": "Scale",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VALUE"
+          }
+        },
+        "rna": {
+          "bl_description": "Perform vector math operation",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "ShaderNodeVectorMath",
+          "bl_label": "Vector Math",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Overlay",
+          "operation": "ADD",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "ShaderNodeVectorMath"
+      },
+      "Position": {
+        "inputs": {},
+        "rna": {
+          "bl_description": "Retrieve a vector indicating the location of each element",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeInputPosition",
+          "bl_label": "Position",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Position",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeInputPosition"
+      },
+      "Reference": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketObject",
+            "bl_label": "Object",
+            "bl_subtype_label": "None",
+            "default_value": {
+              "name": "CD Neutral Dress Surface · Dress",
+              "type": "Object"
+            },
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Object",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "OBJECT"
+          },
+          "1": {
+            "bl_idname": "NodeSocketBool",
+            "bl_label": "Boolean",
+            "bl_subtype_label": "None",
+            "default_value": false,
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "As Instance",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "BOOLEAN"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve information from an object",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeObjectInfo",
+          "bl_label": "Object Info",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Reference",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "transform_space": "RELATIVE",
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeObjectInfo"
+      },
+      "Reference Index": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Value",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "2": {
+            "bl_idname": "NodeSocketInt",
+            "bl_label": "Integer",
+            "bl_subtype_label": "None",
+            "default_value": 0,
+            "description": "",
+            "display_shape": "CIRCLE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Index",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "INT"
+          }
+        },
+        "rna": {
+          "bl_description": "Retrieve values from specific geometry elements",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeSampleIndex",
+          "bl_label": "Sample Index",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "clamp": false,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "data_type": "FLOAT_VECTOR",
+          "domain": "POINT",
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Reference Index",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeSampleIndex"
+      },
+      "Set Position": {
+        "inputs": {
+          "0": {
+            "bl_idname": "NodeSocketGeometry",
+            "bl_label": "Geometry",
+            "bl_subtype_label": "None",
+            "description": "",
+            "display_shape": "LINE",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Geometry",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "GEOMETRY"
+          },
+          "1": {
+            "bl_idname": "NodeSocketBool",
+            "bl_label": "Boolean",
+            "bl_subtype_label": "None",
+            "default_value": true,
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Selection",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "BOOLEAN"
+          },
+          "2": {
+            "bl_idname": "NodeSocketVector",
+            "bl_label": "Vector",
+            "bl_subtype_label": "None",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Position",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          },
+          "3": {
+            "bl_idname": "NodeSocketVectorTranslation",
+            "bl_label": "Vector",
+            "bl_subtype_label": "Translation",
+            "default_value": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "description": "",
+            "display_shape": "DIAMOND",
+            "enabled": true,
+            "link_limit": 1,
+            "name": "Offset",
+            "pin_gizmo": false,
+            "show_expanded": false,
+            "type": "VECTOR"
+          }
+        },
+        "rna": {
+          "bl_description": "Set the location of each point",
+          "bl_height_default": 100.0,
+          "bl_height_max": 30.0,
+          "bl_height_min": 30.0,
+          "bl_icon": "NONE",
+          "bl_idname": "GeometryNodeSetPosition",
+          "bl_label": "Set Position",
+          "bl_width_default": 140.0,
+          "bl_width_max": 700.0,
+          "bl_width_min": 100.0,
+          "color": [
+            0.6079999804496765,
+            0.6079999804496765,
+            0.6079999804496765
+          ],
+          "hide": false,
+          "location_absolute": [
+            0.0,
+            0.0
+          ],
+          "mute": false,
+          "name": "Set Position",
+          "parent": null,
+          "show_options": true,
+          "show_preview": false,
+          "show_texture": false,
+          "use_custom_color": false,
+          "warning_propagation": "ALL"
+        },
+        "type": "GeometryNodeSetPosition"
+      }
+    }
+  }
+}

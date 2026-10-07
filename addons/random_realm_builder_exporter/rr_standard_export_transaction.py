@@ -20,12 +20,13 @@ def _prepare_package(staged_package, previous_package, asset_id):
         raise RuntimeError("Standard staged manifest has a different asset ID.")
 
     paths = [manifest.get("modelFile"), manifest.get("iconFile")]
-    # The exporter currently emits three maps. Keep the established Unity
+    # Keep the established Unity
     # manifest aliases valid when an existing package is reused for icon-only.
     for material in manifest.get("materialMaps", []):
         paths.extend(material.get(key) for key in (
             "bakedBaseColor", "baseMap", "baseColor", "normal", "roughness",
-            "occlusion", "ao", "metallicSmoothness",
+            "occlusion", "ao", "metallicSmoothness", "metallic", "emission",
+            "ringBase", "ringMask",
         ))
     for relative in filter(None, paths):
         path = os.path.abspath(os.path.join(staged_package, relative))

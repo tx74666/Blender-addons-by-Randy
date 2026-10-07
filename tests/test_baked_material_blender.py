@@ -94,12 +94,16 @@ class BakedMaterialTests(unittest.TestCase):
         material = baked.create_baked_material(self.source, self.images, uv_map_name="BakeUV")
         self.assertEqual("Gold_baked", material.name)
         self.assertTrue(material.use_fake_user)
+        self.assertEqual(self.source, material["rr_pbr_baked_source_material"])
+        self.assertEqual("Gold", material["rr_pbr_baked_source_identity"])
         self.assertEqual("Gold", material["rr_pbr_baked_source_name"])
         self.assertEqual(list(self.images), json.loads(material["rr_pbr_baked_roles"]))
         self.assertEqual("preview_required", material["rr_pbr_baked_quality"])
         self.assertEqual(source_state, material_graph(self.source))
         self.assertEqual(images_state, self.image_state())
-        self.assertEqual(source_users, self.source.users)
+        # The persistent source ID reference keeps the original alive without
+        # changing its shader graph, images or any object's material slot.
+        self.assertEqual(source_users + 1, self.source.users)
         self.assertTrue(all(obj.material_slots[0].material == self.source for obj in self.objects))
         tree = material.node_tree
         principled = tree.nodes["Principled BSDF"]
@@ -179,7 +183,7 @@ class BakedMaterialTests(unittest.TestCase):
         original = material_graph(self.source)
         materials = set(bpy.data.materials)
         images_state = self.image_state()
-        def fail(material, images, uv_map_name):
+        def fail(material, images, uv_map_name, *_controls):
             material.use_nodes = True
             material.node_tree.nodes.new("ShaderNodeTexImage").image = images["BaseColor"]
             raise RuntimeError("injected node construction failure")

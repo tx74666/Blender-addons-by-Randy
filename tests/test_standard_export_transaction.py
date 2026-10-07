@@ -110,6 +110,19 @@ class StandardExportTransactionTests(unittest.TestCase):
             self.run_export(incomplete)
         self.assert_old_package_preserved()
 
+    def test_new_pbr_and_ring_maps_are_checked_before_publication(self):
+        for role in ("metallic", "emission", "ringBase", "ringMask"):
+            with self.subTest(role=role):
+                def incomplete(staging_root):
+                    self.new_export(staging_root)
+                    path = Path(staging_root) / "Wall_A" / "manifest.json"
+                    manifest = json.loads(path.read_text())
+                    manifest["materialMaps"][0][role] = "textures/missing.png"
+                    path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(RuntimeError, "resource is missing"):
+                    self.run_export(incomplete)
+                self.assert_old_package_preserved()
+
     def test_stale_model_hash_preserves_old_package(self):
         def corrupt(staging_root):
             self.new_export(staging_root)
