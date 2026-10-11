@@ -301,7 +301,13 @@ def _check_mirror_groups(obj):
         raise QuickBindError(f"{obj.name}: enable Vertex Groups in its Mirror modifier so opposite-side weights follow correctly.")
 
 
-def _validate(context, target, armature, body, mode):
+def _check_locked_groups(target, names):
+    locked = [group.name for group in target.vertex_groups if group.name in names and group.lock_weight]
+    if locked:
+        raise QuickBindError("Unlock deform groups before replacing weights: " + ', '.join(locked[:4]))
+
+
+def _validate(context, target, armature, body, mode, *, check_locks=True):
     if context.mode != 'OBJECT':
         raise QuickBindError("Switch to Object Mode before Quick Bind.")
     if target is None or target.type != 'MESH' or not target.data.vertices:
@@ -317,9 +323,8 @@ def _validate(context, target, armature, body, mode):
     names = tuple(bone.name for bone in armature.data.bones if bone.use_deform)
     if not names:
         raise QuickBindError("The main Armature has no deform bones.")
-    locked = [group.name for group in target.vertex_groups if group.name in names and group.lock_weight]
-    if locked:
-        raise QuickBindError("Unlock deform groups before replacing weights: " + ', '.join(locked[:4]))
+    if check_locks:
+        _check_locked_groups(target, names)
     modifier = _armature_modifier(target, armature)
     if modifier and not modifier.show_viewport:
         raise QuickBindError(f"{target.name}: enable the Armature modifier in the viewport before Quick Bind.")
@@ -470,6 +475,35 @@ def _write_weights(target, weights):
             group.add((index,), weight, 'REPLACE')
 
 
+def _has_group_weights(obj, names):
+    indices = {group.index for group in obj.vertex_groups if group.name in names}
+    return any(member.group in indices and member.weight > 1e-8
+               for vertex in obj.data.vertices for member in vertex.groups)
+
+
+def _rebind_scope_names(target, armature, record, names, *, body=None, mode='TRANSFER'):
+    """Keep an existing backup's weight scope when unrelated bones were added.
+
+    The first backup cannot restore groups introduced by a later rig extension.
+    Do not adopt those groups or let new automatic-weight bones influence the
+    solve. Weighted additions require their own recovery baseline.
+    """
+    saved = set(record['names'])
+    current = set(names)
+    if target.get(RIG_KEY) != armature or not saved <= current:
+        raise QuickBindError("The rig or its saved deform bones changed. Restore the original rig names before rebinding; the previous weights were kept.")
+    added = current - saved
+    if not added:
+        return names
+    for obj in (target, body) if mode == 'TRANSFER' else (target,):
+        if obj is not None and _has_group_weights(obj, added):
+            raise QuickBindError(
+                f"{obj.name}: new deform groups contain weights outside the Previous Weights backup. "
+                "Keep this backup and establish a new binding recovery baseline before rebinding those groups."
+            )
+    return tuple(record['names'])
+
+
 def bind_weights(context, target, armature, *, body=None, mode='TRANSFER'):
     """Replace this rig's deform weights, preserving all other original data.
 
@@ -480,16 +514,17 @@ def bind_weights(context, target, armature, *, body=None, mode='TRANSFER'):
     mesh datablock, modifier stack geometry and shape keys are preserved.
     Rebinding uses current topology; only restoring the first weight backup
     requires its original topology. Rebinding never replaces that backup.
+    Unweighted rig additions keep the first backup's deform-weight scope.
     """
-    names, existing = _validate(context, target, armature, body, mode)
+    names, existing = _validate(context, target, armature, body, mode, check_locks=False)
     had_backup = has_binding_backup(target)
     record = _read_backup(target) if had_backup else None
     previous_weights_topology_matches = (record is None
                                          or _topology_signature(target) == record['topology'])
     if record:
-        if target.get(RIG_KEY) != armature or set(record['names']) != set(names):
-            raise QuickBindError("The rig or its deform bones changed. Restore Previous Binding before binding the changed rig.")
+        names = _rebind_scope_names(target, armature, record, names, body=body, mode=mode)
         _backup_modifier(target, record)
+    _check_locked_groups(target, names)
     if existing is not None and not hasattr(existing, 'persistent_uid'):
         raise QuickBindError("Persistent binding restore needs Blender with modifier persistent IDs.")
     previous_active = context.view_layer.objects.active
@@ -514,6 +549,11 @@ def bind_weights(context, target, armature, *, body=None, mode='TRANSFER'):
             if not source.data.polygons:
                 raise QuickBindError("Automatic Weights needs mesh faces.")
             rig = _temporary_copy(context, armature, temporary)
+            # The solver must use the same owned scope as the write/restore.
+            # A later hair/skirt extension must not compete for these weights.
+            scoped_names = set(names)
+            for bone in rig.data.bones:
+                bone.use_deform = bone.name in scoped_names
             rig.data.pose_position = 'REST'
             _run_auto(context, source, rig)
             _normalized_weights(source, names)

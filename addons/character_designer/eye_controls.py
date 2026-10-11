@@ -106,8 +106,10 @@ def resolve_eyes(context, armature, head_name=None, left_name=None, right_name=N
     return head_name, *result
 
 
-def validate(armature, inventory=None, *, original_mutes=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
     """Check owned resources and native rest data without recursing into inventory."""
+    if original_mutes is None:
+        source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     actual = {b.name for b in armature.data.bones if b.get(OWNER_KEY) == OWNER_VALUE}
     if record is None:
@@ -123,7 +125,7 @@ def validate(armature, inventory=None, *, original_mutes=None):
             if not _owned(bone, record, role) or bone.use_deform or not _same_rest(bone, record['bone_states'][role]):
                 raise _error(f"Eye Controls bone '{name}' was structurally edited.")
         for name, state in record['source_states'].items():
-            bone = armature.data.bones.get(name)
+            bone = _limb()._validation_source_bone(armature.data.bones.get(name), source_rest)
             if bone is None or not _same_rest(bone, state) or bone.use_deform != state['deform']:
                 raise _error(f"Eye Controls source '{name}' changed; restore its original structure first.")
         own_cons = {(entry['owner'], entry['name']) for entry in record['constraints']}

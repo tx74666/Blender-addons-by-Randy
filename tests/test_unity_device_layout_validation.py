@@ -195,11 +195,55 @@ class PackageValidationTests(unittest.TestCase):
         self.payload["devices"][0]["screenPreview"] = None
         self.validate()
 
-    def test_existing_relative_png_and_empty_or_existing_texture_are_valid(self):
+    def test_existing_hardware_png_and_empty_texture_are_valid(self):
         self.add_screen()
         self.validate()
         self.payload["materials"][0]["texturePath"] = "previews/screen.png"
         self.validate()
+
+    def test_screen_preview_path_is_metadata_and_never_opens_a_png(self):
+        for path in ("", "previews/missing.png", "../outside.png", "C:\\outside.png",
+                     "\\\\server\\share\\screen.png", "not-an-image.txt"):
+            with self.subTest(path=path):
+                self.add_screen(path)
+                before = copy.deepcopy(self.payload)
+                with mock.patch.object(layout, "_png_path", side_effect=AssertionError("Screen PNG was read")):
+                    result = self.validate()
+                preview = result["devices"][0]["screenPreview"]
+                self.assertEqual(preview["path"], path)
+                self.assertEqual(preview["width"], 1.0)
+                self.assertEqual(preview["relativeMatrix"], IDENTITY)
+                self.assertNotIn("_path", preview)
+                self.assertEqual(self.payload, before, "Validation must not mutate the snapshot.")
+        self.add_screen()
+        del self.payload["devices"][0]["screenPreview"]["path"]
+        self.assertEqual(self.validate()["devices"][0]["screenPreview"]["path"], "")
+
+    def test_screen_preview_path_still_requires_a_bounded_string(self):
+        for path in (None, False, 1, [], {}, "x" * 4097, "screen.png\0"):
+            with self.subTest(path=path):
+                self.add_screen(path)
+                self.invalid()
+
+    def test_screen_previews_do_not_consume_hardware_image_budget(self):
+        self.add_screen()
+        self.preview.unlink()
+        append_copy(self.payload["devices"], "device-002")
+        with mock.patch.object(layout, "MAX_IMAGES_TOTAL_BYTES", 0), \
+                mock.patch.object(layout, "MAX_IMAGES_TOTAL_PIXELS", 0):
+            result = self.validate()
+        self.assertEqual(len(result["devices"]), 2)
+        self.assertTrue(all(device["screenPreview"] is not None for device in result["devices"]))
+
+    def test_hardware_png_limits_remain_enforced(self):
+        self.add_screen("previews/missing.png")
+        self.payload["materials"][0]["texturePath"] = "previews/screen.png"
+        for constant, limit in (("MAX_IMAGE_BYTES", len(PNG) - 1), ("MAX_IMAGE_PIXELS", 0),
+                                ("MAX_IMAGES_TOTAL_BYTES", len(PNG) - 1), ("MAX_IMAGES_TOTAL_PIXELS", 0)):
+            with self.subTest(constant=constant), mock.patch.object(layout, constant, limit):
+                self.invalid()
+        self.preview.write_bytes(b"This is not a PNG")
+        self.invalid()
 
     def test_required_reference_fields_cannot_be_missing(self):
         for field in ("id", "name", "sourceStableId", "sourceBlend", "authoringFrameInRoot", "worldMatrix"):
@@ -323,29 +367,25 @@ class PackageValidationTests(unittest.TestCase):
                     self.invalid()
                     screen[field] = previous
 
-    def test_screen_and_texture_paths_reject_absolute_traversal_and_missing_files(self):
+    def test_hardware_texture_paths_reject_absolute_traversal_and_missing_files(self):
         self.add_screen()
         paths = (
             "../outside.png", "previews/../../outside.png", "previews\\..\\..\\outside.png",
             str(self.preview.resolve()), "/outside.png", "C:\\outside.png", "\\\\server\\share\\screen.png",
             "previews/missing.png", "previews/screen.png\x00", "",
         )
-        for target in ("screen", "texture"):
-            for path in paths:
-                if target == "texture" and path == "":
-                    continue  # Empty texturePath explicitly means an untextured material.
-                with self.subTest(target=target, path=path):
-                    candidate = copy.deepcopy(self.payload)
-                    if target == "screen":
-                        candidate["devices"][0]["screenPreview"]["path"] = path
-                    else:
-                        candidate["materials"][0]["texturePath"] = path
-                    self.invalid(candidate)
+        for path in paths:
+            if path == "":
+                continue  # Empty texturePath explicitly means an untextured material.
+            with self.subTest(path=path):
+                candidate = copy.deepcopy(self.payload)
+                candidate["materials"][0]["texturePath"] = path
+                self.invalid(candidate)
 
     def test_png_path_cannot_point_to_a_directory(self):
         directory = self.base / "folder.png"
         directory.mkdir()
-        self.add_screen("folder.png")
+        self.payload["materials"][0]["texturePath"] = "folder.png"
         self.invalid()
 
     def test_symlink_cannot_escape_snapshot_directory(self):
@@ -356,7 +396,7 @@ class PackageValidationTests(unittest.TestCase):
             link.symlink_to(outside)
         except (OSError, NotImplementedError) as error:
             self.skipTest("Filesystem cannot create a test symlink: " + str(error))
-        self.add_screen("linked.png")
+        self.payload["materials"][0]["texturePath"] = "linked.png"
         self.invalid()
 
     def test_collection_and_geometry_limits_without_large_allocations(self):
@@ -492,5 +532,3 @@ class CoordinateConversionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

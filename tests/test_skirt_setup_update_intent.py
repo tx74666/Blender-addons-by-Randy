@@ -72,6 +72,7 @@ class UpdateIntent(unittest.TestCase):
                  "_source": lambda context: source, "_settings": lambda context: settings,
                  "_physics": lambda: physics, "_rig": lambda: rig, "_setup": lambda: setup,
                  "_restore_preview": lambda *args: calls.append(("restore preview",)),
+                 "_finish_setup_selection": lambda *args: calls.append(("select",)),
                  "_report": lambda *args, **kwargs: reports.append((args[2], kwargs))}
         exec(compile(ast.Module(body=selected, type_ignores=[]), "skirt.py", "exec"), space)
         operator = space["CHARACTERDESIGNER_OT_create_skirt_setup"]()

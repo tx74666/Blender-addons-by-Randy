@@ -64,9 +64,16 @@ def test_stale_calibration_disable_and_reenable_guard():
                 stale[side]["chain"][1] = "previous_forearm_name." + side
             else:
                 stale[side][stale_field] = "previous_" + stale_field
+            if stale_field == "topology":
+                # Model a genuinely unproved legacy record. A saved exact
+                # support proof intentionally permits an unrelated full-hash
+                # change, which the separate scope suite verifies.
+                stale[side].pop("support_topology", None)
             runtime._write_records(mesh, stale)
             runtime.update_runtime(bpy.context.scene)
-            assert "Mesh topology or rig chain changed" in runtime._ERRORS[mesh.name]
+            expected = ("Mesh topology changed before this calibration had a local proof"
+                        if stale_field == "topology" else "Mesh topology or rig chain changed")
+            assert expected in runtime._ERRORS[mesh.name]
             assert panel_state() == "Paused"
             before_pose = fixtures.pose_snapshot(armature)
             before_structure = fixtures.structure_snapshot(armature, mesh)
@@ -127,6 +134,7 @@ def test_disable_undo_redo_preserves_stale_profile():
     mesh, armature = fixture["mesh"], fixture["armature"]
     records = runtime._records(mesh)
     records["L"]["topology"] = "previous_topology"
+    records["L"].pop("support_topology", None)
     runtime._write_records(mesh, records)
     runtime.update_runtime(bpy.context.scene)
     name, armature_name = mesh.name, armature.name

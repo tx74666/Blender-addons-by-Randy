@@ -59,6 +59,37 @@ def _record(context):
     return _rig().read_record(source) if source is not None else None
 
 
+def _finish_setup_selection(context, source):
+    """Keep Automatic ready without exposing the selected manual input."""
+    rig_service, physics = _rig(), _physics()
+    record = rig_service.read_record(source)
+    if physics.backend(record) == physics.DIRECT_SURFACE_BACKEND:
+        rig_service._require_controls_for_setup(source)
+        state = physics._surface_module(record).preview_status(source, record)
+        if state["mode"] == "AUTOMATIC":
+            # build_skirt already selected the waist in Pose Mode. Leave that
+            # editable input before returning an active Automatic Cloth result.
+            saved_context, hidden = rig_service._context_state(context), source.hide_get()
+            try:
+                rig_service._activate(context, source, "OBJECT")
+            except Exception as error:
+                failures = []
+                try:
+                    rig_service._restore_context(context, saved_context)
+                except Exception as rollback_error:
+                    failures.append("object context: " + str(rollback_error))
+                try:
+                    source.hide_set(hidden)
+                except Exception as rollback_error:
+                    failures.append("source visibility: " + str(rollback_error))
+                if failures:
+                    raise rig_service.SkirtRigError("Dress setup focus failed; rollback also needs recovery: "
+                                                   + "; ".join(failures)) from error
+                raise
+            return source
+    return rig_service.select_controls(context, source)
+
+
 def _desired_attachment(context, source):
     settings = _settings(context)
     armature = _setup().preferred_rig(context, settings.armature)
@@ -345,7 +376,7 @@ class CHARACTERDESIGNER_OT_create_skirt_setup(Operator):
             from . import skirt_motion_tuning
             if not (self.actual_surface and _physics().backend(_rig().read_record(source)) in _physics().SURFACE_BACKENDS):
                 skirt_motion_tuning.initialize(source, capability=capability if not had_setup else None, context=context)
-            _rig().select_controls(context, source)
+            _finish_setup_selection(context, source)
             record = _rig().read_record(source) or record
             _setup().remember_asset(context, source, "SKIRT")
         except (ValueError, RuntimeError) as exc:
@@ -459,10 +490,15 @@ class CHARACTERDESIGNER_OT_skirt_select_controls(Operator):
     def execute(self, context):
         try:
             source = _source(context)
-            _settings(context).source = source
             _restore_preview(context, source)
-            _rig().select_controls(context, source)
-        except (ValueError, RuntimeError) as exc:
+            record = _rig().read_record(source)
+            if _physics().backend(record) == _physics().DIRECT_SURFACE_BACKEND:
+                from . import skirt_motion_tuning
+                skirt_motion_tuning.select_manual_controls(context, source)
+            else:
+                _rig().select_controls(context, source)
+            _settings(context).source = source
+        except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
             _report(self, context, str(exc), error=True)
             return {"CANCELLED"}
         return {"FINISHED"}
@@ -510,7 +546,7 @@ class CHARACTERDESIGNER_OT_skirt_add_physics(Operator):
             if not self.actual_surface:
                 skirt_motion_tuning.initialize(source, capability="BOTH", context=context)
             try:
-                _rig().select_controls(context, source)
+                _finish_setup_selection(context, source)
             except (ValueError, RuntimeError) as exc:
                 if not new_direct:
                     raise
@@ -1025,8 +1061,10 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
 
         layout.label(text=f'{record.get("chain_count", "?")} chains × '
                           f'{record.get("segment_count", "?")} bones', icon="BONE_DATA")
-        from .skirt_motion_ui import draw_motion
-        draw_motion(layout, context, source, record)
+        from .skirt_wiggle_ui import draw_wiggle_motion
+        if not draw_wiggle_motion(layout, context, source, record):
+            from .skirt_motion_ui import draw_motion
+            draw_motion(layout, context, source, record)
         from . import body_original_mode, skirt_original_mode
         dress_rig = source.get(_rig().RIG_KEY)
         original_edit = body_original_mode.active(dress_rig)
@@ -1042,7 +1080,7 @@ class CHARACTERDESIGNER_PT_skirt_setup(Panel):
                          text='Selected').scope = 'SELECTED'
         physics = record.get("physics") or {}
         actual_surface = physics.get("backend") in _physics().SURFACE_BACKENDS
-        if not physics:
+        if not physics and getattr(context.window_manager, "character_designer_dress_wiggle_advanced", False):
             layout.operator("character_designer.skirt_add_physics", icon="PHYSICS").actual_surface = True
         elif not actual_surface and physics.get("backend", "LEGACY_CAGE") == "LEGACY_CAGE":
             layout.operator("character_designer.create_skirt_setup", text="Update Dress Physics",

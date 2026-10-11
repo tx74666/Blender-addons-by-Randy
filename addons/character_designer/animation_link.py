@@ -15,6 +15,8 @@ import uuid
 
 SCHEMA = 'randomrealm.animation-link/1'
 MANIFEST_NAME = 'character_animation_link.json'
+# Animation sidecars carry complete numeric samples; Link manifests remain 1 MiB.
+ANIMATION_METADATA_MAX_BYTES = 32 * 1024 * 1024
 LINK_KEY = 'character_designer_animation_link'
 ACTION_KEY = LINK_KEY + '_action'
 RIG_ID_KEY = LINK_KEY + '_rig_id'
@@ -22,7 +24,10 @@ PACKAGE_KEY = 'character_designer_unity_animation_package'
 PACKAGE_HASH_KEY = PACKAGE_KEY + '_sha256'
 IDENTITY_FIELDS = ('schema', 'linkId', 'targetGuid', 'clipGuid', 'clipLocalId',
                    'sourcePackage', 'sourcePackageSha256')
-OPTIONAL_IDENTITY_FIELDS = ('modelFile', 'modelSha256')
+OPTIONAL_IDENTITY_FIELDS = ('modelFile', 'modelSha256', 'workItemId', 'baseClipGuid',
+                            'baseClipLocalId', 'sourceCharacterGuid', 'purpose', 'editScope',
+                            'composition', 'sourceOnly', 'compositionReferenceSource',
+                            'compositionOwnerLinkGuid')
 OUTPUT_FIELDS = frozenset(('blendFile', 'sourceAction', 'fbxFile', 'fbxSha256',
                            'metadataFile', 'metadataSha256'))
 
@@ -72,25 +77,33 @@ def _validate_identity(record):
             r'[0-9a-fA-F]{64}', record['sourcePackageSha256']):
         raise AnimationLinkError('The animation Link has no valid source packet hash.')
     _absolute(record.get('sourcePackage'), 'sourcePackage', resolve=False)
-    for field in OPTIONAL_IDENTITY_FIELDS:
+    for field in ('modelFile', 'modelSha256'):
         if field in record and record[field] is not None and not isinstance(record[field], str):
             raise AnimationLinkError('The animation Link has an invalid ' + field + '.')
     if record.get('modelFile'):
         _absolute(record['modelFile'], 'modelFile', resolve=False)
     if record.get('modelSha256') and not re.fullmatch(r'[0-9a-fA-F]{64}', record['modelSha256']):
         raise AnimationLinkError('The animation Link has an invalid modelSha256.')
+    try:
+        from .animation_workspace import route_identity
+        route_identity(record)
+    except ValueError as exc:
+        raise AnimationLinkError('The animation Link has invalid work-item provenance: ' + str(exc)) from exc
 
 
 def _identity(record):
     _validate_identity(record)
     model = record.get('modelFile')
     model_hash = record.get('modelSha256')
+    from .animation_workspace import route_identity
+    route = route_identity(record)
     return (record['schema'], uuid.UUID(record['linkId']).hex,
             record['targetGuid'].lower(), record['clipGuid'].lower(), record['clipLocalId'],
             os.path.normcase(str(_absolute(record['sourcePackage'], 'sourcePackage'))),
             record['sourcePackageSha256'].lower(),
             'modelFile' in record, os.path.normcase(str(_absolute(model, 'modelFile'))) if model else model,
-            'modelSha256' in record, model_hash.lower() if model_hash else model_hash)
+            'modelSha256' in record, model_hash.lower() if model_hash else model_hash,
+            route[0], *route[1], *route[2], *route[3:])
 
 
 def _read_link(path):
@@ -305,6 +318,35 @@ def publish_linked_revision(manifest_path, expected_identity, result, *, blend_f
 
 
 def begin_linked_export(context, rig):
+    """Freeze owned Target inputs and isolate the independent base animation."""
+    if rig is None or 'character_designer_rigging_session_v1' not in rig:
+        return _begin_linked_export(context, rig)
+    from . import unity_animation_rigging as rigging
+    session = rigging.current(rig)
+    if session is None:
+        return _begin_linked_export(context, rig)
+    saved = get_link(rig)
+    if saved is None:
+        raise AnimationLinkError('Import and bind a Unity animation Link first.')
+    action = rig.get(ACTION_KEY)
+    if action != session['base_action']:
+        raise AnimationLinkError('The linked base Action changed while editing its Rigging inputs.')
+    if session.get('source_read_only'):
+        raise AnimationLinkError('Source Rigging inputs are read-only; select Custom before syncing.')
+    identity = saved['identity']
+    from .animation_workspace import work_item_id as normalized_work_item_id
+    work_item_id = normalized_work_item_id(identity)
+    if work_item_id != normalized_work_item_id({'workItemId': session['work_item_id']}):
+        raise AnimationLinkError('The Rigging inputs belong to another Worklist source.')
+    frozen = rigging.capture_inputs(context, session,
+        source_packet_sha256=identity['sourcePackageSha256'].lower(),
+        work_item_id=work_item_id, source_action=action.name,
+        source_action_slot=session['base_slot'])
+    with rigging.base_only(context, rig, action=action):
+        return _begin_linked_export(context, rig, rigging_export=frozen)
+
+
+def _begin_linked_export(context, rig, *, rigging_export=None):
     """Export the bound active Action to a new revision, then advance its Link."""
     import bpy
     from . import animation_export
@@ -312,6 +354,12 @@ def begin_linked_export(context, rig):
     saved = get_link(rig)
     if saved is None:
         raise AnimationLinkError('Import and bind a Unity animation Link first.')
+    if saved['identity'].get('composition') is not None:
+        raise AnimationLinkError('Use the composition Worklist\'s isolated Sync B for this upper-body Action.')
+    if saved['identity'].get('sourceOnly') is True:
+        raise AnimationLinkError('This prepared A Link is read-only source provenance. Create a separate New A work copy before syncing edits.')
+    if saved['identity'].get('compositionReferenceSource') is True:
+        raise AnimationLinkError('The composition A Source Link remains read-only. Create a separate New A work copy before syncing edits.')
     action = rig.get(ACTION_KEY)
     if action is None or _active_slot(rig, action) != saved['action_slot']:
         raise AnimationLinkError('The active Action slot differs from the saved Link.')
@@ -349,9 +397,11 @@ def begin_linked_export(context, rig):
             return _revision_result(path, manifest, result, blend_file=blend_file,
                 source_action=source_action, model_file=saved['model_file'], model_sha256=saved['model_sha256'])
 
-        job = animation_export.begin_export(context, rig, action, destination, frame_start=start, frame_end=end,
-            loop=bool(action.get('unity_loop_time', False)), sample_rate=float(rate),
-            export_rig_name=saved['export_rig_name'])
+        options = dict(frame_start=start, frame_end=end, loop=bool(action.get('unity_loop_time', False)),
+            sample_rate=float(rate), export_rig_name=saved['export_rig_name'])
+        if rigging_export is not None:
+            options['rigging_export'] = rigging_export
+        job = animation_export.begin_export(context, rig, action, destination, **options)
         job['_publish_callback'], job['_dispose_callback'] = publish, lock.release
         return job
     except Exception:

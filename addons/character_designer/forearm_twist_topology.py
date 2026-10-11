@@ -9,12 +9,35 @@ not guessed into rings.
 from __future__ import annotations
 
 import math
+import hashlib
 
 _EPSILON = 1.0e-8
 _END_PADDING = 0.08
 _RING_END_PADDING = 0.025
 _MAX_AXIAL_SPREAD = 0.20
 _MAX_EDGE_AXIAL_COSINE = 0.60
+
+
+def support_topology_digest(mesh, vertices):
+    """Prove saved vertex IDs and all connectivity incident to their support.
+
+    Mesh-wide edge/face inventory indices are not part of this proof: editing a
+    disconnected sock may reorder those inventories without changing a sleeve.
+    Endpoint order and polygon winding remain exact, and boundary connectivity
+    includes outside vertex IDs so a local reindex or attachment change fails.
+    This is a topology proof, never a nearest-point remapping of artist data.
+    """
+    indices = tuple(vertices)
+    if (not indices or any(type(index) is not int for index in indices)
+            or indices != tuple(sorted(set(indices)))
+            or indices[0] < 0 or indices[-1] >= len(mesh.vertices)):
+        raise ValueError('The saved forearm support vertex IDs are invalid; recapture its loops.')
+    support = set(indices)
+    edges = sorted(tuple(edge.vertices) for edge in mesh.edges
+                   if any(index in support for index in edge.vertices))
+    faces = sorted(tuple(face.vertices) for face in mesh.polygons
+                   if any(index in support for index in face.vertices))
+    return hashlib.sha256(repr((indices, edges, faces)).encode()).hexdigest()
 
 
 def _closed_loop(start_edge, start_vertex, edges, vertex_edges, edge_faces):

@@ -1,0 +1,19 @@
+{
+  "schema": "x.validation.character-composition-timing-fixture/1",
+  "evidenceDirectory": null,
+  "holdLoopWorkItemId": null,
+  "raiseWorkItemId": null,
+  "followingHoldWorkItemId": null,
+  "expectedModelSha256": null,
+  "poseTolerance": 0.0002,
+  "inputTolerance": 0.00001,
+  "followingHoldPublication": {
+    "manifestPath": null,
+    "manifestSha256": null,
+    "revision": null,
+    "fbxPath": null,
+    "fbxSha256": null,
+    "metadataPath": null,
+    "metadataSha256": null
+  }
+}

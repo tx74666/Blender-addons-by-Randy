@@ -182,6 +182,46 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
             "path": "screen.png", "relativeMatrix": IDENTITY.copy(), "width": 2.0, "height": 1.0,
         }
 
+    def assert_gray_screen(self, preview):
+        material = preview.material_slots[0].material
+        self.assertTrue(layout.is_unity_layout_reference(material))
+        self.assertFalse(any(node.type == "TEX_IMAGE" for node in material.node_tree.nodes))
+        shader = material.node_tree.nodes.get("Principled BSDF")
+        self.assertIsNotNone(shader)
+        for actual, expected in zip(material.diffuse_color, (0.35, 0.35, 0.35, 1.0)):
+            self.assertAlmostEqual(actual, expected, places=5)
+        for actual, expected in zip(shader.inputs["Base Color"].default_value, (0.35, 0.35, 0.35, 1.0)):
+            self.assertAlmostEqual(actual, expected, places=5)
+        self.assertAlmostEqual(shader.inputs["Alpha"].default_value, 1.0, places=5)
+        self.assertAlmostEqual(shader.inputs["Roughness"].default_value, 0.8, places=5)
+        emission = shader.inputs.get("Emission Color") or shader.inputs.get("Emission")
+        self.assertTrue(all(abs(value) < 1e-6 for value in emission.default_value[:3]))
+        strength = shader.inputs.get("Emission Strength")
+        if strength is not None:
+            self.assertAlmostEqual(strength.default_value, 0.0, places=5)
+        self.assertFalse(shader.inputs["Base Color"].is_linked)
+        self.assertFalse(emission.is_linked)
+        return material
+
+    def legacy_screen_material(self, preview):
+        """Build an owned pre-gray-screen material without loading old production code."""
+        material = preview.material_slots[0].material.copy()
+        material.name = "Legacy Unity Layout Screen"
+        image = bpy.data.images.load(str(self.base / "screen.png"), check_existing=False)
+        layout._tag(image, preview.get(layout.REFERENCE_ID_PROP), preview.get(layout.TOKEN_PROP))
+        image.pack()
+        shader = material.node_tree.nodes.get("Principled BSDF")
+        texture = material.node_tree.nodes.new("ShaderNodeTexImage")
+        texture.image = image
+        material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Base Color"])
+        emission = shader.inputs.get("Emission Color") or shader.inputs.get("Emission")
+        material.node_tree.links.new(texture.outputs["Color"], emission)
+        if shader.inputs.get("Emission Strength") is not None:
+            shader.inputs["Emission Strength"].default_value = 0.3
+        preview.material_slots[0].link = "OBJECT"
+        preview.material_slots[0].material = material
+        return material, image
+
     def test_shared_mesh_geometry_uv_material_overrides_and_reference_flags(self):
         second = copy.deepcopy(self.payload["devices"][0])
         second["id"] = "second-" + self.token
@@ -240,11 +280,9 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
         screen_uv = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
         for loop in preview.data.loops:
             self.assertEqual(tuple(preview.data.uv_layers.active.data[loop.index].uv), screen_uv[loop.vertex_index],
-                             "Correcting winding must not mirror or rotate the PNG UVs.")
-        textures = [node.image for node in preview.material_slots[0].material.node_tree.nodes if node.type == "TEX_IMAGE"]
-        self.assertEqual(len(textures), 1)
-        self.assertTrue(layout.is_unity_layout_reference(textures[0]))
-        self.assertIsNotNone(textures[0].packed_file)
+                             "Correcting winding must preserve the screen's existing UVs.")
+        self.assert_gray_screen(preview)
+        self.assertEqual(self.resources()["images"], set(), "Blank screens must not allocate preview images.")
 
         # Unity +90deg Y with nonuniform scale: its readable -Z face becomes
         # Unity -X, hence Blender +X. Reimport must preserve that facing and UVs.
@@ -272,6 +310,191 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
             self.assertLess((preview.matrix_world @ vertex.co - Vector(expected)).length, 1e-5)
         for loop in preview.data.loops:
             self.assertEqual(tuple(preview.data.uv_layers.active.data[loop.index].uv), screen_uv[loop.vertex_index])
+
+    def test_multiple_screens_keep_dimensions_without_preview_png_or_images(self):
+        self.screen()
+        second = copy.deepcopy(self.payload["devices"][0])
+        second["id"] = "second-" + self.token
+        second["name"] = "Second display"
+        second["screenPreview"]["width"] = 3.0
+        second["screenPreview"]["height"] = 2.0
+        second["screenPreview"]["path"] = "missing-preview.png"
+        self.payload["devices"].append(second)
+        (self.base / "screen.png").unlink()
+        result = self.do_import()
+        screens = self.managed(result["collection"], "SCREEN")
+        self.assertEqual(len(screens), 2)
+        self.assertEqual(self.resources()["images"], set())
+        for preview in screens:
+            self.assert_gray_screen(preview)
+            device = next(value for value in self.payload["devices"]
+                          if value["id"] == preview.get(layout.DEVICE_ID_PROP))
+            self.assertAlmostEqual(max(vertex.co.x for vertex in preview.data.vertices) -
+                                   min(vertex.co.x for vertex in preview.data.vertices),
+                                   device["screenPreview"]["width"], places=5)
+            self.assertAlmostEqual(max(vertex.co.z for vertex in preview.data.vertices) -
+                                   min(vertex.co.z for vertex in preview.data.vertices),
+                                   device["screenPreview"]["height"], places=5)
+
+    def test_hardware_png_still_loads_and_packs_when_preview_png_is_missing(self):
+        self.screen()
+        (self.base / "hardware.png").write_bytes(PNG)
+        self.payload["materials"][0]["texturePath"] = "hardware.png"
+        (self.base / "screen.png").unlink()
+        result = self.do_import()
+        self.assert_gray_screen(self.one(result["collection"], "SCREEN"))
+        part = self.one(result["collection"], "PART")
+        images = [node.image for node in part.material_slots[0].material.node_tree.nodes if node.type == "TEX_IMAGE"]
+        self.assertEqual(len(images), 1)
+        self.assertTrue(layout.is_unity_layout_reference(images[0]))
+        self.assertIsNotNone(images[0].packed_file)
+        self.assertEqual(tuple(images[0].size), (1, 1))
+        self.assertEqual(self.resources()["images"], {images[0].as_pointer()})
+
+    def test_reimport_legacy_textured_screen_preserves_root_artist_children_and_shared_texture(self):
+        self.screen()
+        collection = self.do_import()["collection"]
+        root = self.one(collection, "ROOT")
+        old_screen = self.one(collection, "SCREEN")
+        root_pointer = root.as_pointer()
+        material, image = self.legacy_screen_material(old_screen)
+        artist = self.artist_object("Artist shared screen mesh", old_screen.data)
+        artist.material_slots[0].link = "OBJECT"
+        artist.material_slots[0].material = material
+        child = self.artist_object("Artist screen child")
+        child.parent = old_screen
+        child.location = (0.1, 0.2, 0.3)
+        with self.context():
+            self.view_layer.update()
+            child_world = child.matrix_world.copy()
+        updated = copy.deepcopy(self.payload)
+        updated["devices"][0]["relativeMatrix"][3] = 2.0
+        (self.base / "screen.png").unlink()
+        result = self.do_import(updated)
+        new_screen = self.one(result["collection"], "SCREEN")
+        self.assert_gray_screen(new_screen)
+        self.assertEqual(self.one(collection, "ROOT").as_pointer(), root_pointer)
+        self.assertIs(child.parent, new_screen)
+        self.assert_matrix(child.matrix_world, child_world)
+        self.assertIs(artist.material_slots[0].material, material)
+        self.assertIs(next(node.image for node in material.node_tree.nodes if node.type == "TEX_IMAGE"), image)
+        self.assertIsNotNone(image.packed_file)
+
+    def test_explicit_screen_migration_keeps_objects_mesh_and_shared_legacy_data(self):
+        self.screen()
+        collection = self.do_import()["collection"]
+        root = self.one(collection, "ROOT")
+        preview = self.one(collection, "SCREEN")
+        material, image = self.legacy_screen_material(preview)
+        artist = self.artist_object("Artist shared legacy mesh", preview.data)
+        artist.material_slots[0].link = "OBJECT"
+        artist.material_slots[0].material = material
+        artist[layout.ROLE_PROP] = "SCREEN"  # A matching role without ownership is not managed.
+        other_preview = self.artist_object("Another managed screen", preview.data)
+        layout._tag(other_preview, self.payload["reference"]["id"], preview.get(layout.TOKEN_PROP),
+                    "another-screen-device", "SCREEN", -1)
+        other_preview.parent = root
+        other_preview.material_slots[0].link = "OBJECT"
+        other_preview.material_slots[0].material = material
+        unowned_mesh = preview.data.copy()
+        for key in (layout.REFERENCE_PROP, layout.OWNER_PROP, layout.REFERENCE_ID_PROP, layout.TOKEN_PROP):
+            if key in unowned_mesh:
+                del unowned_mesh[key]
+        unowned_mesh[self.TEST_PROP] = self.token
+        owned_object_with_artist_mesh = self.artist_object("Owned screen with artist mesh", unowned_mesh)
+        layout._tag(owned_object_with_artist_mesh, self.payload["reference"]["id"], preview.get(layout.TOKEN_PROP),
+                    "artist-mesh-device", "SCREEN", -1)
+        owned_object_with_artist_mesh.material_slots[0].link = "OBJECT"
+        owned_object_with_artist_mesh.material_slots[0].material = material
+        part = self.one(collection, "PART")
+        part_material = part.material_slots[0].material
+        pointers = (root.as_pointer(), preview.as_pointer(), preview.data.as_pointer())
+        geometry = [tuple(vertex.co) for vertex in preview.data.vertices]
+        world = preview.matrix_world.copy()
+        before = self.resources()
+        with self.context():
+            preview.hide_select = False
+            preview.select_set(True)
+            self.view_layer.objects.active = preview
+            result = layout.blank_imported_screens(self.scene)
+            self.view_layer.update()
+            self.assertTrue(preview.select_get())
+            self.assertIs(self.view_layer.objects.active, preview)
+        self.assert_gray_screen(preview)
+        self.assertEqual(result, {"screen_count": 2, "changed_count": 2, "skipped_count": 1})
+        self.assertIs(other_preview.material_slots[0].material, preview.material_slots[0].material,
+                      "Managed screens with the same reference identity should share one gray material.")
+        self.assertEqual((root.as_pointer(), preview.as_pointer(), preview.data.as_pointer()), pointers)
+        self.assertEqual([tuple(vertex.co) for vertex in preview.data.vertices], geometry)
+        self.assert_matrix(preview.matrix_world, world)
+        self.assertEqual(preview.material_slots[0].link, "OBJECT")
+        self.assertIs(artist.material_slots[0].material, material)
+        self.assertIs(owned_object_with_artist_mesh.material_slots[0].material, material)
+        self.assertIs(part.material_slots[0].material, part_material)
+        self.assertIs(next(node.image for node in material.node_tree.nodes if node.type == "TEX_IMAGE"), image)
+        self.assertIsNotNone(image.packed_file)
+        after = self.resources()
+        for kind in ("objects", "collections", "meshes", "images"):
+            self.assertEqual(after[kind], before[kind], f"Migration must not create/delete {kind}.")
+        self.assertTrue(before["materials"].issubset(after["materials"]), "Existing shared materials must survive.")
+        with self.context():
+            repeat = layout.blank_imported_screens(self.scene)
+        self.assertEqual(repeat, {"screen_count": 2, "changed_count": 0, "skipped_count": 1})
+        self.assertEqual(self.resources(), after, "Repeated blanking must not allocate more material data.")
+
+    def test_screen_migration_creation_failure_rolls_back_slots_and_cleans_partial_material(self):
+        self.screen()
+        first = self.do_import()["collection"]
+        other_payload = copy.deepcopy(self.payload)
+        other_reference = "other-reference-" + self.token
+        self.reference_ids.add(other_reference)
+        other_payload["reference"]["id"] = other_reference
+        other_payload["devices"][0]["id"] = "other-device-" + self.token
+        second = self.do_import(other_payload)["collection"]
+        previews = [self.one(first, "SCREEN"), self.one(second, "SCREEN")]
+        for preview in previews:
+            material, _ = self.legacy_screen_material(preview)
+            # Exercise restoration of a DATA slot after it was overridden on the
+            # Object. Shared mesh material slots must not be modified by blanking.
+            preview.data.materials[0] = material
+            preview.material_slots[0].link = "DATA"
+        states = [(preview, preview.as_pointer(), preview.data.as_pointer(),
+                   preview.material_slots[0].link, preview.material_slots[0].material,
+                   preview.matrix_world.copy()) for preview in previews]
+        before = self.resources()
+        original = layout._blank_screen_material
+        calls = 0
+        first_assignment_seen = False
+        partial_material_created = False
+
+        def fail_after_second_material(reference_id, token):
+            nonlocal calls, first_assignment_seen, partial_material_created
+            calls += 1
+            material = original(reference_id, token)
+            if calls == 2:
+                first_assignment_seen = any(preview.material_slots[0].material != previous
+                                            for preview, _, _, _, previous, _ in states)
+                partial_material_created = material.as_pointer() not in before["materials"]
+                raise RuntimeError("Injected failure after second gray material creation")
+            return material
+
+        with self.context(), mock.patch.object(layout, "_blank_screen_material", side_effect=fail_after_second_material):
+            with self.assertRaisesRegex(RuntimeError, "second gray material creation"):
+                layout.blank_imported_screens(self.scene)
+            self.view_layer.update()
+        self.assertEqual(calls, 2)
+        self.assertTrue(first_assignment_seen, "The first screen must have changed before the injected failure.")
+        self.assertTrue(partial_material_created, "Inject only after allocating/tagging the second material.")
+        self.assertEqual(self.resources(), before, "Rollback must remove even material creation that did not return.")
+        for preview, object_pointer, mesh_pointer, link, material, world in states:
+            self.assertEqual(preview.as_pointer(), object_pointer)
+            self.assertEqual(preview.data.as_pointer(), mesh_pointer)
+            self.assertEqual(preview.material_slots[0].link, link)
+            self.assertIs(preview.material_slots[0].material, material)
+            self.assertIs(preview.data.materials[0], material)
+            self.assert_matrix(preview.matrix_world, world)
+            image = next(node.image for node in material.node_tree.nodes if node.type == "TEX_IMAGE")
+            self.assertIsNotNone(image.packed_file)
 
     def test_core_anchor_unit_scale_and_parent_inverse_keep_shear_and_local_geometry(self):
         self.scene.unit_settings.system = "METRIC"
@@ -377,8 +600,9 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
             self.assertTrue(artist.select_get())
             self.assertIs(self.view_layer.objects.active, artist)
 
-    def test_invalid_matrix_or_missing_png_preserves_previous_layout_and_resources(self):
+    def test_invalid_matrix_or_missing_hardware_png_preserves_previous_layout_and_resources(self):
         self.screen()
+        self.payload["materials"][0]["texturePath"] = "screen.png"
         first = self.do_import()
         collection = first["collection"]
         root = self.one(collection, "ROOT")
@@ -559,9 +783,24 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
         self.assertFalse((self.base / "artist.fbx").exists())
         self.assertFalse((self.base / "blocked.fbx").exists())
 
-    def test_owned_blend_save_reopen_update_deduplicates_and_keeps_packed_png(self):
+    def test_owned_blend_reopen_migrates_legacy_screen_keeps_artist_and_packed_hardware(self):
         self.screen()
+        (self.base / "hardware.png").write_bytes(PNG)
+        self.payload["materials"][0]["texturePath"] = "hardware.png"
         first = self.do_import()
+        preview = self.one(first["collection"], "SCREEN")
+        legacy_material, _ = self.legacy_screen_material(preview)
+        artist = self.artist_object("Artist persistent legacy screen", preview.data)
+        artist.material_slots[0].link = "OBJECT"
+        artist.material_slots[0].material = legacy_material
+        child = self.artist_object("Artist persistent screen child")
+        child.parent = preview
+        child.location = (0.2, 0.3, 0.4)
+        with self.context():
+            self.view_layer.update()
+            child_world = child.matrix_world.copy()
+        artist_name, child_name = artist.name, child.name
+        anchor_name = self.anchor.name
         reference_id = self.payload["reference"]["id"]
         device_id = self.payload["devices"][0]["id"]
         blend = self.base / "owned-layout.blend"
@@ -584,29 +823,51 @@ class UnityDeviceLayoutBlenderTests(unittest.TestCase):
                 if self.ours(value) and value.users == 0:
                     values.remove(value)
         (self.base / "screen.png").unlink()
+        (self.base / "hardware.png").unlink()
         with bpy.data.libraries.load(str(blend), link=False) as (available, loaded):
             self.assertIn(original_name, available.scenes)
             loaded.scenes = [original_name]
         self.scene = loaded.scenes[0]
         self.view_layer = self.scene.view_layers[0]
-        self.anchor = next(obj for obj in self.scene.objects if obj.get(self.TEST_PROP) == self.token)
+        self.anchor = self.scene.objects.get(anchor_name)
+        self.assertIsNotNone(self.anchor)
         collection = next(value for value in self.scene.collection.children
                           if value.get(layout.REFERENCE_ID_PROP) == reference_id)
         root = self.one(collection, "ROOT", device_id)
         root_pointer = root.as_pointer()
         preview = self.one(collection, "SCREEN")
-        image = next(node.image for node in preview.material_slots[0].material.node_tree.nodes
-                     if node.type == "TEX_IMAGE")
-        self.assertIsNotNone(image.packed_file, "Packed PNG must survive without its source file.")
-        self.assertEqual(tuple(image.size), (1, 1))
+        legacy_material = preview.material_slots[0].material
+        legacy_image = next(node.image for node in legacy_material.node_tree.nodes if node.type == "TEX_IMAGE")
+        self.assertIsNotNone(legacy_image.packed_file, "Shared legacy PNG must survive without its source file.")
+        part = self.one(collection, "PART")
+        hardware_image = next(node.image for node in part.material_slots[0].material.node_tree.nodes if node.type == "TEX_IMAGE")
+        self.assertIsNotNone(hardware_image.packed_file, "Packed hardware PNG must survive without its source file.")
+        self.assertEqual(tuple(hardware_image.size), (1, 1))
+        artist = self.scene.objects.get(artist_name)
+        child = self.scene.objects.get(child_name)
+        self.assertIsNotNone(artist)
+        self.assertIsNotNone(child)
+        self.assertIs(artist.material_slots[0].material, legacy_material)
+        self.assertIs(child.parent, preview)
         self.assertFalse((self.base / "screen.png").exists())
-        (self.base / "screen.png").write_bytes(PNG)
+        (self.base / "hardware.png").write_bytes(PNG)
         updated = self.do_import()
         self.assertIs(updated["collection"], collection)
         self.assertEqual(self.one(collection, "ROOT", device_id).as_pointer(), root_pointer)
         self.assertEqual(len(self.managed(collection, "ROOT")), 1)
         self.assertEqual(len(self.managed(collection, "PART")), 1)
         self.assertEqual(len(self.managed(collection, "SCREEN")), 1)
+        preview = self.one(collection, "SCREEN")
+        self.assert_gray_screen(preview)
+        self.assertIs(child.parent, preview)
+        self.assert_matrix(child.matrix_world, child_world)
+        self.assertIs(artist.material_slots[0].material, legacy_material)
+        self.assertIs(next(node.image for node in legacy_material.node_tree.nodes if node.type == "TEX_IMAGE"), legacy_image)
+        self.assertIsNotNone(legacy_image.packed_file)
+        part = self.one(collection, "PART")
+        hardware_image = next(node.image for node in part.material_slots[0].material.node_tree.nodes if node.type == "TEX_IMAGE")
+        self.assertIsNotNone(hardware_image.packed_file)
+        self.assertFalse((self.base / "screen.png").exists(), "Updating a gray screen must not need its old PNG.")
         self.assertEqual(len([value for value in self.scene.collection.children
                               if value.get(layout.REFERENCE_ID_PROP) == reference_id]), 1)
         self.assertIs(bpy.context.scene, self.original_scene)

@@ -1,0 +1,74 @@
+{
+  "schema": "cdesigner.composition-new-collection-handoff/1",
+  "date": "2026-10-11",
+  "runtime_edit_order": "Canonical first; X stage mirrors owned runtime",
+  "deployed": false,
+  "native_validation": false,
+  "files": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_worklist_collection.py",
+      "sha256": "7e306c7af9e3b55aacd84ca5b16a44d3980b459ca905a07111c99132b6b9968f"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_worklist_new.py",
+      "sha256": "b332692c2119c369916a126ec689b5dbdf68c63c7534f54a07e12bab142a7c9d"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_new_templates.py",
+      "sha256": "f9b486a4f6d4aca265b55ff8addc92162f93a0dc33c2b4d7426fda5a49b2dd9f"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_weapon_ownership.py",
+      "sha256": "c3a9b79f33f7ed7b09acbaa7bcd0df1d3e7a47ee76513b4ba1d7e9aeda47f083"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_worklist_new_collection_handoff_20261011.md",
+      "sha256": "434ec68877cd5569c6275e158816d3d51ce735938ea6f75f9c980eff16e1c30c"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_worklist.py",
+      "sha256": "fea0c713008ad73a9cca30112054312a28b8cfdebbcfda20d6a38483defbd043"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_prepared_add.py",
+      "sha256": "ec160b0a2d424f8453a424a83552817abf3a665669f684f8e4ed22136c32194a"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_animation_worklist_collection.py",
+      "sha256": "64905debd3e6e52e8433227a76166e903c53bfbfae87347825ef7c9ae81c3689"
+    }
+  ],
+  "runtime_stage_equal": {
+    "animation_worklist.py": true,
+    "animation_worklist_collection.py": true,
+    "animation_worklist_new.py": true
+  },
+  "pure_tests": {
+    "collection_new_regression": 92,
+    "native_template_proof": 13,
+    "ownership_units": 13,
+    "geometry": 9,
+    "physical_dependencies": 8,
+    "all_listed_pass": true,
+    "aggregation": "Component counts; do not add duplicates from root aggregate suites.",
+    "prepared_add": 19,
+    "canonical_collection": 48,
+    "canonical_worklist": 15
+  },
+  "evidence": [
+    {
+      "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\collection_new_action_pure_report.json",
+      "sha256": "a557932b7e5e13f7efa0888b450a5cade66d4f6c845358d928264dafd4b9541e"
+    },
+    {
+      "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\weapon_source_review.json",
+      "sha256": "a0291a51d3cbd1bce588ec3f72951f2e85c32227ca06cb792c8cd17eb26c4b73"
+    },
+    {
+      "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\prepared_add_route_report.json",
+      "sha256": "400e8195170b51f2ab672b8be976dec1498f9668c80c3fffe38f7ea26b5c9c7b"
+    }
+  ],
+  "prepared_add_requires_explicit_same_library": true,
+  "exact_new_b_uuid_serialization": true
+}

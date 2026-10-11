@@ -60,7 +60,12 @@ def test_warm_and_unrelated_updates_skip_heavy_geometry_proofs():
 def test_same_count_topology_edits_invalidate_without_graph_notification():
     f, graph = ready()
     obj = f['mesh']
-    edge = obj.data.edges[0]
+    support = {index for record in runtime._records(obj).values()
+               for index in record['vertices']}
+    # The scoped proof deliberately permits unrelated topology edits. Mutate
+    # an edge incident to the saved support to exercise the refusal path.
+    edge = next(edge for edge in obj.data.edges
+                if any(index in support for index in edge.vertices))
     old = tuple(edge.vertices)
     with patch.object(runtime, '_topology_digest', wraps=runtime._topology_digest) as topology:
         # Same counts and same undirected edge, but changed exact saved topology.

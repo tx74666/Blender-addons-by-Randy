@@ -10,6 +10,7 @@ from contextlib import contextmanager
 
 _TOPOLOGY = {}
 _MIRROR = {}
+_SUPPORT = {}
 _LIMIT = 32
 _READ_SCOPE = None
 
@@ -29,6 +30,7 @@ def read_scope():
 def clear():
     _TOPOLOGY.clear()
     _MIRROR.clear()
+    _SUPPORT.clear()
 
 
 def _remember(cache, key, value):
@@ -71,6 +73,22 @@ def topology_digest(mesh, calculate):
     result = calculate(mesh)
     _remember(_TOPOLOGY, key, (token, result))
     return result
+
+
+def support_topology_digest(mesh, vertices, calculate):
+    """Cache a scoped proof only while the complete topology token is exact."""
+    token = topology_token(mesh)
+    key = _identity(mesh)
+    cached = _SUPPORT.get(key)
+    if cached is None or cached[0] != token:
+        cached = (token, {})
+        _remember(_SUPPORT, key, cached)
+    indices = tuple(vertices)
+    if any(type(index) is not int for index in indices):
+        return calculate(mesh, indices)
+    if indices not in cached[1]:
+        _remember(cached[1], indices, calculate(mesh, indices))
+    return cached[1][indices]
 
 
 def mirror_pairs(obj, armature, source, target, calculate):

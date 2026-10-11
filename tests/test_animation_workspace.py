@@ -42,6 +42,21 @@ class WorkspaceTests(unittest.TestCase):
     def parse(self, value=None):
         return workspace.parse_workspace(json.dumps(self.manifest if value is None else value))
 
+    def write_reference(self):
+        self.manifest['projectId'] = str(uuid.uuid4())
+        self.path.write_text(json.dumps(self.manifest), encoding='utf-8')
+        self.entry = self.root / 'Cosha 動畫.workspace.json'
+        reference = {
+            'schema': workspace.REFERENCE_SCHEMA,
+            'workspaceManifest': str(self.path),
+            'workspaceId': self.manifest['workspaceId'],
+            'projectId': self.manifest['projectId'],
+            'targetGuid': self.manifest['targetGuid'],
+            'targetName': 'Cosha Animations',
+        }
+        self.entry.write_text(json.dumps(reference), encoding='utf-8')
+        return reference
+
     def test_unknown_fields_and_exact_int64_survive(self):
         self.manifest['clips'][0].update(isCustom=False, currentClipName='Walking',
                                         currentClipLocalId=9223372036854775807)
@@ -73,6 +88,48 @@ class WorkspaceTests(unittest.TestCase):
         self.manifest['clips'][1].update(clipGuid='C' * 32, clipName='Walk')
         clips = self.parse()['clips']
         self.assertNotEqual(workspace.clip_identity(clips[0]), workspace.clip_identity(clips[1]))
+
+    def test_variants_share_source_but_keep_distinct_work_items_and_destinations(self):
+        first, second = self.manifest['clips']
+        first.update(workItemId=uuid.uuid4().hex, baseClipGuid='e' * 32, baseClipLocalId=13,
+                     sourceCharacterGuid='f' * 32, purpose='Variant', editScope='UpperBody')
+        second.update(workItemId=uuid.uuid4().hex, clipGuid=first['clipGuid'],
+                      clipLocalId=first['clipLocalId'], baseClipGuid='e' * 32, baseClipLocalId=14)
+        self.manifest.update(prepareRequestId=uuid.uuid4().hex,
+                             preparedWorkItemIds=[first['workItemId'], second['workItemId']])
+        actual = self.parse()
+        self.assertNotEqual(workspace.row_key(first), workspace.row_key(second))
+        self.assertEqual(workspace.clip_identity(first), workspace.clip_identity(second))
+        self.assertNotEqual(workspace.base_clip_identity(first), workspace.base_clip_identity(second))
+        self.assertEqual(workspace.prepare_request(actual)[1], tuple(self.manifest['preparedWorkItemIds']))
+        second['workItemId'] = first['workItemId'].upper()
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'duplicate clip identity'):
+            self.parse()
+
+    def test_explicit_empty_request_adds_none_and_legacy_null_defaults_remain_legacy(self):
+        self.manifest.update(prepareRequestId=None, preparedWorkItemIds=None)
+        self.assertIsNone(workspace.prepare_request(self.parse()))
+        self.manifest.update(prepareRequestId='', preparedWorkItemIds=[])
+        self.assertIsNone(workspace.prepare_request(self.parse()))
+        self.manifest['clips'][0]['workItemId'] = uuid.uuid4().hex
+        self.assertEqual(workspace.prepare_request(self.parse()), ('', ()))
+        self.manifest['prepareRequestId'] = uuid.uuid4().hex
+        self.assertEqual(workspace.prepare_request(self.parse())[1], ())
+
+    def test_request_and_route_invalid_values_fail_without_coercion(self):
+        row = self.manifest['clips'][0]
+        row['workItemId'] = uuid.uuid4().hex
+        self.manifest.update(prepareRequestId=uuid.uuid4().hex,
+                             preparedWorkItemIds=[row['workItemId']])
+        for value in ([row['workItemId'], row['workItemId'].upper()], [uuid.uuid4().hex],
+                      [''], [True], None, 'all'):
+            with self.subTest(request=value), self.assertRaises(workspace.AnimationWorkspaceError):
+                self.parse({**self.manifest, 'preparedWorkItemIds': value})
+        for field, value in (('workItemId', False), ('workItemId', 'bad'),
+                             ('baseClipGuid', 'bad'), ('baseClipLocalId', True),
+                             ('sourceCharacterGuid', False), ('editScope', {}), ('purpose', 7)):
+            with self.subTest(field=field), self.assertRaises(workspace.AnimationWorkspaceError):
+                self.parse({**self.manifest, 'clips': [{**row, field: value}]})
 
     def test_two_slots_cannot_share_one_link_manifest(self):
         self.manifest['clips'][0]['linkManifest'] = 'D:/Exchange/Walk/character_animation_link.json'
@@ -209,6 +266,132 @@ class WorkspaceTests(unittest.TestCase):
             workspace.load_workspace(self.path)
         with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'Choose'):
             workspace.load_workspace(self.root / 'other.json')
+
+    def test_reference_reads_only_entry_and_actual_index_and_returns_actual_path(self):
+        reference = self.write_reference()
+        reference.update(workspaceId=uuid.UUID(reference['workspaceId']).hex.upper(),
+                         projectId=uuid.UUID(reference['projectId']).hex.upper(),
+                         targetGuid=reference['targetGuid'].upper(), clips=['not a catalog'])
+        self.entry.write_text(json.dumps(reference), encoding='utf-8')
+        opened = []
+        original_open = Path.open
+        def track(path, *args, **kwargs):
+            opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', track):
+            loaded = workspace.load_workspace(self.entry)
+        self.assertEqual(opened, [self.entry, self.path])
+        self.assertEqual(loaded, {**self.manifest, '_manifest_path': str(self.path)})
+        self.assertEqual(workspace.workspace_identity(loaded), workspace.workspace_identity(self.manifest))
+        self.assertNotIn('workspaceManifest', loaded)
+
+    def test_reference_rereads_live_catalog_and_preserves_labels_and_existing_snapshot(self):
+        self.write_reference()
+        entry_bytes = self.entry.read_bytes()
+        previous = workspace.load_workspace(self.entry)
+        self.manifest['clips'].append({'clipGuid': 'e' * 32, 'clipLocalId': 23, 'clipName': 'Jump'})
+        self.manifest['targetName'] = 'Cosha Renamed'
+        self.path.write_text(json.dumps(self.manifest), encoding='utf-8')
+        refreshed = workspace.load_workspace(self.entry)
+        self.assertEqual(refreshed['clips'], self.manifest['clips'])
+        self.assertEqual(refreshed['targetName'], 'Cosha Renamed')
+        self.assertEqual(len(previous['clips']), 2)
+        self.assertEqual(workspace.workspace_identity(previous), workspace.workspace_identity(refreshed))
+        self.assertEqual(self.entry.read_bytes(), entry_bytes)
+
+    def test_reference_identity_mismatch_rejects_replaced_source(self):
+        self.write_reference()
+        for field, value in (('workspaceId', str(uuid.uuid4())), ('projectId', str(uuid.uuid4())),
+                             ('targetGuid', 'f' * 32), ('projectId', 'not a UUID')):
+            with self.subTest(field=field, value=value):
+                source = {**self.manifest, field: value}
+                self.path.write_text(json.dumps(source), encoding='utf-8')
+                with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'source identity changed'):
+                    workspace.load_workspace(self.entry)
+
+    def test_reference_missing_or_unreadable_entry_and_source_have_distinct_errors(self):
+        self.write_reference()
+        self.path.unlink()
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'entry source is unavailable'):
+            workspace.load_workspace(self.entry)
+        self.path.mkdir()
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'entry source is unavailable'):
+            workspace.load_workspace(self.entry)
+        self.entry.unlink()
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'entry could not be read'):
+            workspace.load_workspace(self.entry)
+
+    def test_reference_requires_explicit_schema_ids_label_and_fixed_absolute_source(self):
+        reference = self.write_reference()
+        for field, value in (('schema', workspace.SCHEMA), ('schema', 'other'),
+                             ('workspaceId', 'bad'), ('workspaceId', True), ('projectId', None),
+                             ('targetGuid', 'bad'), ('targetName', ''), ('targetName', []),
+                             ('workspaceManifest', 'relative/character_animation_workspace.json'),
+                             ('workspaceManifest', str(self.root / 'Other.workspace.json')),
+                             ('workspaceManifest', 'C:character_animation_workspace.json'),
+                             ('workspaceManifest', str(self.root / 'bad\x00name' / workspace.MANIFEST_NAME))):
+            with self.subTest(field=field, value=value):
+                self.entry.write_text(json.dumps({**reference, field: value}), encoding='utf-8')
+                with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'entry could not be read'):
+                    workspace.load_workspace(self.entry)
+
+    def test_reference_never_recurses_even_when_reference_uses_index_filename(self):
+        reference = self.write_reference()
+        another = self.root / 'Another.workspace.json'
+        another.write_text(json.dumps(reference), encoding='utf-8')
+        self.path.write_text(json.dumps({**reference, 'workspaceManifest': str(another)}), encoding='utf-8')
+        opened = []
+        original_open = Path.open
+        def track(path, *args, **kwargs):
+            opened.append(path)
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', track):
+            with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'source is unavailable.*schema'):
+                workspace.load_workspace(self.entry)
+        self.assertEqual(opened, [self.entry, self.path])
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'Unsupported animation workspace schema'):
+            workspace.parse_workspace(json.dumps(reference))
+
+    def test_reference_rejects_non_utf8_duplicate_nonfinite_and_malformed_json(self):
+        reference = self.write_reference()
+        valid = json.dumps(reference)
+        for raw in (b'\xff', valid.encode('utf-16'), b'{', b'[]', b'null',
+                    (valid[:-1] + ', "extra": NaN}').encode('utf-8'),
+                    (valid[:-1] + ', "extra": 1e999}').encode('utf-8'),
+                    (valid[:-1] + ', "schema": "other"}').encode('utf-8'),
+                    (valid[:-1] + ', "nested": {"key": 1, "key": 2}}').encode('utf-8')):
+            with self.subTest(raw=str(raw)[:50]):
+                self.entry.write_bytes(raw)
+                with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'entry could not be read'):
+                    workspace.load_workspace(self.entry)
+        self.entry.write_bytes(b'\xef\xbb\xbf' + valid.encode('utf-8'))
+        self.assertEqual(workspace.load_workspace(self.entry)['_manifest_path'], str(self.path))
+
+    def test_reference_and_actual_index_both_enforce_one_mib_bound(self):
+        reference = self.write_reference()
+        raw = json.dumps(reference).encode('utf-8')
+        at_limit = raw + b' ' * (workspace.MAX_BYTES - len(raw))
+        self.entry.write_bytes(at_limit)
+        self.assertEqual(workspace.load_workspace(self.entry)['_manifest_path'], str(self.path))
+        self.entry.write_bytes(at_limit + b' ')
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'entry could not be read.*1 MiB'):
+            workspace.load_workspace(self.entry)
+        self.entry.write_bytes(raw)
+        source = json.dumps(self.manifest).encode('utf-8')
+        self.path.write_bytes(source + b' ' * (workspace.MAX_BYTES + 1 - len(source)))
+        with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'source is unavailable.*1 MiB'):
+            workspace.load_workspace(self.entry)
+
+    def test_reference_loader_bounds_each_read(self):
+        reference = self.write_reference()
+        streams = [io.BytesIO(json.dumps(reference).encode('utf-8')),
+                   io.BytesIO(json.dumps(self.manifest).encode('utf-8'))]
+        readers = [patch.object(stream, 'read', wraps=stream.read) for stream in streams]
+        with patch.object(Path, 'open', side_effect=streams), readers[0] as entry_read, readers[1] as index_read:
+            loaded = workspace.load_workspace(self.entry)
+        entry_read.assert_called_once_with(workspace.MAX_BYTES + 1)
+        index_read.assert_called_once_with(workspace.MAX_BYTES + 1)
+        self.assertEqual(loaded['_manifest_path'], str(self.path))
 
 
 if __name__ == '__main__':

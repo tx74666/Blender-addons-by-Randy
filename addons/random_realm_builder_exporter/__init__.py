@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 58),
+    "version": (0, 2, 60),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -8245,6 +8245,23 @@ def pbr_bake_progress_end(context, window_manager):
     refresh_rr_helper_ui(context)
 
 
+def resolve_pbr_bake_source(assigned):
+    """Resolve a baked result's retained original Material, including renames."""
+    source, visited = assigned, set()
+    while any(key in source for key in (
+            "rr_pbr_baked_roles", "rr_pbr_baked_source_material", "rr_pbr_baked_source_name")):
+        if source in visited:
+            raise RuntimeError(f"{assigned.name}: baked source references form a cycle; choose the original material.")
+        visited.add(source)
+        original = (source.get("rr_pbr_baked_source_material")
+                    if "rr_pbr_baked_source_material" in source
+                    else bpy.data.materials.get(source.get("rr_pbr_baked_source_name", "")))
+        if not isinstance(original, bpy.types.Material) or bpy.data.materials.get(original.name) != original:
+            raise RuntimeError(f"{assigned.name}: the original bake material is missing; restore or assign its source before baking.")
+        source = original
+    return source
+
+
 def bake_selected_to_pbr(context, settings, reporter=None):
     source_roots = get_export_roots(list(context.selected_objects))
     roots = source_roots
@@ -8272,22 +8289,7 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             "rr_pbr_baked_roles", "rr_pbr_baked_source_material", "rr_pbr_baked_source_name"))
 
     def original_bake_source(assigned):
-        # A persistent ID reference survives renames and .blend save/reload.
-        # Only older results without that reference use the saved source name.
-        source = assigned
-        visited = set()
-        while is_baked_result(source):
-            if source in visited:
-                raise RuntimeError(f"{assigned.name}: baked source references form a cycle; choose the original material.")
-            visited.add(source)
-            if "rr_pbr_baked_source_material" in source:
-                original = source.get("rr_pbr_baked_source_material")
-            else:
-                original = bpy.data.materials.get(source.get("rr_pbr_baked_source_name", ""))
-            if not isinstance(original, bpy.types.Material) or bpy.data.materials.get(original.name) != original:
-                raise RuntimeError(f"{assigned.name}: the original bake material is missing; restore or assign its source before baking.")
-            source = original
-        return source
+        return resolve_pbr_bake_source(assigned)
 
     checked_materials = set(pbr_framework_filtered_materials_for_context(context, settings, all_materials))
     bakeable_materials = [material for material in all_materials
@@ -8338,6 +8340,8 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     # The bake module works on per-instance material/group copies, never on
     # shared source graphs or on the first shader branch it happens to find.
     material_plans = {material: rr_pbr_shader_bake.analyze_material(material) for material in materials}
+    ring_selections = {material: plan.get("ring_selection", [])
+                       for material, plan in material_plans.items()}
     bake_roles = PBR_BAKE_ROLES + (PBR_RING_BAKE_ROLES if any(
         plan["has_ring"] for plan in material_plans.values()) else ())
     # UV selection and UI filters describe the currently assigned slots. Plans,
@@ -8403,6 +8407,7 @@ def bake_selected_to_pbr(context, settings, reporter=None):
     progress_window_manager = pbr_bake_progress_begin(context, progress_total)
     created_baked_materials = []
     changed_slots = []
+    ring_intent_restore = []
 
     try:
         pbr_bake_progress_update(
@@ -8429,7 +8434,8 @@ def bake_selected_to_pbr(context, settings, reporter=None):
                 progress_total, f"Baking {role['label']}", reporter,
             )
             role_materials = [material for material in materials if role["key"] in material_images[material]]
-            with rr_pbr_shader_bake.cloned_materials(role_materials, role) as copies:
+            with rr_pbr_shader_bake.cloned_materials(
+                    role_materials, role, ring_selections=ring_selections) as copies:
                 temporary_slots = []
                 target_restores = []
                 scratch_materials = {}
@@ -8512,6 +8518,9 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             created_baked_materials.append((material, baked))
             baked["rr_pbr_baked_at_utc"] = datetime.now(timezone.utc).isoformat()
             baked["rr_pbr_bake_output_root"] = output_root
+            if material_plans[material].get("ring_group_count", 0):
+                baked["rr_pbr_baked_ring_selection"] = json.dumps(
+                    ring_selections[material], ensure_ascii=False)
             relinked += 1
             progress_step += 1
         if relinked != len(materials):
@@ -8526,6 +8535,14 @@ def bake_selected_to_pbr(context, settings, reporter=None):
                 changed_slots.append((slot, slot.link, assigned))
                 slot.link = "OBJECT"
                 slot.material = replacements[source]
+        # Keep the chosen layer even when its authored brightness later becomes
+        # zero. Commit intent only after every map and material succeeds.
+        for material, plan in material_plans.items():
+            if not plan.get("ring_group_count", 0):
+                continue
+            key = "rr_pbr_ring_selection"
+            ring_intent_restore.append((material, key in material, material.get(key)))
+            material[key] = json.dumps(ring_selections[material], ensure_ascii=False)
         pbr_bake_progress_update(
             context,
             progress_window_manager,
@@ -8535,6 +8552,11 @@ def bake_selected_to_pbr(context, settings, reporter=None):
             reporter,
         )
     except Exception:
+        for material, existed, value in reversed(ring_intent_restore):
+            if existed:
+                material["rr_pbr_ring_selection"] = value
+            elif "rr_pbr_ring_selection" in material:
+                del material["rr_pbr_ring_selection"]
         for slot, link, source in reversed(changed_slots):
             slot.material = source
             slot.link = link
@@ -8566,6 +8588,8 @@ def bake_selected_to_pbr(context, settings, reporter=None):
         "output_root": output_root,
         "output_dir": output_dir,
         "files": output_files,
+        "warnings": [f"{material.name}: {warning}" for material, plan in material_plans.items()
+                     for warning in plan.get("warnings", [])],
     }
 
 
@@ -14190,6 +14214,32 @@ class RR_OT_select_pbr_bake_target(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class RR_OT_set_pbr_ring_layer(bpy.types.Operator):
+    bl_idname = "rr_builder.set_pbr_ring_layer"
+    bl_label = "Choose Editable Ring Layer"
+    bl_description = "Choose the Ring layer whose color and brightness stay editable in Unity"
+    bl_options = {"REGISTER", "UNDO"}
+
+    material_name: bpy.props.StringProperty(options={"HIDDEN"})
+    ring_selection: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        try:
+            assigned = bpy.data.materials.get(self.material_name)
+            if assigned is None:
+                raise ValueError("The selected material is missing.")
+            source = resolve_pbr_bake_source(assigned)
+            selection = json.loads(self.ring_selection)
+            plan = rr_pbr_shader_bake.analyze_material(source, ring_selection=selection)
+            source["rr_pbr_ring_selection"] = json.dumps(plan["ring_selection"], ensure_ascii=False)
+        except Exception as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        refresh_rr_helper_ui(context)
+        self.report({"INFO"}, "Editable Ring layer selected; Bake PBR to update the pattern maps.")
+        return {"FINISHED"}
+
+
 class RR_OT_bake_selected_pbr(bpy.types.Operator):
     bl_idname = "rr_builder.bake_selected_pbr"
     bl_label = "Bake PBR"
@@ -14246,6 +14296,8 @@ class RR_OT_bake_selected_pbr(bpy.types.Operator):
         set_pbr_bake_runtime_pending(False)
         set_pbr_bake_runtime_active(False)
         refresh_rr_helper_ui(context)
+        for warning in result.get("warnings", []):
+            self.report({"WARNING"}, warning)
         self.report({"INFO"}, settings.pbr_bake_last_summary)
         return {"FINISHED"}
 
@@ -15040,6 +15092,29 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             else:
                 material_box.label(text="Select mesh or group", icon="INFO")
 
+        for assigned in materials:
+            try:
+                source = resolve_pbr_bake_source(assigned)
+                layers = rr_pbr_shader_bake.describe_ring_layers(source)
+                if len(layers) < 2:
+                    continue
+                ring_box = bake_box.box()
+                ring_box.label(text=f"Editable Ring · {source.name}")
+                try:
+                    selected_paths = rr_pbr_shader_bake.analyze_material(source)["ring_selection"]
+                except ValueError:
+                    selected_paths = []
+                for layer in layers:
+                    row = ring_box.row()
+                    row.enabled = not bake_running and not layer.get("editable_error")
+                    op = row.operator("rr_builder.set_pbr_ring_layer", text=layer["label"],
+                                      depress=layer["path"] in selected_paths)
+                    op.material_name = assigned.name
+                    op.ring_selection = json.dumps([layer["path"]], ensure_ascii=False)
+                ring_box.label(text="Other Ring layers keep their authored appearance.")
+            except (ValueError, RuntimeError):
+                continue  # The Bake preflight reports unsupported source graphs.
+
         auto_row = bake_box.row()
         auto_row.enabled = bool(materials) and not bake_running
         auto_row.operator("rr_builder.bake_selected_pbr", text="Bake PBR for Unity", icon="RENDER_STILL")
@@ -15758,6 +15833,7 @@ CLASSES = (
     RR_OT_prepare_pbr_framework_bake_target,
     RR_OT_set_pbr_framework_material_selection,
     RR_OT_select_pbr_bake_target,
+    RR_OT_set_pbr_ring_layer,
     RR_OT_bake_selected_pbr,
     RR_OT_apply_modeling_origin_point,
     RR_OT_add_surface_text,

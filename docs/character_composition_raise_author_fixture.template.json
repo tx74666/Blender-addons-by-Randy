@@ -1,0 +1,17 @@
+{
+  "schema": "x.validation.character-composition-raise-authoring-fixture/1",
+  "evidenceDirectory": null,
+  "preparedRaiseWorkItemId": null,
+  "collectedHoldLoopWorkItemId": null,
+  "expectedModelSha256": null,
+  "rotationControl": null,
+  "followingHoldPublication": {
+    "manifestPath": null,
+    "manifestSha256": null,
+    "revision": null,
+    "fbxPath": null,
+    "fbxSha256": null,
+    "metadataPath": null,
+    "metadataSha256": null
+  }
+}

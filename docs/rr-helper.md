@@ -1,5 +1,9 @@
 # RR Helper
 
+0.2.60 将导入的 Unity 设备屏幕改为不发光的空白灰屏，保留尺寸、姿态和设备身份。旧板子可用 **Unity Layout → Blank Imported Screens** 直接清空画面，无需重导；设备外壳纹理及用户共享材质保留。见 [设备布局流程](unity_device_layout.md) 和 [0.2.60 更新记录](releases/RRHelper_0.2.60_blank_device_screens_20261008.md)。
+
+Ring 的固定图案烘焙与 Unity Standard 导入已通过原生 Blender/Unity 验证；Unity 材质顶部提供联动线条与发光的 **Ring Color** 和独立 **Emission Strength**，地板底色独立。0.2.59 发布时已打包、部署到 Blender 5.2，并核实 Builder6 加载该版本。操作见 [Ring 烘焙与导入流程](standard_ring_bake.md)，验证、实际 addons_core 加载路径及场景保护记录见 [0.2.59 更新记录](releases/RRHelper_0.2.59_ring_pbr_bake_20261008.md)。
+
 Surface Text 导出的正面材质识别修复见 [0.2.58 更新记录](releases/RRHelper_0.2.58_surface_text_front_20261006.md)。选择背光材质槽不会再改变文字的正面导出描述。
 
 当前导出使用 `Model` / `Icon` 两个开关：勾选 Model 就重新生成模型，勾选 Icon 就生成图标；只导图标时取消 Model。旧场景的 Skip 值不再跳过模型。Icon-only 保留旧 FBX 绑定的来源和 Surface Text 数据，详见 [0.2.24 更新记录](releases/RRHelper_0.2.24_model_icon_20260929.md)。

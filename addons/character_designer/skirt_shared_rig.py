@@ -726,6 +726,9 @@ def remove(context, source, *, allow_animation=False):
              if curve.data_path.startswith(tuple(main.pose.bones[name].path_from_id() for name in names))] if main.animation_data else []
     # All expected errors are checked before destructive cleanup. The caller's
     # Blender operator supplies Undo for a committed removal.
+    from . import skirt_wiggle
+    if skirt_wiggle.STATE_KEY in source:
+        skirt_wiggle.forget(context, source)
     skirt._activate(context, source)
     if surface is not None:
         surface.commit_remove(source, surface_plan)

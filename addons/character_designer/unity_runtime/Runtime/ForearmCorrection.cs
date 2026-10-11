@@ -89,6 +89,16 @@ namespace CharacterDesigner.Unity
             public float[] weights;
         }
 
+        // Only this synchronous fingerprint call owns these binding inputs.
+        private sealed class BindingMeshInputs
+        {
+            public Vector3[] vertices, normals;
+            public Vector4[] tangents;
+            public Matrix4x4[] bindposes;
+            public byte[] weightCounts;
+            public BoneWeight1[] skinWeights;
+        }
+
         private void OnEnable()
         {
             if (Application.IsPlaying(gameObject)) ApplyAndReport();
@@ -303,13 +313,14 @@ namespace CharacterDesigner.Unity
             { error = "Correction data does not match this imported mesh. Reimport the Character Designer export."; return false; }
             if (!mesh.isReadable)
             { error = "The correction mesh needs Read/Write enabled in its import settings."; return false; }
-            if (string.IsNullOrEmpty(data.sourceFingerprint) || ComputeFingerprint(mesh) != data.sourceFingerprint)
+            var inputs = new BindingMeshInputs();
+            if (string.IsNullOrEmpty(data.sourceFingerprint) || ComputeFingerprint(mesh, inputs) != data.sourceFingerprint)
             { error = "The mesh geometry, skinning or artist blendshapes changed after calibration. Reimport the Character Designer export."; return false; }
             if (data.sides == null || data.sources == null || data.stencils == null || data.shapes == null ||
                 data.sides.Length == 0 || data.sources.Length == 0 || data.stencils.Length == 0)
             { error = "Calibration arrays are missing or empty."; return false; }
             bones = targetRenderer.bones;
-            bindposes = mesh.bindposes;
+            bindposes = inputs.bindposes;
             if (bones.Length == 0 || bones.Length != bindposes.Length)
             { error = "Renderer bones and mesh bindposes do not match."; return false; }
             for (int i = 0; i < bones.Length; ++i)
@@ -355,8 +366,8 @@ namespace CharacterDesigner.Unity
                         !ForearmCorrectionMath.IsFinite(shape.deltas[j]))
                     { error = "An artist blendshape source delta is invalid."; return false; }
             }
-            using (var weights = mesh.GetAllBoneWeights()) skinWeights = weights.ToArray();
-            using (var counts = mesh.GetBonesPerVertex()) weightCounts = counts.ToArray();
+            skinWeights = inputs.skinWeights;
+            weightCounts = inputs.weightCounts;
             if (weightCounts.Length != mesh.vertexCount)
             { error = "The imported mesh has incomplete skin weights."; return false; }
             weightOffsets = new int[mesh.vertexCount];
@@ -374,7 +385,7 @@ namespace CharacterDesigner.Unity
                 if (skinWeights[i].boneIndex < 0 || skinWeights[i].boneIndex >= bones.Length ||
                     !ForearmCorrectionMath.IsFinite(skinWeights[i].weight) || skinWeights[i].weight < 0f)
                 { error = "The imported mesh has invalid bone weights."; return false; }
-            baseVertices = mesh.vertices;
+            baseVertices = inputs.vertices;
             pendingVertices = new Vector3[baseVertices.Length];
             sourcePoints = new Vector3[data.sources.Length];
             sourceDeltas = new Vector3[data.sources.Length];
@@ -387,10 +398,10 @@ namespace CharacterDesigner.Unity
             cachedShapeValues = new float[data.shapes.Length];
             CaptureBindingMapping();
             hasCachedInputs = false;
-            baseNormals = mesh.normals;
+            baseNormals = inputs.normals;
             if (baseNormals.Length != mesh.vertexCount) baseNormals = null;
             pendingNormals = baseNormals == null ? null : new Vector3[baseNormals.Length];
-            baseTangents = mesh.tangents;
+            baseTangents = inputs.tangents;
             if (baseTangents.Length != mesh.vertexCount) baseTangents = null;
             pendingTangents = baseTangents == null ? null : new Vector4[baseTangents.Length];
             CaptureSurfaceDirections(mesh);
@@ -518,16 +529,25 @@ namespace CharacterDesigner.Unity
         /// in place cannot accidentally reuse stale calibration of the same size.
         /// </summary>
         public static string ComputeFingerprint(Mesh mesh)
+            => ComputeFingerprint(mesh, null);
+
+        private static string ComputeFingerprint(Mesh mesh, BindingMeshInputs inputs)
         {
             if (mesh == null || !mesh.isReadable) throw new ArgumentException("A readable mesh is required.", nameof(mesh));
             using (SHA256 hash = SHA256.Create())
             using (var stream = new CryptoStream(Stream.Null, hash, CryptoStreamMode.Write))
-            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, true))
+            using (var buffered = new BufferedStream(stream, 64 * 1024))
+            using (var writer = new BinaryWriter(buffered, System.Text.Encoding.UTF8, true))
             {
                 writer.Write(1);
-                WriteVectors(writer, mesh.vertices);
-                WriteVectors(writer, mesh.normals);
+                Vector3[] vertices = mesh.vertices;
+                if (inputs != null) inputs.vertices = vertices;
+                WriteVectors(writer, vertices);
+                Vector3[] normals = mesh.normals;
+                if (inputs != null) inputs.normals = normals;
+                WriteVectors(writer, normals);
                 Vector4[] tangents = mesh.tangents;
+                if (inputs != null) inputs.tangents = tangents;
                 writer.Write(tangents.Length);
                 for (int i = 0; i < tangents.Length; ++i)
                 { writer.Write(tangents[i].x); writer.Write(tangents[i].y); writer.Write(tangents[i].z); writer.Write(tangents[i].w); }
@@ -540,16 +560,19 @@ namespace CharacterDesigner.Unity
                     for (int j = 0; j < indices.Length; ++j) writer.Write(indices[j]);
                 }
                 Matrix4x4[] poses = mesh.bindposes;
+                if (inputs != null) inputs.bindposes = poses;
                 writer.Write(poses.Length);
                 for (int i = 0; i < poses.Length; ++i)
                     for (int j = 0; j < 16; ++j) writer.Write(poses[i][j]);
                 using (var counts = mesh.GetBonesPerVertex())
                 {
+                    if (inputs != null) inputs.weightCounts = counts.ToArray();
                     writer.Write(counts.Length);
                     for (int i = 0; i < counts.Length; ++i) writer.Write(counts[i]);
                 }
                 using (var weights = mesh.GetAllBoneWeights())
                 {
+                    if (inputs != null) inputs.skinWeights = weights.ToArray();
                     writer.Write(weights.Length);
                     for (int i = 0; i < weights.Length; ++i)
                     { writer.Write(weights[i].boneIndex); writer.Write(weights[i].weight); }
@@ -581,6 +604,11 @@ namespace CharacterDesigner.Unity
         private static void WriteVectors(BinaryWriter writer, Vector3[] values)
         {
             writer.Write(values.Length);
+            if (BitConverter.IsLittleEndian && System.Runtime.InteropServices.Marshal.SizeOf<Vector3>() == 12)
+            {
+                writer.Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(new ReadOnlySpan<Vector3>(values)));
+                return;
+            }
             for (int i = 0; i < values.Length; ++i)
             { writer.Write(values[i].x); writer.Write(values[i].y); writer.Write(values[i].z); }
         }

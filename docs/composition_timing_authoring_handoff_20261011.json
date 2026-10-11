@@ -1,0 +1,65 @@
+{
+  "schema": "cdesigner.composition-timing-authoring-source/1",
+  "date": "2026-10-11",
+  "native_verified": false,
+  "canonical_files": {
+    "tools/composition_timing_acceptance.py": "46bf23b458b94ffd95994b4601cf38db9d493cb76e6a45bc987edeb2c1654519",
+    "tools/composition_raise_authoring.py": "9aaeda772c1c271855c323012fc2e02d0abbeabd0997e45aef06eea6de9f1e54"
+  },
+  "pure_checks": {
+    "tests/test_composition_timing_acceptance.py": 10,
+    "tests/test_composition_raise_authoring.py": 6,
+    "compiled": true,
+    "independent_source_review": "rig_controls_review reviewed raw A/B clocks, full FK input closure, true selected-slot keying and independent raw endpoint comparison."
+  },
+  "apis": {
+    "composition_timing_acceptance.author_hold_loop(context, config)": {
+      "fixture_template": "docs/character_composition_loop_author_fixture.template.json",
+      "behavior": "Explicitly authors only the actual third prepared SOURCE HoldLoop Custom before Sync/Collect. Returns report.numeric_proof from composition_sync_acceptance.foreground_one.",
+      "output": "composition_HoldLoop_authoring_report.json"
+    },
+    "composition_raise_authoring.run(context, config)": {
+      "fixture_template": "docs/character_composition_raise_author_fixture.template.json",
+      "behavior": "Authenticates the collected third Loop physical publication, imports actual SOURCE Raise template, copies and cleans its native Action/slot, officially registers genuine NEW IDs, authors three FK Pose/RNA phases and verifies its raw endpoint. Returns report.numeric_proof for explicit run_one.",
+      "output": "composition_Raise_authoring_report.json"
+    },
+    "composition_timing_acceptance.run(context, config)": {
+      "fixture_template": "docs/character_composition_timing_fixture.template.json",
+      "behavior": "Curve-read-only native timing checks of collected moving third Loop and genuine NEW Raise. holdLoopWorkItemId and followingHoldWorkItemId must identify that same row. Returns report.raise_numeric_proof.",
+      "output": "composition_timing_acceptance_report.json"
+    },
+    "composition_timing_acceptance.measure_registered_raise(context, *, work_item_id, model_sha256)": {
+      "behavior": "Read-only actual NEW Raise foreground_one proof after explicit native authoring."
+    }
+  },
+  "real_sequence": [
+    "Authenticate actual prepared A1/A2 HoldPose SOURCE rows and publish their genuine prepared Links.",
+    "Explicitly author the actual third SOURCE HoldLoop through author_hold_loop, then publish its exact foreground proof through run_one.",
+    "Parent verifies actual Unity Collect of all three Hold revisions before genuine Raise Prepare.",
+    "Refresh the exact current prepared workspace/catalog to include real SOURCE Raise template.",
+    "Run explicit Raise authoring: official register_b produces NEW Action/Work Item identity and manifest; endpoint uses actual collected Loop FK inputs at its own .19 phase.",
+    "Verify final native Loop and Raise own clocks with independent raw A/B poses, then publish NEW Raise through explicitly authorized run_one.",
+    "Parent collects actual NEW Raise and performs explicit Pose/Loop/Raise Apply and runtime smoke checks. UI/session acceptance uses its separate saved disposable seed."
+  ],
+  "required_sealed_clocks": {
+    "thirdLoop": {"timeMode": "HoldLoop", "editSpeed": 1.25, "editPhase": 0.19},
+    "raise": {"timeMode": "Raise", "editSpeed": 1.7, "editPhase": 0.17},
+    "reference": {"referenceSpeed": 0.8, "referencePhase": 0.07},
+    "serialization_tolerance": 0.0000001,
+    "followingHold_uses_own_fps_speed_phase": true,
+    "sample_bounds_exclude_FBX_rest_frame": true,
+    "export_raw_B_duration_equals_sampleEnd_minus_sampleStart": true,
+    "phase_speed_not_baked_in_raw_B": true
+  },
+  "followingHold_publication": {
+    "required": ["manifestPath", "manifestSha256", "revision", "fbxPath", "fbxSha256", "metadataPath", "metadataSha256"],
+    "checks": "Actual revision > 0, full fresh native route, real manifest/FBX/sidecar SHA, complete sealed spec/public export proof, full isolated local Hold numeric payload equals actual published sidecar. No fabricated local receipt and no unsynced Custom substitution."
+  },
+  "identity": "Public NEW manifest IDs and report IDs preserve the exact DTO strings. Native local row/folder hex IDs are reported separately. Source DTO/packet IDs and bytes remain sealed.",
+  "limitations": [
+    "Source and pure verification only; no native Blender process was launched by this agent.",
+    "Helpers launch no worker, save no .blend, publish no Link and do not read Unity collection state.",
+    "Parent owns serial native execution, each heavy-operation memory gate, actual Unity Collect admission, physical Sync and final runtime smoke.",
+    "Raise endpoint proof validates timing/control continuity; no artistic pose approval is claimed."
+  ]
+}

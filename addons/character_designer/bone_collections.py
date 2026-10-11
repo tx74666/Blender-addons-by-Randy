@@ -198,12 +198,19 @@ def _write_backup(armature, backup):
         armature.data.pop(BACKUP_REFS_KEY, None)
 
 
+def _single_data_user(armature):
+    if armature.data.users == 1:
+        return True
+    from . import animation_worklist_target
+    return animation_worklist_target.single_armature_user(armature)
+
+
 def restore_bone_collections(armature):
     """Restore the first layout while retaining later collections and live controls."""
     from . import hair_bones_rig as hair, limb_ik
     _structural_edit_guard(armature)
     if (armature.mode == "EDIT" or armature.library or armature.data.library
-            or not armature.is_editable or armature.data.users != 1):
+            or not armature.is_editable or not _single_data_user(armature)):
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
     backup = _load_backup(armature)
     data = armature.data
@@ -479,7 +486,7 @@ def show_original_after_removal(armature):
     from . import body_setup, hair_bones_rig as hair, limb_ik
     if (armature is None or armature.type != "ARMATURE" or armature.mode == "EDIT"
             or armature.library or armature.data.library or not armature.is_editable
-            or armature.data.users != 1):
+            or not _single_data_user(armature)):
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
     _structural_edit_guard(armature)
     if body_setup.has_generated(armature):
@@ -562,7 +569,7 @@ def migrate_removed_body_layouts(scene=None, *, objects=None):
     objects = scene.objects if objects is None else objects
     for rig in tuple(objects):
         if (rig.name not in scene.objects or rig.type != "ARMATURE" or rig.mode == "EDIT" or rig.library or rig.data.library
-                or not rig.is_editable or rig.data.users != 1 or rig.data.get(NATIVE_ONLY_KEY)
+                or not rig.is_editable or not _single_data_user(rig) or rig.data.get(NATIVE_ONLY_KEY)
                 or VIEW_KEY in rig.data):
             continue
         original = rig.data.collections_all.get("Original")
@@ -584,7 +591,7 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
 
     if (armature.type != "ARMATURE" or armature.mode == "EDIT"
             or armature.library or armature.data.library or not armature.is_editable
-            or armature.data.users != 1):
+            or not _single_data_user(armature)):
         raise ValueError("Choose a local, single-user Armature outside Edit Mode.")
     _structural_edit_guard(armature)
     if armature.data.get(NATIVE_ONLY_KEY):
@@ -776,7 +783,7 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
         if scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
             continue
         if (armature.type != "ARMATURE" or armature.mode == "EDIT"
-                or armature.library or armature.data.library or armature.data.users != 1
+                or armature.library or armature.data.library or not _single_data_user(armature)
                 or not armature.is_editable or not armature.data.get(PROFILE_KEY)
                 or armature.data.get(AUTO_KEY) == 0 or not has_layout_backup(armature)
                 or VIEW_KEY in armature.data):

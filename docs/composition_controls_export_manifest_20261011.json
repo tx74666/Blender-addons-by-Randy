@@ -1,0 +1,49 @@
+{
+  "schema": "x.composition.controls-export-source/1",
+  "date": "2026-10-11",
+  "canonical_root": "D:\\MyRepository\\Blender-addons-by-Randy",
+  "native_validation": "pending_root_fresh_window_no_agent_launch",
+  "pure_tests": {
+    "controls_export": 35,
+    "native_fixture_admission": 14,
+    "physical_sync_admission_archive": 9,
+    "raise_stage_admission_catalog": 6
+  },
+  "files": {
+    "addons/character_designer/animation_composition_controls.py": "aff2415b44acf440bb1c97f63eb8ed5af622b5d7f5a597a9d68b945d572e6b42",
+    "addons/character_designer/animation_composition_export.py": "82298a4a1a9a03f2d36bea52a79e41959f99d3ffd83bc17d81326272d08d3a67",
+    "addons/character_designer/animation_composition_export_worker.py": "e98cd3202ad18f47a2f53e1e9d6999dd023089a11d73ab6950229516c33c5741",
+    "tools/verify_character_composition_native.py": "a6e514113eb0de7aa6ae4523e418cf35d37c9d2e5b16937465fc711d4308b40d",
+    "tests/test_animation_composition_controls_export.py": "60ce4ca50f66427cef9c00250740a0f4085e91631e5dfc42b51b43e6ea380720",
+    "tests/test_character_composition_native_fixture.py": "a38cfd7db32981a68927c57dcb5e2166fac720e49b62fdbcd3cbad7ebb647833",
+    "tests/fixtures/composition_rest_identity.json": "e42021ecb114370ba483a5243452c9a7a591c667004c2b517a8eacd92d0a3a33",
+    "docs/composition_controls_export_handoff_20261011.md": "7436a95be65543b6b5bf47e1dea4bfdee8084a3e703b7d5da721ba860cc7bc43",
+    "tools/composition_sync_acceptance.py": "1318495399016458a913427de70b2195c983054ac72c7a0d3c1126da15c14afb",
+    "tests/test_character_composition_sync_fixture.py": "b546b3d152d8002492723b9b7aefef793879be4cfee863ea6db6c0e8625418a1",
+    "docs/character_composition_native_fixture.template.json": "dba6b5a890e1636a791b4893a8b08c3ad1ca65fd8ee26c3145dbc948f2a4b1f6",
+    "docs/character_composition_sync_fixture.template.json": "0dc66c8c3db86b3a65345a622ce8cd046d38d81869d6d5809dcf9cc3268c5fd1",
+    "tools/run_character_composition_raise_stage.py": "701357fcba359a0f842771c8e8338dea2d7cb3b6d328cfd7bd614e98d90a08e5",
+    "tests/test_character_composition_raise_stage.py": "debdeed20361bb7a455c5868ef0956f3a8483e8698fad83db44f4977708a423b",
+    "docs/composition_raise_stage_handoff_20261011.md": "085f2ff594e50e80ef74391104f3acfc6cc85a7e9498cff13ff8905233a7bfd9"
+  },
+  "approved_worker_pins": {
+    "animation_export_worker.py": "b2668e204e4e75e71af165e3427eed8a3e2387c2dd2635cbd757d27d748a97be",
+    "unity_export_worker.py": "ade4b7627365371877c76d03edcde1229148671c1e7dfdcfe7f64d708f628622"
+  },
+  "saved_artist_fixture_sha256": "e8d3013ef14e02ed76160a838e7d255490fd1b6ece340e7c3f9e33dc57a3377f",
+  "native_apis": {
+    "scope": "resolve_scope(context,rig,spec,packet,*,new_creation=None)",
+    "validate": "validate_scope(context,rig,spec,packet,scope=None,*,new_creation=None)",
+    "sealed_packet": "validate_packet_composition(spec,packet)",
+    "b_contents": "effective_fingerprint(action,slot_int,scope,spec)",
+    "foreground_isolation": "isolate_export(context,authenticated_session,item)",
+    "official_tweak_isolation": "animation_composition.isolated_sync(context,rig)",
+    "launch": "begin_isolated_export(context,inputs,destination,export_rig_name=None,*,launch_proof=None)",
+    "poll": "poll_isolated_export(job)",
+    "cancel": "cancel_isolated_export(job=None)",
+    "explicit_physical_sync": "tools.composition_sync_acceptance.run(context,config,successful_foreground_report,*,before_worker=None)",
+    "single_numeric_proof": "tools.composition_sync_acceptance.foreground_one(context,item)",
+    "single_physical_sync": "tools.composition_sync_acceptance.run_one(context,row,evidence_directory,independent_expected,*,before_worker=None)",
+    "explicit_qa_seed": "tools.verify_character_composition_native.save_qa_seed(context,numeric_report,filepath,*,physical_report_path)"
+  }
+}

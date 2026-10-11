@@ -600,9 +600,16 @@ def _cloth(record):
 
 def clear_cache(context, source):
     record, _, proxy, cloth = validate_physics(source)
-    with context.temp_override(object=proxy, active_object=proxy, point_cache=cloth.point_cache):
-        if cloth.point_cache.is_baked:
-            bpy.ops.ptcache.free_bake()
+    cache = cloth.point_cache
+    with context.temp_override(object=proxy, active_object=proxy, point_cache=cache):
+        if cache.is_baked:
+            result = bpy.ops.ptcache.free_bake()
+            _require('FINISHED' in result and not cache.is_baked,
+                     'Blender could not release the owned Dress cache.')
+    # Native Cache-Step updates mark RAM frames outdated even when no sealed
+    # bake exists. Keep the step and current artist frame unchanged; replay
+    # still belongs to Reset/Bake, not this invalidation operation.
+    cache.frame_step = cache.frame_step
     record["physics"]["baked_range"] = None
     skirt_rig.write_record(source, record)
 
@@ -622,12 +629,15 @@ def reset_simulation(context, source):
     direct = backend(record) == DIRECT_SURFACE_BACKEND
     service = _surface_module(record) if direct else None
     saved_mode = service.capture_mode(source, record) if direct else None
+    cache_touched = False
     try:
         with context.temp_override(object=proxy, active_object=proxy, point_cache=cache):
             if cache.is_baked:
+                cache_touched = True
                 result = bpy.ops.ptcache.free_bake()
                 _require('FINISHED' in result and not cache.is_baked,
                          'Blender could not release the owned Dress cache.')
+        cache_touched = True
         cache.frame_step = cache.frame_step
         context.scene.frame_set(start - 1)
         context.scene.frame_set(start)
@@ -645,6 +655,13 @@ def reset_simulation(context, source):
                 service.restore_mode(source, record, saved_mode)
             except Exception as restore_error:
                 restore_errors.append(str(restore_error))
+            if cache_touched:
+                # Freeing or invalidating a native cache is irreversible here.
+                # Restore the artist's preview mode, but never its old readiness.
+                try:
+                    service.invalidate_result(source, record)
+                except Exception as restore_error:
+                    restore_errors.append('result invalidation: ' + str(restore_error))
         try:
             context.scene.frame_set(saved_frame, subframe=saved_subframe)
         except Exception as restore_error:
@@ -777,11 +794,13 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
     saved_mode = saved_active.mode if saved_active else "OBJECT"
     export = None
     finished = False
+    cache_touched = False
     previous_quaternions = {}
     old_frame_step = cloth.point_cache.frame_step
     total = end - start + 1
     try:
         _set_object_mode(context)
+        cache_touched = True
         clear_cache(context, source)
         cache = cloth.point_cache
         cache.frame_start = start
@@ -864,12 +883,20 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
         finished = True
         return result
     finally:
+        invalidation_error = None
+        if not finished and cache_touched and backend(record) == DIRECT_SURFACE_BACKEND:
+            try:
+                _surface_module(record).invalidate_result(source, record)
+            except Exception as error:
+                # Still attempt the existing frame/selection cleanup even if
+                # the output endpoint itself needs recovery.
+                invalidation_error = error
         if export and not finished:
             _remove_export(export[0])
-        if not finished:
+        if not finished and cache_touched:
             record["physics"]["baked_range"] = None
             skirt_rig.write_record(source, record)
-        if not cloth.point_cache.is_baked:
+        if cache_touched and not cloth.point_cache.is_baked:
             cloth.point_cache.frame_step = old_frame_step
         context.scene.frame_set(saved_frame, subframe=saved_subframe)
         _set_object_mode(context)
@@ -882,6 +909,9 @@ def bake_steps(context, source, start, end, kind="SIMULATION"):
             context.view_layer.objects.active = saved_active
             if saved_mode != "OBJECT":
                 bpy.ops.object.mode_set(mode=saved_mode)
+        if invalidation_error is not None:
+            raise SkirtPhysicsError('Dress bake failed; its result output also needs recovery: '
+                                    + str(invalidation_error)) from invalidation_error
 
 
 def _consume(iterator):

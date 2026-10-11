@@ -1,0 +1,57 @@
+{
+  "schema": "x.validation.composition-nla-track-identity-microtest-source/1",
+  "date": "2026-10-11",
+  "source_only": true,
+  "native_execution_performed": false,
+  "script_execution_or_import_performed": false,
+  "tool_source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\verify_composition_nla_track_identity.py",
+    "sha256": "d40cef1a0d4388ae7309f4f76b680161ab7e34a16b458ba3f3edc40e4d9f8f99",
+    "bytes": 10230
+  },
+  "pinned_old_source": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_09\\character_designer\\animation_composition.py",
+    "sha256": "c6b5c2f564239b002cfa5ff1be07bb3707e1cedcec4987bccad245710dc055f1",
+    "bytes": 98130,
+    "function_ast_sha256": {
+      "_nla_context": "35806c5c3b32ed2c3524b4f74f077f341fb1a672396714c584a334eb8a781724",
+      "_tweak": "4bc76f720f064659676d5310e42cb89506d94f65537e72673a3fc58eeda55fd1"
+    }
+  },
+  "pinned_new_source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+    "sha256": "1861bcf7136e389da2cd2c40af57e7c5ea33c9bd8b9b90bf0557b8f649584ea5",
+    "bytes": 99028,
+    "function_ast_sha256": {
+      "_nla_context": "35806c5c3b32ed2c3524b4f74f077f341fb1a672396714c584a334eb8a781724",
+      "_tweak": "1ef3793f25678d53fc6659144899db9b3f57f25fba26e973ca631b5e07a6392c"
+    }
+  },
+  "source_check": {
+    "ast_parse_and_in_memory_compile": true,
+    "count": 1,
+    "runtime_import_executed": false
+  },
+  "prerequisites": [
+    "A fresh separate Parent grant for this exact factory-startup Blender5.2 background API microtest. Source readiness is not a native grant.",
+    "Root selects verified Blender executable and one new short owned report output path; no artist or .blend/model input is permitted.",
+    "Script and old/new whole-source hashes are pinned; only _nla_context and _tweak AST nodes are executed; no add-on registration/deployment or SDK import."
+  ],
+  "cli_arguments": {
+    "old-source": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_09\\character_designer\\animation_composition.py",
+    "new-source": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+    "report-out": "REQUIRED_ACTUAL_NEW_OWNED_OUTPUT_PATH_NOT_YET_SELECTED"
+  },
+  "expected_checks_not_observed": [
+    "Native NlaTrack iteration returns a distinct Python wrapper that is RNA-equal/native-pointer-equal to the returned owned track.",
+    "Old c6 identity selection clears every native strip and the installed operator raises the exact No active strip(s) error in both OBJECT and POSE.",
+    "New equality-selection enters Full Stack with exact native Action+slot; A localX2/B localY3 evaluate together, remain identical through EditB→EditA→EditB, and exit native Tweak.",
+    "Native Action IDs/slots/all curve coordinates and handles remain exact.",
+    "Foreign and two-strip targets reject before selection/native operator."
+  ],
+  "limits": [
+    "No microtest was run and no installed-binary reproduction or pass result exists. Factory native context/Action APIs still need actual execution under the fresh grant.",
+    "No model/artist/FBX/worker/source publication/deployment/save is part of this probe. Factory process is dedicated and should exit naturally.",
+    "Core runtime/owner report remains unchanged; this tool is separate optional validation source only."
+  ]
+}

@@ -193,7 +193,8 @@ def _snapshot(source, record, rig, proxy, cloth):
     holder, _driver_id, path = skirt.physics_control(source)
     snapshot = {"source": source, "record": record, "rig": rig, "proxy": proxy, "cloth": cloth,
                 "profile": source.get(profiles.PROFILE_KEY), "record_raw": source[skirt.RECORD_KEY],
-                "holder": holder, "influence": holder.get("physics_influence"), "path": path}
+                "holder": holder, "influence": holder.get("physics_influence"), "path": path,
+                "native_touched": False}
     if physics.backend(record) in physics.SURFACE_BACKENDS:
         snapshot["surface"] = physics._surface_module(record)
         snapshot["surface_mode"] = snapshot["surface"].capture_mode(source, record)
@@ -211,7 +212,12 @@ def _snapshot(source, record, rig, proxy, cloth):
 def _restore(item):
     physics, skirt = _modules()
     cloth, source = item["cloth"], item["source"]
-    if cloth and item["change_native"]:
+    restore_native = cloth and item["change_native"]
+    if physics.backend(item["record"]) == physics.DIRECT_SURFACE_BACKEND:
+        # A pre-write failure must not invalidate an otherwise untouched RAM
+        # cache through rollback setters. Other backends retain their behavior.
+        restore_native = restore_native and item["native_touched"]
+    if restore_native:
         for attribute, value in item["native"].items():
             setattr(cloth.settings, attribute, value)
         for attribute, value in item["collision"].items():
@@ -265,6 +271,9 @@ def _assignments(item, values, changes):
 def _apply_native(item, values, changes):
     cloth = item["cloth"]
     for owner, attribute, value in item["assignments"]:
+        # RNA setters may mutate or invalidate cache before raising. Record the
+        # attempt first; restoring coefficients cannot restore that RAM payload.
+        item["native_touched"] = True
         setattr(owner, attribute, value)
         actual = getattr(owner, attribute)
         if (actual != value if type(value) in (bool, int) else
@@ -274,8 +283,9 @@ def _apply_native(item, values, changes):
     if set(changes) & {"waist_depth", "transition", "recovery"}:
         service, _skirt = _modules()
         weights = (profiles.surface_pin_weights(values, item["record"]["fit"], physics["rows"], physics["columns"])
-                   if service.backend(item["record"]) in service.SURFACE_BACKENDS
-                   else profiles.pin_weights(values, physics["rows"], physics["columns"]))
+                    if service.backend(item["record"]) in service.SURFACE_BACKENDS
+                    else profiles.pin_weights(values, physics["rows"], physics["columns"]))
+        item["native_touched"] = True
         _set_weights(item["proxy"], item["group"], weights)
         physics["pin_weights"] = _weights(item["proxy"], item["group"])
     physics["baked_range"] = None
@@ -307,7 +317,10 @@ def apply(context, sources, changes=None, *, mode=None):
             raise profiles.DressMotionError("Add automatic physics to this Dress setup first.")
         before = _profile(source, record, rig, cloth)
         profile = profiles.edited(before, record, changes, mode=mode)
-        item = _snapshot(source, copy.deepcopy(record), rig, proxy, cloth)
+        # Mode changes write only influence/profile/output state. Material and
+        # goal snapshots are needed only when those settings will be changed.
+        item = _snapshot(source, copy.deepcopy(record), rig,
+                         proxy if changes else None, cloth if changes else None)
         item["after"] = profile
         item["change_native"] = bool(changes)
         if changes and cloth.point_cache.is_baked:
@@ -340,11 +353,9 @@ def apply(context, sources, changes=None, *, mode=None):
                 # Native settings assignments invalidate the unsealed cache;
                 # ensure the saved bake status also reflects that change.
                 physics.clear_cache(context, item["source"])
-                # Cache-Step's native update explicitly marks unsealed frame
-                # data outdated too. Cloth RNA geometry tags alone do not
-                # prove that frames from the old material were discarded.
-                cache = item["cloth"].point_cache
-                cache.frame_step = cache.frame_step
+                if (physics.backend(item["record"]) == physics.DIRECT_SURFACE_BACKEND
+                        and item["native_touched"]):
+                    item["surface"].invalidate_result(item["source"], item["record"])
             item["rig"].update_tag(refresh={"OBJECT"})
         context.view_layer.update()
         for item in staged:
@@ -357,6 +368,15 @@ def apply(context, sources, changes=None, *, mode=None):
                 _restore(item)
             except Exception as rollback_error:
                 failures.append(f"{item['source'].name}: {rollback_error}")
+            if (physics.backend(item["record"]) == physics.DIRECT_SURFACE_BACKEND
+                    and item["native_touched"]):
+                # restore_mode can recover the old readiness flags, but native
+                # coefficient/goal writes have already invalidated its cache.
+                # Attempt withdrawal even if another restoration step failed.
+                try:
+                    item["surface"].invalidate_result(item["source"], item["record"])
+                except Exception as rollback_error:
+                    failures.append(f"{item['source'].name}: result invalidation: {rollback_error}")
         try:
             context.view_layer.update()
         except Exception as rollback_error:
@@ -366,3 +386,60 @@ def apply(context, sources, changes=None, *, mode=None):
                                            + "; ".join(failures)) from error
         raise
     return tuple(copy.deepcopy(item["after"]) for item in staged)
+
+
+def select_manual_controls(context, source):
+    """Enter Direct's input preview before exposing its editable controls.
+
+    Selection can fail after a successful mode switch. Preserve that switch's
+    captured state as well as the artist's selection; never clear or seek cache.
+    """
+    physics, skirt = _modules()
+    skirt._require_controls_for_setup(source)
+    record = skirt.read_record(source)
+    if physics.backend(record) != physics.DIRECT_SURFACE_BACKEND:
+        raise profiles.DressMotionError("Manual input selection requires a Direct Dress setup.")
+    rig = source[skirt.RIG_KEY]
+    control = rig.data.bones[record["controls"]["waist"]]
+    pose = rig.pose.bones[control.name]
+    # Mode-only rollback has no material/goal writes. Avoid capturing all
+    # Cloth parameters and vertex weights for this selection operation.
+    saved = _snapshot(source, copy.deepcopy(record), rig, None, None)
+    saved["change_native"] = False
+    selection = {
+        "context": skirt._context_state(context), "selected": [(bone, bone.select) for bone in rig.pose.bones],
+        "active": rig.data.bones.active, "hidden": rig.hide_get(), "control_hidden": control.hide,
+        "pose_hidden": pose.hide if hasattr(pose, "hide") else None,
+        "collections": [(collection, collection.is_visible) for collection in control.collections],
+    }
+    # apply owns its own failure rollback; selection has not begun if it fails.
+    apply(context, (source,), mode="MANUAL")
+    try:
+        return skirt.select_controls(context, source)
+    except Exception as error:
+        failures = []
+        try:
+            _restore(saved)
+        except Exception as rollback_error:
+            failures.append("motion mode: " + str(rollback_error))
+        try:
+            skirt._restore_context(context, selection["context"])
+        except Exception as rollback_error:
+            failures.append("object context: " + str(rollback_error))
+        try:
+            for bone, selected in selection["selected"]:
+                bone.select = selected
+            rig.data.bones.active = selection["active"]
+            for collection, visible in selection["collections"]:
+                collection.is_visible = visible
+            control.hide = selection["control_hidden"]
+            if selection["pose_hidden"] is not None:
+                pose.hide = selection["pose_hidden"]
+            rig.hide_set(selection["hidden"])
+            context.view_layer.update()
+        except Exception as rollback_error:
+            failures.append("control selection/display: " + str(rollback_error))
+        if failures:
+            raise profiles.DressMotionError("Dress control selection failed; rollback also needs recovery: "
+                                           + "; ".join(failures)) from error
+        raise

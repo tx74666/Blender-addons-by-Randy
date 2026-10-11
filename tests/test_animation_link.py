@@ -123,6 +123,38 @@ class LinkTests(unittest.TestCase):
             self.bind()
         self.assertEqual(dict(self.rig), {})
 
+    def test_work_item_route_and_scope_survive_binding_and_publication(self):
+        fields = {'workItemId': uuid.uuid4().hex, 'baseClipGuid': 'c' * 32,
+                  'baseClipLocalId': -1657602633327794030, 'sourceCharacterGuid': 'd' * 32,
+                  'purpose': 'Variant', 'editScope': 'UpperBody'}
+        self.manifest.update(fields)
+        self.write_manifest(self.manifest)
+        self.bind()
+        associated = link.get_link(self.rig)['identity']
+        self.assertEqual({key: associated[key] for key in fields}, fields)
+        self.assertNotEqual(associated['clipGuid'], associated['baseClipGuid'])
+        self.finalize(self.revision())
+        published = link.load_link(self.path)
+        self.assertEqual({key: published[key] for key in fields}, fields)
+        # Identity is JSON-compatible, including nested receipt comparisons.
+        self.assertEqual(json.loads(json.dumps(list(link._identity(published)))), list(link._identity(published)))
+
+    def test_work_item_route_changes_during_export_leave_previous_publication_intact(self):
+        self.manifest.update(workItemId=uuid.uuid4().hex, baseClipGuid='c' * 32,
+                             baseClipLocalId=8, sourceCharacterGuid='d' * 32,
+                             purpose='Variant', editScope='UpperBody')
+        result = self.revision()
+        for field, value in (('workItemId', uuid.uuid4().hex), ('baseClipGuid', 'e' * 32),
+                             ('baseClipLocalId', 9), ('sourceCharacterGuid', 'e' * 32),
+                             ('purpose', 'Override'), ('editScope', 'LowerBody')):
+            with self.subTest(field=field):
+                self.write_manifest({**self.manifest, field: value})
+                before = self.path.read_bytes()
+                with self.assertRaisesRegex(link.AnimationLinkError, 'identity changed'):
+                    self.finalize(result)
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertFalse(Path(str(self.path) + '.blender.lock').exists())
+
     def test_revision_commit_preserves_unknown_current_fields(self):
         result = self.revision()
         fresh = {**self.manifest, 'unityOnly': {'changedWhileBaking': True}, 'unityNewField': [3, 4]}

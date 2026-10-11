@@ -271,6 +271,56 @@ class PhysicsSafetyTests(unittest.TestCase):
     def test_baked_reset_discards_state_and_replays_without_action_edits(self):
         self._reset(baked=True)
 
+    def test_clear_unbaked_ram_cache_marks_outdated_without_seeking_and_replays(self):
+        # Small existing Legacy fixture tests the common native cache endpoint;
+        # this is not a complete Direct graph/held-frame editing acceptance test.
+        source, rig, main, record = fixture()
+        scene = bpy.context.scene
+        hips = main.pose.bones['Hips']
+        for frame, x in ((1, 0.0), (3, .16), (6, -.07)):
+            hips.location.x = x
+            hips.keyframe_insert('location', frame=frame)
+        scene.frame_set(1)
+        proxy, cloth = physics._cloth(record)
+        cache = cloth.point_cache
+        cache.frame_step = 1
+        self.assertFalse(cache.use_external)
+        self.assertFalse(cache.use_disk_cache)
+        trajectory = []
+        for frame in range(1, 7):
+            scene.frame_set(frame)
+            trajectory.append(evaluated_vertices(proxy))
+        self.assertRegex(cache.info, r'^6 frames in memory \(', 'Fixture did not retain six native RAM frames')
+        self.assertFalse(cache.is_baked)
+        self.assertFalse(cache.is_outdated, 'Fixture did not establish a current unbaked RAM cache')
+        self.assertGreater(maximum_distance(trajectory[0], trajectory[-1]), .005)
+        frame = scene.frame_current, scene.frame_subframe
+        cache_config = cache.as_pointer(), cache.frame_start, cache.frame_end, cache.frame_step
+        actions = action_state(main), action_state(rig), action_state(source)
+        objects = [source, proxy, *(bpy.data.objects[name] for name in record['physics']['colliders'])]
+        content = {obj.name: mesh_content(obj) for obj in objects}
+        rests = rest_state(rig), rest_state(main)
+
+        physics.clear_cache(bpy.context, source)
+        self.assertTrue(cache.is_outdated, 'Clear Cache did not invalidate native unbaked frame data')
+        self.assertFalse(cache.is_baked)
+        self.assertEqual((scene.frame_current, scene.frame_subframe), frame)
+        self.assertEqual((cache.as_pointer(), cache.frame_start, cache.frame_end, cache.frame_step), cache_config)
+        self.assertIsNone(skirt.read_record(source)['physics']['baked_range'])
+        self.assertEqual((action_state(main), action_state(rig), action_state(source)), actions)
+        self.assertEqual({obj.name: mesh_content(obj) for obj in objects}, content)
+        self.assertEqual((rest_state(rig), rest_state(main)), rests)
+
+        # Replay explicitly; Clear itself must not seek the author's timeline.
+        scene.frame_set(cache.frame_start - 1)
+        for index, expected in enumerate(trajectory, 1):
+            scene.frame_set(index)
+            self.assertLessEqual(maximum_distance(expected, evaluated_vertices(proxy)), 3e-5)
+        self.assertEqual((scene.frame_current, scene.frame_subframe), frame)
+        self.assertEqual((action_state(main), action_state(rig), action_state(source)), actions)
+        self.assertEqual({obj.name: mesh_content(obj) for obj in objects}, content)
+        self.assertEqual((rest_state(rig), rest_state(main)), rests)
+
     def test_graph_proof_after_save_reopen_preserves_native_and_author_data(self):
         source, rig, main, record = fixture()
         names = source.name, rig.name, main.name

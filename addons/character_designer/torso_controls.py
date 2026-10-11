@@ -49,9 +49,11 @@ def collection_members(armature):
             "always": visible, "visible": visible}
 
 
-def validate(armature, inventory=None, *, original_mutes=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
     """Validate only this optional module, without entering limb inventory again."""
     from . import spine_ik_fk
+    if original_mutes is None:
+        source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     if record is None:
         if any(b.get(OWNER_KEY) == OWNER_VALUE for b in armature.data.bones):
@@ -68,7 +70,7 @@ def validate(armature, inventory=None, *, original_mutes=None):
             if not _owned(bone, record, role) or bone.use_deform or not _same_rest(bone, state):
                 raise _error(f"Torso Controls bone '{name}' was structurally edited.")
         for name, state in record['source_states'].items():
-            bone = armature.data.bones.get(name)
+            bone = _limb()._validation_source_bone(armature.data.bones.get(name), source_rest)
             if bone is None or not _same_rest(bone, state) or bone.use_deform != state['deform']:
                 raise _error(f"Torso source '{name}' changed; restore its original structure first.")
         own_cons = {(e['owner'], e['name']) for e in record['constraints']}
@@ -132,7 +134,7 @@ def _same_rest(bone, state):
 def _active(context, armature):
     if (armature is None or armature.type != 'ARMATURE' or context.object != armature
             or armature.mode not in {'OBJECT', 'POSE'} or armature.library or armature.data.library
-            or not armature.is_editable or armature.data.users != 1):
+            or not armature.is_editable or not _limb()._single_armature_user(armature)):
         raise _error('Select a local, single-user armature in Object or Pose Mode.')
 
 

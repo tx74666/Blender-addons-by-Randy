@@ -980,7 +980,6 @@ def export_job(job):
     context.view_layer.update()
     simple_materials = []
     if job.get('simple_materials'):
-        import importlib.util
         spec = importlib.util.spec_from_file_location('cdesigner_unity_materials', Path(__file__).with_name('unity_materials.py'))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -1002,6 +1001,18 @@ def export_job(job):
     )
     if 'FINISHED' not in exported or not (stage / filename).is_file():
         raise ExportError('Blender did not complete the FBX export.')
+    length_spec = importlib.util.spec_from_file_location(
+        'cdesigner_bone_rest_lengths', Path(__file__).with_name('bone_rest_lengths.py'))
+    length_module = importlib.util.module_from_spec(length_spec)
+    length_spec.loader.exec_module(length_module)
+    try:
+        bone_lengths = length_module.capture(main,
+            hashlib.sha256((stage / filename).read_bytes()).hexdigest(), scene.unit_settings.scale_length)
+    except length_module.BoneLengthError as error:
+        # Model export still supports older non-uniform or reflected rigs.
+        # Such exports keep legacy import behavior rather than guessing lengths.
+        bone_lengths = None
+        _warn(warnings, 'Terminal bone length recovery was not exported: ' + str(error))
     files.insert(0, filename)
     hair_info = {'active': False, 'file': None, 'simulation_baked': False,
                  'status': 'No configured Hair motion source in this export.'}
@@ -1043,6 +1054,7 @@ def export_job(job):
             'simple_materials': simple_materials,
             **({'forearm_correction': forearm_info} if forearm_info else {}),
             'objects': [obj.name for obj in objects], 'rigs': rigs,
+            **({'bone_rest_lengths': bone_lengths} if bone_lengths is not None else {}),
             'source_rigs': source_rigs, 'accessory_bone_mapping': accessory_mapping,
             'meshes': mesh_results, 'shape_keys': {name: info['shape_keys'] for name, info in mesh_results.items()},
             'materials': materials, 'origin': list(origin), 'unit_scale': scene.unit_settings.scale_length}

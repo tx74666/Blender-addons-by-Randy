@@ -1,0 +1,139 @@
+{
+  "schema": "x.validation.character-composition-raise-ui-source/1",
+  "task_date": "2026-10-11",
+  "canonical_root": "D:\\MyRepository\\Blender-addons-by-Randy",
+  "source_only": true,
+  "runtime_modified": true,
+  "deployed": false,
+  "native_ui_executed": false,
+  "worker_started": false,
+  "artist_modified": false,
+  "owned_files": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\run_character_composition_raise_ui.py",
+      "sha256": "c80dae0b3f4d33301859d790ba7f4d684c717d71a64ee9a2d43e9bc671727515"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_raise_ui_acceptance.py",
+      "sha256": "d052331d4687d995e4d6b0f0706727758a1cce61926ddec4affb4e28e4df6d6d"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_raise_ui.py",
+      "sha256": "ef39dc2b7e776de209a8e313b0eb4f71ef15a97907a638e7cd5bdfee69735a60"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_handoff_20261011.md",
+      "sha256": "259030ba2b819362733908fce0fac449a18477b84177d2ee07154301ebbf2b12"
+    }
+  ],
+  "shared_dependency_snapshot": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_ui_checkpoints.py",
+      "sha256": "7eaaa038ee91365704616abc198298a07b16d83973c7aa3052a90ba5782e635b"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_session_acceptance.py",
+      "sha256": "ebdf46d19ad9594d95efcb66466ed5100c507f68f9dd42e2a897630de5cd1e5f"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\run_character_composition_raise_stage.py",
+      "sha256": "701357fcba359a0f842771c8e8338dea2d7cb3b6d328cfd7bd614e98d90a08e5"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_timing_acceptance.py",
+      "sha256": "46bf23b458b94ffd95994b4601cf38db9d493cb76e6a45bc987edeb2c1654519"
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\release_projection.py",
+      "sha256": "052e6c765c95ba46d480bf1eeca1e1dccb7685c77a4e756202ce409d20713106"
+    }
+  ],
+  "root_native_entry_pin": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\verify_character_composition_native.py",
+    "sha256": "50de12f44258bb8c656ca769f25b6ee5fb8256ba690d1f229a3492758e832926",
+    "review": "Independent legal pre-copy FK lifecycle exact 50de12f4 readback; 15 native-fixture pure tests passed. Root owns all native/process authorization."
+  },
+  "validation": {
+    "command": "python -m unittest discover -s tests -p test_character_composition_raise_ui.py",
+    "passed": 18,
+    "syntax_compile_passed": true,
+    "limits": "Pure admission/clock/portable Action/workspace identity and active-Tweak versus inactive ordinary ownership guard checks. Actual screenshots, playback, native Undo and save/reopen remain pending an explicit root-owned second window."
+  },
+  "entry_schema": "x.validation.character-composition-raise-ui-fixture/1",
+  "entry": "tools/run_character_composition_raise_ui.py -- --fixture <absolute actual immutable fixture JSON>",
+  "real_input": "Completed registered NEW Raise-stage output_seed and final published physical NEW revision; SOURCE Hold or UI edited seed is rejected.",
+  "supersedes": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_reference_ebdf46d1.json",
+    "sha256": "bbcfcd6374ade13873ad86ae9996ca7bf7572aeab9d15af6addfe20f3ab68694",
+    "immutable_previous": true
+  },
+  "refresh_reason": "Independent source audit identified orphan-receipt admission and post-write recovery gaps. Receipt preparation now validates stored ownership unconditionally and publishes after native/context cleanup, with exact prior property presence/inventory rollback on partial assignment.",
+  "runtime_dependency_snapshot": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+      "sha256": "3f317b20aba7e4276b6e7e6fc50f1ef6cdef9e842cd18bc261d8135bc58eb5e2"
+    }
+  ],
+  "reference_receipt_validation": {
+    "command": "python -m unittest discover -s tests -p test_character_composition_reference_receipts.py",
+    "passed": 15,
+    "syntax_compile_passed": true,
+    "tests": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_reference_receipts.py",
+      "sha256": "7f04828b04ef765e9d9bc16b8745947eaddf9241595ce39a2beb98d7ae80a9f8"
+    },
+    "documentation": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_reference_receipts_transaction_20261011.md",
+      "sha256": "b774d32a8385d89576267cffe384143609665188e5ed691e0749627230550427"
+    },
+    "limits": "Actual canonical prepare/find paths exercised with the 63-byte IDProperty and invalidated native-Action seams and real temporary cache files. Fifteen focused tests and compile passed; no full regression rerun or Blender RNA/native acceptance is claimed.",
+    "boundary_cases": [
+      "No linked Action: malformed/wrong-full-SHA/stored-None/valid-orphan receipts reject without mutation",
+      "Matching Action without a receipt and malformed inventory reject before import",
+      "Exact absent versus present-empty versus existing-other inventories and caches/actions remain protected",
+      "Persistent context restoration failure",
+      "Imported Action removal failure before or after invalidation",
+      "Partially written publication then persistent secondary recovery failure",
+      "Publication only after rig/context/native temporary Action/fake-user restoration"
+    ]
+  },
+  "shared_headful_refresh": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_source_manifest_20261011_headful_reference_ebdf46d1.json",
+    "sha256": "f1a2d7168e527791cac4b3aa670dcd1c590a44761eb84165d5915a2b21fe22a4"
+  },
+  "candidate_requirement": "Root must freeze a new complete runtime projection and matching config pins containing transaction runtime 3f317b20 before another explicitly authorized native window. Prior e040/bbcfcd manifests, n3 and invalidated source-only runtime06/full07/n4 evidence remain immutable; they are not native acceptance for this correction. Shared receipt-reader API and own Raise runner/helper are unchanged.",
+  "immutable_history": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011.json",
+      "sha256": "e040632521537b4c4e8ee413f5c83770de1da5a48b985d95781cbaabe7ebf838",
+      "immutable_previous": true
+    }
+  ],
+  "original_codec_documentation": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_reference_receipts_20261011.md",
+    "sha256": "743ddacd83dab032a3b443cd9bb396136913a47db160532680be3ef3131fe2e5"
+  },
+  "historical_regression_checkpoint": {
+    "source_manifest": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_reference_ebdf46d1.json",
+    "source_manifest_sha256": "bbcfcd6374ade13873ad86ae9996ca7bf7572aeab9d15af6addfe20f3ab68694",
+    "results": [
+      {
+        "pattern": "test_character_composition_new_templates.py",
+        "passed": 13
+      },
+      {
+        "pattern": "test_character_composition_prepared_add.py",
+        "passed": 19
+      },
+      {
+        "pattern": "test_animation_composition_controls_export.py",
+        "passed": 35
+      },
+      {
+        "pattern": "test_character_composition_raise_ui.py",
+        "passed": 18
+      }
+    ],
+    "current_full_regression_rerun": false
+  }
+}

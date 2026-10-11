@@ -1,0 +1,361 @@
+{
+  "schema": "x.validation.character-composition-snapshot-system-property-source-diagnosis/1",
+  "source_only": true,
+  "native_execution_performed": false,
+  "runtime_sources_changed_by_this_diagnosis": false,
+  "actual_failed_snapshot": {
+    "snapshot": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n11\\physical\\item_1\\worker_1\\animation.blend",
+      "sha256": "11d94f695c6c1eb7059e61e0371aea7611cd90c0dd002ef7b37044a575c9625c",
+      "bytes": 16333827
+    },
+    "job": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n11\\physical\\item_1\\worker_1\\job.json",
+      "sha256": "ef3566ce503a5f35b0ab3477d34c4c4a67a69703d5414bcccf7e3294781fe294",
+      "bytes": 855092
+    },
+    "log": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n11\\physical\\item_1\\worker_1\\worker.log",
+      "sha256": "666be731c7748d4b9072eadeaba877a91590ebf4327527ae941bb06bd1233b88",
+      "bytes": 3458
+    },
+    "result": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n11\\physical\\item_1\\worker_1\\stage\\result.json",
+      "sha256": "a8e968637406bd361aca9358986fe1c2f650e0204ec996ae3dad95ae4eab2f5e",
+      "bytes": 1146
+    },
+    "zstd_dll": {
+      "path": "C:\\Program Files\\Git\\mingw64\\bin\\libzstd.dll",
+      "sha256": "f216ea8efb5b3bb9ad3d938fb9ac07e3b8f78c2c92faab03d2c468d0b6798a5a",
+      "bytes": 1179848
+    }
+  },
+  "parser_source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\inspect_composition_snapshot_links.py",
+    "sha256": "df18fe5c40191fc63d9283eda4f86299f8f1f5c8715236b1f4fedbe26162ac40",
+    "bytes": 18593
+  },
+  "raw_SDNa_report": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n11_snapshot_id_links_source_r3_11d94f69.json",
+    "sha256": "b6fd99e828a6421092889cbd81dac267ef091d8dfdc43215ba16ff21e548969f",
+    "bytes": 101434
+  },
+  "frozen_source_pins": {
+    "animation_composition_export.py": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_10\\character_designer\\animation_composition_export.py",
+      "sha256": "82298a4a1a9a03f2d36bea52a79e41959f99d3ffd83bc17d81326272d08d3a67",
+      "bytes": 44171
+    },
+    "animation_composition_export_worker.py": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_10\\character_designer\\animation_composition_export_worker.py",
+      "sha256": "e98cd3202ad18f47a2f53e1e9d6999dd023089a11d73ab6950229516c33c5741",
+      "bytes": 7242
+    },
+    "unity_export_ui.py": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_10\\character_designer\\unity_export_ui.py",
+      "sha256": "940086354a5c0ed33502c70b54391e79065317df72debb0cecfe6ff130f78e34",
+      "bytes": 36993
+    },
+    "__init__.py": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_10\\character_designer\\__init__.py",
+      "sha256": "c8d612988159e83a3332c35245970cc07ad4f0a9b8704ef466e43c819c066861",
+      "bytes": 355675
+    }
+  },
+  "findings": {
+    "saved_Object_count": 102,
+    "saved_Action_count": 10,
+    "expected_Object_count": 9,
+    "expected_Action_count": 1,
+    "expected_root_and_data_count": 19,
+    "all_expected_other_roots_native_IDProperty_links_zero": true,
+    "copied_object_ordinary_custom_native_ID_links_zero": true,
+    "proven_system_native_ID_links": [
+      {
+        "path": "system_properties.character_designer_unity_export.extras[0].object",
+        "property_address": "0x2c73232b06517340",
+        "array_index": 0,
+        "target_address": "0x6bc6b79f701ca300",
+        "target_id": "OBHair"
+      },
+      {
+        "path": "system_properties.character_designer_unity_export.extras[1].object",
+        "property_address": "0x2c73232b06517370",
+        "array_index": 0,
+        "target_address": "0x21c57bb701431580",
+        "target_id": "OBDress"
+      },
+      {
+        "path": "system_properties.character_designer_unity_export.extras[2].object",
+        "property_address": "0x2c73232b065173a0",
+        "array_index": 0,
+        "target_address": "0x58cdfb1ad0853a80",
+        "target_id": "OBJacket"
+      },
+      {
+        "path": "system_properties.character_designer_unity_export.simple_materials[0].material",
+        "property_address": "0x2c73232b06517460",
+        "array_index": 0,
+        "target_address": "0x64438a6abc39ce00",
+        "target_id": "MAStocking Main"
+      },
+      {
+        "path": "system_properties.character_designer_unity_export.unity_material_matches[0].material",
+        "property_address": "0x2c73232b065174a0",
+        "array_index": 0,
+        "target_address": "0x458ba1f79574d660",
+        "target_id": "MACrystal_Blue"
+      }
+    ],
+    "exact_export_group_storage_all_32_records_disjoint": true,
+    "exact_export_group_storage_native_targets_equal": true,
+    "original_export_group_records": 32,
+    "copied_export_group_records": 32,
+    "original_system_storage_address": "0x984b82baa390700",
+    "copied_system_storage_address": "0x2c73232b06516f50",
+    "native_parent_edges": [
+      {
+        "object": "OBHair",
+        "address": "0x6bc6b79f701ca300",
+        "parent_address": "0x7a99ff64e569ced0",
+        "parent_id": "OBCoshaRig"
+      },
+      {
+        "object": "OBDress",
+        "address": "0x21c57bb701431580",
+        "parent_address": "0x7a99ff64e569ced0",
+        "parent_id": "OBCoshaRig"
+      },
+      {
+        "object": "OBJacket",
+        "address": "0x58cdfb1ad0853a80",
+        "parent_address": "0x0",
+        "parent_id": null
+      }
+    ],
+    "original_rig_recovery_ID_edges": [
+      {
+        "path": "user_properties.character_designer_shared_skirts_v1.857c5aaad1ac4160953847b083deba20",
+        "property_address": "0x984b82baa390810",
+        "array_index": 0,
+        "target_address": "0x21c57bb701431580",
+        "target_id": "OBDress"
+      },
+      {
+        "path": "user_properties._cd_bone_palette_rigs_v1.0",
+        "property_address": "0x984b82baa390870",
+        "array_index": 0,
+        "target_address": "0x7a99ff64e569ced0",
+        "target_id": "OBCoshaRig"
+      },
+      {
+        "path": "user_properties.character_designer_animation_previous_import_archive.source_action",
+        "property_address": "0x984b82baa3908f0",
+        "array_index": 0,
+        "target_address": "0x603d3844b29cf8d0",
+        "target_id": "ACSource · Walk_N"
+      },
+      {
+        "path": "user_properties.character_designer_animation_previous_import_archive.custom_action",
+        "property_address": "0x984b82baa390920",
+        "array_index": 0,
+        "target_address": "0x318914bb7fad8dc0",
+        "target_id": "ACCosha · Walk_N · Custom"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_0",
+        "property_address": "0x984b82baa3909f0",
+        "array_index": 0,
+        "target_address": "0x7a99ff64e569ced0",
+        "target_id": "OBCoshaRig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_1",
+        "property_address": "0x984b82baa390a20",
+        "array_index": 0,
+        "target_address": "0x29089849b5e45aa0",
+        "target_id": "SCComposition QA · Fresh Workspace"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_2",
+        "property_address": "0x984b82baa390a30",
+        "array_index": 0,
+        "target_address": "0x7a99ff64e569ced0",
+        "target_id": "OBCoshaRig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_3",
+        "property_address": "0x984b82baa390a40",
+        "array_index": 0,
+        "target_address": "0x65a37e79adea3440",
+        "target_id": "ARmetarig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_4",
+        "property_address": "0x984b82baa390a50",
+        "array_index": 0,
+        "target_address": "0x7a99ff64e569ced0",
+        "target_id": "OBCoshaRig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_5",
+        "property_address": "0x984b82baa390a60",
+        "array_index": 0,
+        "target_address": "0x65a37e79adea3440",
+        "target_id": "ARmetarig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_6",
+        "property_address": "0x984b82baa390a70",
+        "array_index": 0,
+        "target_address": "0x21c57bb701431580",
+        "target_id": "OBDress"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_7",
+        "property_address": "0x984b82baa390a80",
+        "array_index": 0,
+        "target_address": "0x7a99ff64e569ced0",
+        "target_id": "OBCoshaRig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_8",
+        "property_address": "0x984b82baa390a90",
+        "array_index": 0,
+        "target_address": "0x7a99ff64e569ced0",
+        "target_id": "OBCoshaRig"
+      },
+      {
+        "path": "user_properties.character_designer_worklist_main_refs_v1.id_9",
+        "property_address": "0x984b82baa390a00",
+        "array_index": 0,
+        "target_address": "0x65a37e79adea3440",
+        "target_id": "ARmetarig"
+      },
+      {
+        "path": "user_properties.character_designer_composition_drafts_v1.5884be93-194d-4445-b584-2590ac1e5181",
+        "property_address": "0x984b82baa390b10",
+        "array_index": 0,
+        "target_address": "0x14dab56d6d4f1c30",
+        "target_id": "ACHoldPose · Composition Edit"
+      },
+      {
+        "path": "user_properties.character_designer_composition_drafts_v1.30d0acc9-c3c6-44ee-b3e8-724d6ca3ff95",
+        "property_address": "0x984b82baa390b20",
+        "array_index": 0,
+        "target_address": "0x38b13c7de77425d0",
+        "target_id": "ACHoldPose · Composition Edit.001"
+      }
+    ]
+  },
+  "causal_chain": [
+    "Disposable B Object ID.system_properties.character_designer_unity_export.extras[0].object retains original Hair Object.",
+    "Hair.parent and Dress.parent retain original CoshaRig Object.",
+    "Original CoshaRig user properties retain historical Source Walk_N, Custom Walk_N and the fresh QA Scene via worklist_main_refs_v1.id_1.",
+    "libraries.write recursively serializes these ID dependencies; saved snapshot contains102 Objects and10 Actions instead of the admitted9 Objects and1 Action.",
+    "Worker global-object equality fails at export_worker:62 before scene linking; changing evaluation Scene alone cannot remove those serialized Objects."
+  ],
+  "source_locations": [
+    {
+      "file": "animation_composition_export.py",
+      "line": 281,
+      "finding": "_strip_id_refs visits ordinary block.items() custom properties; system RNA storage is separate."
+    },
+    {
+      "file": "animation_composition_export.py",
+      "line": 694,
+      "finding": "Snapshot library roots are isolated rig/action/eight Dress wires; closure brings in registered editor references."
+    },
+    {
+      "file": "animation_composition_export_worker.py",
+      "line": 62,
+      "finding": "Exact global Object inventory equality rejects extra original objects before frame evaluation."
+    },
+    {
+      "file": "unity_export_ui.py",
+      "line": 192,
+      "finding": "Extra entry Object picker is a native Object PointerProperty."
+    },
+    {
+      "file": "unity_export_ui.py",
+      "line": 197,
+      "finding": "Simple material picker is a native Material PointerProperty."
+    },
+    {
+      "file": "unity_export_ui.py",
+      "line": 211,
+      "finding": "Export panel stores extras/simple_materials/unity_material_matches CollectionProperty groups."
+    },
+    {
+      "file": "__init__.py",
+      "line": 8894,
+      "finding": "Object.character_designer_unity_export is a registered PropertyGroup PointerProperty."
+    }
+  ],
+  "minimal_fix_proposal": {
+    "boundary": "begin_isolated_export, immediately before libraries.write on the proved disposable B Object",
+    "field": "character_designer_unity_export",
+    "operation": "property_unset on the copied Object only",
+    "required_proofs": [
+      "Exact disposable Object and Armature data identity, excluding original Rig.",
+      "No driver/constraint/evaluation input uses this editor-only field.",
+      "Original registered export preferences/native references remain exact before/after.",
+      "Registered copied editor group is unset before snapshot serialization."
+    ],
+    "preserved": [
+      "Existing isolate_export/_copy_selected_action/_strip_id_refs numeric paths",
+      "Exact global worker Object/Action guards",
+      "All217 mapping/Rest/control/clock/strict Hold gates",
+      "Original editor state and all historical evidence"
+    ],
+    "exclude_from_fix": [
+      "finger_bank/body_calibration/rigify/wiggle system groups (no proven native references)",
+      "Global dependency-guard relaxation",
+      "Scene-only workaround"
+    ]
+  },
+  "official_primary_sources": [
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/makesdna/DNA_ID.h",
+      "lines": [
+        436,
+        447
+      ],
+      "finding": "ID.properties is user dict storage; ID.system_properties is dynamically registered RNA storage."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/makesdna/DNA_ID_enums.h",
+      "lines": [
+        21,
+        30
+      ],
+      "finding": "IDP_GROUP6/IDP_ID7/IDP_IDPARRAY9 define named property trees and native pointers."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/blenloader_core/BLO_core_bhead.hh",
+      "finding": "Format1 uses little-endian LargeBHead8."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/blenloader/intern/writefile.cc",
+      "lines": [
+        40,
+        51
+      ],
+      "finding": "ID blocks precede their owner-local direct data."
+    }
+  ],
+  "checks": {
+    "final_parser_AST_parse": true,
+    "final_parser_compile_in_memory": true,
+    "pure_saved_byte_read_exit_code": 0,
+    "pure_unit_tests_run": 0,
+    "Blender_or_addon_imports": 0,
+    "native_or_SDK_launches": 0
+  },
+  "limitations": [
+    "This reads saved snapshot bytes, not a new loaded Blender inventory or evaluation.",
+    "Loaded external library expansion is not performed; existing actual worker log is pinned independently.",
+    "Earlier decoder drafts rejected repeated owner-local direct-data addresses before producing a report; final reader scopes DATA address maps by owning ID.",
+    "No repaired snapshot or continuation/native acceptance is claimed."
+  ]
+}

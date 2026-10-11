@@ -216,6 +216,11 @@ def save_pose(context, rig, name, *, scope='SELECTED', include_fingers=False):
     _require(context, rig)
     if scope not in _SCOPES:
         raise ValueError('Choose Selected Region or All Body.')
+    if scope == 'ALL_BODY' and rig.get('character_designer_rigging_session_v1') is not None:
+        from . import unity_animation_rigging
+        session = unity_animation_rigging.current(rig)
+        if session is not None and session['enabled']:
+            raise ValueError('All Body cannot save a combined Rigging result. Edit Base with native keying or use Save Controls.')
     name = name.strip() if isinstance(name, str) else ''
     if not name:
         raise ValueError('Give the Pose a name.')

@@ -1,0 +1,292 @@
+{
+  "schema": "x.validation.character-composition-raise-ui-source/1",
+  "task_date": "2026-10-11",
+  "canonical_root": "D:\\MyRepository\\Blender-addons-by-Randy",
+  "source_only": true,
+  "status": "SOURCE_READY_NATIVE_PENDING",
+  "runtime_modified_by_manifest_task": false,
+  "runtime_dependency_modified_in_prior_pose_selection_repair": true,
+  "deployed": false,
+  "native_ui_executed": false,
+  "worker_started": false,
+  "artist_modified": false,
+  "owned_raise_ui_files": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\run_character_composition_raise_ui.py",
+      "sha256": "c80dae0b3f4d33301859d790ba7f4d684c717d71a64ee9a2d43e9bc671727515",
+      "bytes": 25464
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_raise_ui_acceptance.py",
+      "sha256": "d052331d4687d995e4d6b0f0706727758a1cce61926ddec4affb4e28e4df6d6d",
+      "bytes": 22436
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_raise_ui.py",
+      "sha256": "ef39dc2b7e776de209a8e313b0eb4f71ef15a97907a638e7cd5bdfee69735a60",
+      "bytes": 21257
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_handoff_20261011.md",
+      "sha256": "259030ba2b819362733908fce0fac449a18477b84177d2ee07154301ebbf2b12",
+      "bytes": 7847
+    }
+  ],
+  "current_shared_tools": {
+    "run_character_composition_first_stage": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\run_character_composition_first_stage.py",
+      "sha256": "701532d2fcc8024850811cd41e40c2b5dbd43e912ed95ab5f76824f6722521e6",
+      "bytes": 9852
+    },
+    "verify_character_composition_native": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\verify_character_composition_native.py",
+      "sha256": "ce4be885e95ef720f617712ca1bacc0347872a2a1542ade6cf8f9e86d6d34632",
+      "bytes": 52692
+    },
+    "composition_sync_acceptance": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_sync_acceptance.py",
+      "sha256": "1318495399016458a913427de70b2195c983054ac72c7a0d3c1126da15c14afb",
+      "bytes": 21115
+    },
+    "composition_timing_acceptance": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_timing_acceptance.py",
+      "sha256": "58325c8b4256585a12370aa10a059eabb1d80c74fe3d2eb4b2fbb97fecf0cb06",
+      "bytes": 40700
+    },
+    "composition_session_acceptance": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_session_acceptance.py",
+      "sha256": "140b47ac160fbe2679e2ccbcdbfae7b4d79f756adb8bad38a7943c84c7b245eb",
+      "bytes": 49355
+    },
+    "composition_raise_authoring": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_raise_authoring.py",
+      "sha256": "e8cbbe9696f7899c67543f70785f0bd02e3f3ac0cd15daa5225fc2c87c8420f1",
+      "bytes": 18339
+    },
+    "run_character_composition_raise_stage": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\run_character_composition_raise_stage.py",
+      "sha256": "701357fcba359a0f842771c8e8338dea2d7cb3b6d328cfd7bd614e98d90a08e5",
+      "bytes": 20129
+    },
+    "run_character_composition_ui_fixture": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\run_character_composition_ui_fixture.py",
+      "sha256": "729df3152233172c0ed72f67e39801e7f2c58c4ea6be7197e04c96ab548d2b07",
+      "bytes": 24773
+    },
+    "composition_ui_checkpoints": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_ui_checkpoints.py",
+      "sha256": "7eaaa038ee91365704616abc198298a07b16d83973c7aa3052a90ba5782e635b",
+      "bytes": 20498
+    },
+    "release_projection": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\release_projection.py",
+      "sha256": "052e6c765c95ba46d480bf1eeca1e1dccb7685c77a4e756202ce409d20713106",
+      "bytes": 7529
+    }
+  },
+  "current_product": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+    "sha256": "783b296dc635b9172fa7ebb7acbdc7aa6b436e1a2a88a76b53e71e08a65dfc5a",
+    "bytes": 96417
+  },
+  "current_product_tests": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_selection.py",
+    "sha256": "430a60b47dc0d887ae5968fab5c039c9f82f81a53380c0633b72bbe7be0bc329",
+    "bytes": 13199
+  },
+  "current_product_documentation": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_pose_selection_compatibility_20261011.md",
+    "sha256": "45fc298437ffa9006b5fe6a59879da6cd17a773c273a0f1171cfcc5f85640ce9",
+    "bytes": 2139
+  },
+  "current_tool_tests": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_composition_tool_pose_selection.py",
+    "sha256": "a5762b315db806dbe9703539c78f19252d23ab479d995cab931b408a058fce2a",
+    "bytes": 8630
+  },
+  "shared_headful_refresh": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_source_manifest_20261011_pose_selection_783b296d.json",
+    "sha256": "bd40214088cffe8c17e8ec237ddcb29ebdc8ca0e6ccbfaad30d92ea663f02960",
+    "bytes": 15423
+  },
+  "shared_source_owner_report": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_source_report_20261011_pose_selection_783b296d.json",
+    "sha256": "4d96fc9ad4f217d5070042df4698836ba24ee5d56aecfd4343f2b18ebbf2bf82",
+    "bytes": 13892
+  },
+  "independent_product_source_review": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\composition_pose_selection_source_review_20261011_783b296d.json",
+    "sha256": "42fdb27c136efda28057ac9ba6954e8f56998eb3f07757cb01f8e03f8497143a",
+    "bytes": 29005
+  },
+  "independent_tool_source_review": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\composition_tool_pose_selection_source_review_20261011_58325c8b.json",
+    "sha256": "2724a0d4c53d7d4b532831aa3dcae266ba65a6d432f283512ea3a6a43afe88c5",
+    "bytes": 38602
+  },
+  "actual_root_candidate_projection_pins": {
+    "python_projection": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_08\\python_projection.json",
+      "sha256": "20c0999f276c6258a77f2b3d17eda52ef2236e409073fb5a883ca622e39e78e0",
+      "bytes": 23988
+    },
+    "complete_candidate": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\full_candidate_09\\candidate_projection.json",
+      "sha256": "18dd5a276be6f30318aeb5777df4dccdf5ef28ac57852920bd0e739bde22dc59",
+      "bytes": 23581
+    },
+    "projection_receipt": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\pose_selection_projection_receipt_08_09.json",
+      "sha256": "0996a8e3f33d59cee51591f63ac064c0db1a068dafa52320850c455a9d4d3b59",
+      "bytes": 2055
+    }
+  },
+  "current_focused_validation": {
+    "product_owner": "/root/rig_controls_review",
+    "product_command": "python -m unittest discover -s tests -p test_character_composition_selection.py -v",
+    "product_cases_passed": 8,
+    "product_syntax_compile_passed": true,
+    "tool_owner": "/root/worklist_review",
+    "tool_cases_passed": 9,
+    "tool_files_compiled": 4,
+    "peer_tool_tests_rerun_by_this_manifest_task": false,
+    "product_tests_rerun_by_this_manifest_task": false,
+    "whole_suite_rerun": false,
+    "limits": "Current actual canonical selection capture/restriction/restore/Enter-failure plus tool selection/visibility seams only; no Blender/native/pixels/worker or save/reopen acceptance."
+  },
+  "historical_validations": {
+    "classification": "Original passing checkpoints retained as historical, not rerun against current product783b/session140b/timing58325/author e8cb.",
+    "raise_ui": {
+      "passed": 18,
+      "rerun": false,
+      "source_checkpoint": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_receipt_transaction_3f317b20.json",
+        "sha256": "2f7b66b75028ab06a02b49046c8a00922a2763e9fe4e1e99407fb0653735db64",
+        "immutable_previous": true
+      },
+      "unchanged_raise_ui_tests": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_raise_ui.py",
+        "sha256": "ef39dc2b7e776de209a8e313b0eb4f71ef15a97907a638e7cd5bdfee69735a60",
+        "bytes": 21257
+      }
+    },
+    "raise_original_anchors": {
+      "passed": 10,
+      "rerun": false,
+      "source_checkpoint": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_import_anchors_ce4be885.json",
+        "sha256": "ea313c2d4088f3c2457a1e4c0744169f19a9fe592708db3cbc52db8b17a40240",
+        "bytes": 10227
+      },
+      "original_source": {
+        "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_03\\composition_raise_authoring.py",
+        "sha256": "491c0dbd4eb813d717d298b03abb99be44087b19a6c5dbf4f5f18ac6fa903533",
+        "bytes": 18183
+      },
+      "tests": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_composition_raise_authoring.py",
+        "sha256": "dc07e6d9f1617fe42d7af2c5481890ae96b42ebc48e397a5b9d9544fb3f8f70e",
+        "bytes": 15159
+      }
+    },
+    "native_original_anchors": {
+      "passed": 4,
+      "rerun": false,
+      "original_source": {
+        "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_03\\verify_character_composition_native.py",
+        "sha256": "ce4be885e95ef720f617712ca1bacc0347872a2a1542ade6cf8f9e86d6d34632",
+        "bytes": 52692
+      },
+      "source_checkpoint": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_import_anchors_ce4be885.json",
+        "sha256": "ea313c2d4088f3c2457a1e4c0744169f19a9fe592708db3cbc52db8b17a40240",
+        "bytes": 10227
+      }
+    },
+    "session_and_runner_original_anchors": {
+      "passed": 5,
+      "rerun": false,
+      "original_sources": {
+        "composition_session_acceptance": {
+          "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_03\\composition_session_acceptance.py",
+          "sha256": "fb6fa59eef2930a784061e417eb03608a7e5882e5bc320b71e642cfcac82d07d",
+          "bytes": 48648
+        },
+        "run_character_composition_ui_fixture": {
+          "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_03\\run_character_composition_ui_fixture.py",
+          "sha256": "729df3152233172c0ed72f67e39801e7f2c58c4ea6be7197e04c96ab548d2b07",
+          "bytes": 24773
+        }
+      },
+      "source_checkpoint": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_import_anchors_ce4be885.json",
+        "sha256": "ea313c2d4088f3c2457a1e4c0744169f19a9fe592708db3cbc52db8b17a40240",
+        "bytes": 10227
+      }
+    },
+    "reference_receipt_transaction": {
+      "passed": 15,
+      "rerun": false,
+      "original_product": {
+        "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_07\\character_designer\\animation_composition.py",
+        "sha256": "3f317b20aba7e4276b6e7e6fc50f1ef6cdef9e842cd18bc261d8135bc58eb5e2",
+        "bytes": 95834
+      },
+      "tests": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_reference_receipts.py",
+        "sha256": "7f04828b04ef765e9d9bc16b8745947eaddf9241595ce39a2beb98d7ae80a9f8"
+      },
+      "source_checkpoint": {
+        "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_receipt_transaction_3f317b20.json",
+        "sha256": "2f7b66b75028ab06a02b49046c8a00922a2763e9fe4e1e99407fb0653735db64",
+        "immutable_previous": true
+      }
+    },
+    "original_timing_dependency": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_03\\composition_timing_acceptance.py",
+      "sha256": "46bf23b458b94ffd95994b4601cf38db9d493cb76e6a45bc987edeb2c1654519",
+      "bytes": 40590
+    }
+  },
+  "supersedes": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_import_anchors_ce4be885.json",
+    "sha256": "ea313c2d4088f3c2457a1e4c0744169f19a9fe592708db3cbc52db8b17a40240",
+    "bytes": 10227
+  },
+  "immutable_history": [
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_receipt_transaction_3f317b20.json",
+      "sha256": "2f7b66b75028ab06a02b49046c8a00922a2763e9fe4e1e99407fb0653735db64",
+      "immutable_previous": true
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011_reference_ebdf46d1.json",
+      "sha256": "bbcfcd6374ade13873ad86ae9996ca7bf7572aeab9d15af6addfe20f3ab68694",
+      "immutable_previous": true
+    },
+    {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_raise_ui_source_manifest_20261011.json",
+      "sha256": "e040632521537b4c4e8ee413f5c83770de1da5a48b985d95781cbaabe7ebf838",
+      "immutable_previous": true
+    }
+  ],
+  "refresh_reason": "Actual n7 Bone.select failure: product783b selection compatibility and tool selection/visibility APIs now paired; previous Raise/source manifests remain immutable.",
+  "entry_schema": "x.validation.character-composition-raise-ui-fixture/1",
+  "entry": "tools/run_character_composition_raise_ui.py -- --fixture <absolute actual immutable fixture JSON>",
+  "real_input": "Completed registered NEW Raise-stage output_seed and final published physical NEW revision; SOURCE Hold or UI edited seed is rejected.",
+  "api_requirements": {
+    "selection_owner": "Use actual animation_composition._pose_selection_owner(pb); modern PoseBone.select or verified existing legacy Bone.select; unknown API/write errors propagate.",
+    "visibility": "Current timing and Raise author import composition_session_acceptance._pose_hidden, so background must include current session140b even when sessionChecks is None.",
+    "show_control": "Existing three positional arguments retained; optional backend keyword does not require own Raise UI caller edits.",
+    "headful": "start(context,iterator,options,evidence,*,finished,pin_guard,state_reader); official native NEW activation and final physical publication admission remain mandatory."
+  },
+  "candidate_requirement": "Actual root-owned runtime_draft_08 complete167 Python projection/full_candidate_09 complete173 candidate receipts are pinned source-only. Root must use a matching new frozen tools/config and obtain successful genuine numeric/physical/QA-seed/exit evidence before headful NEW Raise acceptance. No n7 failure or this manifest is native success.",
+  "excluded": "No mutable artist/input models/workspaces/prepared packets/scene bytes are rehashed by this manifest task; only explicit source, old immutable checkpoints and actual root candidate projection JSON are pinned.",
+  "direct_pin_inventory": {
+    "count": 43,
+    "mismatches": 0,
+    "verified_actual_file_bytes": true,
+    "shared_manifest_direct_pins_verified": 27,
+    "recursive_candidate_contents_verified_by_this_task": false
+  }
+}

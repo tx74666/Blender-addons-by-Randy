@@ -618,6 +618,9 @@ def _purge_owned(source, owner):
 
 
 def _clear_source_properties(source):
+    from . import skirt_wiggle
+    source.pop(skirt_wiggle.STATE_KEY, None)
+    source.pop(skirt_wiggle.STATE_SCENE_KEY, None)
     from . import skirt_original_mode, skirt_motion_profiles
     for key in (RECORD_KEY, RIG_KEY, OWNER_KEY, PARENT_KEY, ATTACHMENT_BACKUP_KEY,
                 ATTACHMENT_PARENT_KEY, skirt_original_mode.CORRECTIONS, skirt_motion_profiles.PROFILE_KEY):
@@ -932,6 +935,11 @@ def select_controls(context, obj, level="ALL"):
     _require_controls_for_setup(obj)
     rig = obj[RIG_KEY]
     _activate(context, rig, "POSE")
+    from . import bone_display
+    controls, deform, mechanism = _bone_collection_layout(record)
+    for name in controls | deform | mechanism:
+        bone_display._set_hidden(rig, rig.data.bones[name], name not in controls)
+    rig.data.show_bone_custom_shapes = True
     wanted = record["controls"]["waist"]
     if level.lower() in {"waist", "mid", "hem"}:
         wanted = record["controls"][level.lower()]
@@ -977,6 +985,9 @@ def remove_skirt(context, obj, allow_animation=False):
             expected = matching[0]
     if expected and (expected.type != "ARMATURE" or expected.object is not rig):
         raise SkirtRigError("The generated skin modifier was replaced. Restore it before removing the setup.")
+    from . import skirt_wiggle
+    if skirt_wiggle.STATE_KEY in obj:
+        skirt_wiggle.forget(context, obj)
     # No user-owned child is deleted with its generated parent.
     for child in list(bpy.data.objects):
         if child is obj or child.parent not in owned or child in owned:

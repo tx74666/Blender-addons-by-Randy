@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+from contextlib import nullcontext
 
 import bpy
 
@@ -34,8 +35,65 @@ def _slot(rig, action):
     return slots[0].handle
 
 
+def _action_frame_clock(scene, action):
+    from . import unity_animation
+    try:
+        native_rate = unity_animation.native_action_frame_rate(action)
+    except (ValueError, TypeError) as error:
+        raise AnimationExportError(str(error)) from error
+    if native_rate is None:
+        return scene.render.fps, scene.render.fps_base
+    fps = max(1, int(round(native_rate)))
+    return fps, fps / native_rate
+
+
+def _freeze_rigging_export(rig, action, value, session):
+    """Seal explicit source inputs before snapshotting or starting a worker."""
+    from . import animation_rigging_contract as contract
+    if session is None or session['base_action'] != action:
+        raise AnimationExportError('The Rigging inputs belong to another base Action.')
+    slot = _slot(rig, action)
+    if slot != session['base_slot']:
+        raise AnimationExportError('The Rigging inputs belong to another base Action slot.')
+    return contract.validate_export(value, session['capture'],
+        source_packet_sha256=str(action.get('character_designer_unity_animation_package_sha256', '')),
+        work_item_id=session['work_item_id'], new_action_id=session['new_action_id'],
+        source_action=action.name, source_action_slot=slot,
+        target_input_action=session['input_action'].name, target_input_action_slot=session['input_slot'])
+
+
 def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
-                 export_rig_name=None):
+                 export_rig_name=None, rigging_export=None):
+    """Export the independent base, alongside explicitly owned Target inputs."""
+    session = None
+    if rig is not None and 'character_designer_rigging_session_v1' in rig:
+        from . import unity_animation_rigging as rigging
+        session = rigging.current(rig)
+    if session is not None and rigging_export is None:
+        raise AnimationExportError('Use Worklist Sync to preserve the separate Rigging inputs with this base animation.')
+    frozen = (_freeze_rigging_export(rig, action, rigging_export, session)
+              if rigging_export is not None else None)
+    if frozen is not None:
+        from .unity_animation import native_action_frame_rate
+        rate = native_action_frame_rate(action)
+        capture = session['capture']
+        expected_end = 1. + capture['duration'] * capture['sampleRate']
+        if (rate != capture['sampleRate']
+                or type(frame_start) not in (int, float) or type(frame_end) not in (int, float)
+                or not math.isclose(frame_start, 1., rel_tol=0., abs_tol=1e-6)
+                or not math.isclose(frame_end, expected_end, rel_tol=1e-6, abs_tol=1e-6)
+                or sample_rate is not None and (type(sample_rate) not in (int, float)
+                    or sample_rate != capture['sampleRate'])
+                or type(loop) is not bool or loop != capture['loopTime']):
+            raise AnimationExportError('Keep the captured base time range, sample rate and loop setting when syncing Rigging inputs.')
+    boundary = rigging.base_only(context, rig, action=action) if session is not None else nullcontext()
+    with boundary:
+        return _begin_export(context, rig, action, filepath, frame_start=frame_start, frame_end=frame_end,
+            loop=loop, sample_rate=sample_rate, export_rig_name=export_rig_name, rigging_export=frozen)
+
+
+def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
+                  export_rig_name=None, rigging_export=None):
     global _ACTIVE_JOB
     from . import unity_export
     if _ACTIVE_JOB or unity_export._ACTIVE_JOB:
@@ -46,6 +104,7 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
         raise AnimationExportError('Leave Edit Mode and NLA Tweak Mode before exporting an Action.')
     if action is None or action.library:
         raise AnimationExportError('Choose a local editable Action.')
+    frame_fps, frame_fps_base = _action_frame_clock(context.scene, action)
     from . import dress_export_guard
     try:
         direct_admission = dress_export_guard.animation_host_admission(
@@ -54,7 +113,7 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
         raise AnimationExportError(str(error)) from error
     if not all(math.isfinite(value) for value in (frame_start, frame_end)) or frame_end <= frame_start:
         raise AnimationExportError('End Frame must be after Start Frame.')
-    fps = context.scene.render.fps / context.scene.render.fps_base
+    fps = frame_fps / frame_fps_base
     rate = fps if sample_rate is None else sample_rate
     if not math.isfinite(rate) or not 1 <= rate <= 240:
         raise AnimationExportError('Sampling must be between 1 and 240 frames per second.')
@@ -96,7 +155,7 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
     spec = {
         'rig': rig.name, 'action': action.name, 'action_slot': slot,
         'frame_start': float(frame_start), 'frame_end': float(frame_end),
-        'fps': context.scene.render.fps, 'fps_base': context.scene.render.fps_base,
+        'fps': frame_fps, 'fps_base': frame_fps_base,
         'sample_rate': float(rate), 'unit_scale': context.scene.unit_settings.scale_length,
         'loop': bool(loop), 'name': action.name, 'stage': str(stage), 'filename': filename,
         'unsupported_channels': omitted,
@@ -107,15 +166,25 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
     job = {'temporary': temporary, 'root': root, 'stage': stage, 'destination': destination,
            'metadata': metadata, 'started': time.monotonic(), 'source_package': source_package,
            'source_package_sha256': source_hash,
-           'source_blend': bpy.data.filepath, 'action': action.name, 'process': None, 'log': None}
+           'source_blend': bpy.data.filepath, 'action': action.name, 'action_slot': slot,
+           'process': None, 'log': None}
+    if rigging_export is not None:
+        # This owned DTO was validated before launching. Publication never
+        # resamples a changed live rig or reads the composed deform pose.
+        job['rigging_export'] = rigging_export
     try:
         from . import hair_wiggle_adapter
         if hair_wiggle_adapter.status(context).get('active'):
             hair_wiggle_adapter.stop_preview(context, reason='Animation export ends transient Hair preview.')
         snapshot = root / 'animation.blend'
         spec['dress_snapshot_path'] = str(snapshot)
-        bpy.data.libraries.write(str(snapshot), {rig, action} | dress_scene_roots,
-                                path_remap='ABSOLUTE', compress=True)
+        snapshot_boundary = nullcontext()
+        if 'character_designer_rigging_session_v1' in rig:
+            from . import unity_animation_rigging as rigging
+            snapshot_boundary = rigging.snapshot_base_refs(rig, action)
+        with snapshot_boundary:
+            bpy.data.libraries.write(str(snapshot), {rig, action} | dress_scene_roots,
+                                    path_remap='ABSOLUTE', compress=True)
         spec[dress_export_guard.JOB_KEY] = dress_export_guard.bind_animation_snapshot(direct_admission, snapshot)
         (root / 'job.json').write_text(json.dumps(spec), encoding='utf-8')
         job['log'] = (root / 'worker.log').open('w', encoding='utf-8')
@@ -152,11 +221,16 @@ def _publish(job, result):
         raise AnimationExportError('The worker did not produce a complete animation FBX.')
     destination.parent.mkdir(parents=True, exist_ok=True)
     report = {**result, 'source_blend': job['source_blend'], 'action': job['action'],
+              'actionSlot': job.get('action_slot', -1),
               'origin': 'unity-edit' if job['source_package'] else 'blender-original',
               'source_package': job['source_package'],
               'source_package_sha256': job['source_package_sha256'],
               'channels': 'skeletal-only',
               'limitations': 'No Shape Key, material, camera, audio or animation-event export.'}
+    if job.get('rigging_export') is not None:
+        if job.get('action_slot') != job['rigging_export']['sourceActionSlot']:
+            raise AnimationExportError('The frozen Rigging inputs belong to another exported base Action slot.')
+        report['rigging'] = job['rigging_export']
     # Older imported Actions have no fixed source hash; leave it unknown rather
     # than attributing them to a possibly replaced packet at the same path.
     # Each staged file is on the destination volume. FBX is published last so

@@ -82,8 +82,10 @@ def collection_members(armature):
     return result
 
 
-def validate(armature, inventory=None, *, original_mutes=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
     """Validate the optional extension, without recursing into Limb IK inventory."""
+    if original_mutes is None:
+        source_rest = _limb()._validation_source_rest(armature, source_rest)
     values = records(armature)
     expected = set()
     for side, record in values.items():
@@ -184,7 +186,7 @@ def _update(context, armature):
 def _active(context, armature):
     if (armature is None or armature.type != 'ARMATURE' or context.object is not armature
             or armature.mode not in {'OBJECT', 'POSE'} or armature.library or armature.data.library
-            or not armature.is_editable or armature.data.users != 1):
+            or not armature.is_editable or not _limb()._single_armature_user(armature)):
         raise _error('Select a local, single-user armature in Object or Pose Mode.')
 
 

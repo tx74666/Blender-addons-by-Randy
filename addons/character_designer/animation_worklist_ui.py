@@ -100,7 +100,7 @@ def _poll_scan():
             collection = _collection()
             collection.scan_changes(bpy.context)
             if pending['sync_after']:
-                collection.begin_sync_changed(bpy.context)
+                collection.begin_sync_changed(bpy.context, changed_only=True)
             _redraw(bpy.context)
     except Exception as exc:
         _scan_feedback(pending, str(exc), error=True)
@@ -150,11 +150,67 @@ def _catalog_matches(item, search):
     return all(term in text for term in search.casefold().split())
 
 
+def _rigging_display(rig):
+    if (rig is None or not hasattr(rig, 'get')
+            or not rig.get('character_designer_rigging_session_v1')):
+        return None
+    from . import unity_animation_rigging
+    display = getattr(unity_animation_rigging, 'display_state', None)
+    return display(rig) if display is not None else None
+
+
 def _active_side(item, side):
     action = item.source_action if side == 'SOURCE' else item.custom_action
     rig = item.rig
-    return bool(action is not None and rig is not None and rig.animation_data is not None
-                and rig.animation_data.action == action and item.side == side)
+    if action is None or rig is None or rig.animation_data is None or item.side != side:
+        return False
+    if rig.animation_data.action == action:
+        return True
+    display = _rigging_display(rig)
+    return bool(display and display['rig'] is rig and display['base_action'] is action
+                and display['source_read_only'] == (side == 'SOURCE')
+                and rig.animation_data.use_nla
+                and rig.animation_data.action in (None, display['input_action']))
+
+
+def _editable_rigging(context):
+    item = _selected(_state(context))
+    display = _rigging_display(item.rig) if item is not None else None
+    return (item, display) if (display and item.side == 'CUSTOM'
+        and display['rig'] is item.rig and display['scene'] is context.scene
+        and display['base_action'] is item.custom_action
+        and not display['source_read_only']) else (None, None)
+
+
+def _run_rigging(operator, context, *, edit_role=None):
+    try:
+        item = _selected(_state(context))
+        if not _idle(context) or item is None or item.item_id != operator.item_id or item.side != 'CUSTOM':
+            raise ValueError('Select the same Custom worklist entry before editing its controls.')
+        from . import unity_animation_rigging
+        session = unity_animation_rigging.current(item.rig)
+        if (session is None or session['rig'] is not item.rig or session['scene'] is not context.scene
+                or session['base_action'] is not item.custom_action or session['source_read_only']):
+            raise ValueError('This entry has no editable Rigging session in the current scene.')
+        if edit_role is not None:
+            unity_animation_rigging.activate(context, session, edit_role=edit_role, enabled=True)
+            action = session['base_action'] if edit_role == 'BASE' else session['input_action']
+            message = 'Editing: ' + action.name
+        else:
+            unity_animation_rigging.key_current(context, session)
+            message = 'Saved controls to "' + session['input_action'].name + '" at the current frame.'
+        saved = _state(context)
+        saved.status, saved.has_error = message, False
+        operator.report({'INFO'}, message)
+    except (ValueError, RuntimeError, OSError, ReferenceError, AttributeError, KeyError) as exc:
+        saved = _state(context)
+        if saved is not None:
+            saved.status, saved.has_error = str(exc), True
+        operator.report({'ERROR'}, str(exc))
+        _redraw(context)
+        return {'CANCELLED'}
+    _redraw(context)
+    return {'FINISHED'}
 
 
 def _redraw(context):
@@ -207,6 +263,7 @@ def _run_collection(operator, context, *names):
 
 class CharacterDesignerAnimationWorklistCatalog(PropertyGroup):
     clip_key: StringProperty(options={'HIDDEN'})
+    work_item_id: StringProperty(options={'HIDDEN'})
     name: StringProperty(name='Clip')
     source_name: StringProperty(name='Source')
     link_path: StringProperty(subtype='FILE_PATH', options={'HIDDEN'})
@@ -215,7 +272,20 @@ class CharacterDesignerAnimationWorklistCatalog(PropertyGroup):
 
 
 class CharacterDesignerAnimationWorklistItem(PropertyGroup):
+    workspace_path: StringProperty(subtype='FILE_PATH', options={'HIDDEN'})
+    workspace_identity: StringProperty(options={'HIDDEN'})
+    composition_json: StringProperty(options={'HIDDEN'})
+    composition_sha256: StringProperty(options={'HIDDEN'})
+    application_role: StringProperty(options={'HIDDEN'})
+    edit_scope: StringProperty(options={'HIDDEN'})
+    b_edited: BoolProperty(default=False, options={'SKIP_SAVE'})
+    composition_changed: BoolProperty(default=False, options={'SKIP_SAVE'})
+    effective_inputs_changed: BoolProperty(default=False, options={'SKIP_SAVE'})
+    export_needed: BoolProperty(default=False, options={'SKIP_SAVE'})
     item_id: StringProperty(options={'HIDDEN'})
+    work_item_id: StringProperty(options={'HIDDEN'})
+    new_animation: BoolProperty(default=False, options={'HIDDEN'})
+    new_action_id: StringProperty(options={'HIDDEN'})
     clip_key: StringProperty(options={'HIDDEN'})
     name: StringProperty(name='Clip')
     source_action: PointerProperty(type=bpy.types.Action)
@@ -234,6 +304,7 @@ class CharacterDesignerAnimationWorklistItem(PropertyGroup):
     source_data: PointerProperty(type=bpy.types.Armature)
     custom_data: PointerProperty(type=bpy.types.Armature)
     last_synced_receipt: StringProperty(options={'HIDDEN'})
+    source_baseline_receipt: StringProperty(options={'HIDDEN'})
     scan_state: EnumProperty(name='Changes', items=_SCAN_STATES, default='NOT_SCANNED',
                              options={'SKIP_SAVE'})
     scan_reason: StringProperty(options={'SKIP_SAVE'})
@@ -242,6 +313,11 @@ class CharacterDesignerAnimationWorklistItem(PropertyGroup):
 
 
 class CharacterDesignerAnimationWorklistState(PropertyGroup):
+    composition_workspace_path: StringProperty(name='Composition Library', subtype='FILE_PATH')
+    composition_workspace_identity: StringProperty(options={'HIDDEN'})
+    composition_catalog: CollectionProperty(type=CharacterDesignerAnimationWorklistCatalog)
+    composition_catalog_index: IntProperty(default=-1, min=-1)
+    composition_base_item_id: StringProperty(name='A Work Copy', options={'HIDDEN'})
     catalog: CollectionProperty(type=CharacterDesignerAnimationWorklistCatalog)
     items: CollectionProperty(type=CharacterDesignerAnimationWorklistItem)
     # Highlight only: loading a .blend or selecting a row must not swap Actions.
@@ -250,6 +326,8 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     search: StringProperty(name='Search Clips', options={'TEXTEDIT_UPDATE'})
     workspace_path: StringProperty(name='Workspace', subtype='FILE_PATH')
     workspace_id: StringProperty(options={'HIDDEN'})
+    prepare_request_id: StringProperty(options={'HIDDEN'})
+    prepared_work_item_ids: StringProperty(options={'HIDDEN'})
     workspace_identity: StringProperty(options={'HIDDEN'})
     target_name: StringProperty(name='Character')
     target_guid: StringProperty(options={'HIDDEN'})
@@ -257,16 +335,18 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     model_sha256: StringProperty(options={'HIDDEN'})
     rig: PointerProperty(type=bpy.types.Object, poll=_armature)
     show_catalog: BoolProperty(name='Clip Browser', default=True)
+    show_advanced: BoolProperty(name='Advanced', default=False, options={'SKIP_SAVE'})
     status: StringProperty(options={'SKIP_SAVE'})
     has_error: BoolProperty(options={'SKIP_SAVE'})
     collection_status: StringProperty(options={'SKIP_SAVE'})
+    collection_feedback: BoolProperty(default=False, options={'SKIP_SAVE'})
     scan_completed: BoolProperty(default=False, options={'SKIP_SAVE'})
 
 
 class CHARACTERDESIGNER_OT_worklist_connect(Operator):
     bl_idname = 'character_designer.worklist_connect'
     bl_label = 'Connect Workspace'
-    bl_description = 'Open the animation workspace metadata exported by Unity'
+    bl_description = 'Open a Unity animation workspace or a readable .workspace.json entry'
     bl_options = {'REGISTER'}
     filepath: StringProperty(subtype='FILE_PATH')
     filter_glob: StringProperty(default='character_animation_workspace.json;*.json', options={'HIDDEN'})
@@ -278,11 +358,26 @@ class CHARACTERDESIGNER_OT_worklist_connect(Operator):
     def invoke(self, context, _event):
         if not self.filepath:
             settings = _state(context)
-            if settings.workspace_path:
-                self.filepath = settings.workspace_path
+            saved_path = settings.workspace_path
+            source = Path(saved_path) if saved_path else None
+            if (source is not None and source.name == 'character_animation_workspace.json'
+                    and len(source.parents) >= 5 and source.parents[2].name == 'Workspaces'
+                    and source.parents[3].name == 'CharacterTuning'):
+                exchange = source.parents[4]
             else:
                 from .animation import unity_exchange_folder
-                self.filepath = str(Path(unity_exchange_folder(context)) / 'character_animation_workspace.json')
+                exchange = Path(unity_exchange_folder(context))
+            entries = exchange / 'Animations'
+            try:
+                has_entries = entries.is_dir()
+            except OSError:
+                has_entries = False
+            if has_entries:
+                self.filepath = str(entries) + '/'
+            elif saved_path:
+                self.filepath = saved_path
+            else:
+                self.filepath = str(exchange / 'character_animation_workspace.json')
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -304,6 +399,40 @@ class CHARACTERDESIGNER_OT_worklist_refresh(Operator):
         return _run(self, context, 'refresh')
 
 
+class CHARACTERDESIGNER_OT_worklist_use_main_rig(Operator):
+    bl_idname = 'character_designer.worklist_use_main_rig'
+    bl_label = 'Use Main Rig'
+    bl_description = 'Validate prepared motion on this scene Main Rig and retain a persistent artist recovery snapshot'
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        setup = getattr(context.scene, 'character_designer_setup', None)
+        return (settings is not None and bool(settings.workspace_path)
+                and getattr(setup, 'rig', None) is not None and _idle(context))
+
+    def execute(self, context):
+        return _run(self, context, 'adopt_main_rig')
+
+
+class CHARACTERDESIGNER_OT_worklist_restore_main_rig(Operator):
+    bl_idname = 'character_designer.worklist_restore_main_rig'
+    bl_label = 'Restore Main Rig'
+    bl_description = 'Validate and restore the preceding artist Action, rig data, Original mode and display; keep local drafts'
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        rig = getattr(settings, 'rig', None)
+        return (rig is not None and hasattr(rig, 'get')
+                and rig.get('character_designer_worklist_main_session_v1') is not None and _idle(context))
+
+    def execute(self, context):
+        return _run(self, context, 'restore_main_rig')
+
+
 class CHARACTERDESIGNER_OT_worklist_add(Operator):
     bl_idname = 'character_designer.worklist_add'
     bl_label = 'Add to Worklist'
@@ -321,8 +450,11 @@ class CHARACTERDESIGNER_OT_worklist_add(Operator):
 
 class CHARACTERDESIGNER_OT_worklist_add_ready(Operator):
     bl_idname = 'character_designer.worklist_add_ready'
-    bl_label = 'Add Ready'
-    bl_description = 'Add missing ready clips serially; keep existing edits and the active Action'
+    bl_label = 'Import Prepared'
+    bl_description = (
+        'Import animations prepared in Unity. Use this workspace\'s animation rig when available; '
+        'otherwise create a separate animation scene and import the character. '
+        'Keep existing custom edits and the active animation')
 
     @classmethod
     def poll(cls, context):
@@ -347,10 +479,33 @@ class CHARACTERDESIGNER_OT_worklist_scan_changes(Operator):
         return _defer_scan(self, context)
 
 
+class CHARACTERDESIGNER_OT_worklist_register_new(Operator):
+    bl_idname = 'character_designer.worklist_register_new'
+    bl_label = 'Register New Action'
+    bl_description = 'Add the local new Action on this workspace rig; no original clip or target purpose is invented'
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and settings.rig is not None and bool(settings.workspace_path) and _idle(context)
+
+    def execute(self, context):
+        try:
+            from .animation_worklist_new import register
+            register(context)
+        except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
+            settings = _state(context)
+            settings.status, settings.has_error = str(exc), True
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        _redraw(context)
+        return {'FINISHED'}
+
+
 class CHARACTERDESIGNER_OT_worklist_sync_changed(Operator):
     bl_idname = 'character_designer.worklist_sync_changed'
-    bl_label = 'Sync Changed'
-    bl_description = 'Rescan and serially publish selected Custom Actions as Unity candidates'
+    bl_label = 'Export Changes'
+    bl_description = 'Check all imported animations and export only confirmed changes to Unity'
 
     @classmethod
     def poll(cls, context):
@@ -358,8 +513,8 @@ class CHARACTERDESIGNER_OT_worklist_sync_changed(Operator):
         return settings is not None and bool(settings.items) and _idle(context)
 
     def execute(self, context):
-        # A button press is an explicit fresh scan. The backend keeps subsequent
-        # user selections and requires an explicit selection for Unknown rows.
+        # Always recheck edits. The primary export ignores old checkbox state
+        # and publishes only animations with a complete change comparison.
         return _defer_scan(self, context, sync_after=True)
 
 
@@ -387,8 +542,8 @@ class CHARACTERDESIGNER_OT_worklist_activate(Operator):
 
     @classmethod
     def description(cls, _context, properties):
-        return ('View this clip\'s linked source Action on the shared character'
-                if properties.side == 'SOURCE' else 'Edit this clip\'s local custom Action on the shared character')
+        return ('View the original animation'
+                if properties.side == 'SOURCE' else 'Edit your version of this animation')
 
     @classmethod
     def poll(cls, context):
@@ -558,6 +713,42 @@ class CHARACTERDESIGNER_OT_worklist_sync(Operator):
         return _run(self, context, 'sync')
 
 
+class CHARACTERDESIGNER_OT_worklist_rigging_edit(Operator):
+    bl_idname = 'character_designer.worklist_rigging_edit'
+    bl_label = 'Edit Rigging Action'
+    bl_description = 'Choose the actual Action that receives native edits; Base uses Blender keying'
+    bl_options = {'REGISTER', 'UNDO'}
+    item_id: StringProperty(options={'HIDDEN'})
+    edit_role: EnumProperty(items=(('BASE', 'Base', 'Edit the base Action'),
+                                   ('RIGGING', 'Controls', 'Edit the Target/Hint controls Action')),
+                            default='BASE', options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        item, _display = _editable_rigging(context)
+        return item is not None and _idle(context)
+
+    def execute(self, context):
+        return _run_rigging(self, context, edit_role=self.edit_role)
+
+
+class CHARACTERDESIGNER_OT_worklist_save_controls(Operator):
+    bl_idname = 'character_designer.worklist_save_controls'
+    bl_label = 'Save Controls'
+    bl_description = 'Key the current effective Target/Hint inputs into their controls Action; does not export'
+    bl_options = {'REGISTER', 'UNDO'}
+    item_id: StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        item, display = _editable_rigging(context)
+        return bool(item is not None and display['enabled'] and display['edit_role'] == 'RIGGING'
+                    and _idle(context))
+
+    def execute(self, context):
+        return _run_rigging(self, context)
+
+
 class CHARACTERDESIGNER_UL_animation_catalog(UIList):
     def filter_items(self, _context, data, propname):
         if not data.search.strip():
@@ -588,7 +779,7 @@ class CHARACTERDESIGNER_UL_animation_catalog(UIList):
 
 class CHARACTERDESIGNER_UL_animation_worklist(UIList):
     def filter_items(self, _context, _data, _propname):
-        return [], []  # Stored order is authoritative for buttons and drag gestures.
+        return [], []  # Keep the imported order and stable item identities.
 
     def draw_filter(self, _context, _layout):
         pass
@@ -597,96 +788,106 @@ class CHARACTERDESIGNER_UL_animation_worklist(UIList):
                   _active_propname, _index=0, _flt_flag=0):
         row = layout.row(align=True)
         row.enabled = _idle(context)
-        select = row.row(align=True)
-        select.enabled = item.scan_state not in {'NOT_SCANNED', 'BLOCKED'}
-        select.prop(item, 'sync_selected', text='')
-        row.label(text=item.name)
-        row.label(text=_SCAN_LABELS.get(item.scan_state, 'Unknown'))
-        for side, label, action in (('SOURCE', 'Source', item.source_action), ('CUSTOM', 'Custom', item.custom_action)):
+        for side, icon, action in (('SOURCE', 'LINKED', item.source_action),
+                                   ('CUSTOM', 'EDITMODE_HLT', item.custom_action)):
             cell = row.row(align=True)
-            cell.enabled = action is not None
-            activate = cell.operator('character_designer.worklist_activate', text=label,
+            cell.enabled = row.enabled and action is not None
+            activate = cell.operator('character_designer.worklist_activate', text=item.name, icon=icon,
                                      depress=_active_side(item, side))
             activate.item_id, activate.side = item.item_id, side
-        row.operator('character_designer.worklist_remove', text='', icon='X', emboss=False).item_id = item.item_id
+
+
+def _draw_rigging(layout, context, item):
+    display = _rigging_display(item.rig) if item is not None else None
+    action = item.source_action if item is not None and item.side == 'SOURCE' else getattr(item, 'custom_action', None)
+    if (not display or display['rig'] is not item.rig or display['scene'] is not context.scene
+            or display['base_action'] is not action
+            or display['source_read_only'] != (item.side == 'SOURCE')):
+        return
+    box = layout.box()
+    box.label(text='Rigging', icon='ARMATURE_DATA')
+    box.label(text='Base: ' + display['base_action'].name, icon='ACTION')
+    box.label(text='Controls: ' + display['input_action'].name, icon='ACTION')
+    actual = item.rig.animation_data.action if item.rig.animation_data else None
+    editing = actual.name if actual is not None else 'Preview only'
+    if display['source_read_only']:
+        editing += ' (read-only)'
+    box.label(text='Editing: ' + editing)
+    row = box.row(align=True)
+    row.enabled = _idle(context) and not display['source_read_only']
+    for role, label in (('BASE', 'Edit Base'), ('RIGGING', 'Edit Controls')):
+        operator = row.operator('character_designer.worklist_rigging_edit', text=label,
+                                depress=display['tweak_enabled'] and display['edit_role'] == role)
+        operator.item_id, operator.edit_role = item.item_id, role
+    save = box.row()
+    save.enabled = row.enabled and display['enabled'] and display['edit_role'] == 'RIGGING'
+    save.operator('character_designer.worklist_save_controls', text='Save Controls', icon='KEY_HLT').item_id = item.item_id
 
 
 def draw_worklist(layout, context):
+    from .animation_composition_ui import draw_composition
+    draw_composition(layout, context)
     settings = _state(context)
     if settings is None:
         layout.label(text='Animation workspace is unavailable.', icon='ERROR')
         return
     box = layout.box()
     header = box.row(align=True)
-    header.label(text='Animation Worklist', icon='ACTION')
+    header.label(text='Animations', icon='ACTION')
     header.operator_context = 'INVOKE_DEFAULT'
     header.operator('character_designer.worklist_connect', text='Connect', icon='FILE_FOLDER')
     header.operator('character_designer.worklist_refresh', text='', icon='FILE_REFRESH')
+    box.label(text='Scene: ' + getattr(context.scene, 'name', 'Unnamed'), icon='SCENE_DATA')
+    busy = scan_pending() or _collection().running()
     if settings.workspace_path:
         box.label(text='Character: ' + (settings.target_name or 'Unnamed'))
-        selected = _selected(settings)
-        source = next((entry.source_name for entry in settings.catalog
-                       if selected is not None and entry.clip_key == selected.clip_key), '')
-        if source:
-            box.label(text='Source: ' + source)
+        setup = getattr(context.scene, 'character_designer_setup', None)
+        main = getattr(setup, 'rig', None)
+        rig = getattr(settings, 'rig', None)
+        if main is not None:
+            row = box.row(align=True)
+            row.enabled = _idle(context)
+            if (rig is not None and hasattr(rig, 'get')
+                    and rig.get('character_designer_worklist_main_session_v1') is not None):
+                row.label(text='Rig: ' + rig.name, icon='ARMATURE_DATA')
+                row.operator('character_designer.worklist_restore_main_rig', text='Restore Main Rig', icon='LOOP_BACK')
+            else:
+                row.operator('character_designer.worklist_use_main_rig', text='Use Main Rig', icon='ARMATURE_DATA')
         batch = box.row(align=True)
-        batch.operator('character_designer.worklist_add_ready', text='Add Ready', icon='ADD')
-        batch.operator('character_designer.worklist_scan_changes', text='Scan Changes', icon='VIEWZOOM')
-        batch = box.row(align=True)
-        batch.operator('character_designer.worklist_sync_changed', text='Sync Changed', icon='EXPORT')
-        batch.operator('character_designer.worklist_cancel_collection', text='Cancel Collection', icon='CANCEL')
-        catalog = box.row()
-        catalog.prop(settings, 'show_catalog', text=f'Clip Browser ({len(settings.catalog)})', emboss=False,
-                     icon='TRIA_DOWN' if settings.show_catalog else 'TRIA_RIGHT')
-        if settings.show_catalog:
-            box.prop(settings, 'search', text='', icon='VIEWZOOM')
-            box.template_list('CHARACTERDESIGNER_UL_animation_catalog', '', settings, 'catalog',
-                              settings, 'catalog_index', rows=4, maxrows=8, sort_lock=True)
-            if (0 <= settings.catalog_index < len(settings.catalog)
-                    and _catalog_matches(settings.catalog[settings.catalog_index], settings.search)):
-                entry = settings.catalog[settings.catalog_index]
-                row = box.row(align=True)
-                row.label(text='Link Available' if entry.ready else 'Prepare in Unity',
-                          icon='LINKED' if entry.ready else 'INFO')
-                add = row.row(align=True)
-                add.enabled = entry.ready and _idle(context) and not any(
-                    item.clip_key == entry.clip_key for item in settings.items)
-                add.operator('character_designer.worklist_add', text='Add to Worklist', icon='ADD').clip_key = entry.clip_key
+        batch.enabled = _idle(context)
+        batch.operator('character_designer.worklist_add_ready', text='Import Prepared', icon='IMPORT')
+        batch.operator('character_designer.worklist_sync_changed', text='Export Changes', icon='EXPORT')
         if settings.items:
-            row = box.row()
-            row.template_list('CHARACTERDESIGNER_UL_animation_worklist', '', settings, 'items',
+            box.template_list('CHARACTERDESIGNER_UL_animation_worklist', '', settings, 'items',
                               settings, 'active_index', rows=4, maxrows=8, sort_lock=True)
-            controls = row.column(align=True)
-            for delta, icon in ((-1, 'TRIA_UP'), (1, 'TRIA_DOWN')):
-                cell = controls.row(align=True)
-                cell.enabled = (selected is not None and _idle(context)
-                                and 0 <= settings.active_index + delta < len(settings.items))
-                move = cell.operator('character_designer.worklist_move', text='', icon=icon)
-                move.item_id, move.delta = (selected.item_id if selected is not None else ''), delta
-            handle = controls.column(align=True)
-            handle.operator_context = 'INVOKE_DEFAULT'
-            handle.scale_y = 4.0
-            handle.enabled = selected is not None and len(settings.items) > 1 and _idle(context)
-            handle.operator('character_designer.worklist_drag_handle', text='', icon='GRIP').item_id = (
-                selected.item_id if selected is not None else '')
-            box.operator('character_designer.worklist_sync', text='Sync Current to Unity', icon='EXPORT')
-            if selected is not None and selected.scan_reason:
-                width = max(24, int(getattr(context.region, 'width', 300) / (
-                    7 * (context.preferences.system.ui_scale or 1.0))) - 6)
-                for index, line in enumerate(textwrap.wrap(selected.scan_reason, width=width)):
-                    box.label(text=line, icon='INFO' if index == 0 else 'BLANK1')
-            if any(item.scan_state == 'UNKNOWN' for item in settings.items):
-                box.label(text='Unknown: select explicitly to sync.', icon='INFO')
         else:
-            box.label(text='Add a prepared clip to start your worklist.', icon='INFO')
-    if settings.status:
+            box.label(text='Prepare motions in Unity, then click Import Prepared.', icon='INFO')
+        _draw_rigging(box, context, _selected(settings))
+        advanced = box.row()
+        advanced.prop(settings, 'show_advanced', text='Advanced', emboss=False,
+                      icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
+        if settings.show_advanced:
+            box.operator('character_designer.worklist_register_new', text='New Action', icon='ACTION')
+    if busy:
+        box.operator('character_designer.worklist_cancel_collection', text='Cancel', icon='CANCEL')
+    unresolved = any(
+        item.scan_state in {'UNKNOWN', 'BLOCKED'} for item in settings.items)
+    show_status = (settings.has_error or busy) and bool(settings.status)
+    if show_status:
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.status, width=width)):
             box.label(text=line, icon=('ERROR' if settings.has_error else 'INFO') if index == 0 else 'BLANK1')
-    if settings.collection_status and settings.collection_status != settings.status:
+    if ((settings.has_error or busy or unresolved or getattr(settings, 'collection_feedback', False)) and settings.collection_status
+            and (not show_status or settings.collection_status != settings.status)):
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.collection_status, width=width)):
             box.label(text=line, icon=('ERROR' if settings.has_error else 'INFO') if index == 0 else 'BLANK1')
+    selected = _selected(settings)
+    if (unresolved and selected is not None and selected.scan_state in {'UNKNOWN', 'BLOCKED'}
+            and selected.scan_reason and selected.scan_reason != settings.collection_status):
+        width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
+        for index, line in enumerate(textwrap.wrap(selected.scan_reason, width=width)):
+            box.label(text=line, icon=('ERROR' if selected.scan_state == 'BLOCKED' else 'INFO') if index == 0 else 'BLANK1')
 
 
 WORKLIST_CLASSES = (
@@ -695,9 +896,12 @@ WORKLIST_CLASSES = (
     CharacterDesignerAnimationWorklistState,
     CHARACTERDESIGNER_OT_worklist_connect,
     CHARACTERDESIGNER_OT_worklist_refresh,
+    CHARACTERDESIGNER_OT_worklist_use_main_rig,
+    CHARACTERDESIGNER_OT_worklist_restore_main_rig,
     CHARACTERDESIGNER_OT_worklist_add,
     CHARACTERDESIGNER_OT_worklist_add_ready,
     CHARACTERDESIGNER_OT_worklist_scan_changes,
+    CHARACTERDESIGNER_OT_worklist_register_new,
     CHARACTERDESIGNER_OT_worklist_sync_changed,
     CHARACTERDESIGNER_OT_worklist_cancel_collection,
     CHARACTERDESIGNER_OT_worklist_activate,
@@ -706,6 +910,8 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_drag_handle,
     CHARACTERDESIGNER_OT_worklist_drag,
     CHARACTERDESIGNER_OT_worklist_sync,
+    CHARACTERDESIGNER_OT_worklist_rigging_edit,
+    CHARACTERDESIGNER_OT_worklist_save_controls,
     CHARACTERDESIGNER_UL_animation_catalog,
     CHARACTERDESIGNER_UL_animation_worklist,
 )

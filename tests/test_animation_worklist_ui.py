@@ -4,6 +4,7 @@ import importlib.util
 from contextlib import contextmanager
 from pathlib import Path
 import sys
+import tempfile
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -72,10 +73,15 @@ class WorklistUI(unittest.TestCase):
             setattr(self.collection, method, Mock())
         self.collection.running = Mock(return_value=False)
         self.collection.export_finished = Mock(return_value='')
+        # The sibling native Pose panel owns Matrix/IK dependencies. These
+        # tests exercise Worklist controls and retain all their assertions.
+        pose_capture = ModuleType(package_name + '.control_pose_capture')
+        pose_capture.draw = Mock()
         modules = patch.dict(sys.modules, {
             package_name: package, 'bpy': bpy, 'bpy.props': props, 'bpy.types': types,
             animation.__name__: animation, self.backend.__name__: self.backend,
             self.collection.__name__: self.collection,
+            pose_capture.__name__: pose_capture,
         })
         modules.start()
         self.addCleanup(modules.stop)
@@ -101,9 +107,9 @@ class WorklistUI(unittest.TestCase):
         self.state = SimpleNamespace(items=items, catalog=catalog, active_index=0, catalog_index=1,
                                      search='', workspace_path='character_animation_workspace.json',
                                      target_name='Cosha', show_catalog=True, status='', has_error=False,
-                                     collection_status='', scan_completed=False)
+                                     collection_status='', scan_completed=False, show_advanced=False)
         self.context = SimpleNamespace(
-            scene=SimpleNamespace(character_designer_animation_worklist=self.state),
+            scene=SimpleNamespace(name='Animation Worklist · Cosha', character_designer_animation_worklist=self.state),
             screen=SimpleNamespace(areas=[]), region=SimpleNamespace(width=360),
             preferences=SimpleNamespace(system=SimpleNamespace(ui_scale=1.0)),
             workspace=SimpleNamespace(status_text_set=Mock()),
@@ -195,6 +201,77 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(operator.invoke(self.context, self.event('LEFTMOUSE')), {'RUNNING_MODAL'})
         return operator
 
+    def connect_operator(self, root):
+        self.animation.unity_exchange_folder = Mock(return_value=str(root))
+        self.context.window_manager.fileselect_add = Mock()
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect()
+        operator.filepath = ''
+        return operator
+
+    def test_connect_prefers_readable_entries_from_saved_workspace_exchange_root(self):
+        with tempfile.TemporaryDirectory(prefix='cd-readable-connect-') as folder:
+            root = Path(folder)
+            entries = root / 'Animations'
+            entries.mkdir()
+            saved = root / 'CharacterTuning' / 'Workspaces' / str(uuid.uuid4()) / ('a' * 32) / 'character_animation_workspace.json'
+            self.state.workspace_path = str(saved)
+            operator = self.connect_operator(root / 'UnrelatedConfiguredRoot')
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+            self.assertEqual(operator.filepath, str(entries) + '/')
+            self.animation.unity_exchange_folder.assert_not_called()
+            self.context.window_manager.fileselect_add.assert_called_once_with(operator)
+            self.backend.connect.assert_not_called()
+
+    def test_connect_without_readable_entries_keeps_saved_workspace_file(self):
+        with tempfile.TemporaryDirectory(prefix='cd-readable-connect-') as folder:
+            root = Path(folder)
+            saved = root / 'CharacterTuning' / 'Workspaces' / str(uuid.uuid4()) / ('a' * 32) / 'character_animation_workspace.json'
+            self.state.workspace_path = str(saved)
+            operator = self.connect_operator(root / 'UnrelatedConfiguredRoot')
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+            self.assertEqual(operator.filepath, str(saved))
+            self.animation.unity_exchange_folder.assert_not_called()
+
+    def test_connect_without_saved_workspace_uses_configured_entries_or_legacy_file(self):
+        with tempfile.TemporaryDirectory(prefix='cd-readable-connect-') as folder:
+            root = Path(folder)
+            self.state.workspace_path = ''
+            operator = self.connect_operator(root)
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+            self.assertEqual(operator.filepath, str(root / 'character_animation_workspace.json'))
+            entries = root / 'Animations'
+            entries.mkdir()
+            operator.filepath = ''
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+            self.assertEqual(operator.filepath, str(entries) + '/')
+
+    def test_connect_nonstandard_saved_workspace_uses_configured_root_for_entries(self):
+        with tempfile.TemporaryDirectory(prefix='cd-readable-connect-') as folder:
+            root = Path(folder)
+            entries = root / 'Animations'
+            entries.mkdir()
+            self.state.workspace_path = str(root / 'Private' / 'character_animation_workspace.json')
+            operator = self.connect_operator(root)
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+            self.assertEqual(operator.filepath, str(entries) + '/')
+            self.animation.unity_exchange_folder.assert_called_once_with(self.context)
+
+    def test_connect_unavailable_entry_folder_keeps_legacy_fallback(self):
+        operator = self.connect_operator('D:/Exchange')
+        saved = self.state.workspace_path
+        with patch.object(Path, 'is_dir', side_effect=OSError('Unavailable exchange drive')):
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+        self.assertEqual(operator.filepath, saved)
+
+    def test_connect_explicit_filepath_is_preserved_without_probe_or_config_read(self):
+        operator = self.connect_operator('D:/Exchange')
+        operator.filepath = 'D:/HandChosen/Cosha.workspace.json'
+        with patch.object(Path, 'is_dir', side_effect=AssertionError('Explicit selection was probed')):
+            self.assertEqual(operator.invoke(self.context, None), {'RUNNING_MODAL'})
+        self.assertEqual(operator.filepath, 'D:/HandChosen/Cosha.workspace.json')
+        self.animation.unity_exchange_folder.assert_not_called()
+        self.backend.connect.assert_not_called()
+
     def test_rna_contract_has_no_action_switching_update_callbacks(self):
         state = self.ui.CharacterDesignerAnimationWorklistState.__annotations__
         self.assertNotIn('update', state['active_index'])
@@ -221,6 +298,8 @@ class WorklistUI(unittest.TestCase):
                          {'NOT_SCANNED', 'CHANGED', 'UNCHANGED', 'UNKNOWN', 'BLOCKED'})
         for field in ('collection_status', 'scan_completed'):
             self.assertIn('SKIP_SAVE', state[field]['options'])
+        self.assertIn('SKIP_SAVE', state['show_advanced']['options'])
+        self.assertFalse(state['show_advanced']['default'])
 
     def test_collection_operators_are_registered(self):
         for operator in (self.ui.CHARACTERDESIGNER_OT_worklist_add_ready,
@@ -272,7 +351,7 @@ class WorklistUI(unittest.TestCase):
         self.assertIsNone(self.ui._poll_scan())
         self.assertEqual([call[0] for call in calls.mock_calls], ['scan', 'begin'])
         self.collection.scan_changes.assert_called_once_with(self.context)
-        self.collection.begin_sync_changed.assert_called_once_with(self.context)
+        self.collection.begin_sync_changed.assert_called_once_with(self.context, changed_only=True)
         self.backend.sync.assert_not_called()
         self.animation._link_idle.return_value = False
         self.assertFalse(operator.poll(self.context))
@@ -325,7 +404,7 @@ class WorklistUI(unittest.TestCase):
             self.assertTrue(self.ui._idle(self.context))
             calls.append('scan')
         self.collection.scan_changes.side_effect = scan
-        self.collection.begin_sync_changed.side_effect = lambda _context: calls.append('begin')
+        self.collection.begin_sync_changed.side_effect = lambda _context, **_options: calls.append('begin')
         self.ui.CHARACTERDESIGNER_OT_worklist_sync_changed().execute(self.context)
         self.ui._poll_scan()
         self.assertEqual(calls, ['scan', 'begin'])
@@ -428,7 +507,7 @@ class WorklistUI(unittest.TestCase):
         self.collection.scan_changes.assert_not_called()
         self.collection.begin_sync_changed.assert_not_called()
 
-    def test_unknown_row_requires_an_explicit_selection_and_displays_reason(self):
+    def test_unresolved_reason_is_detail_without_scan_columns_or_selection_mutation(self):
         item = self.state.items[0]
         item.scan_state, item.scan_reason = 'UNKNOWN', 'Unsupported animated dependency.'
         self.state.scan_completed = True
@@ -437,24 +516,23 @@ class WorklistUI(unittest.TestCase):
         self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
             self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
         labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
-        self.assertIn('Unknown: select explicitly to sync.', labels)
+        self.assertNotIn('Unknown: select explicitly to sync.', labels)
         self.assertIn('Unsupported animated dependency.', labels)
-        self.assertIn('Unknown', labels)
+        self.assertNotIn('Unknown', labels)
         selections = [(value, enabled) for kind, value, enabled in layout.records
                       if kind == 'prop' and value[0] == 'sync_selected']
-        self.assertEqual(len(selections), 1)
-        self.assertTrue(selections[0][1])
+        self.assertEqual(selections, [])
         self.assertFalse(item.sync_selected)
-        item.sync_selected = True  # The artist explicitly checks this row.
+        item.sync_selected = True
         self.ui.draw_worklist(Layout(), self.context)
         self.assertTrue(item.sync_selected)
+        self.assertEqual((item.scan_state, item.scan_reason), ('UNKNOWN', 'Unsupported animated dependency.'))
         self.collection.scan_changes.assert_not_called()
         self.collection.begin_sync_changed.assert_not_called()
 
-    def test_blocked_and_unscanned_rows_cannot_be_checked_for_sync(self):
+    def test_rows_have_no_scan_columns_in_any_scan_state(self):
         item = self.state.items[0]
-        for state, enabled in (('BLOCKED', False), ('NOT_SCANNED', False),
-                               ('CHANGED', True), ('UNCHANGED', True), ('UNKNOWN', True)):
+        for state in ('BLOCKED', 'NOT_SCANNED', 'CHANGED', 'UNCHANGED', 'UNKNOWN'):
             with self.subTest(state=state):
                 item.scan_state = state
                 layout = Layout()
@@ -462,7 +540,8 @@ class WorklistUI(unittest.TestCase):
                     self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
                 selections = [active for kind, value, active in layout.records
                               if kind == 'prop' and value[0] == 'sync_selected']
-                self.assertEqual(selections, [enabled])
+                self.assertEqual(selections, [])
+                self.assertFalse(any(kind == 'label' for kind, _value, _active in layout.records))
 
     def test_drawing_saved_scan_results_never_rescans_or_reads_fingerprint_inputs(self):
         self.state.items[0].scan_state = 'CHANGED'
@@ -490,17 +569,25 @@ class WorklistUI(unittest.TestCase):
     def test_draw_does_not_read_files_or_call_backend(self):
         layout = Layout()
         with patch.object(Path, 'open', side_effect=AssertionError('UI read a file')), \
+                patch.object(Path, 'is_dir', side_effect=AssertionError('UI probed a directory')), \
                 patch.object(self.ui, '_backend', side_effect=AssertionError('UI called the backend')):
             self.ui.draw_worklist(layout, self.context)
         labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
         self.assertIn('Character: Cosha', labels)
-        self.assertIn('Source: Soldier', labels)
-        self.assertIn('Prepare in Unity', labels)
-        add = [(value, enabled) for kind, value, enabled in layout.records
-               if kind == 'operator' and value[0] == 'character_designer.worklist_add']
-        self.assertEqual(len(add), 1)
-        self.assertFalse(add[0][1])
-        self.assertEqual(add[0][0][2].clip_key, 'clip-Dance')
+        self.assertIn('Scene: Animation Worklist · Cosha', labels)
+        self.assertNotIn('Source: Soldier', labels)
+        lists = [value[0] for kind, value, _enabled in layout.records if kind == 'list']
+        self.assertEqual(len(lists), 1)
+        self.assertEqual(lists[0][0], 'CHARACTERDESIGNER_UL_animation_worklist')
+        self.assertEqual(lists[0][3], 'items')
+        buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
+        self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
+            ('character_designer.worklist_connect', 'Connect'),
+            ('character_designer.worklist_refresh', ''),
+            ('character_designer.worklist_add_ready', 'Import Prepared'),
+            ('character_designer.worklist_sync_changed', 'Export Changes')])
+        self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
+                             for kind, value, _enabled in layout.records))
 
     def test_search_filters_name_and_source_without_reordering(self):
         ui_list = self.ui.CHARACTERDESIGNER_UL_animation_catalog()
@@ -509,13 +596,14 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(flags, [ui_list.bitflag_filter_item, 0])
         self.assertEqual(order, [])
 
-    def test_search_hides_add_for_a_selected_row_outside_the_results(self):
+    def test_legacy_catalog_search_never_hides_imported_worklist(self):
         self.state.catalog_index = 0
         self.state.search = 'Dance'
         layout = Layout()
         self.ui.draw_worklist(layout, self.context)
         self.assertFalse(any(kind == 'operator' and value[0] == 'character_designer.worklist_add'
                              for kind, value, _enabled in layout.records))
+        self.assertEqual([value[0][3] for kind, value, _enabled in layout.records if kind == 'list'], ['items'])
 
     def test_row_actions_use_stable_item_ids_and_correct_sides(self):
         item = self.state.items[1]
@@ -533,17 +621,113 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(activate.execute(self.context), {'FINISHED'})
         self.backend.activate.assert_called_once_with(self.context, 'id-Run', side='SOURCE')
 
-    def test_row_exposes_only_source_custom_remove_and_legacy_move_is_hidden(self):
+    def test_row_names_both_actions_with_distinct_icons_without_remove(self):
         layout = Layout()
         self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
             self.context, layout, self.state, self.state.items[0], 0, self.state, 'active_index', 0)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([name for name, _options, _payload in buttons], [
-            'character_designer.worklist_activate', 'character_designer.worklist_activate',
-            'character_designer.worklist_remove'])
+            'character_designer.worklist_activate', 'character_designer.worklist_activate'])
         self.assertEqual([payload.side for name, _options, payload in buttons
                           if name.endswith('worklist_activate')], ['SOURCE', 'CUSTOM'])
+        self.assertEqual([options['text'] for _name, options, _payload in buttons], ['Walk', 'Walk'])
+        self.assertEqual([options['icon'] for _name, options, _payload in buttons], ['LINKED', 'EDITMODE_HLT'])
+        self.assertEqual([options['depress'] for name, options, _payload in buttons
+                          if name.endswith('worklist_activate')], [False, True])
         self.assertIn('INTERNAL', self.ui.CHARACTERDESIGNER_OT_worklist_drag.bl_options)
+        self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_remove, self.ui.WORKLIST_CLASSES)
+
+    def test_action_cells_require_their_action_and_an_idle_worklist(self):
+        item = self.state.items[0]
+        for busy in (False, True):
+            with self.subTest(busy=busy):
+                self.animation._link_idle.return_value = not busy
+                item.source_action = None
+                layout = Layout()
+                self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+                    self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
+                self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
+                                 [False, not busy])
+
+    def test_new_action_is_available_only_in_closed_by_default_advanced_fold(self):
+        for opened in (False, True):
+            with self.subTest(opened=opened):
+                self.state.show_advanced = opened
+                layout = Layout()
+                self.ui.draw_worklist(layout, self.context)
+                buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+                self.assertEqual('character_designer.worklist_register_new' in buttons, opened)
+                self.assertNotIn('character_designer.worklist_scan_changes', buttons)
+                self.assertNotIn('character_designer.worklist_sync', buttons)
+        self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_register_new, self.ui.WORKLIST_CLASSES)
+
+    def test_idle_success_feedback_is_hidden_and_errors_remain_visible(self):
+        self.state.status = 'Library connected.'
+        self.state.collection_status = 'Custom Walk active.'
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
+        self.assertNotIn(self.state.status, labels)
+        self.assertNotIn(self.state.collection_status, labels)
+        self.assertEqual(self.state.status, 'Library connected.')
+        self.state.status, self.state.collection_status = 'Workspace identity changed.', ''
+        self.state.has_error = True
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        self.assertIn({'text': 'Workspace identity changed.', 'icon': 'ERROR'},
+                      [value for kind, value, _enabled in layout.records if kind == 'label'])
+
+    def test_pending_scan_and_collection_show_progress_and_cancel_only_while_busy(self):
+        self.state.status = 'Importing animations...'
+        self.state.collection_status = '1 / 3 motions.'
+        for running in (False, True):
+            with self.subTest(running=running):
+                self.collection.running.return_value = running
+                layout = Layout()
+                self.ui.draw_worklist(layout, self.context)
+                buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+                labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
+                self.assertEqual('character_designer.worklist_cancel_collection' in buttons, running)
+                self.assertEqual(self.state.status in labels, running)
+                self.assertEqual(self.state.collection_status in labels, running)
+        self.collection.running.return_value = False
+        self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes().execute(self.context)
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        self.assertIn('character_designer.worklist_cancel_collection',
+                      [value[0] for kind, value, _enabled in layout.records if kind == 'operator'])
+        self.assertTrue(any(kind == 'label' and 'Scanning animations' in value['text']
+                            for kind, value, _enabled in layout.records))
+
+    def test_export_result_remains_visible_after_worker_finishes(self):
+        self.state.collection_feedback = True
+        self.state.collection_status = 'No changes to export.'
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        self.assertIn({'text': 'No changes to export.', 'icon': 'INFO'},
+                      [value for kind, value, _enabled in layout.records if kind == 'label'])
+
+    def test_unresolved_export_feedback_stays_visible_without_idle_success_status(self):
+        self.state.scan_completed = True
+        self.state.items[0].scan_state = 'UNKNOWN'
+        self.state.items[0].scan_reason = 'Missing preparation proof.'
+        self.state.status = 'Custom Walk active.'
+        self.state.collection_status = 'One motion needs attention.'
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
+        self.assertNotIn(self.state.status, labels)
+        self.assertIn(self.state.collection_status, labels)
+        self.assertIn(self.state.items[0].scan_reason, labels)
+        self.state.items[0].scan_state = 'BLOCKED'
+        self.state.items[0].scan_reason = 'The prepared Link changed.'
+        self.state.status = self.state.collection_status
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        self.assertIn({'text': 'The prepared Link changed.', 'icon': 'ERROR'},
+                      [value for kind, value, _enabled in layout.records if kind == 'label'])
+        labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
+        self.assertEqual(labels.count(self.state.collection_status), 1)
 
     def test_sync_requires_selected_custom_to_be_the_actual_rig_action(self):
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_sync
@@ -618,13 +802,15 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(operator.invoke(self.context, event), {'CANCELLED'})
         self.backend.move.assert_not_called()
 
-    def test_tall_drag_handle_draws_one_control_for_the_stable_selected_item(self):
+    def test_main_worklist_hides_reorder_controls_but_retains_operators(self):
         layout = Layout()
         self.ui.draw_worklist(layout, self.context)
-        buttons = [value for kind, value, _enabled in layout.records
-                   if kind == 'operator' and value[0] == 'character_designer.worklist_drag_handle']
-        self.assertEqual(len(buttons), 1)
-        self.assertEqual(buttons[0][2].item_id, 'id-Walk')
+        buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+        for operator in (self.ui.CHARACTERDESIGNER_OT_worklist_drag_handle,
+                         self.ui.CHARACTERDESIGNER_OT_worklist_drag,
+                         self.ui.CHARACTERDESIGNER_OT_worklist_move):
+            self.assertNotIn(operator.bl_idname, buttons)
+            self.assertIn(operator, self.ui.WORKLIST_CLASSES)
 
     def test_drag_distance_accounts_for_dpi_and_sidebar_zoom(self):
         self.context.preferences.system.ui_scale = 1.5
@@ -903,6 +1089,36 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(self.other_state.status, 'Other scene unchanged')
         self.assertIsNone(animation._export_window_manager)
         sys.modules['bpy'].app.timers.unregister.assert_called_once_with(animation._poll_action_export)
+
+    def test_main_rig_adoption_button_dispatches_existing_scene_backend(self):
+        main = SimpleNamespace(name='CoshaRig', get=lambda _key: None)
+        self.context.scene.character_designer_setup = SimpleNamespace(rig=main)
+        self.state.rig = None
+        self.backend.adopt_main_rig = Mock()
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_use_main_rig()
+        self.assertTrue(operator.poll(self.context))
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.backend.adopt_main_rig.assert_called_once_with(self.context)
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+        self.assertIn('character_designer.worklist_use_main_rig', buttons)
+
+    def test_adopted_main_rig_exposes_persistent_restore_button(self):
+        main = SimpleNamespace(name='CoshaRig', get=lambda key:
+                               'saved record' if key == 'character_designer_worklist_main_session_v1' else None)
+        self.context.scene.character_designer_setup = SimpleNamespace(rig=main)
+        self.state.rig = main
+        self.backend.restore_main_rig = Mock()
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_restore_main_rig()
+        self.assertTrue(operator.poll(self.context))
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.backend.restore_main_rig.assert_called_once_with(self.context)
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+        self.assertIn('character_designer.worklist_restore_main_rig', buttons)
+        self.assertNotIn('character_designer.worklist_use_main_rig', buttons)
 
     def test_connected_panel_keeps_playback_and_cancel_without_legacy_controls(self):
         animation = self.load_animation()

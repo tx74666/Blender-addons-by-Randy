@@ -18,6 +18,11 @@ import uuid
 SOURCE = Path(__file__).resolve().parents[1] / 'addons/character_designer'
 
 
+class NativeAction(SimpleNamespace):
+    def get(self, key, default=None):
+        return default  # These plain legacy fixtures have no native ID properties.
+
+
 class Timers:
     def __init__(self):
         self.registered = set()
@@ -71,7 +76,7 @@ class CollectionTests(unittest.TestCase):
         self.rig = SimpleNamespace(animation_data=SimpleNamespace(action=object()))
         self.item = self.make_item('walk')
         self.saved = self.make_state([self.item])
-        self.original_scene = SimpleNamespace(character_designer_animation_worklist=self.saved)
+        self.original_scene = SimpleNamespace(name='Artist Scene', character_designer_animation_worklist=self.saved)
         self.area = SimpleNamespace(type='VIEW_3D', tag_redraw=Mock())
         self.window = SimpleNamespace(scene=self.original_scene,
                                       screen=SimpleNamespace(areas=[self.area]))
@@ -79,7 +84,7 @@ class CollectionTests(unittest.TestCase):
         self.context = Context(self.window, self.manager)
         self.timers = Timers()
         self.catalog = {'clips': [self.clip('walk')]}
-        self.link = {'clip_key': 'walk', 'targetGuid': 'f' * 32,
+        self.link = {'clip_key': 'walk', 'clipGuid': 'a' * 32, 'clipLocalId': 1, 'targetGuid': 'f' * 32,
                      'revision': 1, 'fbxFile': str(self.fbx),
                      'fbxSha256': self.digest(self.fbx),
                      'metadataFile': str(self.metadata),
@@ -93,8 +98,9 @@ class CollectionTests(unittest.TestCase):
         bpy.context, bpy.app = self.context, SimpleNamespace(timers=self.timers)
         self.worklist = ModuleType(name + '.animation_worklist')
         self.worklist.state = lambda context: context.scene.character_designer_animation_worklist
-        self.worklist._fresh_workspace = Mock(side_effect=lambda _saved: deepcopy(self.catalog))
+        self.worklist._fresh_workspace = Mock(side_effect=lambda _saved, _item=None: deepcopy(self.catalog))
         self.worklist._clip_key = lambda clip: clip['clip_key']
+        self.worklist._validate_route = Mock()
         self.worklist._check_baseline = Mock()
         self.worklist._item = lambda saved, key: next(item for item in saved.items if item.item_id == key)
         self.worklist._slot = Mock(return_value=SimpleNamespace(handle=3))
@@ -105,7 +111,8 @@ class CollectionTests(unittest.TestCase):
         self.worklist._idle = Mock(side_effect=self.idle)
         self.links = ModuleType(name + '.animation_link')
         self.links.load_link = Mock(side_effect=lambda _path: deepcopy(self.link))
-        self.links._identity = lambda link: (link['targetGuid'], link['clip_key'])
+        self.links._identity = lambda link: (link['targetGuid'], link['clip_key'],
+            link.get('workItemId', ''), link.get('baseClipGuid', ''), link.get('baseClipLocalId', 0))
         self.links._sha256 = self.digest
         self.fingerprints = ModuleType(name + '.animation_worklist_fingerprint')
         self.fingerprints.SCHEMA = self.proof['schema']
@@ -154,8 +161,8 @@ class CollectionTests(unittest.TestCase):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
     def make_item(self, key):
-        return SimpleNamespace(item_id='item-' + key, clip_key=key, name=key,
-            custom_action=SimpleNamespace(library=None), custom_slot=3, rig=self.rig,
+        return SimpleNamespace(item_id='item-' + key, clip_key=key, work_item_id='', name=key,
+            custom_action=NativeAction(library=None), custom_slot=3, rig=self.rig,
             manifest_path=str(self.manifest), source_hash='saved source baseline',
             link_identity='', last_synced_receipt='', scan_state='NOT_SCANNED',
             scan_reason='', sync_selected=False, side='CUSTOM')
@@ -165,7 +172,7 @@ class CollectionTests(unittest.TestCase):
             scan_completed=False, collection_status='', status='', has_error=False)
 
     def clip(self, key, *, prepared=True, stale=False):
-        return {'clip_key': key, 'needsRebuild': stale,
+        return {'clip_key': key, 'clipGuid': 'a' * 32, 'clipLocalId': 1, 'needsRebuild': stale,
                 'linkManifest': str(self.manifest) if prepared else ''}
 
     def idle(self, _context, *, _collection=False):
@@ -210,6 +217,8 @@ class CollectionTests(unittest.TestCase):
         tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                         and node.name == 'sync')
+        rigging_dispatch = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                                and node.name == '_rigging_module')
         namespace = dict(__name__=self.worklist.__name__,
             __package__=self.worklist.__name__.rsplit('.', 1)[0],
             bpy=sys.modules['bpy'], Path=Path, json=json, links=self.links,
@@ -218,8 +227,9 @@ class CollectionTests(unittest.TestCase):
                 self.worklist.state(context).active_index],
             _check_baseline=self.worklist._check_baseline,
             _fresh_workspace=self.worklist._fresh_workspace,
-            _clip_key=self.worklist._clip_key, _association=Mock())
-        exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), 'exec'), namespace)
+            _clip_key=self.worklist._clip_key, _validate_route=self.worklist._validate_route,
+            _association=Mock())
+        exec(compile(ast.Module(body=[rigging_dispatch, function], type_ignores=[]), str(path), 'exec'), namespace)
         def begin_export(_context, _rig):
             self.active_job = {}
             return self.active_job
@@ -268,12 +278,15 @@ class CollectionTests(unittest.TestCase):
         self.worklist.activate.assert_not_called()
         self.assertIs(self.rig.animation_data.action, before_action)
         self.assertEqual([item.clip_key for item in self.saved.items], ['walk', 'turn'])
+        self.assertIn('Added 1 / 1; Completed.', self.saved.collection_status)
+        self.assertIn('Used animation scene "Artist Scene".', self.saved.collection_status)
 
     def test_first_add_hands_ownership_to_one_new_worklist_scene(self):
         self.saved.items = []
         self.catalog['clips'] = [self.clip('walk'), self.clip('turn')]
         artist_action = self.rig.animation_data.action
-        first_scene = SimpleNamespace(character_designer_animation_worklist=self.make_state([]))
+        first_scene = SimpleNamespace(name='Animation Worklist · Cosha',
+                                      character_designer_animation_worklist=self.make_state([]))
         def add(context, key, **kwargs):
             if context.scene is self.original_scene:
                 context.window.scene = first_scene
@@ -291,6 +304,132 @@ class CollectionTests(unittest.TestCase):
                          ['walk', 'turn'])
         self.worklist.activate.assert_not_called()
         self.assertIs(self.rig.animation_data.action, artist_action)
+        self.assertIn('Added 2 / 2; Completed.', first_scene.character_designer_animation_worklist.collection_status)
+        self.assertIn('Created animation scene "Animation Worklist · Cosha".',
+                      first_scene.character_designer_animation_worklist.collection_status)
+
+    def test_add_without_saved_rig_reports_reused_scene_when_owned_rig_is_adopted(self):
+        self.saved.rig = None
+        self.catalog['clips'].append(self.clip('turn'))
+        self.collection.begin_add_ready(self.context)
+        self.assertIsNone(self.collection._poll_collection())
+        self.assertIn('Used animation scene "Artist Scene".', self.saved.collection_status)
+        self.assertNotIn('Created animation scene', self.saved.collection_status)
+
+    def test_partial_add_cancel_keeps_count_state_and_actual_scene_feedback(self):
+        self.catalog['clips'].extend([self.clip('turn'), self.clip('jump')])
+        queue = self.collection.begin_add_ready(self.context)
+        self.assertEqual(self.collection._poll_collection(), 0.25)
+        self.assertTrue(self.collection.cancel(message='Artist stopped this import.'))
+        self.assertIsNone(self.collection._poll_collection())
+        self.assertEqual(queue.succeeded_keys, ('turn',))
+        self.assertIn('Added 1 / 2; Cancelled.', self.saved.collection_status)
+        self.assertIn('Used animation scene "Artist Scene".', self.saved.collection_status)
+        self.assertFalse(queue.cancel_message)  # Existing between-item cancellation has no worker message.
+
+    def test_failed_first_add_does_not_claim_a_scene_was_created_or_used(self):
+        self.catalog['clips'].append(self.clip('turn'))
+        self.worklist.add.side_effect = ValueError('The linked model changed.')
+        queue = self.collection.begin_add_ready(self.context)
+        self.assertIsNone(self.collection._poll_collection())
+        self.assertEqual(queue.succeeded_keys, ())
+        self.assertEqual(self.saved.collection_status, 'Added 0 / 1; Failed. The linked model changed.')
+
+    def test_sync_completion_feedback_remains_unchanged(self):
+        queue, job = self.begin_sync()
+        self.dispose(job)
+        self.assertEqual(self.collection.export_finished(job, self.publication()), '')
+        self.assertIsNone(self.collection._poll_collection())
+        self.assertEqual(queue.succeeded_keys, ('item-walk',))
+        self.assertEqual(self.saved.collection_status, 'Synced 1 / 1; Completed.')
+
+    def test_deleted_scene_after_successful_add_does_not_strand_batch(self):
+        class DeletedScene:
+            @property
+            def name(self):
+                raise ReferenceError('Scene was removed.')
+
+            @property
+            def character_designer_animation_worklist(self):
+                raise ReferenceError('Scene was removed.')
+
+        self.catalog['clips'].append(self.clip('turn'))
+        queue = self.collection.begin_add_ready(self.context)
+        batch = self.collection._batch
+        queue.tick(lambda attempt: self.collection._start(self.context, batch, attempt))
+        self.assertFalse(queue.busy)
+        self.assertEqual(queue.succeeded_keys, ('turn',))
+        self.assertEqual([item.clip_key for item in self.saved.items], ['walk', 'turn'])
+        batch['scene'] = DeletedScene()
+        self.assertIsNone(self.collection._poll_collection())
+        self.assertIsNone(self.collection._batch)
+        self.assertFalse(self.collection.running())
+
+    def test_selected_three_request_ignores_historical_ready_and_preserves_existing_custom(self):
+        ids = [uuid.uuid4().hex for _ in range(5)]
+        self.catalog['clips'] = [{**self.clip(key), 'workItemId': value}
+                                  for key, value in zip(('walk', 'turn', 'jump', 'old', 'other'), ids)]
+        self.catalog.update(prepareRequestId=uuid.uuid4().hex, preparedWorkItemIds=ids[:3])
+        self.worklist._clip_key = self.collection.workspace.row_key
+        self.item.clip_key, self.item.work_item_id = 'work:' + ids[0], ids[0]
+        original = self.item.custom_action
+        queue = self.collection.begin_add_ready(self.context)
+        self.assertEqual(queue.remaining_keys, tuple('work:' + value for value in ids[1:3]))
+        self.collection._poll_collection()
+        self.collection._poll_collection()
+        self.assertEqual([item.clip_key for item in self.saved.items], ['work:' + value for value in ids[:3]])
+        self.assertIs(self.saved.items[0].custom_action, original)
+        self.worklist.activate.assert_not_called()
+
+    def test_explicit_empty_request_and_new_rows_without_request_add_nothing(self):
+        self.catalog['clips'] = [{**self.clip('turn'), 'workItemId': uuid.uuid4().hex}]
+        for request in ({'prepareRequestId': uuid.uuid4().hex, 'preparedWorkItemIds': []}, {}):
+            with self.subTest(request=request):
+                self.catalog.pop('prepareRequestId', None)
+                self.catalog.pop('preparedWorkItemIds', None)
+                self.catalog.update(request)
+                queue = self.collection.begin_add_ready(self.context)
+                self.assertEqual(queue.total, 0)
+                self.assertIsNone(self.collection._poll_collection())
+        self.worklist.add.assert_not_called()
+
+    def test_changed_preparation_request_stops_remaining_imports(self):
+        ids = [uuid.uuid4().hex for _ in range(2)]
+        self.saved.items = []
+        self.catalog['clips'] = [{**self.clip(key), 'workItemId': value}
+                                  for key, value in zip(('walk', 'turn'), ids)]
+        self.catalog.update(prepareRequestId=uuid.uuid4().hex, preparedWorkItemIds=ids)
+        queue = self.collection.begin_add_ready(self.context)
+        self.collection._poll_collection()
+        self.catalog['prepareRequestId'] = uuid.uuid4().hex
+        self.collection._poll_collection()
+        self.assertEqual(queue.succeeded_keys, ('walk',))
+        self.assertEqual([item.clip_key for item in self.saved.items], ['walk'])
+        self.assertIn('Added 1 / 2; Failed.', self.saved.collection_status)
+        self.assertIn('Used animation scene "Artist Scene".', self.saved.collection_status)
+        self.assertIn('request changed', self.saved.collection_status)
+
+    def test_partial_return_records_only_the_original_row_and_rejects_swapped_variant(self):
+        self.item.work_item_id = uuid.uuid4().hex
+        self.link.update(workItemId=self.item.work_item_id, baseClipGuid='b' * 32, baseClipLocalId=22)
+        self.item.link_identity = json.dumps(self.link)
+        second = self.make_item('turn')
+        second.work_item_id = uuid.uuid4().hex
+        second.last_synced_receipt = 'artist existing receipt'
+        self.saved.items.append(second)
+        self.publish_receipt()
+        self.assertEqual(json.loads(self.item.last_synced_receipt)['workItemId'], self.item.work_item_id)
+        self.assertEqual(second.last_synced_receipt, 'artist existing receipt')
+        previous = self.item.last_synced_receipt
+        tampered = json.loads(previous)
+        tampered['workItemId'] = second.work_item_id
+        self.item.last_synced_receipt = json.dumps(tampered)
+        self.assertIsNone(self.collection._receipt(self.item, self.link, self.implementation))
+        self.item.last_synced_receipt = previous
+        self.link['workItemId'] = second.work_item_id
+        self.assertIn('differs', self.collection.export_finished(self.ordinary_job(), self.publication()))
+        self.assertEqual(self.item.last_synced_receipt, previous)
+        self.assertEqual(second.last_synced_receipt, 'artist existing receipt')
 
     def test_scan_does_not_switch_action_or_evaluate_an_export(self):
         action = self.rig.animation_data.action
@@ -316,6 +455,84 @@ class CollectionTests(unittest.TestCase):
         self.collection.scan_changes(self.context)
         self.assertFalse(self.item.sync_selected)
 
+    def test_prepared_baseline_skips_unchanged_a_and_selects_only_edited_b(self):
+        second = self.make_item('turn')
+        self.saved.items.append(second)
+        for item in self.saved.items:
+            item.source_action, item.source_slot = object(), 3
+            item.link_identity = json.dumps(self.link)
+            self.collection.remember_source_baseline(self.context, item)
+        self.catalog['clips'].append(self.clip('turn'))
+        self.fingerprints.fingerprint_native.side_effect = lambda action, *_args: {
+            **self.proof, 'fingerprint': ('b' if action is second.custom_action else 'a') * 64}
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'UNCHANGED')
+        self.assertFalse(self.item.sync_selected)
+        self.assertEqual(second.scan_state, 'CHANGED')
+        self.assertTrue(second.sync_selected)
+        self.assertEqual(self.item.last_synced_receipt, '')
+        self.assertEqual(second.last_synced_receipt, '')
+        self.worklist.activate.assert_not_called()
+
+    def test_unknown_source_dependencies_never_skip_a_new_or_legacy_entry(self):
+        self.item.source_action, self.item.source_slot = object(), 3
+        self.proof.update(fingerprint_known=False, fingerprint='', proof_reason='Unproven constraints')
+        self.collection.remember_source_baseline(self.context, self.item)
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'UNKNOWN')
+        self.assertFalse(self.item.sync_selected)
+        self.assertFalse(self.collection.unchanged_proof(self.item, self.link, self.implementation, self.proof))
+
+    def test_registered_new_c_is_changed_then_unchanged_after_its_own_complete_return(self):
+        action_id, work_id = uuid.uuid4().hex, uuid.uuid4().hex
+        folder = self.folder / 'new_actions' / action_id
+        folder.mkdir(parents=True)
+        model = self.folder / 'model.fbx'
+        model.write_bytes(b'Workspace model')
+        workspace_path = self.folder / 'character_animation_workspace.json'
+        workspace_path.write_text('{}', encoding='utf-8')
+        self.saved.workspace_path = str(workspace_path)
+        self.manifest = folder / 'character_animation_new.json'
+        self.link = {'schema': 'randomrealm.animation-new-action/1', 'newActionId': action_id,
+            'workItemId': work_id, 'workspaceId': str(uuid.uuid4()), 'projectId': str(uuid.uuid4()),
+            'targetGuid': 'a' * 32, 'targetHash': 'b' * 32, 'baseControllerGuid': 'c' * 32,
+            'avatarGuid': 'd' * 32, 'avatarHash': 'e' * 32, 'workspaceTemplateLinkGuid': 'f' * 32,
+            'modelFile': str(model), 'modelSha256': self.digest(model),
+            'workspaceManifest': str(workspace_path), 'editScope': 'All', 'revision': 0}
+        self.manifest.write_text(json.dumps(self.link), encoding='utf-8')
+        self.item.new_animation, self.item.new_action_id, self.item.work_item_id = True, action_id, work_id
+        self.item.manifest_path, self.item.link_identity = str(self.manifest), json.dumps(self.link)
+        self.item.source_hash = ''
+        self.catalog.update(self.link)
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'CHANGED')
+        self.assertTrue(self.item.sync_selected)
+        self.link.update(revision=1, fbxFile=str(self.fbx), fbxSha256=self.digest(self.fbx),
+                         metadataFile=str(self.metadata), metadataSha256=self.digest(self.metadata))
+        self.manifest.write_text(json.dumps(self.link), encoding='utf-8')
+        self.assertEqual(self.collection.export_finished(self.ordinary_job(), self.publication()), '')
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'UNCHANGED')
+        self.assertFalse(self.item.sync_selected)
+
+    def test_invalid_later_publication_cannot_fall_back_to_source(self):
+        self.item.source_action, self.item.source_slot = object(), 3
+        self.collection.remember_source_baseline(self.context, self.item)
+        self.item.last_synced_receipt = 'invalid later publication'
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'UNKNOWN')
+        self.assertFalse(self.collection.unchanged_proof(self.item, self.link, self.implementation, self.proof))
+
+    def test_real_sync_of_proven_unchanged_action_starts_no_export(self):
+        self.item.source_action, self.item.source_slot = object(), 3
+        self.collection.remember_source_baseline(self.context, self.item)
+        self.rig.animation_data.action = self.item.custom_action
+        sync, association = self.real_sync()
+        with self.assertRaisesRegex(ValueError, 'unchanged'):
+            sync(self.context)
+        association.assert_not_called()
+        self.links.begin_linked_export.assert_not_called()
+
     def test_actual_guard_bytes_change_implementation_and_invalidate_receipt(self):
         # Execute the actual IO fingerprint and actual receipt/scan functions;
         # only their __file__ root points to a private copy of the runtime files.
@@ -323,7 +540,13 @@ class CollectionTests(unittest.TestCase):
         folder.mkdir()
         names = self.real_export_implementation().keys()
         for name in names:
-            (folder / name).write_bytes((SOURCE / name).read_bytes())
+            if (SOURCE / name).is_file():
+                (folder / name).write_bytes((SOURCE / name).read_bytes())
+        # A release without Dress integration is supported. This private fixture
+        # adds the pair only to exercise actual file-byte receipt invalidation.
+        for name in ('dress_export_snapshot.py', 'dress_export_guard.py'):
+            if not (folder / name).exists():
+                (folder / name).write_bytes(b'# owned optional guard fingerprint fixture\n')
         with patch.object(self.collection, '__file__', str(folder / 'animation_worklist_collection.py')), \
                 patch.object(self.collection, 'export_implementation', self.real_export_implementation):
             before = self.collection.export_implementation()
@@ -343,6 +566,28 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(self.item.last_synced_receipt, saved_receipt)
             self.worklist.activate.assert_not_called()
             self.worklist.sync.assert_not_called()
+
+    def test_absent_optional_guards_are_bound_and_partial_install_is_rejected(self):
+        folder = self.folder / 'implementation-without-dress'
+        folder.mkdir()
+        required = ('animation_export.py', 'animation_export_worker.py',
+                    'unity_export_worker.py', 'animation_worklist_fingerprint.py')
+        for name in required:
+            (folder / name).write_bytes((SOURCE / name).read_bytes())
+        with patch.object(self.collection, '__file__', str(folder / 'animation_worklist_collection.py')):
+            before = self.real_export_implementation()
+            self.assertEqual(before['dress_export_snapshot.py'], 'absent')
+            self.assertEqual(before['dress_export_guard.py'], 'absent')
+            (folder / 'dress_export_snapshot.py').write_bytes(b'# owned snapshot\n')
+            with self.assertRaisesRegex(ValueError, 'incomplete'):
+                self.real_export_implementation()
+            (folder / 'dress_export_guard.py').write_bytes(b'# owned guard\n')
+            after = self.real_export_implementation()
+            self.assertEqual([name for name in before if before[name] != after[name]],
+                             ['dress_export_snapshot.py', 'dress_export_guard.py'])
+            (folder / 'animation_export.py').unlink()
+            with self.assertRaises(FileNotFoundError):
+                self.real_export_implementation()
 
     def test_missing_or_modified_published_output_cannot_claim_unchanged(self):
         self.publish_receipt()
@@ -433,6 +678,89 @@ class CollectionTests(unittest.TestCase):
         second.scan_state = 'BLOCKED'
         queue = self.collection.begin_sync_changed(self.context)
         self.assertEqual(queue.remaining_keys, ('item-walk',))
+
+    def test_automatic_export_includes_fresh_changes_despite_old_selection(self):
+        self.publish_receipt()
+        self.proof['fingerprint'] = 'b' * 64
+        for old_state in ('CHANGED', 'UNKNOWN', 'BLOCKED'):
+            with self.subTest(old_state=old_state):
+                self.item.scan_state, self.item.sync_selected = old_state, False
+                self.collection.scan_changes(self.context)
+                self.assertEqual(self.item.scan_state, 'CHANGED')
+                queue = self.collection.begin_sync_changed(self.context, changed_only=True)
+                self.assertEqual(queue.remaining_keys, ('item-walk',))
+                self.collection.cancel()
+                self.collection._poll_collection()
+
+    def test_automatic_export_excludes_unknown_blocked_and_unchanged_even_if_selected(self):
+        self.saved.scan_completed = True
+        self.item.scan_state, self.item.sync_selected = 'CHANGED', False
+        for key, state in (('uncertain', 'UNKNOWN'), ('blocked', 'BLOCKED'), ('same', 'UNCHANGED')):
+            item = self.make_item(key)
+            item.scan_state, item.sync_selected = state, True
+            self.saved.items.append(item)
+        previous_items = list(self.saved.items)
+        queue = self.collection.begin_sync_changed(self.context, changed_only=True)
+        self.assertEqual(queue.remaining_keys, ('item-walk',))
+        self.collection.cancel()
+        self.collection._poll_collection()
+        self.assertIn('2 animation(s) need attention', self.saved.collection_status)
+        self.assertEqual(self.saved.items, previous_items)
+        self.worklist.sync.assert_not_called()
+
+    def test_automatic_export_without_proven_changes_starts_no_worker_and_explains_unknown(self):
+        self.saved.scan_completed = True
+        self.item.scan_state, self.item.sync_selected = 'UNKNOWN', True
+        queue = self.collection.begin_sync_changed(self.context, changed_only=True)
+        self.assertFalse(queue.busy)
+        self.assertIn('Nothing ready to export.', self.saved.collection_status)
+        self.assertIn('1 animation(s) need attention', self.saved.collection_status)
+        self.assertTrue(self.saved.collection_feedback)
+        self.worklist.sync.assert_not_called()
+        self.item.scan_state = 'UNCHANGED'
+        queue = self.collection.begin_sync_changed(self.context, changed_only=True)
+        self.assertFalse(queue.busy)
+        self.assertEqual(self.saved.collection_status, 'No changes to export.')
+        self.worklist.sync.assert_not_called()
+
+    def test_automatic_export_rechecks_complete_comparison_before_worker_launch(self):
+        for invalidation in ('unknown_inputs', 'lost_receipt', 'reverted_edits'):
+            with self.subTest(invalidation=invalidation):
+                self.proof.update(fingerprint_known=True, fingerprint='a' * 64)
+                self.publish_receipt()
+                previous_receipt = self.item.last_synced_receipt
+                self.proof['fingerprint'] = 'b' * 64
+                self.collection.scan_changes(self.context)
+                self.assertEqual(self.item.scan_state, 'CHANGED')
+                queue = self.collection.begin_sync_changed(self.context, changed_only=True)
+                sync, association = self.real_sync()
+                self.worklist.sync.side_effect = sync
+                if invalidation == 'unknown_inputs':
+                    self.proof.update(fingerprint_known=False, fingerprint='', proof_reason='Unsupported input')
+                elif invalidation == 'lost_receipt':
+                    self.item.last_synced_receipt = '{}'
+                else:
+                    self.proof['fingerprint'] = 'a' * 64
+                retained_receipt = self.item.last_synced_receipt
+                self.assertIsNone(self.collection._poll_collection())
+                association.assert_not_called()
+                self.links.begin_linked_export.assert_not_called()
+                self.assertEqual(queue.state, self.queue_module.FAILED)
+                self.assertEqual(queue.succeeded_keys, ())
+                self.assertEqual(self.item.last_synced_receipt, retained_receipt)
+                self.item.last_synced_receipt = previous_receipt
+
+    def test_automatic_export_launches_confirmed_change_with_frozen_proof(self):
+        self.publish_receipt()
+        self.proof['fingerprint'] = 'b' * 64
+        self.collection.scan_changes(self.context)
+        queue = self.collection.begin_sync_changed(self.context, changed_only=True)
+        sync, association = self.real_sync()
+        self.worklist.sync.side_effect = sync
+        self.assertEqual(self.collection._poll_collection(), 0.25)
+        association.assert_called_once()
+        self.links.begin_linked_export.assert_called_once()
+        self.assertEqual(self.collection._batch['job']['_worklist_fingerprint'], self.proof)
 
     def test_publication_uses_launch_proof_and_does_not_mark_later_edits_unchanged(self):
         queue, job = self.begin_sync()

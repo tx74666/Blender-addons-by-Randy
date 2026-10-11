@@ -1,0 +1,110 @@
+{
+  "schema": "x.validation.character-composition-first-ui-builder-source/1",
+  "date": "2026-10-11",
+  "status": "SOURCE_READY_ACTUAL_SUCCESS_PENDING",
+  "owner": "/root/rig_controls_review",
+  "source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\build_character_composition_first_ui_fixture.py",
+    "sha256": "44c973b9e8f49b6e6ec6fd701a73902f8bc37c04b51e738b014d19334f5553d8",
+    "bytes": 40271
+  },
+  "historical_root_readback_checkpoint": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\source_history\\build_character_composition_first_ui_fixture_20261011_6dbc3f1c.py",
+    "sha256": "6dbc3f1c5007d9c41bba5bdfb8ba483558c86f3f63dc769248598b1c34b70774",
+    "bytes": 40074
+  },
+  "checkpoint_delta": "Four added lines record frozen05 source_manifest and independent_source_review in admitted_inputs/final SHA recheck. No schema/API/other guard change. Exact earlier CRLF bytes preserved and SHA rechecked.",
+  "preserved_prior_builder": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\build_first_ui_fixture_n8.py",
+    "sha256": "b46f824c25c8ed12d7f7dea95a83eed8354adfa60150c3f5504259ca72a8e63d",
+    "bytes": 20567
+  },
+  "frozen_dependencies": {
+    "tools05": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_05\\frozen_tools_receipt.json",
+      "sha256": "7ec4592f0c35038d6bc38253e3dc6eb681f8cb119415145f46f8d6f8453ef5f7",
+      "bytes": 5118
+    },
+    "flat05_manifest": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_source_manifest_20261011_edit_a_c_47cd966e.json",
+      "sha256": "cb86da3acfbc6d9dfca69e962870705c151af7838c5c286ab489956038e05169",
+      "bytes": 11198
+    },
+    "EditA_C_source_review": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\composition_edit_a_c_source_review_20261011_47cd966e.json",
+      "sha256": "5b75fcad568a7ae630eac8efcab77a545bd3707d32f9467f79fd13f93c36d490",
+      "bytes": 23243
+    },
+    "session": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_05\\composition_session_acceptance.py",
+      "sha256": "47cd966e74c50188ddbebd1efe8b915dd9df645184ee7409bf657e756cee6fb3",
+      "bytes": 57217
+    },
+    "runtime08": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_08\\python_projection.json",
+      "sha256": "20c0999f276c6258a77f2b3d17eda52ef2236e409073fb5a883ca622e39e78e0",
+      "bytes": 23988
+    },
+    "full09": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\full_candidate_09\\candidate_projection.json",
+      "sha256": "18dd5a276be6f30318aeb5777df4dccdf5ef28ac57852920bd0e739bde22dc59",
+      "bytes": 23581
+    }
+  },
+  "API": "build(root=ROOT, *, first_stage, stage_config, stage_config_sha256, source_entry, source_entry_sha256, completion_closure, completion_closure_sha256, tools_receipt, tools_receipt_sha256, write=False)",
+  "output_API": {
+    "fixture": "<actual root>/u1_fixture.json",
+    "source_receipt": "<actual root>/u1_fixture_source_receipt.json",
+    "evidence": "<actual root>/u1",
+    "schema": "x.validation.character-composition-first-ui-builder/1",
+    "additional_fields": [
+      "actual_stage_config",
+      "actual_source_entry",
+      "completion_closure",
+      "gui_grant_consumed=False"
+    ],
+    "profiles": [
+      "CONFIG",
+      "DATAFILES"
+    ],
+    "public_ID_policy": "Preserve actual prepared DTO UUID text; normalize comparisons only."
+  },
+  "admission_guards": [
+    "Same-attempt config/source-entry/completion closure explicit paths/SHA, closure source_entry and audit/config pins equal",
+    "Twelve distinct two-A/seek/Object-motion native cases/full217/FK before-after adoption/protected actions and historical recovery",
+    "Two genuine SOURCE HoldPose physical publications and distinct third native-authored moving SOURCE Loop",
+    "Current manifest/revision/FBX/metadata/sealed packet/full float32 TRS payload SHA/native receipt equal independent foreground proofs",
+    "Actual immutable QA seed file/Scene memberships/native row IDs and physical receipt match successful audit",
+    "Natural unforced exit0/main-PID actual OS absence/all-worker closure and sole protected artist proof",
+    "Actual Parent Root/compile/Prepare/raw Hold constancy/embedded/source/tool/runtime/full immutable proofs pinned; no future values invented",
+    "Frozen05 exact7ec459/current47cd/independent5b75 plus complete current167/173 release_projection inventory",
+    "Final SHA recheck and all admission precede exclusive new config/receipt writes; earlier outputs preserved",
+    "No GUI grant is read, consumed or provided by source generation"
+  ],
+  "checks": {
+    "syntax_compiled_files": 1,
+    "AST_checked": true,
+    "required_pin_arguments": true,
+    "completion_gates_before_write": true,
+    "no_bpy_SDK_subprocess_ctypes_imports": true,
+    "no_literal_n8_admission": true,
+    "source_module_imports_executed": 0,
+    "test_cases_executed": 0,
+    "builder_runs": 0
+  },
+  "unresolved_dependencies": [
+    "No actual successful next-attempt config/source-entry/completion closure exists yet; failed n8 is inadmissible.",
+    "Actual Parent r14 Prepare/raw source constancy/pinned packets/specs/workspace and twelve numeric cases/three real publications/QA seed must complete and remain unchanged.",
+    "Root successful natural exit and actual all-worker absence closure must precede fixture generation.",
+    "A separate exact once-only GUI grant and reviewed launcher/preflight remain necessary."
+  ],
+  "actions_not_performed": [
+    "Blender/runtime/SDK/GUI/native work",
+    "builder or frozen source imports/admission/run",
+    "fixture/config generation",
+    "future evidence or completion claims",
+    "projection/build/deploy/install",
+    "artist changes"
+  ],
+  "scope": "Source code preservation and bounded AST/syntax checks only; no native acceptance."
+}

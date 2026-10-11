@@ -13,6 +13,8 @@ from bpy.types import Operator, Panel, PropertyGroup
 
 from . import character_setup
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
+from . import unity_material_match_ui as material_match_ui
+from .unity_material_match_ui import CharacterDesignerUnityMaterialMatch, CHARACTERDESIGNER_OT_unity_match_material
 
 _MODAL_EXPORTS = []
 _SIMPLE_MATERIAL_SEARCH = {}
@@ -24,6 +26,7 @@ def stop_export_ui():
     for operator in list(_MODAL_EXPORTS):
         operator._finish_timer()
     _SIMPLE_MATERIAL_SEARCH.clear()
+    material_match_ui.stop_matches()
 
 
 def _redraw(context):
@@ -149,6 +152,10 @@ def _warning_actions(layout, context, config, message):
     if match:
         material = bpy.data.materials.get(match[1])
         if material is not None and not any(entry.material == material for entry in _simple_material_entries(config)):
+            layout.operator_context = 'INVOKE_DEFAULT'
+            action = layout.operator('character_designer.unity_match_material',
+                                     text='Match Unity Material', icon='MATERIAL')
+            action.material_name = material.name
             action = layout.operator('character_designer.unity_simple_material',
                                      text='Use Simplified', icon='MATERIAL')
             action.material_name = material.name
@@ -203,6 +210,7 @@ class CharacterDesignerUnityExport(PropertyGroup):
     asset_id: StringProperty(options={'HIDDEN'})
     extras: CollectionProperty(type=CharacterDesignerUnityExtra)
     simple_materials: CollectionProperty(type=CharacterDesignerUnitySimpleMaterial)
+    unity_material_matches: CollectionProperty(type=CharacterDesignerUnityMaterialMatch)
     show_objects: BoolProperty(
         name='Objects', default=False,
         description='Review meshes with an enabled character Armature binding and change export inclusion',
@@ -701,6 +709,7 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             CHARACTERDESIGNER_PT_unity_export._draw_objects(
                 layout, context, rig, config, setup, objects, eligible, error, scope)
 
+        material_match_ui.draw_matches(layout, context, rig, config, running)
         chosen = {entry.material for entry in _simple_material_entries(config)}
         row = layout.row()
         row.operator('character_designer.unity_export_section', text=f'Use Simplified Materials · {len(chosen)}', emboss=False,
@@ -722,7 +731,8 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                 box.label(text='No simplified materials selected.')
 
         report = _last_report(config)
-        reported_warnings = _panel_warnings(report or {'warnings': warnings})
+        reported_warnings = [message for message in _panel_warnings(report or {'warnings': warnings})
+                             if not material_match_ui.warning_matched(rig, config, message)]
         if reported_warnings:
             row = layout.row()
             row.operator('character_designer.unity_export_section', text=f'Warnings · {len(reported_warnings)}', emboss=False,
@@ -776,7 +786,9 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
 UNITY_EXPORT_CLASSES = (
     CharacterDesignerUnityExtra,
     CharacterDesignerUnitySimpleMaterial,
+    CharacterDesignerUnityMaterialMatch,
     CharacterDesignerUnityExport,
+    CHARACTERDESIGNER_OT_unity_match_material,
     CHARACTERDESIGNER_OT_unity_export,
     CHARACTERDESIGNER_OT_unity_locate_unweighted,
     CHARACTERDESIGNER_OT_unity_export_section,

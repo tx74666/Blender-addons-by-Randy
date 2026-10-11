@@ -641,6 +641,14 @@ class CHARACTERDESIGNER_OT_limb_ik_analyze(Operator):
 # tests and future UI variants can use the detector independently.
 
 
+def _single_armature_user(armature):
+    """Accept only proven Worklist references beyond the native Object user."""
+    if armature.data.users == 1:
+        return True
+    from . import animation_worklist_target
+    return animation_worklist_target.single_armature_user(armature)
+
+
 def _require_active_armature(context, settings, *, analyzed=True):
     armature = context.object
     if armature is None or armature.type != "ARMATURE":
@@ -653,7 +661,7 @@ def _require_active_armature(context, settings, *, analyzed=True):
         raise LimbIKError("Linked Armatures are read-only; make a local copy before building Limb IK.")
     if armature.override_library is not None or armature.data.override_library is not None:
         raise LimbIKError("Library overrides are not modified by Limb IK; use a local Armature.")
-    if armature.data.users != 1:
+    if not _single_armature_user(armature):
         raise LimbIKError("The active Armature Data is shared; make it single-user before building Limb IK.")
     memberships = [scene for scene in bpy.data.scenes if scene.objects.get(armature.name) is armature]
     if len(memberships) != 1 or memberships[0] is not context.scene:
@@ -3139,7 +3147,32 @@ def _validation_mute(pose_bone, constraint, original_mutes=None):
     return original_mutes.mute(pose_bone, constraint)
 
 
-def _validate_inventory(armature, *, original_mutes=None, original_rest=None):
+def _validation_source_bone(bone, source_rest=None):
+    """Project only an explicitly identified native source into proven Rest data."""
+    return bone if bone is None or source_rest is None else source_rest.source_bone(bone)
+
+
+def _validation_source_rest(armature, source_rest=None):
+    """Resolve only an authenticated adopted motion-data copy, without mutation."""
+    if source_rest is not None:
+        return source_rest
+    from . import animation_worklist_target
+    if not animation_worklist_target.is_adopted(armature):
+        return None
+    try:
+        return animation_worklist_target.control_rest_view(armature)
+    except ValueError as exc:
+        raise LimbIKError('Main Rig motion Rest proof failed: ' + str(exc)) from exc
+
+
+def _validate_inventory(armature, *, original_mutes=None, original_rest=None, source_rest=None):
+    # Explicit Original-mode views keep their own comparison/mute semantics.
+    # Ordinary control/corrective callers need the same proven Worklist view as
+    # the importer while a managed native translation data copy is attached.
+    if original_rest is None and source_rest is None and original_mutes is None:
+        source_rest = _validation_source_rest(armature)
+        if source_rest is not None:
+            original_rest = source_rest
     armature_id = armature.data.get(ARMATURE_ID_KEY, "")
     generated = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE]
     records = _owned_constraint_records(armature, strict=True)
@@ -3513,8 +3546,8 @@ def _validate_inventory(armature, *, original_mutes=None, original_rest=None):
             if any(not _owned(bone, armature_id, role=role, rig_id=rig_id) for bone, role in mechanisms):
                 raise LimbIKError(f"Limb IK rig '{rig_id}' roll-decoupled bone ownership is invalid.")
             expected_bones.update(bone.name for bone, _role in mechanisms)
-            source_upper = armature.data.bones[chain[0]]
-            source_lower = armature.data.bones[chain[1]]
+            source_upper = _validation_source_bone(armature.data.bones[chain[0]], source_rest)
+            source_lower = _validation_source_bone(armature.data.bones[chain[1]], source_rest)
             anchor = source_upper.parent if source_upper.parent is not None else armature.data.bones.get(MASTER_NAME)
             anchor_name = anchor.name if anchor is not None else ""
             if (
@@ -3732,6 +3765,8 @@ def _validate_inventory(armature, *, original_mutes=None, original_rest=None):
         "source_widgets": source_widgets,
     }
     mute_view = {'original_mutes': original_mutes} if original_mutes is not None else {}
+    if source_rest is not None:
+        mute_view['source_rest'] = source_rest
     foot_controls.validate(armature, inventory, **mute_view)
     torso_controls.validate(armature, inventory, **mute_view)
     spine_ik_fk.validate(armature, inventory, **mute_view)
@@ -7739,7 +7774,7 @@ def refresh_parent_delta_spaces(context, armature):
 
 def _wrist_rotation_upgrade_problems(armature, inventory, candidates):
     problems = []
-    if armature.library or armature.override_library or armature.data.library or armature.data.users != 1:
+    if armature.library or armature.override_library or armature.data.library or not _single_armature_user(armature):
         return ["Use a local, single-user Armature before upgrading wrist rotation."]
     names = {rig["target"].name for rig in candidates}
     owned = {(owner.as_pointer(), con.as_pointer()) for owner, con, _ in inventory["records"]}

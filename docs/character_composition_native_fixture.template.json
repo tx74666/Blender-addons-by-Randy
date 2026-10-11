@@ -1,0 +1,31 @@
+{
+  "schema": "x.validation.character-composition-fixture/1",
+  "inputBlend": "D:/Blender/Projects/Character/X/validation/direct_original_rig_return_20261011/artist_final_validation.blend",
+  "inputBlendSha256": "e8d3013ef14e02ed76160a838e7d255490fd1b6ece340e7c3f9e33dc57a3377f",
+  "addonPackage": "REPLACE_WITH_FRESH_FROZEN_07725_CHARACTER_DESIGNER_PACKAGE",
+  "runtimeManifest": "REPLACE_WITH_COMPLETE_APPROVED_PROJECTION_MANIFEST",
+  "runtimeManifestSha256": "REPLACE_WITH_ACTUAL_PROJECTION_MANIFEST_SHA256",
+  "evidenceDirectory": "REPLACE_WITH_FRESH_ABSOLUTE_NATIVE_EVIDENCE_DIRECTORY",
+  "compositionWorkspace": "REPLACE_WITH_ACTUAL_PREPARED_COMPOSITION_LIBRARY",
+  "compositionWorkspaceSha256": "REPLACE_WITH_ACTUAL_LIBRARY_FILE_SHA256",
+  "historicalModelSha256": "REPLACE_WITH_ACTUAL_HISTORICAL_2AE_MODEL_SHA256",
+  "compositionModelSha256": "REPLACE_WITH_ACTUAL_FRESH_F10E_MODEL_SHA256",
+  "bWorkItemIds": ["REPLACE_WITH_GENUINE_A1_B_VARIANT_UUID", "REPLACE_WITH_GENUINE_A2_B_VARIANT_UUID"],
+  "sceneName": "Scene",
+  "rigName": "CoshaRig",
+  "specFiles": [
+    {"path": "REPLACE_WITH_ACTUAL_SEALED_A1_B_VARIANT_DTO_FILE", "sha256": "REPLACE_WITH_ACTUAL_DTO_SHA256"},
+    {"path": "REPLACE_WITH_ACTUAL_SEALED_A2_B_VARIANT_DTO_FILE", "sha256": "REPLACE_WITH_ACTUAL_DTO_SHA256"}
+  ],
+  "seekSeconds": [0.0, 0.3],
+  "objectMotionCases": [
+    [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+    [0.0, -1.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+  ],
+  "expectedNativeCount": 217,
+  "preservationHelper": {
+    "path": "D:/Blender/Projects/Character/X/validation/direct_original_rig_return_20261011/validation_preservation.py",
+    "sha256": "REPLACE_WITH_ACTUAL_HELPER_SHA256"
+  },
+  "sessionChecks": null
+}

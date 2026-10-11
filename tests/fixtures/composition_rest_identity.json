@@ -1,0 +1,1 @@
+{"bones":[{"path":"Root/Spine","humanRole":"Spine","restSource":"target-rest","parent":0,"rest":[1,0,0,0,0,1,0,0.123456789,0,0,1,0,0,0,0,1]},{"path":"Root","humanRole":"Hips","restSource":"model-rest","parent":-1,"rest":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],"expectedSha256":"54011f87427adc4df9077943af35005933923d0ff4f2d918d0cd5dc30873da4d"}

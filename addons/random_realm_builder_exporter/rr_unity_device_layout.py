@@ -29,6 +29,8 @@ TOKEN_PROP = "rr_unity_layout_token"
 ROLE_PROP = "rr_unity_layout_role"
 PART_PROP = "rr_unity_layout_part"
 OWNER = "RRUnityDeviceLayoutV1"
+BLANK_SCREEN_PROP = "rr_unity_layout_blank_screen"
+SCREEN_COLOR = (0.35, 0.35, 0.35, 1.0)
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_DEVICES = 512
 MAX_MESHES = 2048
@@ -236,11 +238,12 @@ def validate_package(payload, base_directory):
                     preview[key] = _number(preview.get(key), f"screenPreview.{key}")
                     if preview[key] <= 0:
                         _fail(f"screenPreview.{key}", "must be positive")
-                preview["_path"] = _png_path(preview.get("path"), base, "screenPreview.path")
+                # UI screenshots are not imported. Keep the optional path as
+                # bounded metadata, without requiring or opening its PNG.
+                preview["path"] = _text(preview.get("path", ""), "screenPreview.path", empty=True)
         device["screenPreview"] = preview
         devices.append(device)
     paths = {value["_texture_path"] for value in materials.values() if value["_texture_path"]}
-    paths.update(device["screenPreview"]["_path"] for device in devices if device["screenPreview"] is not None)
     image_bytes = image_pixels = 0
     for path in paths:
         image_bytes += Path(path).stat().st_size
@@ -396,6 +399,97 @@ def _fallback_core(scene):
     return module.get_reference_object(scene) if module is not None else None
 
 
+def _blank_screen_material(reference_id, token):
+    material = bpy.data.materials.new("Unity Layout Screen Gray")
+    _tag(material, reference_id, token)
+    material[BLANK_SCREEN_PROP] = True
+    material.diffuse_color = SCREEN_COLOR
+    material.use_nodes = True
+    material.use_backface_culling = False
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    shader.inputs["Base Color"].default_value = SCREEN_COLOR
+    shader.inputs["Roughness"].default_value = 0.8
+    shader.inputs["Alpha"].default_value = 1.0
+    emission = shader.inputs.get("Emission Color") or shader.inputs.get("Emission")
+    if emission is not None:
+        emission.default_value = (0.0, 0.0, 0.0, 1.0)
+    if shader.inputs.get("Emission Strength") is not None:
+        shader.inputs["Emission Strength"].default_value = 0.0
+    return material
+
+
+def _is_blank_screen_material(material, reference_id):
+    if not (_owned(material, reference_id) and material.get(BLANK_SCREEN_PROP) and material.use_nodes):
+        return False
+    nodes = material.node_tree.nodes
+    shader = nodes.get("Principled BSDF")
+    output = next((node for node in nodes if node.type == "OUTPUT_MATERIAL"), None)
+    if shader is None or output is None or len(nodes) != 2 or len(material.node_tree.links) != 1:
+        return False
+    surface = output.inputs.get("Surface")
+    if surface is None or not surface.is_linked or surface.links[0].from_socket != shader.outputs["BSDF"]:
+        return False
+    expected = {"Base Color": SCREEN_COLOR, "Alpha": 1.0, "Roughness": 0.8, "Emission Strength": 0.0}
+    for name, value in expected.items():
+        socket = shader.inputs.get(name)
+        if socket is None or socket.is_linked:
+            return False
+        actual = socket.default_value
+        if isinstance(value, tuple):
+            if any(abs(a - b) > 1e-6 for a, b in zip(actual, value)):
+                return False
+        elif abs(actual - value) > 1e-6:
+            return False
+    return all(abs(a - b) < 1e-6 for a, b in zip(material.diffuse_color, SCREEN_COLOR))
+
+
+def blank_imported_screens(scene):
+    """Explicitly blank owned screen overlays without changing shared data.
+
+    Uses object material overrides; leaves meshes, old materials/images, device
+    identities, transforms and selection intact. No import, save or handlers.
+    """
+    if bpy is None:
+        raise RuntimeError("blank_imported_screens requires Blender")
+    screens, skipped = [], 0
+    for obj in scene.objects:
+        if not (_owned(obj) and obj.get(ROLE_PROP) == "SCREEN"):
+            continue
+        reference_id = obj.get(REFERENCE_ID_PROP)
+        if (not isinstance(reference_id, str) or not reference_id or
+                obj.type != "MESH" or not _owned(obj.data, reference_id) or not obj.material_slots or
+                obj.library or not obj.is_editable or obj.data.library or not obj.data.is_editable):
+            skipped += 1
+            continue
+        screens.append((obj, reference_id))
+    materials, states = {}, []
+    token = str(uuid.uuid4())
+    try:
+        # A previous blanking can be reused, so repeated clicks do not allocate.
+        for obj, reference_id in screens:
+            material = obj.material_slots[0].material
+            if _is_blank_screen_material(material, reference_id):
+                materials.setdefault(reference_id, material)
+        for obj, reference_id in screens:
+            slot = obj.material_slots[0]
+            if _is_blank_screen_material(slot.material, reference_id):
+                continue
+            if reference_id not in materials:
+                material = _blank_screen_material(reference_id, token)
+                materials[reference_id] = material
+            states.append((slot, slot.link, slot.material))
+            slot.link = "OBJECT"
+            slot.material = materials[reference_id]
+    except Exception:
+        for slot, link, material in reversed(states):
+            slot.link = "OBJECT"
+            slot.material = material
+            slot.link = link
+        _cleanup_resources({token})
+        raise
+    return {"screen_count": len(screens), "changed_count": len(states), "skipped_count": skipped}
+
+
 def import_package(payload, anchor, base_directory):
     """Stage a complete package, then update only the managed reference collection.
 
@@ -504,6 +598,7 @@ def import_package(payload, anchor, base_directory):
         fallback = material_for("Unity Layout Default", [0.65, 0.65, 0.65, 1.], [0., 0., 0.])
         slots = {value["id"]: len(value["submeshes"]) for value in package["meshes"]}
         mesh_names = {}
+        screen_material = None
         for device in package["devices"]:
             for part in device["parts"]:
                 slots[part["meshId"]] = max(slots[part["meshId"]], len(part["materialIds"]))
@@ -558,16 +653,10 @@ def import_package(payload, anchor, base_directory):
                 corners = [(0., 0.), (1., 0.), (1., 1.), (0., 1.)]
                 for loop in mesh.loops:
                     uv.data[loop.index].uv = corners[loop.vertex_index]
-                material = material_for("Unity Layout Screen", [1., 1., 1., 1.], [0.15, 0.15, 0.15], preview["_path"])
-                shader = material.node_tree.nodes.get("Principled BSDF")
-                emission_input = shader.inputs.get("Emission Color") or shader.inputs.get("Emission")
-                if emission_input is not None:
-                    texture = next(node for node in material.node_tree.nodes if node.type == "TEX_IMAGE")
-                    material.node_tree.links.new(texture.outputs["Color"], emission_input)
-                    if shader.inputs.get("Emission Strength") is not None:
-                        shader.inputs["Emission Strength"].default_value = 0.3
-                mesh.materials.append(material)
-                object_for(device["name"] + " Screen Preview", mesh, identity, "SCREEN", -1, root, preview["relativeMatrix"])
+                if screen_material is None:
+                    screen_material = _blank_screen_material(reference_id, token)
+                mesh.materials.append(screen_material)
+                object_for(device["name"] + " Screen", mesh, identity, "SCREEN", -1, root, preview["relativeMatrix"])
 
         # Staging has completed. Keep existing roots so artist children/constraints
         # and the selected device's identity continue to point at the same Object.
@@ -676,7 +765,7 @@ if bpy is not None:
     class RR_OT_import_unity_device_layout(bpy.types.Operator):
         bl_idname = "rr_builder.import_unity_device_layout"
         bl_label = "Import / Update"
-        bl_description = "Import a Unity device snapshot as reference-only geometry; update its managed collection"
+        bl_description = "Import or update Unity device references with plain gray screens"
         bl_options = {"REGISTER", "UNDO"}
 
         @classmethod
@@ -703,6 +792,30 @@ if bpy is not None:
                 self.report({"ERROR"}, settings.status)
                 return {"CANCELLED"}
 
+    class RR_OT_blank_unity_device_screens(bpy.types.Operator):
+        bl_idname = "rr_builder.blank_unity_device_screens"
+        bl_label = "Blank Imported Screens"
+        bl_description = "Replace imported screen pictures with plain gray; keep device geometry and placement"
+        bl_options = {"REGISTER", "UNDO"}
+
+        @classmethod
+        def poll(cls, context):
+            return context.mode == "OBJECT" and any(
+                _owned(obj) and obj.get(ROLE_PROP) == "SCREEN" for obj in context.scene.objects)
+
+        def execute(self, context):
+            try:
+                result = blank_imported_screens(context.scene)
+                message = f"Blank gray screens: {result['screen_count']}."
+                if result["skipped_count"]:
+                    message += f" Skipped {result['skipped_count']} read-only or changed references."
+                context.scene.rr_unity_device_layout.status = message
+                self.report({"WARNING"} if result["skipped_count"] else {"INFO"}, message)
+                return {"FINISHED"}
+            except (ValueError, RuntimeError) as exception:
+                self.report({"ERROR"}, "Screen update failed: " + str(exception))
+                return {"CANCELLED"}
+
     class RR_PT_unity_device_layout(bpy.types.Panel):
         bl_label = "Unity Layout"
         bl_idname = "RR_PT_unity_device_layout"
@@ -721,6 +834,7 @@ if bpy is not None:
                 fallback = _fallback_core(context.scene)
                 layout.label(text="Core: " + (fallback.name if fallback else "choose a building"))
             layout.operator("rr_builder.import_unity_device_layout", icon="IMPORT")
+            layout.operator("rr_builder.blank_unity_device_screens", icon="MATERIAL")
             row = layout.row()
             row.enabled = (settings.managed_collection is not None and _owned(settings.managed_collection)
                            and not settings.managed_collection.library and settings.managed_collection.is_editable)
@@ -730,7 +844,8 @@ if bpy is not None:
             for line in textwrap.wrap(settings.status, width=42):
                 layout.label(text=line)
 
-    CLASSES = (RRUnityDeviceLayoutSettings, RR_OT_import_unity_device_layout, RR_PT_unity_device_layout)
+    CLASSES = (RRUnityDeviceLayoutSettings, RR_OT_import_unity_device_layout,
+               RR_OT_blank_unity_device_screens, RR_PT_unity_device_layout)
 else:
     CLASSES = ()
 
@@ -755,4 +870,3 @@ def unregister():
     for cls in reversed(CLASSES):
         if getattr(cls, "is_registered", False):
             bpy.utils.unregister_class(cls)
-

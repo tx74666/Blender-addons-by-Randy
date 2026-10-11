@@ -134,8 +134,10 @@ def _validate_scale_drivers(armature, pb):
         raise _error('Another driver controls Root uniform scale; preserve that setup first.')
 
 
-def validate(armature, inventory=None, *, original_mutes=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
     """Validate this extension without entering the limb inventory recursively."""
+    if original_mutes is None:
+        source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     actual = {b.name for b in armature.data.bones if b.get(OWNER_KEY) == OWNER_VALUE}
     if record is None:
@@ -154,7 +156,7 @@ def validate(armature, inventory=None, *, original_mutes=None):
             raise _error('Use Root uniform scale; its individual scale channels must stay locked.')
         _validate_scale_drivers(armature, pb)
         for name, state in record['source_states'].items():
-            bone = armature.data.bones.get(name)
+            bone = _limb()._validation_source_bone(armature.data.bones.get(name), source_rest)
             if bone is None or not _same_rest(bone, state) or bone.use_deform != state['deform']:
                 raise _error(f"Root source '{name}' was structurally edited.")
         for name, original in record['control_states'].items():

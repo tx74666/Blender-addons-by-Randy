@@ -1,0 +1,7 @@
+{
+  "schema": "x.validation.character-composition-loop-authoring-fixture/1",
+  "evidenceDirectory": null,
+  "holdLoopWorkItemId": null,
+  "expectedModelSha256": null,
+  "holdLoopRotationControl": null
+}

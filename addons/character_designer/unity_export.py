@@ -479,6 +479,13 @@ def begin_export(context, rig, config):
     asset_id = config.asset_id or uuid.uuid4().hex
     prior = _previous(directory, filename, asset_id)
     objects = collected['objects']
+    from . import unity_material_match_ui
+    material_matches = unity_material_match_ui.capture(config, objects, directory, asset_id)
+    from . import skirt_wiggle
+    for source in objects:
+        if source.type == 'MESH':
+            skirt_wiggle.suspend(context, source=source,
+                                 reason='Model export paused automatic Dress motion.')
     dress_surfaces = _capture_dress_surfaces(objects)
     hair_motion = _capture_hair_motion(objects)
     owned_keys = _owned_keys(objects)
@@ -495,7 +502,7 @@ def begin_export(context, rig, config):
            'prior': prior, 'manifest_hash': _hash(manifest) if manifest.exists() else None,
            'rig': rig, 'config': config, 'started': time.monotonic(), 'process': None,
            'objects': [obj.name for obj in objects], 'hair_motion': hair_motion,
-           'dress_surfaces': dress_surfaces}
+           'dress_surfaces': dress_surfaces, 'unity_material_matches': material_matches}
     try:
         specification = {
             'objects': job['objects'], 'rig': rig.name,
@@ -585,6 +592,7 @@ def _publish(job, result):
         if target.exists() and (not prior or relative not in prior.get('files', {})):
             raise ExportError(f'{relative} already exists and is not owned by this export.')
     report = {**result, 'schema': SCHEMA, 'asset_id': job['asset_id'], 'hair_motion': hair_motion,
+              'unity_material_matches': job.get('unity_material_matches', []),
               'source_rig': job['rig'].name, 'filename': filename,
               'files': {relative: _hash(_safe_file(stage, relative)) for relative in files},
               'unity_status': 'Exported; Unity import has not been verified.',

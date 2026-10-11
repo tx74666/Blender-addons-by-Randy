@@ -48,8 +48,16 @@ def character_rig(context):
 
 def _editable(rig):
     if (rig is None or rig.type != 'ARMATURE' or rig.mode == 'EDIT'
-            or rig.library or rig.data.library or not rig.is_editable or rig.data.users != 1):
+            or rig.library or rig.data.library or not rig.is_editable
+            or not _single_data_user(rig)):
         raise ValueError('Choose a local, single-user character armature outside Edit Mode.')
+
+
+def _single_data_user(rig):
+    if rig.data.users == 1:
+        return True
+    from . import animation_worklist_target
+    return animation_worklist_target.single_armature_user(rig)
 
 
 def dress_rigs(context, main):

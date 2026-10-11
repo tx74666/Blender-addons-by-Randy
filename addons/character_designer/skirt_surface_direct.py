@@ -885,6 +885,18 @@ def set_editing(source, record, editing):
     _sync(source, record, state)
 
 
+def invalidate_result(source, record):
+    """Withdraw a result after a failed operation may have changed its cache.
+
+    Preserve the authored mode/editing session and all native cache data. Only
+    a successful explicit Reset may restore readiness after this invalidation.
+    """
+    state = _state(source, record)
+    state["pending"] = True
+    _write_state(source, state)
+    _sync(source, record, state)
+
+
 def reset_completed(context, source, record):
     """Complete only the caller's successful explicit start-frame cache reset.
 

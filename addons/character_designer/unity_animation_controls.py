@@ -35,6 +35,7 @@ class ControlPlan:
     switches: dict  # (pose-bone name, custom-property name) -> preview value
     neutral: frozenset
     eyes: dict  # native eye -> (target control, aim distance)
+    delegated_names: frozenset = frozenset()  # Rest-local Dress keeps its validated native graph.
 
 
 @dataclass
@@ -46,7 +47,7 @@ class BakeResult:
     sample_count: int
 
 
-def build_plan(target, mapped_names):
+def build_plan(target, mapped_names, *, package=None):
     """Read-only validation of the complete *target object's* control graph.
 
     Returns None for an unconstrained, undriven native skeleton. Every accepted
@@ -57,7 +58,8 @@ def build_plan(target, mapped_names):
     Only control_names may be skipped while checking mapped native ancestry.
     """
     from . import limb_ik, limb_ik_fk, root_control, torso_controls
-    from . import foot_controls, spine_ik_fk, eye_controls
+    from . import foot_controls, spine_ik_fk, eye_controls, unity_animation_dress
+    from . import animation_worklist_target
 
     names = frozenset(mapped_names)
     if target is None or target.type != 'ARMATURE':
@@ -65,7 +67,15 @@ def build_plan(target, mapped_names):
     if any(name not in target.pose.bones for name in names):
         raise _error('The animation mapping contains missing native bones.')
     try:
-        inventory = limb_ik._validate_inventory(target)
+        original_rest = animation_worklist_target.validation_rest_view(target, names)
+    except ValueError as exc:
+        raise _error('Main Rig recovery Rest did not pass validation: ' + str(exc)) from exc
+    try:
+        # A managed motion-data copy may disconnect native joints for keyed
+        # translation. The helper proves that exact saved transaction before
+        # allowing inventory checks against its protected original Rest data.
+        inventory = (limb_ik._validate_inventory(target) if original_rest is None
+                     else limb_ik._validate_inventory(target, original_rest=original_rest, source_rest=original_rest))
         accepted, drivers = set(), set()
         control_names = {bone.name for bone in inventory['bones']}
         redirects, switches, neutral, eyes, sources = {}, {}, set(), {}, set()
@@ -84,11 +94,12 @@ def build_plan(target, mapped_names):
 
         # These explicit validators also catch orphaned extension metadata on
         # otherwise empty inventories. Their detailed checks must not be bypassed.
-        root = root_control.validate(target, inventory=inventory)
-        torso = torso_controls.validate(target, inventory=inventory)
-        spine = spine_ik_fk.validate(target, inventory=inventory)
-        eye = eye_controls.validate(target, inventory=inventory)
-        feet = foot_controls.validate(target, inventory=inventory)
+        source_view = {'source_rest': original_rest} if original_rest is not None else {}
+        root = root_control.validate(target, inventory=inventory, **source_view)
+        torso = torso_controls.validate(target, inventory=inventory, **source_view)
+        spine = spine_ik_fk.validate(target, inventory=inventory, **source_view)
+        eye = eye_controls.validate(target, inventory=inventory, **source_view)
+        feet = foot_controls.validate(target, inventory=inventory, **source_view)
         for record in (root, torso, spine, eye, *feet.values()):
             if not record:
                 continue
@@ -123,6 +134,14 @@ def build_plan(target, mapped_names):
             eyes.update((name, (eye['targets'][side], float(distance)))
                         for name, side in zip(eye['sources'], ('L', 'R')))
 
+        dress = unity_animation_dress.build_plan(target, names, package=package)
+        delegated = frozenset()
+        if dress:
+            control_names.update(dress.control_names)
+            accepted.update(dress.constraint_keys)
+            drivers.update(dress.driver_keys)
+            delegated = dress.delegated_names
+
         for pb in target.pose.bones:
             for constraint in pb.constraints:
                 if (pb.name, constraint.name) not in accepted:
@@ -141,9 +160,11 @@ def build_plan(target, mapped_names):
         if missing:
             raise _error('The animation package omits controlled native bones: ' + ', '.join(sorted(missing)))
         return ControlPlan(names, frozenset(control_names), frozenset(accepted), frozenset(drivers),
-                           redirects, switches, frozenset(neutral), eyes)
+                           redirects, switches, frozenset(neutral), eyes, delegated)
     except limb_ik.LimbIKError as exc:
         raise _error('Character controls did not pass ownership validation: ' + str(exc)) from exc
+    except unity_animation_dress.DressAnimationError as exc:
+        raise _error('Character Dress did not pass animation routing validation: ' + str(exc)) from exc
 
 
 def snapshot_properties(target, plan):
@@ -237,6 +258,13 @@ def _capture_channels(target, clone, plan, keyed, channels, previous_q, previous
 
 
 def bake_channels(context, target, plan, desired_samples):
+    """Solve only the disposable clone while artist corrective updates wait."""
+    from . import forearm_twist
+    with forearm_twist.defer_runtime(context, flush_on_exit=False):
+        return _bake_channels(context, target, plan, desired_samples)
+
+
+def _bake_channels(context, target, plan, desired_samples):
     """Return original-target FCurve values for exact, armature-local samples.
 
     desired_samples is an iterable of {native_bone_name: Matrix}. It must come
@@ -252,7 +280,8 @@ def bake_channels(context, target, plan, desired_samples):
         raise _error('A verified control plan is required for control-channel baking.')
     clone, data_copy = None, None
     channels, previous_q, previous_e = {}, {}, {}
-    keyed = sorted((set(plan.mapped_names) - set(plan.redirects)) | set(plan.redirects.values())
+    authored_names = plan.mapped_names - plan.delegated_names
+    keyed = sorted((set(authored_names) - set(plan.redirects)) | set(plan.redirects.values())
                    | set(plan.neutral) | {value[0] for value in plan.eyes.values()})
     worst, count, needs_translation = 0.0, 0, False
     try:
@@ -277,14 +306,15 @@ def bake_channels(context, target, plan, desired_samples):
                 for field in ('target', 'pole_target', 'space_object'):
                     if getattr(constraint, field, None) == target:
                         setattr(constraint, field, clone)
-        ua._swap_armature_data(context, clone, data_copy, allow_joint_translation=True)
+        ua._swap_armature_data(context, clone, data_copy, allow_joint_translation=True,
+                              joint_translation_names=authored_names)
         for name in plan.neutral:
             clone.pose.bones[name].matrix_basis = Matrix.Identity(4)
         for (name, prop), value in plan.switches.items():
             clone.pose.bones[name][prop] = value
         _update(context, clone)
 
-        order = sorted(plan.mapped_names, key=lambda name: len(target.data.bones[name].parent_recursive))
+        order = sorted(authored_names, key=lambda name: len(target.data.bones[name].parent_recursive))
         for sample_index, desired in enumerate(desired_samples):
             if set(desired) != plan.mapped_names:
                 raise _error('An exact motion sample does not cover the validated native skeleton.')
@@ -312,6 +342,8 @@ def bake_channels(context, target, plan, desired_samples):
                 pb.matrix = matrix
             _update(context, clone)
             for name, matrix in desired.items():
+                if name in plan.delegated_names:
+                    continue  # Bind proved; the artist's original Dress graph owns its evaluated motion.
                 error = _difference(clone.pose.bones[name].matrix, matrix)
                 worst = max(worst, error)
                 if error > MATRIX_TOLERANCE:

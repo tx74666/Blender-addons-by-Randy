@@ -6,6 +6,7 @@ with channel emissions. Unsupported closures fail before any datablock copy.
 """
 
 from contextlib import contextmanager
+import json
 import math
 
 import bpy
@@ -15,6 +16,8 @@ from . import rr_ring_nodes
 
 _ROLES = {"BaseColor", "Roughness", "Metallic", "Emission", "Normal", "RingBase", "RingMask"}
 _SHADERS = {"ShaderNodeBsdfPrincipled", "ShaderNodeEmission"}
+_RING_SELECTION_PROPERTY = "rr_pbr_ring_selection"
+_RING_COLOR_TOLERANCE = 1.0 / 255.0
 _BASIC_PRINCIPLED_DEFAULTS = (
     (("Coat Weight", "Clearcoat"), 0.0),
     (("Subsurface Weight", "Subsurface"), 0.0),
@@ -68,6 +71,11 @@ class _Context:
 
     def source(self, socket):
         return self.sources.get(_key(socket)) if socket is not None else None
+
+    def instance_path(self):
+        if self.parent is None:
+            return ()
+        return self.parent.instance_path() + (self.instance.name,)
 
     def child(self, instance):
         child = self.children.get(_key(instance))
@@ -185,6 +193,12 @@ def _ring_shader(socket):
     return socket.identifier == group.get("rr_ring_group_shader_output")
 
 
+def _ring_path(socket, context):
+    # Group copies change datablock IDs/names; node instance names survive.
+    # The material name is excluded so a source material rename is harmless.
+    return context.instance_path() + (socket.node.name,)
+
+
 def _data_depends_on(socket, context, target, target_context, visiting):
     if socket is None:
         return False
@@ -208,7 +222,7 @@ def _data_depends_on(socket, context, target, target_context, visiting):
         visiting.remove(token)
 
 
-def _ring_leaf_values(node, context):
+def _ring_leaf_values(node, context, warnings=None, path=()):
     if node.bl_idname == "ShaderNodeEmission":
         color_socket, strength_socket = node.inputs.get("Color"), node.inputs.get("Strength")
         color = _finite_color(_constant_input(color_socket, context, "Ring Color"), "Ring Color")
@@ -221,8 +235,15 @@ def _ring_leaf_values(node, context):
     if any(emission):
         emission_color = _finite_color(_constant_input(_input(node, "Emission Color", "Emission"),
                                                       context, "Ring Emission Color"), "Ring Emission Color")
-        if any(abs(a - b) > 1e-6 for a, b in zip(color, emission_color)):
-            raise ValueError("Ring face and emission colors differ; choose one uniform Ring color before automatic baking.")
+        difference = max(abs(a - b) for a, b in zip(color, emission_color))
+        if difference > _RING_COLOR_TOLERANCE:
+            raise ValueError("Ring face and emission colors differ by more than one 8-bit linear channel step; "
+                             "choose one uniform Ring color before automatic baking.")
+        if difference > 1e-6 and warnings is not None:
+            warnings.append("Ring layer " + " > ".join(path) + ", " + node.name +
+                            ": emission color follows the face color (max linear RGB difference " +
+                            format(difference, ".9g") + ", allowed " + format(_RING_COLOR_TOLERANCE, ".9g") +
+                            "); the original source colors were kept.")
         strength = _finite_scalar(_constant_input(node.inputs.get("Emission Strength"), context,
                                                   "Ring Emission Strength"), "Ring Emission Strength")
     return color, strength
@@ -267,7 +288,7 @@ def _check_tree(tree, visiting, seen):
     seen.add(token)
 
 
-def _inspect_shader(socket, context, state, visiting, mixes=(), in_ring=False):
+def _inspect_shader(socket, context, state, visiting, mixes=(), ring_path=None):
     if socket is None:
         return  # An empty Mix input contributes a zero channel closure.
     token = (id(context), _key(socket))
@@ -289,43 +310,36 @@ def _inspect_shader(socket, context, state, visiting, mixes=(), in_ring=False):
                 if abs(alpha - 1.0) > 1e-6 or abs(amount) > 1e-6:
                     raise ValueError("Glass and transparency need a separate material workflow.")
             radiance = _emission_radiance(node, context)
-            if in_ring:
-                state["ring_values"].append(_ring_leaf_values(node, context))
-            else:
-                state["emission_strength"] = max(state["emission_strength"], *radiance)
+            state["leaves"].append((node, context, ring_path, radiance))
+            if ring_path is not None:
+                state["ring_layers"][ring_path]["leaves"].append((node, context))
             state["shader_leaf_count"] += 1
         elif kind == "ShaderNodeMixShader":
             for incoming in node.inputs[1:3]:
                 _inspect_shader(context.source(incoming), context, state, visiting,
-                                mixes + ((context.source(node.inputs[0]), context),), in_ring)
+                                mixes + ((context.source(node.inputs[0]), context),), ring_path)
         elif kind == "NodeReroute":
-            _inspect_shader(context.source(node.inputs[0]), context, state, visiting, mixes, in_ring)
+            _inspect_shader(context.source(node.inputs[0]), context, state, visiting, mixes, ring_path)
         elif kind == "ShaderNodeGroup":
             if _ring_shader(socket):
                 rr_ring_nodes._validate_group(node.node_tree)
                 mask = _socket(node.outputs, node.node_tree.get("rr_ring_group_mask_output"))
                 if not any(_data_depends_on(factor, owner, mask, context, set()) for factor, owner in mixes):
                     raise ValueError("Ring Group Shader is not mixed by its own Mask; connect its Mask and Shader as one layer.")
-                in_ring = True
-                state["ring_group_count"] += 1
+                ring_path = _ring_path(socket, context)
+                state["ring_layers"].setdefault(ring_path, {"path": ring_path, "leaves": []})
             source, child, _incoming = _group_source(socket, context)
-            _inspect_shader(source, child, state, visiting, mixes, in_ring)
+            _inspect_shader(source, child, state, visiting, mixes, ring_path)
         elif kind == "NodeGroupInput":
             source, parent, _incoming = _parent_source(socket, context)
-            _inspect_shader(source, parent, state, visiting, mixes, in_ring)
+            _inspect_shader(source, parent, state, visiting, mixes, ring_path)
         else:
             raise ValueError("Unsupported Surface shader " + kind + "; use manual baking.")
     finally:
         visiting.remove(token)
 
 
-def analyze_material(material):
-    """Return serializable bake metadata; allocate or mutate no Blender data.
-
-    Emission PNG values are linear radiance divided by emission_strength. That
-    common nonnegative scale retains constant HDR values and explicitly zero
-    emission without clipping; Unity restores it as a separately editable gain.
-    """
+def _inspect_material(material):
     if not isinstance(material, bpy.types.Material) or material.node_tree is None or not material.use_nodes:
         raise ValueError("Choose a node material before PBR baking.")
     if not material.is_editable:
@@ -341,16 +355,103 @@ def analyze_material(material):
     source = context.source(output.inputs.get("Surface"))
     if source is None:
         raise ValueError("The active material output has no Surface shader.")
-    state = {"contract_version": 1, "emission_strength": 0.0,
-             "emission_color": [1.0, 1.0, 1.0, 1.0], "shader_leaf_count": 0,
-             "ring_group_count": 0, "ring_values": []}
+    state = {"shader_leaf_count": 0, "ring_layers": {}, "leaves": []}
     _inspect_shader(source, context, state, set())
+    return state
+
+
+def _describe_ring_layer(record):
+    colors, strengths, errors = [], [], []
+    for node, context in record["leaves"]:
+        color_socket = node.inputs.get("Color") if node.bl_idname == "ShaderNodeEmission" else node.inputs.get("Base Color")
+        strength_socket = node.inputs.get("Strength") if node.bl_idname == "ShaderNodeEmission" else node.inputs.get("Emission Strength")
+        strengths.append(_finite_scalar(_constant_input(strength_socket, context, "Ring Emission Strength"),
+                                        "Ring Emission Strength"))
+        try:
+            colors.append(_finite_color(_constant_input(color_socket, context, "Ring Color"), "Ring Color"))
+        except ValueError as error:
+            errors.append(str(error))
+    if not strengths:
+        errors.append("Ring Group has no connected shader leaf.")
+    if colors and any(any(abs(a - b) > 1e-6 for a, b in zip(colors[0], color)) for color in colors[1:]):
+        errors.append("This Ring layer has multiple face colors.")
+    if strengths and any(abs(strengths[0] - strength) > 1e-6 for strength in strengths[1:]):
+        errors.append("This Ring layer has multiple emission strengths.")
+    return {"path": list(record["path"]), "label": " > ".join(record["path"]),
+            "color": [*colors[0], 1.0] if colors and not errors else None,
+            "emission_strength": max(strengths, default=0.0),
+            "editable_error": "; ".join(errors) if errors else None}
+
+
+def describe_ring_layers(material):
+    """Return readable per-instance candidates without allocating or mutating IDs."""
+    return [_describe_ring_layer(record) for record in _inspect_material(material)["ring_layers"].values()]
+
+
+def _choose_ring_paths(material, layers, ring_selection):
+    if ring_selection is None and _RING_SELECTION_PROPERTY in material:
+        stored = material[_RING_SELECTION_PROPERTY]
+        if not isinstance(stored, str):
+            raise ValueError("Saved Ring layer selection must be JSON paths; choose the Ring layer again.")
+        try:
+            ring_selection = json.loads(stored)
+        except (TypeError, ValueError):
+            raise ValueError("Saved Ring layer selection is invalid JSON; choose the Ring layer again.") from None
+    if ring_selection is not None:
+        if not isinstance(ring_selection, (list, tuple)):
+            raise ValueError("Ring layer selection must be a list of instance-name paths.")
+        paths = []
+        for path in ring_selection:
+            if (not isinstance(path, (list, tuple)) or not path
+                    or any(not isinstance(name, str) or not name for name in path)):
+                raise ValueError("Each selected Ring layer needs a nonempty instance-name path.")
+            token = tuple(path)
+            if token not in layers:
+                raise ValueError("Selected Ring layer is missing from the active Surface: " + " > ".join(path) +
+                                 "; choose the Ring layer again.")
+            if token in paths:
+                raise ValueError("A Ring layer was selected more than once: " + " > ".join(path))
+            paths.append(token)
+        return paths
+    candidates = [_describe_ring_layer(record) for record in layers.values()]
+    positive = [tuple(item["path"]) for item in candidates if item["emission_strength"] > 0]
+    if positive:
+        return positive
+    if len(candidates) <= 1:
+        return [tuple(item["path"]) for item in candidates]
+    colors = [item["color"] for item in candidates]
+    if all(color is not None for color in colors) and all(
+            all(abs(a - b) <= 1e-6 for a, b in zip(colors[0], color)) for color in colors[1:]):
+        return [tuple(item["path"]) for item in candidates]
+    raise ValueError("Multiple non-emitting Ring layers have different colors; choose the editable Ring layer explicitly.")
+
+
+def analyze_material(material, *, ring_selection=None):
+    """Return serializable bake metadata; allocate or mutate no Blender data.
+
+    Selection uses explicit instance-name paths, a persisted source intent, or
+    initially emitting layers. Unselected Rings remain ordinary background.
+    Emission PNG values retain nonselected HDR radiance with a separate gain.
+    """
+    inspected = _inspect_material(material)
+    paths = _choose_ring_paths(material, inspected["ring_layers"], ring_selection)
+    selected = set(paths)
+    state = {"contract_version": 1, "emission_strength": 0.0,
+             "emission_color": [1.0, 1.0, 1.0, 1.0],
+             "shader_leaf_count": inspected["shader_leaf_count"],
+             "ring_group_count": len(inspected["ring_layers"]),
+             "editable_ring_group_count": len(paths), "ring_selection": [list(path) for path in paths],
+             "has_ring": bool(paths), "warnings": []}
+    values = []
+    for node, context, path, radiance in inspected["leaves"]:
+        if path in selected:
+            values.append(_ring_leaf_values(node, context, state["warnings"], path))
+        else:
+            state["emission_strength"] = max(state["emission_strength"], *radiance)
     state["has_emission"] = state["emission_strength"] > 0
-    values = state.pop("ring_values")
-    state["has_ring"] = bool(state["ring_group_count"])
     if state["has_ring"]:
         if not values:
-            raise ValueError("Ring Group needs a connected constant-color shader before baking.")
+            raise ValueError("Selected Ring Group needs a connected constant-color shader before baking.")
         color, strength = values[0]
         if any(any(abs(a - b) > 1e-6 for a, b in zip(color, other_color))
                or abs(strength - other_strength) > 1e-6 for other_color, other_strength in values[1:]):
@@ -416,14 +517,15 @@ def _leaf_channel(socket, context, role, scale):
     return _emit(context, color)
 
 
-def _convert_shader(socket, context, role, scale):
+def _convert_shader(socket, context, role, scale, selected_paths):
     if socket is None:
         return _emit(context, (0, 0, 0))
     token = _key(socket)
     if token in context.converted:
         return context.converted[token]
     node, kind = socket.node, socket.node.bl_idname
-    if _ring_shader(socket) and role in {"RingMask", "RingBase", "Emission"}:
+    if (_ring_shader(socket) and _ring_path(socket, context) in selected_paths
+            and role in {"RingMask", "RingBase", "Emission"}):
         result = _emit(context, (1, 1, 1) if role == "RingMask" else (0, 0, 0))
     elif kind in _SHADERS:
         result = _leaf_channel(socket, context, role, scale)
@@ -435,19 +537,19 @@ def _convert_shader(socket, context, role, scale):
         if factor_source is not None:
             context.tree.links.new(factor_source, mix.inputs[0])
         for index in (1, 2):
-            channel = _convert_shader(context.source(node.inputs[index]), context, role, scale)
+            channel = _convert_shader(context.source(node.inputs[index]), context, role, scale, selected_paths)
             context.tree.links.new(channel, mix.inputs[index])
         result = mix.outputs[0]
     elif kind == "NodeReroute":
-        result = _convert_shader(context.source(node.inputs[0]), context, role, scale)
+        result = _convert_shader(context.source(node.inputs[0]), context, role, scale, selected_paths)
     elif kind == "ShaderNodeGroup":
         source, child, incoming = _group_source(socket, context)
-        channel = _convert_shader(source, child, role, scale)
+        channel = _convert_shader(source, child, role, scale, selected_paths)
         _replace_link(child.tree, incoming, channel)
         result = socket
     elif kind == "NodeGroupInput":
         source, parent, incoming = _parent_source(socket, context)
-        channel = _convert_shader(source, parent, role, scale)
+        channel = _convert_shader(source, parent, role, scale, selected_paths)
         _replace_link(parent.tree, incoming, channel)
         result = socket
     else:
@@ -457,7 +559,7 @@ def _convert_shader(socket, context, role, scale):
 
 
 @contextmanager
-def cloned_materials(materials, role):
+def cloned_materials(materials, role, *, ring_selections=None):
     """Yield original -> temporary material; dispose only this operation's IDs.
 
     The caller assigns clones only for native baking and restores its own object
@@ -467,7 +569,8 @@ def cloned_materials(materials, role):
     if key not in _ROLES:
         raise ValueError("Unsupported PBR bake role: " + str(key))
     sources = list(dict.fromkeys(materials))
-    plans = {material: analyze_material(material) for material in sources}
+    selections = ring_selections or {}
+    plans = {material: analyze_material(material, ring_selection=selections.get(material)) for material in sources}
     cloned, groups = {}, []
     try:
         for source in sources:
@@ -482,7 +585,8 @@ def cloned_materials(materials, role):
                 context = _Context(clone.node_tree)
                 output = _active_output(context.tree, "ShaderNodeOutputMaterial")
                 surface = output.inputs["Surface"]
-                result = _convert_shader(context.source(surface), context, key, plans[source]["emission_strength"])
+                result = _convert_shader(context.source(surface), context, key, plans[source]["emission_strength"],
+                                         {tuple(path) for path in plans[source]["ring_selection"]})
                 _replace_link(context.tree, surface, result)
         yield cloned
     finally:

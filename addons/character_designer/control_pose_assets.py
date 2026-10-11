@@ -57,10 +57,12 @@ def asset_metadata(action):
                 or not saved['source_object'] or not isinstance(saved.get('source_slot'), str)
                 or not saved['source_slot'] or not isinstance(saved.get('names'), list)
                 or not saved['names'] or any(not isinstance(n, str) or not n for n in saved['names'])
-                or len(saved['names']) != len(set(saved['names']))):
+                or len(saved['names']) != len(set(saved['names']))
+                or ('stable_ik_bend' in saved and type(saved['stable_ik_bend']) is not bool)):
             raise ValueError
     except (ValueError, TypeError, KeyError) as exc:
         raise ValueError('This saved Pose has invalid compatibility data; no changes were applied.') from exc
+    _validate_stable_ik_seed_metadata(saved)
     return saved
 
 
@@ -268,9 +270,195 @@ def _auto_key(context, rig, before, values):
             _insert_key(pb, path, frame)
 
 
-def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limbs=(), sync_controls=False):
-    from . import torso_controls, spine_ik_fk, eye_controls, bone_collections, root_control
+def _complete_native_transforms(fields):
+    rotations = [name for name in fields if name.startswith('rotation_')]
+    return (set(fields.get('location', ())) == set(range(3))
+            and set(fields.get('scale', ())) == set(range(3))
+            and len(rotations) == 1
+            and rotations[0] in _TRANSFORMS
+            and set(fields[rotations[0]]) == set(range(_TRANSFORMS[rotations[0]])))
+
+
+def _validate_stable_ik_seed_metadata(metadata):
+    """Validate explicit, Rest-compatible reference seeds without writing RNA."""
+    if 'stable_ik_seed' not in metadata:
+        return {}
+    seeds = metadata['stable_ik_seed']
+    modes = {'QUATERNION', 'AXIS_ANGLE', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX'}
+    try:
+        if not isinstance(seeds, dict) or not seeds or set(seeds) - {'ARM/L', 'ARM/R'}:
+            raise ValueError
+        for sources in seeds.values():
+            if not isinstance(sources, dict) or len(sources) != 3:
+                raise ValueError
+            for name, saved in sources.items():
+                if (not isinstance(name, str) or not name or not isinstance(saved, dict)
+                        or set(saved) != {'rotation_mode', 'matrix_basis'} or saved['rotation_mode'] not in modes):
+                    raise ValueError
+                rows = saved['matrix_basis']
+                if (not isinstance(rows, list) or len(rows) != 4
+                        or any(not isinstance(row, list) or len(row) != 4 for row in rows)
+                        or any(type(value) not in {int, float} or not math.isfinite(value) for row in rows for value in row)
+                        or any(abs(rows[3][index] - expected) > 1e-8
+                               for index, expected in enumerate((0., 0., 0., 1.)))):
+                    raise ValueError
+                basis = Matrix(rows)
+                if not limb_ik._matrix_is_finite(basis):
+                    raise ValueError
+                rebuilt = Matrix.LocRotScale(*basis.decompose())
+                determinant = basis.to_3x3().determinant()
+                if (not limb_ik._matrix_is_finite(rebuilt)
+                        or not math.isfinite(determinant) or determinant <= 1e-10
+                        or _difference(basis, rebuilt) > 2e-6):
+                    raise ValueError
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        raise ValueError('This saved Pose has invalid stable IK seed data; no changes were applied.') from exc
+    return seeds
+
+
+def _validate_stable_ik_seed_inventory(rig, inventory, seeds, *, applied=()):
+    native = set(native_rest(rig))
+    for name, sources in seeds.items():
+        key = tuple(name.split('/'))
+        if (set(sources) - native
+                or any(limb_ik._side_from_name(source) not in {'', key[1]} for source in sources)):
+            raise ValueError('This saved Pose has different stable IK seed bones; no changes were applied.')
+        if key not in applied:
+            continue
+        entry = inventory['rigs'].get(key)
+        if entry is None or set(sources) != set(entry['chain']):
+            raise ValueError('This saved Pose has different stable IK seed bones; no changes were applied.')
+
+
+def _stable_ik_bend_supported(rig, inventory, entry):
+    """Prove the ordinary Direct source/control graph before keeping its seed."""
+    if (inventory['schema'] not in {limb_ik.LEGACY_DIRECT_PREROLL_SCHEMA, limb_ik.DIRECT_PREROLL_SCHEMA}
+            or not entry.get('direct_rest') or entry.get('foot_controls')
+            or entry['solver_target'].name != entry['target'].name
+            or rig.parent is not None or rig.constraints
+            or (rig.data.animation_data and rig.data.animation_data.drivers)):
+        return False
+    chain = tuple(entry['chain'])
+    if len(chain) != 3 or len(set(chain)) != 3:
+        return False
+    bones = [rig.pose.bones[name] for name in chain]
+    if bones[1].parent != bones[0] or bones[2].parent != bones[1]:
+        return False
+    owned = {con.as_pointer(): (pb, con, record) for pb, con, record in entry['entries']}
+    switch_paths = set()
+    for pb in bones:
+        for con in pb.constraints:
+            record = owned.get(con.as_pointer())
+            if (record is None or record[0] != pb or not match.is_switch_constraint(rig, *record)
+                    or not match.validate_constraint_influence(rig, *record)):
+                return False
+            switch_paths.add(con.path_from_id('influence'))
+    proof = match._fk_parent_dependencies(rig, bones[0].parent, set(chain))
+    if proof is None:
+        return False
+    dependencies, root_scale = proof
+    controls = [rig.pose.bones[entry[name].name] for name in ('target', 'pole')]
+    if controls[0] == controls[1] or any(pb.constraints for pb in controls):
+        return False
+    from . import root_control
+    root = root_control.get_record(rig)
+    parents = {pb.parent.name: pb.parent for pb in controls if pb.parent}
+    if parents and (root is None or set(parents) != {root['master']}):
+        return False
+    if parents:
+        master = parents[root['master']]
+        if master.parent is not None or master.constraints:
+            return False
+        root_control._validate_scale_drivers(rig, master)
+        root_scale = master.path_from_id('scale')
+    prefixes = tuple(pb.path_from_id() for pb in (*bones, *dependencies.values(), *controls, *parents.values()))
+    for curve in rig.animation_data.drivers if rig.animation_data else ():
+        path = curve.data_path
+        if path in switch_paths or path == root_scale:
+            continue
+        if (any(path == prefix or path.startswith(prefix + '.') or path.startswith(prefix + '[')
+                for prefix in prefixes)
+                or path.startswith(('location', 'rotation_', 'scale', 'delta_', 'matrix_', 'constraints['))):
+            return False
+    return True
+
+
+def _match_stable_ik_bend(context, rig, inventory, key, entry, wanted, desired, authored, seeds):
+    """Apply an explicitly tagged flat preset through its current IK seed.
+
+    A tiny FK elbow bend can imply an unwanted future IK plane. This opt-in
+    preset semantic permits a bounded upper/lower adjustment while preserving
+    the exact authored wrist; ordinary native Pose matching remains exact.
+    """
+    upper, lower, end = entry['chain']
+    start, joint, finish = (wanted[name].translation for name in entry['chain'])
+    axis = finish - start
+    reach = axis.length
+    if reach < 1e-8:
+        return False
+    axis.normalize()
+    radial = joint - start - axis * (joint - start).dot(axis)
+    if radial.length > reach * .02:
+        return False
+    if not _stable_ik_bend_supported(rig, inventory, entry):
+        raise ValueError('This flat Pose needs supported Direct IK controls for its stable bend; no changes kept.')
+    seed = seeds.get('/'.join(key))
+    upper_pb = rig.pose.bones[upper]
+    basis = Matrix(seed[upper]['matrix_basis']) if seed is not None else upper_pb.matrix_basis.copy()
+    parent = upper_pb.parent.matrix if upper_pb.parent else Matrix.Identity(4)
+    reference = _convert(upper_pb.bone, basis, parent).to_3x3()
+    authored_frame = wanted[upper].to_3x3()
+    reference_axis = reference.col[1].normalized()
+    authored_axis = authored_frame.col[1].normalized()
+    swing = reference_axis.rotation_difference(authored_axis)
+    transported = limb_ik._project_perpendicular(swing @ reference.col[0], authored_axis)
+    authored_roll = limb_ik._project_perpendicular(authored_frame.col[0], authored_axis)
+    if (min(transported.length, authored_roll.length) < 1e-8
+            or abs(limb_ik._signed_angle(transported, authored_roll, authored_axis)) > math.radians(3.)):
+        raise ValueError('This flat Pose has incompatible axial twist for its stable IK seed; no changes kept.')
+    plane = {name: matrix.copy() for name, matrix in wanted.items()}
+    plane[lower].translation = start + axis * (joint - start).dot(axis)
+    if seed is not None:
+        # Only this asset's explicit reference is restored. Never invent a
+        # neutral Identity seed for a calibrated or deliberately posed rig.
+        for name in entry['chain']:
+            pb = rig.pose.bones[name]
+            pb.rotation_mode = seed[name]['rotation_mode']
+            pb.matrix_basis = Matrix(seed[name]['matrix_basis'])
+        match._update(context, rig)
+    match._match_ik(context, rig, inventory, entry, plane)
+    match._match_toe(context, rig, entry, wanted)
+    match._update(context, rig)
+    position, rotation, scale = match._pose_errors(rig, wanted)
+    wrist = rig.pose.bones[end].matrix
+    if (position > reach * .02 or rotation > math.radians(3.) or scale > match.SCALE_TOLERANCE
+            or _difference(wrist, wanted[end]) > 4e-4
+            or (wrist.translation - wanted[end].translation).length > 1e-5):
+        raise ValueError('This flat Pose needs more than the bounded IK bend adjustment; no changes kept.')
+    before = {name: matrix.copy() for name, matrix in desired.items()}
+    adjusted = {upper, lower}
+    for name in (upper, lower):
+        wanted[name] = desired[name] = rig.pose.bones[name].matrix.copy()
+    # Unkeyed native children retain their original parent-relative pose.
+    # The authored wrist remains exact, so its fingers retain that exact frame.
+    for name in sorted(desired, key=lambda n: len(rig.pose.bones[n].parent_recursive)):
+        parent = rig.data.bones[name].parent
+        if name in entry['chain'] or name in authored or parent is None or parent.name not in adjusted:
+            continue
+        bone = rig.data.bones[name]
+        basis = _convert(bone, before[name], before[parent.name], invert=True)
+        desired[name] = _convert(bone, basis, desired[parent.name])
+        adjusted.add(name)
+    match._verify(rig, wanted)
+    return True
+
+
+def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limbs=(), sync_controls=False,
+           stable_ik_bend_limbs=(), authored_names=(), stable_ik_seeds=None):
+    from . import torso_controls, spine_ik_fk, eye_controls, bone_collections, root_control, body_original_mode
     inventory = limb_ik._validate_inventory(rig)
+    stable_sources = {name for key in stable_ik_bend_limbs if key[0] == 'ARM' and key in inventory['rigs']
+                      for name in match.pose_names(inventory['rigs'][key])}
     torso, spine, eyes = torso_controls.validate(rig), spine_ik_fk.validate(rig), eye_controls.validate(rig)
     def torso_match():
         old_value = rig.pose.bones[spine['chest']].get(spine_ik_fk.PROPERTY, 0.) if spine else 0.
@@ -307,6 +495,12 @@ def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limb
         previous_value = rig.pose.bones[entry['target'].name].get(match.PROPERTY, 1.0)
         if match.VERSION_KEY not in rig.pose.bones[entry['target'].name].bone:
             raise ValueError('Update this legacy rig before applying Pose assets through its controls.')
+        if (key in stable_ik_bend_limbs and key[0] == 'ARM' and previous == 'IK'
+                and key not in precise_limbs and not body_original_mode.active(rig)
+                and _match_stable_ik_bend(context, rig, inventory, key, entry, wanted, desired,
+                                        set(authored_names), stable_ik_seeds or {})):
+            modes['/'.join(key)] = 'IK'
+            return
         match.switch_limb(context, rig, key, 'FK', keyframe=False, desired_pose=wanted)
         if previous == 'FK' and sync_controls:
             # Seed the dormant target and Pole through the same matching path.
@@ -374,6 +568,13 @@ def _match(context, rig, desired, changed, *, preserve_modes=False, precise_limb
             follow = root_follow.get(name)
             if pb.constraints and (follow is None or list(pb.constraints) != [follow]):
                 raise ValueError(f'{name} has an unsupported constraint; this Pose was not applied.')
+            if (stable_sources and name not in authored_names and not pb.constraints
+                    and any(parent.name in stable_sources for parent in pb.parent_recursive)
+                    and _difference(pb.matrix, desired[name]) <= 4e-4):
+                # These free descendants already follow their matched parent.
+                # Reassigning a connected finger's evaluated matrix would clear
+                # dormant artist location channels that this preset never keyed.
+                continue
             matrix = (rig.pose.bones[follow.subtarget].matrix.inverted() @ desired[name]
                       if follow is not None else desired[name])
             match._set_matrix(context, rig, pb, matrix)
@@ -430,6 +631,9 @@ def apply_channels(context, rig, values, *, metadata=None):
 
 def _apply_channels(context, rig, values, *, metadata=None, refresh=lambda: None):
     from . import body_original_mode as original
+    if metadata is not None and 'stable_ik_bend' in metadata and type(metadata['stable_ik_bend']) is not bool:
+        raise ValueError('This saved Pose has invalid stable IK bend data; no changes were applied.')
+    seeds = _validate_stable_ik_seed_metadata(metadata) if metadata is not None else {}
     if context.mode not in {'OBJECT', 'POSE'} or rig.library or rig.data.library or rig.data.users != 1:
         raise ValueError('Apply this Pose to a local, single-user rig in Object or Pose Mode.')
     match._update(context, rig)
@@ -446,11 +650,22 @@ def _apply_channels(context, rig, values, *, metadata=None, refresh=lambda: None
             if curve.data_path in bbone_paths or any(curve.data_path.startswith(rig.pose.bones[name].path_from_id())
                    and any('.' + p in curve.data_path for p in ('location', 'rotation_', 'scale')) for name in changed):
                 raise ValueError('A transform driver controls this Pose region; no changes were applied.')
+    stable = ()
+    inventory = None
+    if metadata is not None and metadata.get('stable_ik_bend', False) and not original.active(rig):
+        inventory = limb_ik._validate_inventory(rig)
+        stable = tuple(key for key, entry in inventory['rigs'].items() if key[0] == 'ARM'
+                       and all(name in values and _complete_native_transforms(values[name])
+                               for name in entry['chain']))
+    if seeds:
+        applied = tuple(key for key in stable if match.mode_for_rig(rig, inventory['rigs'][key]) == 'IK')
+        _validate_stable_ik_seed_inventory(rig, inventory, seeds, applied=applied)
     with _transaction(context, rig) as before:
         if original.active(rig):
             modes = _match_original(context, rig, desired, changed, preserve_modes=metadata is not None)
         elif metadata is not None:
-            modes = _match(context, rig, desired, changed, sync_controls=True, preserve_modes=True)
+            modes = _match(context, rig, desired, changed, sync_controls=True, preserve_modes=True,
+                           stable_ik_bend_limbs=stable, authored_names=values, stable_ik_seeds=seeds)
         else:
             modes = _match(context, rig, desired, changed)
         for name, fields in values.items():

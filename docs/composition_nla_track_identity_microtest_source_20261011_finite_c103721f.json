@@ -1,0 +1,56 @@
+{
+  "schema": "x.validation.composition-nla-track-identity-microtest-source/1",
+  "date": "2026-10-11",
+  "source_only": true,
+  "native_execution_performed": false,
+  "script_execution_or_import_performed": false,
+  "tests_performed": false,
+  "tool_source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\verify_composition_nla_track_identity.py",
+    "sha256": "c103721f0c8c48bb16b8a5ee0a661934d5ba437d65101bd3a9e3e9012699a789",
+    "bytes": 10424
+  },
+  "preserved_prior_tool": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\verify_composition_nla_track_identity_d40cef1a_before_finite_guard.py",
+    "sha256": "d40cef1a0d4388ae7309f4f76b680161ab7e34a16b458ba3f3edc40e4d9f8f99",
+    "bytes": 10230
+  },
+  "prior_owner_report": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_nla_track_identity_microtest_source_20261011_d40cef1a.json",
+    "sha256": "f0f61e0f0219ac91f8ce4898b82701ec004901acc13a978d19b13e9212465290",
+    "bytes": 3472
+  },
+  "prior_peer_report": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\microtest_nla_track_identity_peer_source_review_d40cef1a.json",
+    "sha256": "94e9af8b9287985336f22aa89db8c9f0e9ecb2aeacc07a6b918873d7280bb9c8",
+    "bytes": 6120
+  },
+  "unchanged_core_product": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+    "sha256": "1861bcf7136e389da2cd2c40af57e7c5ea33c9bd8b9b90bf0557b8f649584ea5",
+    "bytes": 99028
+  },
+  "correction": {
+    "changed_function": "evaluated",
+    "line": 79,
+    "reason": "A max(abs(delta)) check can miss a later NaN. Admit exactly three finite native pose components before any Full Stack or return-B comparison.",
+    "new_standard_library_import": "math",
+    "changed_existing_function_count": 1,
+    "unchanged_other_function_count": 8,
+    "all_other_top_level_ast_equal_except_math_import": true,
+    "frame_set_view_layer_update_and_evaluated_pose_read_ast_equal": true,
+    "guard_ast": "require(len(values) == 3 and all((math.isfinite(value) for value in values)), 'Evaluated native pose must contain exactly three finite components')",
+    "guard_function_ast_sha256": "62b62fb7dcb6a021ee6b24cf2e8afc8cb8678ce246ace140a1cb982f6715c342"
+  },
+  "source_check": {
+    "ast_parse_and_in_memory_compile": true,
+    "count": 2,
+    "runtime_import_executed": false
+  },
+  "scope": [
+    "Probe-only source correction. No runtime/add-on/clock/exporter/test source edits or projection/deployment.",
+    "The d40 source was exclusively preserved byte-exact before the canonical probe edit. Existing owner/peer reports are historical and unchanged.",
+    "A separately authorized factory-startup Blender5.2 background launch is still required; no actual probe result exists.",
+    "Verified executable, --factory-startup and Python exit-code are explicit launcher obligations; the probe additionally requires background5.2 and empty bpy.data.filepath."
+  ]
+}

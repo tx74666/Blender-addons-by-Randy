@@ -424,6 +424,8 @@ def _enter(context, rig, refresh):
         prefixes = tuple(rig.pose.bones[name].path_from_id() + '.' + prop for name in names for prop in _CHANNELS)
         if any(not curve.mute and curve.data_path.startswith(prefixes) for curve in rig.animation_data.drivers):
             raise ValueError('A native transform driver still controls Original; preserve or adjust that driver before direct posing.')
+    from . import skirt_wiggle
+    skirt_wiggle.suspend_for_rig(context, rig, reason='Original editing paused automatic Dress motion.')
     _update(context, rig)
     dress_entries = dress_pose.prepare(context, rig)
     dress_checkpoint = dress_pose.checkpoint(context, rig, dress_entries)

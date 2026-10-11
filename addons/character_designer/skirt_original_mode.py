@@ -460,13 +460,25 @@ def clear(context, main, selected_only=True):
     entries = prepare(context, main)
     state = checkpoint(context, main, entries)
     count = 0
+    changed_targets = set()
+    direct_edits = []
     try:
         for entry, target, source, record, relations in _resolve(context, main, entries):
             correction = _corrections(source, record)
-            for pb, copy, _rotation in relations:
-                value = correction['bones'].get(pb.name)
-                if value is None or selected_only and not (pb.select if hasattr(pb, 'select') else pb.bone.select):
-                    continue
+            clearing = [(pb, copy, correction['bones'][pb.name])
+                        for pb, copy, _rotation in relations
+                        if pb.name in correction['bones'] and (not selected_only
+                            or (pb.select if hasattr(pb, 'select') else pb.bone.select))]
+            if not clearing:
+                continue
+            service, _identity = _surface(source, target, record, prove=False)
+            if service is not None and getattr(service, 'BACKEND', None) == 'DIRECT_MAIN_CLOTH_V1':
+                # Clearing changes the same input as Original posing. Withdraw
+                # the old Cloth result before the first channel mutation;
+                # explicit Reset/replay owns cache replacement, not Clear.
+                service.set_editing(source, record, True)
+                direct_edits.append((service, source, record))
+            for pb, copy, value in clearing:
                 copy.mix_mode = value['mix_mode']
                 _restore(pb, value['channels'])
                 correction['bones'].pop(pb.name)
@@ -475,7 +487,10 @@ def clear(context, main, selected_only=True):
                 source[CORRECTIONS] = json.dumps(correction, separators=(',', ':'))
             else:
                 source.pop(CORRECTIONS, None)
-        _update(context, {saved['target'] for saved in state})
+            changed_targets.add(target)
+        _update(context, changed_targets)
+        for service, source, record in direct_edits:
+            service.set_editing(source, record, False)
     except Exception:
         rollback(context, state)
         raise

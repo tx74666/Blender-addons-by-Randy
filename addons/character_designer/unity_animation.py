@@ -31,6 +31,7 @@ ACTIVE_KEY = "character_designer_unity_animation_active"
 ORIGINAL_DATA_KEY = "character_designer_unity_animation_original_data"
 PREVIEW_DATA_KEY = "character_designer_unity_animation_preview_data"
 ORIGINAL_REST_KEY = "character_designer_unity_animation_original_rest"
+NATIVE_TIMEBASE_KEY = "character_designer_unity_native_timebase"
 
 
 class UnityAnimationError(ValueError):
@@ -181,7 +182,7 @@ def _mapping(target, data, unit_scale=1.0):
     if "Hips" not in candidates or len(candidates) < 4:
         raise UnityAnimationError("This package does not contain this character's named body bones.")
     from .unity_animation_controls import build_plan
-    controls = build_plan(target, candidates)
+    controls = build_plan(target, candidates, package=data)
     validate_target(target, candidates, controls)
     for name, index in candidates.items():
         parent = data["bones"][index]["parent"]
@@ -276,7 +277,8 @@ def _set_frame(scene, value):
     scene.frame_set(base, subframe=value - base)
 
 
-def _swap_armature_data(context, target, data, *, allow_joint_translation=False):
+def _swap_armature_data(context, target, data, *, allow_joint_translation=False,
+                        joint_translation_names=None):
     """Temporarily use a data copy; the rig Object and its skin bindings stay intact."""
     active = context.view_layer.objects.active
     selected = tuple(context.selected_objects)
@@ -294,7 +296,8 @@ def _swap_armature_data(context, target, data, *, allow_joint_translation=False)
         if allow_joint_translation:
             bpy.ops.object.mode_set(mode="EDIT")
             for bone in data.edit_bones:
-                bone.use_connect = False
+                if joint_translation_names is None or bone.name in joint_translation_names:
+                    bone.use_connect = False
             bpy.ops.object.mode_set(mode="OBJECT")
     finally:
         if target.mode == "EDIT":
@@ -449,24 +452,78 @@ def import_test_action(context, target, filepath, *, start_frame=1):
     return _import_package_action(context, target, load_package(filepath), start_frame=start_frame)
 
 
-def _import_package_action(context, target, data, *, start_frame=1):
+def native_action_frame_rate(action):
+    """Read an explicit native import clock, authenticated against its source packet."""
+    if NATIVE_TIMEBASE_KEY not in action:
+        return None
+    rate = action[NATIVE_TIMEBASE_KEY]
+    if (type(rate) not in (int, float) or not math.isfinite(rate) or not 1 <= rate <= 240
+            or type(action.get("unity_sample_rate")) not in (int, float)
+            or action.get("unity_sample_rate") != rate
+            or type(action.get("unity_start_frame")) not in (int, float)
+            or action.get("unity_start_frame") != 1.):
+        raise UnityAnimationError("The explicit native Action clock is incomplete or changed.")
+    path, digest = action.get(PACKAGE_KEY), action.get(PACKAGE_HASH_KEY)
+    if (not isinstance(path, str) or not path
+            or not isinstance(digest, str) or len(digest) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in digest)):
+        raise UnityAnimationError("The native Action needs its exact prepared source packet.")
+    packet = load_package(path)
+    if (packet["_sha256"] != digest.lower() or packet["sampleRate"] != rate
+            or type(action.get("unity_duration")) not in (int, float)
+            or action.get("unity_duration") != packet["duration"]):
+        raise UnityAnimationError("The native Action clock differs from its prepared source packet.")
+    return rate
+
+
+def _import_sample_frames(data, start_frame, scene_fps, *, native_timebase=False):
+    """Keep ordinary previews on the Scene clock; explicit native imports use packet seconds."""
+    if type(native_timebase) is not bool:
+        raise UnityAnimationError("The native import timebase option must be true or false.")
+    fps = scene_fps
+    if native_timebase:
+        fps = data.get("sampleRate")
+        if (isinstance(fps, bool) or not isinstance(fps, (int, float))
+                or not math.isfinite(fps) or not 1 <= fps <= 240):
+            raise UnityAnimationError("Native import sample rate must be between 1 and 240 Hz.")
+    if not math.isfinite(start_frame):
+        raise UnityAnimationError("The test start frame must be finite.")
+    return [start_frame + frame["time"] * fps for frame in data["frames"]]
+
+
+def _import_package_action(context, target, data, *, start_frame=1, native_timebase=False):
     """Apply this operation's validated packet without parsing a second copy.
 
     Internal callers must pass load_package's result. Link import retains its
     fresh final input checks; this is not a persistent cache or a hash shortcut.
     """
+    if type(native_timebase) is not bool:
+        raise UnityAnimationError("The native import timebase option must be true or false.")
+    # Validate native timing before touching Blender state. Composition Actions
+    # retain this packet clock even when the artist Scene uses another rate.
+    frames = (_import_sample_frames(data, start_frame, None, native_timebase=True)
+              if native_timebase else None)
     if active_preview(target):
         raise UnityAnimationError("Restore the current Unity test before importing another clip.")
     if context.object and context.object.mode == "EDIT":
         raise UnityAnimationError("Leave Edit Mode before importing a test Action.")
+    if target is None or target.type != 'ARMATURE' or context.scene.objects.get(target.name) is not target:
+        raise UnityAnimationError('Choose the character Rig in its original scene before importing motion.')
+    from . import body_original_mode
+    if body_original_mode.active(target):
+        raise UnityAnimationError('Return Original to its saved controls, or use Main Rig in the Worklist before importing motion.')
+    # Objects in an inactive Scene may still expose a stale cached world matrix.
+    # Preflight must evaluate the actual editing Scene, without changing scenes.
+    context.view_layer.update()
     unit_scale = context.scene.unit_settings.scale_length
     mapping = _mapping(target, data, unit_scale)
     if not math.isfinite(start_frame):
         raise UnityAnimationError("The test start frame must be finite.")
     snapshot = _snapshot(context, target, mapping.controls)
     previous = target.animation_data.action if target.animation_data else None
-    fps = snapshot["fps"] / snapshot["fps_base"]
-    frames = [start_frame + frame["time"] * fps for frame in data["frames"]]
+    if frames is None:
+        fps = snapshot["fps"] / snapshot["fps_base"]
+        frames = _import_sample_frames(data, start_frame, fps)
     names = sorted(mapping.indices, key=lambda n: len(target.data.bones[n].parent_recursive))
     world_inv = target.matrix_world.inverted()
     world_scale = target.matrix_world.to_3x3().col[0].length
@@ -533,9 +590,17 @@ def _import_package_action(context, target, data, *, start_frame=1):
         action[PACKAGE_HASH_KEY] = data["_sha256"]
         action["unity_clip_name"] = clip
         action["unity_sample_rate"] = data["sampleRate"]
+        if native_timebase:
+            action[NATIVE_TIMEBASE_KEY] = data["sampleRate"]
         action["unity_start_frame"] = float(start_frame)
         action["unity_duration"] = data["duration"]
         action["unity_loop_time"] = bool(data.get("loopTime", False))
+        if mapping.controls and mapping.controls.delegated_names:
+            action['character_designer_animation_authored_bones'] = json.dumps(sorted(
+                mapping.controls.mapped_names - mapping.controls.delegated_names))
+            action['character_designer_animation_delegated_dress_bones'] = json.dumps(sorted(
+                mapping.controls.delegated_names))
+            action['character_designer_animation_dress_route'] = 'PRESERVE_VALIDATED_STATIC_DRESS'
         if needs_joint_translation:
             # Unity Humanoid can animate joint translations which Blender's
             # connected native bones suppress. Only this disposable data copy
@@ -546,7 +611,17 @@ def _import_package_action(context, target, data, *, start_frame=1):
             action[ORIGINAL_DATA_KEY] = original_data
             action[PREVIEW_DATA_KEY] = preview_data
             action[ORIGINAL_REST_KEY] = json.dumps(_rest_state(original_data), separators=(",", ":"))
-            _swap_armature_data(context, target, preview_data, allow_joint_translation=True)
+            translated = set()
+            for name in names:
+                if not original_data.bones[name].use_connect:
+                    continue
+                path = target.pose.bones[name].path_from_id('location')
+                values = [channels.get((path, index), [0.0] * len(frames)) for index in range(3)]
+                if any(sum(values[index][sample] ** 2 for index in range(3)) > 1e-14
+                       for sample in range(len(frames))):
+                    translated.add(name)
+            _swap_armature_data(context, target, preview_data, allow_joint_translation=True,
+                                joint_translation_names=translated)
         _set_playing(context, False)
         ad = target.animation_data_create()
         ad.use_nla, ad.action_blend_type, ad.action_influence = False, "REPLACE", 1.0

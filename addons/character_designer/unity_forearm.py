@@ -28,10 +28,16 @@ def capture(obj):
     topology = twist._topology(obj.data)
     keys = obj.data.shape_keys
     owned = []
-    for side, record in records.items():
+    for side, record in tuple(records.items()):
         key = twist._managed_key(obj, side, record, repair_name=False)
-        if record["topology"] != topology or record["armature"] != rig.name:
+        if record["armature"] != rig.name:
             raise ValueError(f"{obj.name}: recapture forearm loops after the topology/binding change.")
+        # Export can precede the next runtime evaluation after an unrelated
+        # mesh edit. Use the same saved support proof, preparing only local
+        # metadata copies: capture remains read-only even if later export
+        # validation or atomic sidecar publication fails.
+        record = twist._current_topology_record(obj.data, record, topology=topology)
+        records[side] = record
         if record["rest"] != twist._rest_signature(rig, record["chain"]):
             raise ValueError(f"{obj.name}: forearm calibration rest bones have changed.")
         if key.relative_key != keys.reference_key or key.vertex_group:

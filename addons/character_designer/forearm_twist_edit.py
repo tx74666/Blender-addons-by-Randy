@@ -214,7 +214,8 @@ def manual_add_loop(context, obj, side, ring):
                                owned_record=record, rings_override=rings,
                                continuous=record.get("distribution") == "WRIST_CONTINUOUS")
     fresh.update({key: value for key, value in record.items()
-                  if key not in {"rings", "vertices", "positions", "range_start", "range_end", "current_ring"}})
+                  if key not in {"rings", "vertices", "positions", "support_topology",
+                                 "range_start", "range_end", "current_ring"}})
     for name, anchor in zip(("range_start", "range_end", "current_ring"), anchors):
         fresh[name] = next(i for i, item in enumerate(rings) if frozenset(item["vertices"]) == anchor)
     records[side] = fresh

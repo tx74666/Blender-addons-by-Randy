@@ -225,7 +225,7 @@ def draw(layout, context):
     if part=='ARMS':
         row=box.row()
         row.enabled=item['state'] in {'READY','CONFIRMED'} and context.mode in {'OBJECT','POSE'}
-        row.operator('character_designer.forearm_twist_start',text='Forearm Twist Setup',icon='DRIVER_ROTATIONAL_DIFFERENCE')
+        row.operator('character_designer.forearm_twist_start',text='Forearm Twist Setup',icon='DRIVER_ROTATIONAL_DIFFERENCE').repair_stale=True
     failed = bool(s.last_error and s.last_error_signature == (p or {}).get('signature',''))
     box.prop(s,'show_details',text='Details',icon='TRIA_DOWN' if s.show_details else 'TRIA_RIGHT',emboss=False)
     if s.show_details:

@@ -1,13 +1,38 @@
 # Dress automatic motion
 
+## Current installed workflow — 2026-10-09
+
+Character Designer **0.77.5** now provides an explicitly requested **Wiggle 2
+Automatic / Manual** switch for the existing PHYS bone layer, plus daily
+Controls / Original and advanced MCH / PHYS display. Blender 5.2 and X's add-on
+copy were deployed from a reviewed 150-file projection and verified identical.
+See [release and validation](releases/CharacterDesigner_0.77.5_dress_wiggle_switch_20261009.md).
+The saved real X model passed isolated validation; the artist file was not changed.
+
+The sections below retain the **cancelled, unreleased Cloth investigation**.
+They describe that historical branch, not the installed 0.77.5 Wiggle workflow.
+Its cancelled Goal and outstanding collision/Unity acceptance remain unchanged.
+
+## Held Cloth investigation — cancelled 2026-10-08
+
+The automatic Goal was cancelled on 2026-10-08 for manual structural review.
+Existing sources and private evidence are retained; no new Dress deployment or
+artist scene save was performed. No Dress development or native test is queued.
+Before explicitly restarting work, decide the held-pose/manual
+refinement workflow and Blender/Unity physical-output ownership. The latest
+native run completed the seed and mid-pose checks, but not the full 75-degree
+plus Manual test; its timed successor is prepared and has not been run. Current
+artist export needs a fresh native target, not the older derived QA snapshot.
+
 This is the **unreleased Dress work**, not the installed artist workflow. Cloth
 has been selected for Dress instead of the earlier proposed Wiggle automation;
 Wiggle remains the Hair backend. Daily Dress Automatic is intended to require
 only character motion, with no prerequisite Dress keyframes. Final-surface
 collision, same-frame editing and artist integration are not yet accepted.
-Formal X has received separate Pose `0.77.2` work. The frozen Dress measurements
-predate that deployment and subsequent Artist edits; Direct has not been
-installed, refreshed or saved in the artist scene.
+Formal X contains the separate Pose `0.77.3` approved projection; its 148 listed
+files match the X add-on copy. That projection excludes pending Dress sources.
+Dress reports retain their individual source/input versions; Direct has not
+been installed, refreshed or saved in the artist scene.
 
 The unreleased source routes **Setup Dress / Physics + Manual** to
 `DIRECT_MAIN_CLOTH_V1` (Direct). Select the actual Body mesh in Character Setup
@@ -43,6 +68,11 @@ The intended Direct workflow is:
 1. Set the actual Body mesh in Character Setup, select Dress, and use
    **Setup Dress**. Existing setup geometry is
    reused; it is not silently replaced after topology or ownership changes.
+   When the resulting Direct mode is Automatic, setup focuses the Dress mesh
+   in Object Mode instead of leaving its manual waist control selected in Pose
+   Mode. This preserves Automatic readiness; use the explicit Manual control
+   entry when refining the input. The setup handoff has source regression
+   coverage; its native artist integration remains pending.
 2. Use **Automatic**, then **Reset** and play from the simulation start frame.
    Advance Cloth sequentially; no Dress keyframes are required. Work on the
    character animation; leg motion affects the skirt through
@@ -51,6 +81,11 @@ The intended Direct workflow is:
    Advanced holds material, waist goal, gravity and self-collision settings.
    Only changed fields are applied. Batch tuning explicitly selects all
    registered physics Dresses on the same Main Rig.
+   Direct material or goal writes withdraw the old Cloth output. Use **Reset**,
+   then replay or rebake before judging the new result. A failed parameter
+   transaction restores settings but still withdraws any touched simulation;
+   restoring coefficients cannot restore the old RAM cache's validity. This
+   readiness handling has source-test coverage; native validation is pending.
 4. Use **Bake** for stable seeking/playback. Reset a sealed cache before
    changing physical material settings, then replay or bake again.
 5. Use **Manual** for wire handles or **Original** for local bone corrections.

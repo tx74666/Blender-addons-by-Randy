@@ -41,10 +41,49 @@ namespace CharacterDesigner.Unity.Editor
         [Serializable] public sealed class ShapeExport { public string name; public Vector3[] deltas; }
         [Serializable] public sealed class StencilExport { public int vertex; public int[] sources; public float[] weights; }
         static readonly HashSet<string> Pending = new HashSet<string>();
+        static readonly HashSet<string> Ready = new HashSet<string>();
+        [Serializable] sealed class PendingImports { public string[] paths; }
+        const string PendingKey = "CharacterDesigner.ForearmRuntime.Pending/1";
         const string OwnershipMarker = "CharacterDesigner.ForearmRuntime/1";
         static bool scheduled, building;
         // Fault injection for isolated editor validation; never assigned by the importer UI.
         internal static Action BeforePrefabSaveForTests;
+
+        [InitializeOnLoadMethod]
+        static void RestorePending()
+        {
+            string saved = SessionState.GetString(PendingKey, "");
+            if (string.IsNullOrEmpty(saved)) return;
+            try
+            {
+                var state = JsonUtility.FromJson<PendingImports>(saved);
+                if (state?.paths != null)
+                    foreach (string path in state.paths)
+                        if (!string.IsNullOrWhiteSpace(path) && path.StartsWith("Assets/", StringComparison.Ordinal) &&
+                            path.EndsWith(".forearm.json", StringComparison.OrdinalIgnoreCase))
+                        { Pending.Add(path); Ready.Add(path); }
+            }
+            catch (ArgumentException error)
+            {
+                SessionState.EraseString(PendingKey);
+                Debug.LogWarning("Character Designer pending runtime import: " + error.Message);
+            }
+            SchedulePending();
+        }
+        static void SavePending()
+        {
+            if (Pending.Count == 0) { SessionState.EraseString(PendingKey); return; }
+            var paths = new List<string>(Pending);
+            paths.Sort(StringComparer.Ordinal);
+            SessionState.SetString(PendingKey, JsonUtility.ToJson(new PendingImports { paths = paths.ToArray() }));
+        }
+        static void SchedulePending()
+        {
+            if (Ready.Count == 0 || scheduled) return;
+            scheduled = true;
+            // Use one editor update so imports do not depend on Inspector refresh.
+            EditorApplication.update += Drain;
+        }
 
         static string Sidecar(string path) => Path.ChangeExtension(path, null) + ".forearm.json";
         void OnPreprocessModel()
@@ -65,31 +104,37 @@ namespace CharacterDesigner.Unity.Editor
         static void OnPostprocessAllAssets(string[] imported, string[] deleted, string[] moved, string[] movedFrom)
         {
             if (building) return;
+            bool queued = false;
             foreach (string path in imported)
             {
-                if (path.EndsWith(".forearm.json", StringComparison.OrdinalIgnoreCase)) Pending.Add(path);
-                else if (path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) && File.Exists(Sidecar(path))) Pending.Add(Sidecar(path));
+                if (path.EndsWith(".forearm.json", StringComparison.OrdinalIgnoreCase))
+                { Pending.Add(path); Ready.Add(path); queued = true; }
+                else if (path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) && File.Exists(Sidecar(path)))
+                { Pending.Add(Sidecar(path)); Ready.Add(Sidecar(path)); queued = true; }
             }
-            if (Pending.Count == 0 || scheduled) return;
-            scheduled = true;
-            EditorApplication.delayCall += Drain;
+            if (!queued) return;
+            SavePending();
+            SchedulePending();
         }
         static void Drain()
         {
+            EditorApplication.update -= Drain;
             scheduled = false;
             if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating)
             {
-                scheduled = true;
-                EditorApplication.delayCall += Drain;
+                SchedulePending();
                 return;
             }
-            var paths = new List<string>(Pending);
-            Pending.Clear();
+            var paths = new List<string>(Ready);
+            Ready.Clear();
             foreach (string path in paths)
             {
-                try { Build(path); }
+                try { Build(path); Pending.Remove(path); }
                 catch (Exception error) { Debug.LogWarning("Character Designer runtime import: " + error.Message); }
+                finally { SavePending(); }
             }
+            // Keep failed/incomplete work for the next related import or reload;
+            // retrying it every idle tick would loop on invalid or foreign assets.
         }
         [MenuItem("Assets/Character Designer/Rebuild Runtime Prefab")]
         static void RebuildSelected()
@@ -193,6 +238,7 @@ namespace CharacterDesigner.Unity.Editor
                     prepared.Add(data);
                     renderers.Add(renderer);
                     string target = folder + "/" + stem + "." + SafeName(entry.objectName) + ".Forearm.asset";
+                    data.name = Path.GetFileNameWithoutExtension(target);
                     if (!destinationSet.Add(target))
                         throw new InvalidDataException("Mesh names produce the same generated asset path: " + target);
                     var previousData = AssetDatabase.LoadAssetAtPath<ForearmCorrectionData>(target);
@@ -247,6 +293,9 @@ namespace CharacterDesigner.Unity.Editor
                     throw;
                 }
                 finally { AssetDatabase.AllowAutoRefresh(); }
+                Pending.Remove(path);
+                Ready.Remove(path);
+                SavePending();
                 return prefabPath;
             }
             finally

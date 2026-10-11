@@ -1,0 +1,21 @@
+{
+  "schema": "x.validation.character-composition-sync-fixture/1",
+  "allowPreparedLinkPublication": true,
+  "evidenceDirectory": "REPLACE_WITH_FRESH_ABSOLUTE_PHYSICAL_SYNC_EVIDENCE_DIRECTORY",
+  "items": [
+    {
+      "kind": "SOURCE",
+      "workItemId": "REPLACE_WITH_ACTUAL_A1_B_VARIANT_UUID",
+      "newActionId": "",
+      "manifestPath": "REPLACE_WITH_EXPLICITLY_AUTHORIZED_ACTUAL_B1_LINK_MANIFEST",
+      "manifestSha256": "REPLACE_WITH_ACTUAL_PRE_SYNC_LINK_SHA256"
+    },
+    {
+      "kind": "SOURCE",
+      "workItemId": "REPLACE_WITH_ACTUAL_A2_B_VARIANT_UUID",
+      "newActionId": "",
+      "manifestPath": "REPLACE_WITH_EXPLICITLY_AUTHORIZED_ACTUAL_B2_LINK_MANIFEST",
+      "manifestSha256": "REPLACE_WITH_ACTUAL_PRE_SYNC_LINK_SHA256"
+    }
+  ]
+}

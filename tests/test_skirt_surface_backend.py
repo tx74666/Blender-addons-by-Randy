@@ -518,6 +518,24 @@ class PendingDirectExport(unittest.TestCase):
                 self.assertTrue(reader(self.source("ACTUAL_SURFACE_DELTA_V1")))
 
 
+class ResetCacheMock:
+    """Fault-inject native cache mutations, without pretending to restore payload."""
+    def __init__(self, owner):
+        self.owner = owner
+        self.is_baked, self.frame_start, self._step = True, 1, 1
+
+    @property
+    def frame_step(self):
+        return self._step
+
+    @frame_step.setter
+    def frame_step(self, value):
+        self.owner.step_assignments += 1
+        if self.owner.fail_step:
+            raise RuntimeError("Native cache step rejected")
+        self._step = value
+
+
 class ResetDispatch(unittest.TestCase):
     def setUp(self):
         self.runtime = physics_scope()
@@ -525,15 +543,19 @@ class ResetDispatch(unittest.TestCase):
         self.events = []
         self.source = Source()
         self.record = {"physics": {"backend": self.runtime["DIRECT_SURFACE_BACKEND"], "baked_range": [1, 60]}}
-        self.cache = SimpleNamespace(is_baked=True, frame_start=1, frame_step=1)
+        self.cache = ResetCacheMock(self)
         self.cloth = SimpleNamespace(point_cache=self.cache)
         self.scene = SimpleNamespace(frame_current=39, frame_subframe=.25, frame_set=self.frame_set)
-        self.context = SimpleNamespace(scene=self.scene, temp_override=lambda **_kwargs: nullcontext(),
-                                       view_layer=SimpleNamespace(update=self.update))
-        self.mode = {"pending": True, "socket": False, "cloth_flags": (False, False)}
+        self.context = SimpleNamespace(scene=self.scene, temp_override=self.override,
+                                        view_layer=SimpleNamespace(update=self.update))
+        self.mode = {"mode": "AUTOMATIC", "editing": False,
+                     "pending": True, "socket": False, "cloth_flags": (False, False)}
         self.fail_hook = self.fail_update = self.fail_restore = False
+        self.fail_free = self.fail_step = self.fail_write = self.fail_override = False
+        self.fail_frame, self.step_assignments = None, 0
+        self.persisted_range = [1, 60]
         self.service = SimpleNamespace(capture_mode=self.capture_mode, reset_completed=self.reset_completed,
-                                       restore_mode=self.restore_mode)
+                                        restore_mode=self.restore_mode, invalidate_result=self.invalidate_result)
         self.runtime.update(skirt_rig=SimpleNamespace(_require_controls_for_setup=lambda _source: None,
                                                       write_record=self.write_record),
                             validate_physics=lambda _source: (self.record, "Rig", "C", self.cloth),
@@ -553,12 +575,21 @@ class ResetDispatch(unittest.TestCase):
 
     def free_bake(self):
         self.events.append("free")
+        if self.fail_free:
+            raise RuntimeError("Native cache release rejected")
         self.cache.is_baked = False
         return {"FINISHED"}
+
+    def override(self, **_kwargs):
+        if self.fail_override:
+            raise RuntimeError("Owned cache override rejected")
+        return nullcontext()
 
     def frame_set(self, frame, *, subframe=0.):
         self.events.append(("frame", frame, subframe))
         self.scene.frame_current, self.scene.frame_subframe = frame, subframe
+        if frame == self.fail_frame:
+            raise RuntimeError("Native frame evaluation rejected")
 
     def reset_completed(self, context, source, record):
         self.assertIs(context, self.context)
@@ -585,18 +616,30 @@ class ResetDispatch(unittest.TestCase):
             raise RuntimeError("Preview restoration rejected")
         self.mode = copy.deepcopy(state)
 
+    def invalidate_result(self, source, record):
+        self.assertIs(source, self.source)
+        self.assertIs(record, self.record)
+        self.events.append("invalidate_result")
+        self.mode.update(pending=True, socket=False, cloth_flags=(False, False))
+
     def write_record(self, source, record):
         self.assertIs(source, self.source)
         self.assertIs(record, self.record)
         self.events.append("write")
+        if self.fail_write:
+            raise RuntimeError("Record commit rejected")
+        self.persisted_range = copy.deepcopy(record["physics"]["baked_range"])
 
     def test_direct_reset_releases_cache_then_resumes_only_at_start_before_update(self):
         result = self.runtime["reset_simulation"](self.context, self.source)
         self.assertEqual(result, {"start": 1, "is_baked": False})
         self.assertEqual(self.events, ["service", "capture", "free", ("frame", 0, 0.),
                                        ("frame", 1, 0.), "reset_hook", "update", "write"])
-        self.assertEqual(self.mode, {"pending": False, "socket": True, "cloth_flags": (True, True)})
+        self.assertEqual(self.mode, {"mode": "AUTOMATIC", "editing": False,
+                                    "pending": False, "socket": True, "cloth_flags": (True, True)})
         self.assertIsNone(self.record["physics"]["baked_range"])
+        self.assertIsNone(self.persisted_range)
+        self.assertEqual(self.step_assignments, 1)
 
     def test_partial_hook_failure_restores_preview_and_exact_author_frame_but_not_released_payload(self):
         before = copy.deepcopy(self.mode)
@@ -605,7 +648,7 @@ class ResetDispatch(unittest.TestCase):
             self.runtime["reset_simulation"](self.context, self.source)
         self.assertEqual(self.mode, before)
         self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
-        self.assertEqual(self.events[-2:], ["restore_mode", ("frame", 39, .25)])
+        self.assertEqual(self.events[-3:], ["restore_mode", "invalidate_result", ("frame", 39, .25)])
         self.assertFalse(self.cache.is_baked, "An explicit Reset cannot restore the freed cache payload")
         self.assertNotIn("write", self.events)
 
@@ -617,6 +660,62 @@ class ResetDispatch(unittest.TestCase):
         self.assertEqual(self.mode, before)
         self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
         self.assertNotIn("write", self.events)
+        self.assertEqual(self.events[-3:], ["restore_mode", "invalidate_result", ("frame", 39, .25)])
+
+    def test_ready_automatic_fails_closed_after_each_started_native_mutation(self):
+        failures = (("fail_free", True, "Native cache release", True),
+                    ("fail_step", True, "Native cache step", True),
+                    ("fail_step", True, "Native cache step", False),
+                    ("fail_frame", 0, "Native frame evaluation", True),
+                    ("fail_frame", 1, "Native frame evaluation", True),
+                    ("fail_hook", True, "Partial Direct reset", True),
+                    ("fail_update", True, "Reset evaluation", True),
+                    ("fail_write", True, "Record commit", True))
+        for field, value, message, baked in failures:
+            with self.subTest(failure=field, value=value, baked=baked):
+                self.setUp()
+                self.cache.is_baked = baked
+                self.mode.update(pending=False, socket=True, cloth_flags=(True, True))
+                before = copy.deepcopy(self.mode)
+                setattr(self, field, value)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.runtime["reset_simulation"](self.context, self.source)
+                self.assertEqual(self.mode, {**before, "pending": True, "socket": False,
+                                            "cloth_flags": (False, False)})
+                self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
+                self.assertEqual(self.events[-3:], ["restore_mode", "invalidate_result", ("frame", 39, .25)])
+                self.assertEqual(self.persisted_range, [1, 60])
+                if field != "fail_free":
+                    self.assertFalse(self.cache.is_baked, "Failure must not pretend to restore released payload")
+
+    def test_override_failure_before_cache_mutation_preserves_exact_ready_preview(self):
+        self.mode.update(pending=False, socket=True, cloth_flags=(True, True))
+        before = copy.deepcopy(self.mode)
+        self.fail_override = True
+        with self.assertRaisesRegex(RuntimeError, "Owned cache override"):
+            self.runtime["reset_simulation"](self.context, self.source)
+        self.assertEqual(self.mode, before)
+        self.assertTrue(self.cache.is_baked)
+        self.assertEqual(self.step_assignments, 0)
+        self.assertEqual(self.persisted_range, [1, 60])
+        self.assertNotIn("free", self.events)
+        self.assertNotIn("invalidate_result", self.events)
+        self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
+
+    def test_preflight_failure_does_not_restore_or_invalidate_an_untouched_preview(self):
+        self.mode.update(pending=False, socket=True, cloth_flags=(True, True))
+        before = copy.deepcopy(self.mode)
+
+        def reject(_source):
+            raise ValueError("Owned graph rejected")
+
+        self.runtime["validate_physics"] = reject
+        with self.assertRaisesRegex(ValueError, "Owned graph rejected"):
+            self.runtime["reset_simulation"](self.context, self.source)
+        self.assertEqual(self.mode, before)
+        self.assertEqual(self.events, [])
+        self.assertTrue(self.cache.is_baked)
+        self.assertEqual(self.step_assignments, 0)
 
     def test_restore_failure_still_attempts_author_frame_and_retains_initial_cause(self):
         self.fail_hook = self.fail_restore = True
@@ -624,7 +723,10 @@ class ResetDispatch(unittest.TestCase):
             self.runtime["reset_simulation"](self.context, self.source)
         self.assertRegex(str(captured.exception.__cause__), "Partial Direct reset")
         self.assertEqual((self.scene.frame_current, self.scene.frame_subframe), (39, .25))
-        self.assertEqual(self.events[-2:], ["restore_mode", ("frame", 39, .25)])
+        self.assertEqual(self.events[-3:], ["restore_mode", "invalidate_result", ("frame", 39, .25)])
+        self.assertTrue(self.mode["pending"])
+        self.assertFalse(self.mode["socket"])
+        self.assertEqual(self.mode["cloth_flags"], (False, False))
 
     def test_existing_delta_reset_does_not_load_direct_service_or_modify_preview(self):
         self.record["physics"]["backend"] = self.runtime["ACTUAL_SURFACE_BACKEND"]

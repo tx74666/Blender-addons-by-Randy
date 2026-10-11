@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 3),
+    "version": (0, 77, 25),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -81,6 +81,7 @@ from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .hair_motion_ui import HAIR_MOTION_CLASSES, CharacterDesignerHairMotionState
 from .hair_wiggle_adapter import register_guards as register_hair_motion_guards, unregister_guards as unregister_hair_motion_guards
 from .skirt import SKIRT_CLASSES, CharacterDesignerSkirtState, stop_skirt_runtime
+from . import skirt_wiggle, skirt_wiggle_ui
 from .animation import (
     ANIMATION_CLASSES,
     CharacterDesignerAnimationState,
@@ -91,6 +92,11 @@ from .animation_worklist_ui import (
     WORKLIST_CLASSES,
     CharacterDesignerAnimationWorklistState,
     stop_worklist_ui,
+)
+from .animation_composition_ui import COMPOSITION_CLASSES
+from .animation_composition import (
+    register_runtime as register_composition_runtime,
+    unregister_runtime as unregister_composition_runtime,
 )
 from .ui_constants import (
     SIDEBAR_CATEGORY,
@@ -8689,6 +8695,7 @@ CLASSES = (
     *HAIR_MOTION_CLASSES,
     *SKIRT_CLASSES,
     *WORKLIST_CLASSES,
+    *COMPOSITION_CLASSES,
     *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
     *BONE_COLLECTION_CLASSES,
@@ -8851,6 +8858,7 @@ def register():
         register_finger_bones_runtime()
         register_finger_root_runtime()
         register_animation_runtime()
+        register_composition_runtime()
         register_reference_view_handlers()
         body_calibration_ui.register()
         control_pose_assets.register()
@@ -8864,6 +8872,8 @@ def register():
         _register_source_watch()
         generated_names.register_handlers()
         register_hair_motion_guards()
+        skirt_wiggle_ui.register()
+        skirt_wiggle.register()
         return
     if any(registration_state):
         raise RuntimeError("Character Designer is only partially registered.")
@@ -8943,6 +8953,7 @@ def register():
         register_finger_bones_runtime()
         register_finger_root_runtime()
         register_animation_runtime()
+        register_composition_runtime()
         register_reference_view_handlers()
         body_calibration_ui.register()
         control_pose_assets.register()
@@ -8956,7 +8967,11 @@ def register():
         _register_source_watch()
         generated_names.register_handlers()
         register_hair_motion_guards()
+        skirt_wiggle_ui.register()
+        skirt_wiggle.register()
     except Exception:
+        skirt_wiggle.unregister()
+        skirt_wiggle_ui.unregister()
         unregister_hair_motion_guards()
         generated_names.unregister_handlers()
         stop_worklist_ui()
@@ -8965,6 +8980,7 @@ def register():
         unregister_refine_symmetry_runtime()
         unregister_finger_bones_runtime()
         unregister_finger_root_runtime()
+        unregister_composition_runtime()
         unregister_animation_runtime()
         unregister_forearm_twist_runtime()
         control_pose_capture.unregister()
@@ -8996,6 +9012,8 @@ def register():
 
 def unregister():
     from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint, generated_names
+    skirt_wiggle.unregister()
+    skirt_wiggle_ui.unregister()
     unregister_hair_motion_guards()
     generated_names.unregister_handlers()
     control_pose_capture.unregister()
@@ -9008,6 +9026,7 @@ def unregister():
     unregister_refine_symmetry_runtime()
     unregister_finger_bones_runtime()
     unregister_finger_root_runtime()
+    unregister_composition_runtime()
     unregister_animation_runtime()
     stop_skirt_runtime()
     unregister_forearm_twist_runtime()

@@ -178,6 +178,33 @@ def ring_fixture(*, strength=12):
     return source, ring, radial, line
 
 
+def add_background_ring(source, radial, *, strength=0):
+    """A distinct blue inner ring stays behind the original yellow Ring layer."""
+    tree = source.node_tree
+    blue = tree.nodes.new("ShaderNodeBsdfPrincipled")
+    blue.name = "Blue background Ring shader"
+    blue.inputs["Base Color"].default_value = (.385814, .399648, .575254, 1)
+    blue.inputs["Metallic"].default_value = .753333
+    blue.inputs["Emission Color"].default_value = (1, 1, 1, 1)
+    blue.inputs["Emission Strength"].default_value = strength
+    mask = group_node(tree, radial.node_tree, "Blue Ring Mask")
+    for name, value in (("Inner Radius", .15), ("Ring Width", .1), ("Edge Softness", .01),
+                        ("Start Angle", 0), ("Sweep Angle", 360)):
+        mask.inputs[name].default_value = value
+    ring = group_node(tree, rr_ring_nodes.new_group(), "Blue Ring Group")
+    tree.links.new(mask.outputs["Mask"], ring.inputs["Mask 1"])
+    tree.links.new(blue.outputs["BSDF"], ring.inputs["Shader"])
+    mixer = tree.nodes["Actual Mix Shaders"]
+    background = mixer.inputs["Base Shader"].links[0].from_socket
+    mix = tree.nodes.new("ShaderNodeMixShader")
+    mix.name = "Blue background Ring mix"
+    tree.links.new(ring.outputs["Mask"], mix.inputs[0])
+    tree.links.new(background, mix.inputs[1])
+    tree.links.new(ring.outputs["Shader"], mix.inputs[2])
+    tree.links.new(mix.outputs[0], mixer.inputs["Base Shader"])
+    return ring, blue
+
+
 def smoothstep(low, high, value):
     factor = min(1, max(0, (value - low) / (high - low)))
     return factor * factor * (3 - 2 * factor)
@@ -205,7 +232,7 @@ class RingPbrBakeNativeTests(unittest.TestCase):
         scene.render.threads_mode = "FIXED"
         scene.render.threads = 1
 
-    def native_pixels(self, source, obj, role, size=64):
+    def native_pixels(self, source, obj, role, size=64, *, ring_selection=None):
         image = bpy.data.images.new("Native " + role, width=size, height=size, alpha=True, is_data=True)
         image.colorspace_settings.name = "Non-Color"
         slot = obj.material_slots[0]
@@ -213,7 +240,8 @@ class RingPbrBakeNativeTests(unittest.TestCase):
         before = graph_state(source)
         existing = datablocks()
         try:
-            with bake.cloned_materials([source], role) as cloned:
+            with bake.cloned_materials([source], role,
+                                      ring_selections={source: ring_selection}) as cloned:
                 target = cloned[source]
                 node = target.node_tree.nodes.new("ShaderNodeTexImage")
                 node.image = image
@@ -481,6 +509,7 @@ class RingPbrBakeNativeTests(unittest.TestCase):
         from unittest import mock
         import random_realm_builder_exporter as rr
         source, _ring, radial, line = ring_fixture()
+        add_background_ring(source, radial)
         identity = source.name
         obj = quad(source)
         shared = bpy.data.objects.new("Untouched shared source user", obj.data)
@@ -501,6 +530,7 @@ class RingPbrBakeNativeTests(unittest.TestCase):
                 self.assertEqual(7, first["image_count"])
                 self.assertEqual(source, first_material["rr_pbr_baked_source_material"])
                 self.assertEqual(identity, first_material["rr_pbr_baked_source_identity"])
+                self.assertEqual([["Actual Ring Group"]], json.loads(source["rr_pbr_ring_selection"]))
                 first_hashes = {path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
                                 for path in first["files"]}
                 first_mask = first_material.node_tree.nodes["RingMask"].image
@@ -537,6 +567,8 @@ class RingPbrBakeNativeTests(unittest.TestCase):
                 self.assertEqual(identity, fresh["rr_pbr_baked_source_identity"])
                 self.assertEqual(source.name, fresh["rr_pbr_baked_source_name"])
                 self.assertEqual(0, fresh["rr_pbr_baked_ring_emission_strength"])
+                self.assertEqual([["Actual Ring Group"]], json.loads(source["rr_pbr_ring_selection"]))
+                self.assertEqual([["Actual Ring Group"]], json.loads(fresh["rr_pbr_baked_ring_selection"]))
                 for actual, expected in zip(fresh["rr_pbr_baked_ring_color"], (.2, .7, .3, 1)):
                     self.assertAlmostEqual(expected, actual, places=6)
                 new_pixels = tuple(fresh.node_tree.nodes["RingMask"].image.pixels[:])
@@ -650,6 +682,7 @@ class RingPbrBakeNativeTests(unittest.TestCase):
         saved["rr_pbr_baked_source_material"] = source
         saved["rr_pbr_baked_source_name"] = source.name
         saved["rr_pbr_baked_source_identity"] = original_identity
+        source["rr_pbr_ring_selection"] = json.dumps([["An explicit layer", "Nested Ring"]])
         source.name = "Original renamed before saving library"
         graph = graph_state(source)
         with tempfile.TemporaryDirectory(prefix="rr_bake_source_id_") as directory:
@@ -662,6 +695,8 @@ class RingPbrBakeNativeTests(unittest.TestCase):
             self.assertIsInstance(restored, bpy.types.Material)
             self.assertEqual(restored, bpy.data.materials.get(restored.name))
             self.assertEqual(original_identity, loaded["rr_pbr_baked_source_identity"])
+            self.assertEqual([["An explicit layer", "Nested Ring"]],
+                             json.loads(restored["rr_pbr_ring_selection"]))
             self.assertTrue(restored.name.startswith(source.name))
             self.assertTrue(restored.use_nodes)
             self.assertEqual(graph, graph_state(source))
@@ -718,6 +753,191 @@ class RingPbrBakeNativeTests(unittest.TestCase):
             self.assertEqual([obj], list(bpy.context.selected_objects))
             self.assertEqual(obj, bpy.context.view_layer.objects.active)
             self.assertFalse(any(image.name.startswith("RR Bake Scratch") for image in bpy.data.images))
+            self.assertNotIn("rr_pbr_ring_selection", source)
+        finally:
+            rr.unregister()
+
+    def test_emitting_layer_selection_preserves_a_distinct_nonemitting_ring_as_background(self):
+        source, _ring, radial, _line = ring_fixture()
+        _blue_ring, blue = add_background_ring(source, radial)
+        obj = quad(source)
+        before, original = datablocks(), graph_state(source)
+        candidates = bake.describe_ring_layers(source)
+        self.assertEqual({("Actual Ring Group",), ("Blue Ring Group",)},
+                         {tuple(item["path"]) for item in candidates})
+        self.assertTrue(all(item["color"] is not None for item in candidates))
+        plan = bake.analyze_material(source)
+        self.assertEqual(2, plan["ring_group_count"])
+        self.assertEqual(1, plan["editable_ring_group_count"])
+        self.assertEqual([["Actual Ring Group"]], plan["ring_selection"])
+        self.assertEqual(before, datablocks())
+        self.assertEqual(original, graph_state(source))
+        self.assertNotIn("rr_pbr_ring_selection", source)
+        mask = self.native_pixels(source, obj, "RingMask")
+        inner, _expected = self.sample(mask, .2)
+        yellow, _expected = self.sample(mask, .55)
+        self.assertLess(inner[0], .01)
+        self.assertGreater(yellow[0], .99)
+        base = self.native_pixels(source, obj, "RingBase")
+        inner, _expected = self.sample(base, .2)
+        for actual, expected in zip(inner, blue.inputs["Base Color"].default_value[:3]):
+            self.assertAlmostEqual(expected, actual, delta=.015)
+        yellow, _expected = self.sample(base, .55)
+        self.assertTrue(all(abs(value) < .01 for value in yellow))
+        # An explicitly unselected emitting Ring retains ordinary HDR emission.
+        blue.inputs["Emission Color"].default_value = (.2, .3, .4, 1)
+        blue.inputs["Emission Strength"].default_value = 3
+        selection = [["Actual Ring Group"]]
+        plan = bake.analyze_material(source, ring_selection=selection)
+        self.assertAlmostEqual(1.2, plan["emission_strength"], places=6)
+        emission = self.native_pixels(source, obj, "Emission", ring_selection=selection)
+        inner, _expected = self.sample(emission, .2)
+        for actual, expected in zip(inner, (.5, .75, 1)):
+            self.assertAlmostEqual(expected, actual, delta=.015)
+        yellow, _expected = self.sample(emission, .55)
+        self.assertTrue(all(abs(value) < .01 for value in yellow))
+
+    def test_saved_layer_intent_retains_mask_when_all_layers_become_nonemitting(self):
+        source, _ring, radial, line = ring_fixture()
+        add_background_ring(source, radial)
+        selection = bake.analyze_material(source)["ring_selection"]
+        source["rr_pbr_ring_selection"] = json.dumps(selection)
+        line.inputs["Emission Strength"].default_value = 0
+        before, original = datablocks(), graph_state(source)
+        plan = bake.analyze_material(source)
+        self.assertEqual(selection, plan["ring_selection"])
+        self.assertEqual(0, plan["ring_emission_strength"])
+        self.assertTrue(plan["has_ring"])
+        obj = quad(source)
+        mask = self.native_pixels(source, obj, "RingMask")
+        yellow, _expected = self.sample(mask, .55)
+        self.assertGreater(yellow[0], .99)
+        self.assertEqual(original, graph_state(source))
+        # Analyze and clone calls only read existing intent; they never infer
+        # a different layer from the now-zero emission value.
+        self.assertEqual(selection, json.loads(source["rr_pbr_ring_selection"]))
+        self.assertEqual(before[0], datablocks()[0])
+        self.assertEqual(before[1], datablocks()[1])
+
+    def test_missing_or_invalid_selection_and_ambiguous_zero_layers_fail_without_copying(self):
+        source, _ring, radial, line = ring_fixture(strength=0)
+        add_background_ring(source, radial)
+        before, original = datablocks(), graph_state(source)
+        with self.assertRaisesRegex(ValueError, "choose the editable Ring layer explicitly"):
+            with bake.cloned_materials([source], "RingMask"):
+                self.fail("Ambiguous zero layers reached cloning.")
+        for value in ("not JSON", json.dumps([["Missing Ring"]]), json.dumps(["not a path"]),
+                      json.dumps([["Actual Ring Group"], ["Actual Ring Group"]])):
+            with self.subTest(value=value):
+                source["rr_pbr_ring_selection"] = value
+                with self.assertRaises(ValueError):
+                    with bake.cloned_materials([source], "RingBase"):
+                        self.fail("Invalid intent reached cloning.")
+                self.assertEqual(before, datablocks())
+                self.assertEqual(original, graph_state(source))
+        source["rr_pbr_ring_selection"] = json.dumps([["Missing Ring"]])
+        override = [["Actual Ring Group"]]
+        self.assertEqual(override, bake.analyze_material(source, ring_selection=override)["ring_selection"])
+        # Explicitly disabling editable Rings preserves the complete ordinary
+        # material workflow and does not silently create a mask/color control.
+        line.inputs["Emission Strength"].default_value = 2
+        disabled = bake.analyze_material(source, ring_selection=[])
+        self.assertFalse(disabled["has_ring"])
+        self.assertGreater(disabled["emission_strength"], 0)
+
+    def test_near_face_emission_colors_warn_and_large_differences_still_fail(self):
+        source, _ring, _radial, line = ring_fixture(strength=2)
+        line.inputs["Base Color"].default_value = (1.0000240802764893, .7991068363189697, .34670937061309814, 1)
+        line.inputs["Emission Color"].default_value = (1, .800164520740509, .3493145704269409, 1)
+        original, before = graph_state(source), datablocks()
+        plan = bake.analyze_material(source)
+        self.assertEqual(1, len(plan["warnings"]))
+        self.assertIn("max linear RGB difference", plan["warnings"][0])
+        self.assertAlmostEqual(.34670937061309814, plan["ring_color"][2], places=7)
+        self.assertEqual(2, plan["ring_emission_strength"])
+        self.assertEqual(original, graph_state(source))
+        self.assertEqual(before, datablocks())
+        line.inputs["Emission Color"].default_value = (1, .8, .5, 1)
+        self.assert_rejected_without_allocation(source, "more than one 8-bit linear channel step")
+
+    def test_shared_nested_ring_instances_use_readable_paths_in_the_copied_graph(self):
+        source = material("Nested selected Ring instances")
+        tree = source.node_tree
+        output, background = output_and_shader(source)
+        background.inputs["Base Color"].default_value = (.1, .2, .3, 1)
+        wrapper = bpy.data.node_groups.new("Shared nested Ring wrapper", "ShaderNodeTree")
+        for name, direction in (("Shader", "INPUT"), ("Mask", "INPUT"),
+                                ("Shader", "OUTPUT"), ("Mask", "OUTPUT")):
+            wrapper.interface.new_socket(name=name, in_out=direction,
+                                         socket_type="NodeSocketShader" if name == "Shader" else "NodeSocketFloat")
+        inputs = wrapper.nodes.new("NodeGroupInput")
+        outputs = wrapper.nodes.new("NodeGroupOutput")
+        outputs.is_active_output = True
+        ring = group_node(wrapper, rr_ring_nodes.new_group(), "Ring Instance")
+        wrapper.links.new(inputs.outputs["Shader"], ring.inputs["Shader"])
+        wrapper.links.new(inputs.outputs["Mask"], ring.inputs["Mask 1"])
+        wrapper.links.new(ring.outputs["Shader"], outputs.inputs["Shader"])
+        wrapper.links.new(ring.outputs["Mask"], outputs.inputs["Mask"])
+        layers = []
+        for name, color, strength, mask in (("Yellow Wrapper", (.8, .4, .1), 2, .5),
+                                            ("Blue Wrapper", (.2, .3, .6), 0, .25)):
+            shader = tree.nodes.new("ShaderNodeBsdfPrincipled")
+            shader.inputs["Base Color"].default_value = (*color, 1)
+            shader.inputs["Emission Color"].default_value = (*color, 1)
+            shader.inputs["Emission Strength"].default_value = strength
+            layer = group_node(tree, wrapper, name)
+            layer.inputs["Mask"].default_value = mask
+            tree.links.new(shader.outputs[0], layer.inputs["Shader"])
+            layers.append(layer)
+        inner = tree.nodes.new("ShaderNodeMixShader")
+        tree.links.new(background.outputs[0], inner.inputs[1])
+        tree.links.new(layers[1].outputs["Shader"], inner.inputs[2])
+        tree.links.new(layers[1].outputs["Mask"], inner.inputs[0])
+        outer = tree.nodes.new("ShaderNodeMixShader")
+        tree.links.new(inner.outputs[0], outer.inputs[1])
+        tree.links.new(layers[0].outputs["Shader"], outer.inputs[2])
+        tree.links.new(layers[0].outputs["Mask"], outer.inputs[0])
+        tree.links.new(outer.outputs[0], output.inputs["Surface"])
+        selected = [["Yellow Wrapper", "Ring Instance"]]
+        self.assertEqual(selected, bake.analyze_material(source)["ring_selection"])
+        self.assertEqual({("Yellow Wrapper", "Ring Instance"), ("Blue Wrapper", "Ring Instance")},
+                         {tuple(item["path"]) for item in bake.describe_ring_layers(source)})
+        obj = quad(source)
+        pixels = self.native_pixels(source, obj, "RingMask", size=8)
+        self.assertTrue(all(abs(pixels[offset] - .5) < .01 for offset in range(0, len(pixels), 4)))
+        pixels = self.native_pixels(source, obj, "RingMask", size=8,
+                                    ring_selection=[["Blue Wrapper", "Ring Instance"]])
+        self.assertTrue(all(abs(pixels[offset] - .125) < .01 for offset in range(0, len(pixels), 4)))
+
+    def test_ring_layer_operator_persists_zero_layer_choice_and_rejects_invalid_path(self):
+        import random_realm_builder_exporter as rr
+        source, _ring, radial, line = ring_fixture()
+        add_background_ring(source, radial)
+        quad(source)
+        original, before = graph_state(source), datablocks()
+        selection = [["Actual Ring Group"]]
+        rr.register()
+        try:
+            result = bpy.ops.rr_builder.set_pbr_ring_layer(
+                "EXEC_DEFAULT", material_name=source.name, ring_selection=json.dumps(selection))
+            self.assertEqual({"FINISHED"}, result)
+            self.assertEqual(selection, json.loads(source["rr_pbr_ring_selection"]))
+            self.assertEqual(original, graph_state(source))
+            self.assertEqual(before, datablocks())
+            line.inputs["Emission Strength"].default_value = 0
+            self.assertEqual(selection, bake.analyze_material(source)["ring_selection"])
+            saved_intent, zero_graph = source["rr_pbr_ring_selection"], graph_state(source)
+            try:
+                result = bpy.ops.rr_builder.set_pbr_ring_layer(
+                    "EXEC_DEFAULT", material_name=source.name,
+                    ring_selection=json.dumps([["Layer that does not exist"]]))
+            except RuntimeError as error:
+                self.assertIn("Selected Ring layer is missing", str(error))
+            else:
+                self.assertEqual({"CANCELLED"}, result)
+            self.assertEqual(saved_intent, source["rr_pbr_ring_selection"])
+            self.assertEqual(zero_graph, graph_state(source))
+            self.assertEqual(before, datablocks())
         finally:
             rr.unregister()
 

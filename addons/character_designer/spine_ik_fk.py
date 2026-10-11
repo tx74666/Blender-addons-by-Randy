@@ -175,7 +175,9 @@ def _valid_driver(armature, path, chest):
             and variable.targets[0].id == armature and variable.targets[0].data_path == property_path(chest))
 
 
-def validate(armature, inventory=None, *, original_mutes=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
+    if original_mutes is None:
+        source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     actual = {bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE}
     if record is None:
@@ -197,7 +199,7 @@ def validate(armature, inventory=None, *, original_mutes=None):
             if role.startswith('IK_') and any(not torso._same_value(getattr(pb, key), value) for key, value in _SOLVER_FIELDS.items()):
                 raise _error('The Spine IK solver limits or stretch settings were edited.')
         for name, state in record['source_states'].items():
-            bone = armature.data.bones.get(name)
+            bone = _limb()._validation_source_bone(armature.data.bones.get(name), source_rest)
             if bone is None or not torso._same_rest(bone, state) or bone.use_deform != state['deform']:
                 raise _error(f"Spine source '{name}' changed; restore its original structure first.")
         if record['constraints'] != _constraint_plan(record):

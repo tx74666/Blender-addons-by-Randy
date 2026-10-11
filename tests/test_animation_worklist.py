@@ -102,6 +102,23 @@ class WorklistTests(unittest.TestCase):
         rig[self.links.LINK_KEY], rig[self.links.ACTION_KEY] = 'selected row association', first.custom_action
         return rig, first, second
 
+    def test_source_cleanup_removes_all_main_rig_recovery_id_references(self):
+        import importlib
+        target = importlib.import_module(self.worklist.__package__ + '.animation_worklist_target')
+        action = ID(use_fake_user=False)
+        action['artist_curves'] = 'unchanged'
+        for name in ('VERSION_KEY', 'TARGET_KEY', 'SCENE_KEY', 'PREVIOUS_ACTION_KEY',
+                     'SESSION_KEY', 'CONTROL_KEYS_KEY', 'ORIGINAL_DATA_KEY',
+                     'PREVIEW_DATA_KEY', 'ORIGINAL_REST_KEY'):
+            key = name.lower()
+            setattr(self.worklist.ua, name, key)
+            action[key] = ID(name='Recovery ID reference')
+        action[target.ACTION_MOTION_KEY] = 'saved Rest proof'
+        action[target.ACTION_RIG_KEY] = ID(name='Artist Main Rig')
+        self.worklist._clean_action(action)
+        self.assertEqual(dict(action), {'artist_curves': 'unchanged'})
+        self.assertTrue(action.use_fake_user)
+
     def test_refresh_preserves_selected_clip_identity_and_local_work(self):
         rig, first, second = self.populated()
         self.saved.catalog_index = 0
@@ -115,6 +132,37 @@ class WorklistTests(unittest.TestCase):
         self.assertEqual([item.item_id for item in self.saved.items], [first.item_id, second.item_id])
         self.assertIs(rig.animation_data.action, first.custom_action)
         self.assertEqual(first.custom_action['artist_edit'], 17)
+
+    def test_work_item_identity_keeps_same_source_variants_separate_and_custom_intact(self):
+        first, second = self.record['clips']
+        first.update(workItemId=uuid.uuid4().hex, baseClipGuid='d' * 32, baseClipLocalId=7)
+        second.update(workItemId=uuid.uuid4().hex, clipGuid=first['clipGuid'],
+                      clipLocalId=first['clipLocalId'], baseClipGuid='d' * 32, baseClipLocalId=8)
+        self.record.update(prepareRequestId=uuid.uuid4().hex,
+                           preparedWorkItemIds=[first['workItemId'], second['workItemId']])
+        self.write_workspace()
+        self.worklist.refresh(self.context)
+        _rig, old, variant = self.populated()
+        self.assertNotEqual(old.clip_key, variant.clip_key)
+        self.assertEqual(self.saved.catalog[0].work_item_id, first['workItemId'])
+        self.record['preparedWorkItemIds'] = [second['workItemId']]
+        self.write_workspace()
+        self.worklist.refresh(self.context)
+        with patch.object(self.worklist, '_prepared', side_effect=AssertionError('Custom rebaked')):
+            self.assertIs(self.worklist.add(self.context, old.clip_key, activate_new=False), old)
+        self.assertEqual(old.custom_action['artist_edit'], 17)
+        self.assertEqual(variant.custom_action['artist_edit'], 18)
+
+    def test_route_checks_source_and_destination_independently(self):
+        row = {**self.record['clips'][0], 'workItemId': uuid.uuid4().hex,
+               'baseClipGuid': 'd' * 32, 'baseClipLocalId': 7, 'editScope': 'UpperBody'}
+        link = {**row, 'targetGuid': self.saved.target_guid}
+        self.worklist._validate_route(self.saved, row, link)
+        for field, value in (('workItemId', uuid.uuid4().hex), ('baseClipLocalId', 8),
+                             ('clipLocalId', row['clipLocalId'] + 1), ('editScope', 'LowerBody'),
+                             ('targetGuid', 'e' * 32)):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'another work item'):
+                self.worklist._validate_route(self.saved, row, {**link, field: value})
 
     def test_changed_workspace_identity_does_not_replace_local_membership(self):
         rig, first, second = self.populated()

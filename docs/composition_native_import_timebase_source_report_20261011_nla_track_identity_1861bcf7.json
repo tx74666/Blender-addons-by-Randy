@@ -1,0 +1,205 @@
+{
+  "schema": "x.validation.composition-native-import-timebase-source/1",
+  "date": "2026-10-11",
+  "passed": true,
+  "source_only": true,
+  "native_execution_performed": false,
+  "blender_worker_or_sdk_launch_performed": false,
+  "projection_build_deployment_artist_mutation_performed": false,
+  "changed_runtime_sources": {
+    "unity_animation.py": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\unity_animation.py",
+      "sha256": "6c0806ed1e00632d5175b331b66456e662eb00c62bbffe2a182baf5d05839e7d",
+      "bytes": 41190
+    },
+    "animation_link_source.py": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_link_source.py",
+      "sha256": "9aaa032749a86ec808523697c8a85679dce0134e60dfb640331bd41f53859998",
+      "bytes": 12785
+    },
+    "animation_composition.py": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+      "sha256": "1861bcf7136e389da2cd2c40af57e7c5ea33c9bd8b9b90bf0557b8f649584ea5",
+      "bytes": 99028
+    },
+    "animation_export.py": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\projected_animation_export_native_timebase.py",
+      "sha256": "db4261888d98e23b68a68fcc9e8ec1e45e253d2b522669510aa1f1f67ba6d69b",
+      "bytes": 10708,
+      "canonical_path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_export.py",
+      "canonical_sha256": "ec4f40beebe786623b680b1f579afdcf5ba967a345ba7f05212ae76f58d0a5c2"
+    }
+  },
+  "test_source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_composition_native_import_timebase.py",
+    "sha256": "94ed66bcca11e29d33dc6c3ed3285b0952a4a372badbd360c4173eaee9be6081",
+    "bytes": 28501
+  },
+  "pure_test_command": "C:\\Users\\Randy\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe -B -m unittest discover -s tests -p test_composition_native_import_timebase.py -v",
+  "pure_test_working_directory": "D:\\MyRepository\\Blender-addons-by-Randy",
+  "pure_test_results": {
+    "test_count": 26,
+    "run_count": 2,
+    "total_test_executions": 52,
+    "exit_code": 0,
+    "failures": 0,
+    "errors": 0
+  },
+  "pure_test_runs": [
+    {
+      "exporter": "canonical",
+      "command": "C:\\Users\\Randy\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe -B -m unittest discover -s tests -p test_composition_native_import_timebase.py -v",
+      "test_count": 26,
+      "exit_code": 0,
+      "failures": 0,
+      "errors": 0,
+      "unittest_elapsed_seconds": 3.861
+    },
+    {
+      "exporter": "approved_minimal_projection",
+      "command": "C:\\Users\\Randy\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe -B -m unittest discover -s tests -p test_composition_native_import_timebase.py -v",
+      "environment": {
+        "CHARACTER_DESIGNER_TEST_ANIMATION_EXPORT_SOURCE": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\projected_animation_export_native_timebase.py"
+      },
+      "test_count": 26,
+      "exit_code": 0,
+      "failures": 0,
+      "errors": 0,
+      "unittest_elapsed_seconds": 1.717
+    }
+  ],
+  "pure_test_stdout_summary": "Actual requested rerun:26 canonical and the same26 approved minimal projected-export tests pass;52 pure executions after the NLA-only composition change.",
+  "nla_focused_tests": {
+    "source": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_composition_nla_tweak_selection.py",
+      "sha256": "ad1032f874ccdb0e97d0e9119620709ac7e127bd4fbcd36f51177fd527722261",
+      "bytes": 9319
+    },
+    "command": "C:\\Users\\Randy\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe -B -m unittest discover -s tests -p test_composition_nla_tweak_selection.py -v",
+    "test_count": 10,
+    "exit_code": 0,
+    "failures": 0,
+    "errors": 0,
+    "unittest_elapsed_seconds": 0.515,
+    "coverage": [
+      "fresh distinct but native-equal track/strip RNA wrappers on every iteration; exact Action+slot Full Stack entry",
+      "same-name foreign track, ambiguous same-native membership, missing/multiple/Actionless strip rejection before selection/operator",
+      "track/strip/active-track write readback rejection before operator",
+      "operator CANCELLED/exception context cleanup and wrong Action/slot result rejection",
+      "already-active Tweak rejection and unchanged exit/no-op paths"
+    ]
+  },
+  "total_pure_test_executions": 62,
+  "syntax_checks": {
+    "count": 7,
+    "passed": true,
+    "method": "ast.parse and compile in memory; no runtime imports"
+  },
+  "minimal_export_projection": {
+    "preserved_frozen_parent_sha256": "9c7ef264cbe13eec00e393f974865f173f31d20ccadce5ecba8f058bbd4d83c4",
+    "projected_source": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\.codex\\task-staging\\character-composition-20261011\\projected_animation_export_native_timebase.py",
+      "sha256": "db4261888d98e23b68a68fcc9e8ec1e45e253d2b522669510aa1f1f67ba6d69b",
+      "bytes": 10708
+    },
+    "canonical_source": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_export.py",
+      "sha256": "ec4f40beebe786623b680b1f579afdcf5ba967a345ba7f05212ae76f58d0a5c2",
+      "bytes": 11624
+    },
+    "unchanged_other_functions": true,
+    "new_clock_helper_ast_equal": true,
+    "only_clock_statements_added": true,
+    "default_scene_clock_preserved": true,
+    "unrelated_canonical_changes_preserved": true,
+    "canonical_before_clock_sha256": "9c8e638cfd8408fe729103efe232ed23c334b2a879e9c226376057b22d5b28cf",
+    "frozen_parent_path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_08\\character_designer\\animation_export.py",
+    "unchanged_other_function_count": 7,
+    "strict_reverse_ast_verified": "Remove the new frame_fps assignment and restore exactly fps expression plus two job dictionary values; begin_export becomes AST-identical to frozen9c7ef.",
+    "excluded_unrelated_work": "Existing canonical Dress admission/snapshot imports and code were not copied into the approved minimal projected exporter."
+  },
+  "minimal_export_projection_proof_reuse": {
+    "prior_owner": {
+      "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_native_import_timebase_source_report_20261011_projected_db426188_freeze.json",
+      "sha256": "678f6dfc15dede3953cccd0e8a6d396a8966485478c1b31e6a6f241671328506",
+      "bytes": 12764
+    },
+    "peer": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\composition_native_import_timebase_peer_source_review_20261011_db426188.json",
+      "sha256": "d85f3db89556bbb140726b71db6ed8374a72017b594ef7193af19bf2d25a0062",
+      "bytes": 12671
+    },
+    "all_exporter_inputs_exact_same_bytes": true,
+    "exporter_source_changed_this_task": false
+  },
+  "nla_source_ast_closure": {
+    "baseline": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_09\\character_designer\\animation_composition.py",
+      "sha256": "c6b5c2f564239b002cfa5ff1be07bb3707e1cedcec4987bccad245710dc055f1",
+      "bytes": 98130
+    },
+    "changed_existing_functions": [
+      "_tweak"
+    ],
+    "new_functions": [],
+    "unchanged_existing_function_count": 63,
+    "all_other_top_level_nodes_ast_equal": true,
+    "disabled_exit_branch_ast_equal": true,
+    "function_lines": {
+      "_tweak": 943
+    },
+    "all_receipt_transactions_and_four_clock_guards_ast_equal_to_n10": true,
+    "context_override_pose_mode_rest_mapping_controls_curve_data_undo_rollback_apis_changed": false
+  },
+  "actual_failure": {
+    "first_stage": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n10\\composition_first_stage_report.json",
+      "sha256": "20e6cf8417c1364d77a9c00022541f0ad9aa0474f26b0bf70ccab5de5379d32d",
+      "bytes": 900157
+    },
+    "native": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n10\\composition_native_report.json",
+      "sha256": "160186bc829af4ca5cae46fcee5b3f5aaf63b2ea4fdd00bc28d155b463fda488",
+      "bytes": 823959
+    },
+    "completed": false,
+    "phase": "a1_enter_full_stack",
+    "error": "Error: No active strip(s) to enter tweak mode on\n",
+    "historical_cleanup": "historical_native_state_and_rows_restored",
+    "retry_or_old_evidence_mutation_performed": false
+  },
+  "source_diagnosis": {
+    "cause": "_tweak compared iterated NlaTrack Python wrapper identity (is) instead of Blender native RNA equality. Distinct wrappers of the same native track could clear every strip selection while the active track was assigned.",
+    "repair": "Require exact native track membership and one Action strip; use RNA equality to select only that track/strip; verify selection and active-track readback; retain official Full Stack operator and require resulting exact Action+slot.",
+    "readonly_active_not_written": true,
+    "no_context_mode_or_timing_workaround": true
+  },
+  "official_primary_sources": [
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/python/intern/bpy_rna.cc",
+      "lines": "898-925,7675,8122-8153",
+      "support": "RNA equality compares native data/type; iteration creates RNA Python wrappers and only types supporting instancing can reuse objects."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/blenkernel/intern/nla.cc",
+      "lines": "2135-2204",
+      "support": "Tweak chooses an active track and falls back to its selected strip; missing Action/strip prevents entry."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/blender/blender/blender-v5.2-release/source/blender/makesrna/intern/rna_nla.cc",
+      "lines": "1023-1032",
+      "support": "Strip active is readonly; select is writable."
+    }
+  ],
+  "prior_immutable_owner_report": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_native_import_timebase_source_report_20261011_projected_db426188_freeze.json",
+    "sha256": "678f6dfc15dede3953cccd0e8a6d396a8966485478c1b31e6a6f241671328506",
+    "bytes": 12764
+  },
+  "limitations": [
+    "Pure tests execute actual extracted canonical _tweak and use explicit fresh-wrapper/native-operator seams; they are not a native reproduction or acceptance result.",
+    "Actual n10 failed and remains incomplete. Source diagnosis is consistent with its operator error, not a claim that a rerun passes.",
+    "Fresh separately authorized isolated native acceptance and full pinned projection/refresh remain necessary; no build, projection, install, artist operation, GUI, SDK or native microtest was run.",
+    "Prior owner reports/projections/n10 bytes are retained unchanged."
+  ]
+}

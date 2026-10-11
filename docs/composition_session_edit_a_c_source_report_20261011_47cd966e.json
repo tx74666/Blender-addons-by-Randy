@@ -1,0 +1,146 @@
+{
+  "schema": "x.validation.character-composition-edit-a-c-source/1",
+  "date": "2026-10-11",
+  "status": "SOURCE_READY_NATIVE_PENDING",
+  "owner": "/root/rig_controls_review",
+  "source_only": true,
+  "canonical_source": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tools\\composition_session_acceptance.py",
+    "sha256": "47cd966e74c50188ddbebd1efe8b915dd9df645184ee7409bf657e756cee6fb3",
+    "bytes": 57217
+  },
+  "focused_tests": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\tests\\test_character_composition_edit_a_c_witness.py",
+    "sha256": "8d444263706ccd8b3ed4296132a935e95acf5efa469516293dfa3d270ec123f5",
+    "bytes": 13098
+  },
+  "baseline_frozen_session": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\tools_headful_04\\composition_session_acceptance.py",
+    "sha256": "140b47ac160fbe2679e2ccbcdbfae7b4d79f756adb8bad38a7943c84c7b245eb",
+    "bytes": 49355
+  },
+  "preserved_product": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\addons\\character_designer\\animation_composition.py",
+    "sha256": "783b296dc635b9172fa7ebb7acbdc7aa6b436e1a2a88a76b53e71e08a65dfc5a",
+    "bytes": 96417
+  },
+  "preserved_n8_session": {
+    "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\n8\\tools\\composition_session_acceptance.py",
+    "sha256": "140b47ac160fbe2679e2ccbcdbfae7b4d79f756adb8bad38a7943c84c7b245eb",
+    "bytes": 49355
+  },
+  "preserved_root_candidate_projection_pins": {
+    "python_projection": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\runtime_draft_08\\python_projection.json",
+      "sha256": "20c0999f276c6258a77f2b3d17eda52ef2236e409073fb5a883ca622e39e78e0",
+      "bytes": 23988
+    },
+    "complete_candidate": {
+      "path": "D:\\Blender\\Projects\\Character\\X\\validation\\composition_20261011\\full_candidate_09\\candidate_projection.json",
+      "sha256": "18dd5a276be6f30318aeb5777df4dccdf5ef28ac57852920bd0e739bde22dc59",
+      "bytes": 23581
+    }
+  },
+  "source_ast_scope": {
+    "changed": [
+      "_positive_a_edit",
+      "run_steps"
+    ],
+    "added": [
+      "_c_native_domains",
+      "_edit_a_c_witness"
+    ],
+    "removed": [],
+    "unchanged_function_count": 21,
+    "_full_stack_unchanged": true,
+    "_a_only_unchanged": true,
+    "_a_only_used_during_EditA": false
+  },
+  "validation": {
+    "command": "python -m unittest discover -s tests -p test_character_composition_edit_a_c_witness.py -v",
+    "cases_passed": 11,
+    "syntax_compiled_files": 2,
+    "whole_suite_rerun": false,
+    "native_tests_performed": false,
+    "coverage": [
+      "Actual unconditional contextmanager retains an EditA checkpoint then returns to B with upper/lower/full zero-difference measurements",
+      "Reject lost upper or lower C pose while EditA; reject unrestored Solo C and changed returnB pose/Action",
+      "Reject coherent equal-content native A Action rebinding and checkpoint draft change before switch could commit",
+      "Require unmodified reference workcopy, native Tweak, unmuted B, distinct multiple seek times and strict finite tolerance",
+      "Actual positiveA key/commit function accepts real lower motion only when upperB remains within tolerance",
+      "Reject moving upperB even when lower moves, and reject no effective lower motion",
+      "Resume checkpoint first reacquires context/row; Scene or Rig native ID replacement rejects before retained IDs or official switch/commit are touched"
+    ],
+    "limits": "Actual helper/function bodies and matrix-domain comparisons exercised; only native evaluation/transform/keying and canonical service boundary fixtures mocked. No Blender, real screenshots/animation or native acceptance implied."
+  },
+  "report_API": {
+    "explicit_phase": "explicit_A_target",
+    "witness_field": "C_switch_witness",
+    "witness_required_true": [
+      "completed",
+      "C_view_retained_while_editing_A",
+      "C_view_restored_after_Solo_A",
+      "C_view_retained_after_return_to_B",
+      "native_Full_Stack_Tweak_verified",
+      "B_draft_unchanged",
+      "B_Custom_unchanged",
+      "A_workcopy_unchanged",
+      "readonly_A_unchanged",
+      "checkpoint_native_IDs_retained"
+    ],
+    "witness_counts": [
+      "sample_count",
+      "native_count",
+      "upper_count",
+      "lower_count",
+      "delegated_count"
+    ],
+    "witness_action_hashes": "action_hashes_before and action_hashes_after contain B_draft/B_Custom/A_workcopy/readonly_A and must match",
+    "witness_sample_shape": "samples[] {seconds,frame,EditA:{full,upper,lower},SoloA_restored_C:{full,upper,lower},ReturnB:{full,upper,lower}}; every error<=tolerance; 0<tolerance<=0.0002",
+    "positive_phase": "positive_A_only_edit_commit",
+    "positive_required_true": [
+      "native_transform_key_commit",
+      "C_lower_changed",
+      "C_upper_B_unchanged",
+      "C_Full_Stack_Tweak_verified",
+      "B_unchanged",
+      "protected_Source_A_unchanged",
+      "origin_NewAction_manifest_unchanged",
+      "prior_state_restored"
+    ],
+    "positive_numeric_guard": "C_lower_error>1e-7; C_upper_error<=pose_tolerance; 0<pose_tolerance<=0.0002; native_upper_count/native_lower_count positive"
+  },
+  "lifecycle": [
+    "Existing _full_stack proves C upperB/lowerA before the explicit target-switch phase; it remains unchanged.",
+    "New unconditional witness samples validated B full C in all nondelegated native domains before switching.",
+    "Official set_edit_target A selects authenticated exact unmodified workcopy; full stack/mutes/native Action slots and all protected hashes checked at every seek.",
+    "Original SoloA true/false retained, followed by multi-seek C comparisons; never calls _a_only in EditA.",
+    "Contextmanager yields while actual EditA/C remains active for the existing real headful checkpoint.",
+    "Before returnB, unexpected draft/hash/ID changes reject before the official switch could commit.",
+    "Checkpoint resume reacquires exact current context and row before any retained native RNA access. Changed Scene/Rig ID rejects with no switch/commit; same native IDs remain mandatory.",
+    "After official returnB, same seek samples and four Action hashes rechecked; report marks completed only afterward.",
+    "PositiveA records all-domain C before key and after actual native key+commit, verifies native full stack again and checks lower-change plus preserved-upperB.",
+    "Existing readonly A protection, Undo/Redo, save/reopen/resume and retained-draft paths remain in their existing flow."
+  ],
+  "native_candidate_policy": "Source supplement is separate from failed n8 and frozen04. No tools05 freeze/config/GUI launch generated here; root must create new matching immutable tool pins before any authorized future window.",
+  "actions_not_performed": {
+    "runtime_edit": false,
+    "frozen04_or_n8_edit": false,
+    "projection_edit": false,
+    "Blender_or_worker_launch": false,
+    "GUI_or_SDK": false,
+    "GUI_config": false,
+    "deploy_or_install": false,
+    "artist_edit_or_save": false
+  },
+  "supersedes_source_report": {
+    "path": "D:\\MyRepository\\Blender-addons-by-Randy\\docs\\composition_session_edit_a_c_source_report_20261011_19836387.json",
+    "sha256": "11fdbfd948b6197855fda534035331a0a6afa9c93027b03fc588b3d8ac39390f",
+    "bytes": 6689
+  },
+  "failure_policy": {
+    "before_checkpoint": "Pre-yield C mismatch leaves the authentic current A draft/session active; no automatic repair or switch that could commit unexpected input. Parent/controller writes failure and keeps owned QA available.",
+    "checkpoint_native_replacement": "Unscripted Undo/load replacing native Scene/Rig fails closed before retained RNA access or switch; scripted Undo/reopen happens only after this witness has returned to B.",
+    "checkpoint_action_change": "Exact original Action pointers/slots/content and unmodified A draft are required before switch could commit."
+  }
+}
