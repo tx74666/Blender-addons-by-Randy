@@ -252,7 +252,9 @@ def register():
 
 
 def unregister():
-    if active(bpy.context):
+    # Failed add-on initialization runs with no accessible scene. Keep any
+    # saved workspace recoverable, while still removing our registered classes.
+    if getattr(bpy.context, 'scene', None) is not None and active(bpy.context):
         saved = active(bpy.context)
         layer = bpy.context.scene.view_layers.get(json.loads(saved['state'])['view_layer'])
         try:

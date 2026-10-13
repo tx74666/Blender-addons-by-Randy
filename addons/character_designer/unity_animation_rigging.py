@@ -11,6 +11,7 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+from pathlib import Path
 import uuid
 
 import bpy
@@ -28,6 +29,7 @@ _REFS_KEY = 'character_designer_rigging_refs_v1'
 _INPUT_REF = 'character_designer_rigging_input_action_v1'
 _INPUT_META = 'character_designer_rigging_input_owner_v1'
 _INPUT_BASE = 'character_designer_rigging_base_action_v1'
+_PREVIEW_REF_META = 'character_designer_rigging_preview_reference_v1'
 _SIDES = ('Right', 'Left')
 _FIELDS = (('targetPosition', 3), ('targetRotation', 4), ('hintPosition', 3))
 _CACHE = {}
@@ -35,6 +37,11 @@ _BUSY = set()
 _SUSPENDED = {}
 _HANDLER_ERRORS = {}
 _OWNED_TOKENS = {}
+_REACQUIRE_PENDING = {}
+# Retain the owned timer handle/generation across an in-place module reload so
+# register/unregister can cancel the previous callback before admitting IDs.
+_REACQUIRE_TIMER = globals().get('_REACQUIRE_TIMER')
+_REACQUIRE_GENERATION = globals().get('_REACQUIRE_GENERATION', 0)
 
 
 def _require(condition, message):
@@ -211,11 +218,14 @@ def display_state(rig):
     """Cheap UI-only view of an already authenticated in-process session."""
     if rig is None or SESSION_KEY not in rig:
         return None
+    if rig.as_pointer() in _REACQUIRE_PENDING or rig.as_pointer() in _HANDLER_ERRORS:
+        return None
     session = _CACHE.get(rig.as_pointer())
     if not session or session.get('rig') is not rig:
         return None
-    return {key: session[key] for key in ('rig', 'scene', 'base_action', 'input_action', 'edit_role',
-            'source_read_only', 'enabled', 'tweak_enabled')}
+    return {**{key: session[key] for key in ('rig', 'scene', 'base_action', 'input_action', 'edit_role',
+            'source_read_only', 'enabled', 'tweak_enabled')},
+            'original_controls_only': 'original_inputs' in session}
 
 
 def _validate(session):
@@ -245,7 +255,11 @@ def _validate(session):
     if session['source_read_only']:
         _require(_motion(action, session['input_slot']) == meta['initial_input_motion'] == meta['source_input_motion'],
                  'Read-only Source input curves cannot be edited.')
+    if 'original_inputs' in session:
+        from . import unity_animation_original_inputs
+        unity_animation_original_inputs.validate_session(session)
     _inventory(session)
+    _validate_preview_reference(session)
     if session['tracks']:
         _require([session['scene'].render.fps, session['scene'].render.fps_base] == session['scene_clock'],
                  'Restore the owning Scene clock before editing this Rigging preview.')
@@ -342,7 +356,14 @@ def _binding_plan(rig, packet, capture, mapping):
     return plan
 
 
-def _new_input_action(rig, capture, base_action, base_slot, source, packet_sha, work_id):
+def _new_input_action(rig, capture, base_action, base_slot, source, packet_sha, work_id,
+                      *, source_action_id=None):
+    action_id = capture['newActionId']
+    if source_action_id is not None:
+        _require(source is True, 'A separate Source identity is only for a new read-only input carrier.')
+        action_id = _uid(source_action_id)
+        _require(action_id != capture['newActionId'],
+                 'The read-only Source and editable captured input draft need distinct identities.')
     action = bpy.data.actions.new('Rigging Inputs · ' + ('Source' if source else 'Custom'))
     try:
         slot, bag = ua._new_channelbag(action, rig)
@@ -369,7 +390,7 @@ def _new_input_action(rig, capture, base_action, base_slot, source, packet_sha, 
                  'capture_sha256': contract.capture_digest(capture),
                  'source_packet_sha256': packet_sha, 'work_item_id': work_id,
                  'base_slot': base_slot, 'input_slot': slot.handle,
-                 'new_action_id': capture['newActionId'], 'source_read_only': source,
+                 'new_action_id': action_id, 'source_read_only': source,
                  'rig_name': rig.name, 'rig_rest_sha256': _digest(ua._rest_state(rig.data)),
                  'initial_input_motion': _motion(action, slot.handle)}
         if source:
@@ -403,6 +424,8 @@ def import_inputs(context, rig, packet, *, base_action, base_slot, work_item_id=
              'Rigging needs the actual selected base Action slot.')
     _require(base_action.get(ua.PACKAGE_HASH_KEY) == packet_sha,
              'Import Rigging only on the actual prepared base packet Action.')
+    _require(ua.native_action_frame_rate(base_action) == capture['sampleRate'],
+             'Import the exact prepared base on its native packet clock before adding Rigging inputs.')
     source = source or bool(base_action.library)
     mapping = ua._mapping(rig, packet, context.scene.unit_settings.scale_length)
     bindings = _binding_plan(rig, packet, capture, mapping)
@@ -538,7 +561,331 @@ def _tracks(session):
                      for key, value in row['fields'].items()),
                  'Owned Rigging preview timing or blending changed.')
         result[role] = track
+    if result:
+        reference = session.get('preview_reference')
+        action, slot = ((reference['action'], reference['slot']) if reference
+                        else (session['base_action'], session['base_slot']))
+        _require(session['tracks']['BASE']['action'] is action
+                 and session['tracks']['BASE']['slot'] == slot
+                 and session['tracks']['RIGGING']['action'] is session['input_action']
+                 and session['tracks']['RIGGING']['slot'] == session['input_slot'],
+                 'The preview reference or original input track owner changed.')
     return result
+
+
+def _reference_file_sha(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _preview_reference_seal(session, reference):
+    return {'schema': 'cdesigner.rigging-preview-reference/1',
+        'packet_sha256': reference['packet_sha256'], 'model_sha256': reference['model_sha256'],
+        'motion_sha256': reference['motion_sha256'], 'slot': reference['slot'],
+        'rig_name': session['rig'].name, 'formal_source_packet_sha256': session['source_packet_sha256'],
+        'work_item_id': session['work_item_id']}
+
+
+def _validate_preview_reference(session, *, files=False, sealed=True):
+    if 'original_inputs' in session:
+        from . import unity_animation_original_inputs
+        return unity_animation_original_inputs.validate_reference(session, files=files, sealed=sealed)
+    reference = session.get('preview_reference')
+    if reference is None:
+        return
+    _require(isinstance(reference, dict) and set(reference) == {
+        'action', 'slot', 'packet_file', 'packet_sha256', 'model_file', 'model_sha256',
+        'sample_rate', 'duration', 'motion_sha256', 'mapping_sha256', 'root_path'},
+        'The read-only preview reference record is incomplete.')
+    action, rig = reference['action'], session['rig']
+    _require(isinstance(action, bpy.types.Action) and not action.library
+             and action is not session['base_action'] and action is not session['input_action']
+             and composition._slot(action, reference['slot']) is not None
+             and action.get(ua.TARGET_KEY) is rig and action.get(ua.SCENE_KEY) is session['scene']
+             and action.get(ua.VERSION_KEY) == 2
+             and not any(key in action for key in (CAPTURE_KEY, _INPUT_REF, _INPUT_META, _INPUT_BASE,
+                                                  ua.ORIGINAL_DATA_KEY, ua.PREVIEW_DATA_KEY))
+             and action.get(ua.PACKAGE_HASH_KEY) == reference['packet_sha256']
+             and str(Path(action.get(ua.PACKAGE_KEY, '')).resolve()) == reference['packet_file']
+             and action.get(ua.NATIVE_TIMEBASE_KEY) == reference['sample_rate']
+             and action.get('unity_sample_rate') == reference['sample_rate']
+             and action.get('unity_duration') == reference['duration']
+             and action.get('unity_start_frame') == 1.
+             and _motion(action, reference['slot']) == reference['motion_sha256'],
+             'The read-only reference Action, native slot, source or curves changed.')
+    if sealed:
+        _require(json.loads(action.get(_PREVIEW_REF_META, 'null')) == _preview_reference_seal(session, reference),
+                 'The reference must retain its original public-import ownership and curve proof.')
+    _require(type(reference['duration']) in (int, float) and math.isfinite(reference['duration'])
+             and reference['duration'] > 0 and type(reference['sample_rate']) in (int, float)
+             and math.isfinite(reference['sample_rate']) and 1 <= reference['sample_rate'] <= 240
+             and reference['duration'] * reference['sample_rate'] >= 1.
+             and rig.get('character_designer_animation_source_model_sha256') == reference['model_sha256']
+             and not (session['edit_role'] == 'BASE' and session['tweak_enabled']),
+             'The reference clock/model changed, or its read-only BASE was opened for editing.')
+    if files:
+        _require(_reference_file_sha(reference['model_file']) == reference['model_sha256']
+                 and _reference_file_sha(reference['packet_file']) == reference['packet_sha256']
+                 and ua.native_action_frame_rate(action) == reference['sample_rate'],
+                 'A saved preview reference input changed; its native draft was retained.')
+
+
+def _reference_model_identity(session, model_file, model_sha256):
+    from . import animation_link as links
+    model_path = Path(model_file).expanduser().resolve()
+    _require(Path(model_file).is_absolute()
+             and model_path.suffix.lower() == '.fbx' and model_path.is_file()
+             and isinstance(model_sha256, str) and len(model_sha256) == 64
+             and all(c in '0123456789abcdef' for c in model_sha256)
+             and _reference_file_sha(model_path) == model_sha256,
+             'Use the exact actual reference packet and this formal Worklist model.')
+    rig, association = session['rig'], links.get_link(session['rig'])
+    _require(association is not None
+             and Path(association['model_file']).resolve() == model_path
+             and association['model_sha256'] == model_sha256
+             and association['identity']['sourcePackageSha256'].lower() == session['source_packet_sha256']
+             and association['identity']['targetGuid'].lower() == session['capture']['targetGuid'],
+             'The reference model must belong to the unchanged formal base association.')
+    return model_path
+
+
+def _reference_admission(context, session, action, slot, packet_file, packet_sha256,
+                         model_file, model_sha256, *, _creating=False):
+    _require(type(slot) is int and slot >= 0 and composition._slot(action, slot) is not None,
+             'Select the actual reference Action and its exact native slot.')
+    model_path = _reference_model_identity(session, model_file, model_sha256)
+    packet_path = Path(packet_file).expanduser().resolve()
+    _require(Path(packet_file).is_absolute() and isinstance(packet_sha256, str)
+             and len(packet_sha256) == 64 and all(c in '0123456789abcdef' for c in packet_sha256),
+             'Use the actual absolute reference packet and its complete SHA256.')
+    rig = session['rig']
+    packet = ua.load_package(packet_path)
+    _require(packet['_sha256'] == packet_sha256
+             and ua.native_action_frame_rate(action) == packet['sampleRate'],
+             'The reference native Action clock does not match its actual complete packet.')
+    roots = [bone for bone in packet['bones'] if bone['parent'] < 0]
+    root = roots[0] if len(roots) == 1 else None
+    root_path = session['capture']['bindings'][0]['rootPath'].split('/')[0]
+    _require(root is not None and root['name'] == root['path'] == root_path
+             and root['restSource'] == 'hierarchy' and root.get('weighted') is False
+             and len({bone['name'] for bone in packet['bones']}) == len(packet['bones'])
+             and len({bone['path'] for bone in packet['bones']}) == len(packet['bones']),
+             'The reference needs the same explicit source root and unique complete hierarchy.')
+    mapping = ua._mapping(rig, packet, context.scene.unit_settings.scale_length)
+    _require(mapping.controls is not None
+             and set(mapping.indices) == set(rig.data.bones.keys()) - set(mapping.controls.control_names)
+             and _rows(mapping.conversion) == session['conversion'],
+             'The actual reference does not match the complete original Rest and ControlPlan.')
+    plan = _binding_plan(rig, packet, session['capture'], mapping)
+    _require(plan == session['native_bindings'],
+             'The reference must preserve the exact original native two-arm binding plan.')
+    reference = {'action': action, 'slot': slot, 'packet_file': str(packet_path),
+        'packet_sha256': packet_sha256, 'model_file': str(model_path), 'model_sha256': model_sha256,
+        'sample_rate': packet['sampleRate'], 'duration': packet['duration'],
+        'motion_sha256': _motion(action, slot), 'root_path': root_path,
+        'mapping_sha256': _digest({'indices': mapping.indices, 'conversion': _rows(mapping.conversion),
+            'rest_world': {name: _rows(value) for name, value in mapping.rest_world.items()}})}
+    checked = dict(session, preview_reference=reference)
+    _validate_preview_reference(checked, files=True, sealed=not _creating)
+    if _creating:
+        _require(_PREVIEW_REF_META not in action, 'Do not reseed an existing read-only reference proof.')
+        action[_PREVIEW_REF_META] = json.dumps(_preview_reference_seal(session, reference),
+            sort_keys=True, separators=(',', ':'), allow_nan=False)
+    return reference
+
+
+def _preview_base_timing(session, reference=None):
+    if 'original_inputs' in session:
+        from . import unity_animation_original_inputs
+        return unity_animation_original_inputs.preview_base_timing(session, reference)
+    duration, scene_rate = session['capture']['duration'], session['scene_clock'][0] / session['scene_clock'][1]
+    action, slot = ((reference['action'], reference['slot']) if reference
+                    else (session['base_action'], session['base_slot']))
+    rate = reference['sample_rate'] if reference else session['capture']['sampleRate']
+    source_duration = reference['duration'] if reference else duration
+    _require(duration > 0 and source_duration > 0 and scene_rate > 0,
+             'Reference preview needs positive source and destination clocks.')
+    return action, slot, {'begin': 1., 'end': 1. + source_duration * rate,
+        'scene_start': session['scene_start'], 'scene_end': session['scene_start'] + duration * scene_rate,
+        'scale': duration * scene_rate / (source_duration * rate)}
+
+
+def _assign_preview_base(strip, action, slot, timing):
+    strip.action = action
+    strip.action_slot = composition._slot(action, slot)
+    strip.action_frame_start, strip.action_frame_end = timing['begin'], timing['end']
+    strip.repeat = 1.
+    strip.scale = timing['scale']
+    strip.frame_start, strip.frame_end = timing['scene_start'], timing['scene_end']
+    strip.blend_type, strip.influence, strip.extrapolation = 'REPLACE', 1., 'HOLD'
+    strip.blend_in = strip.blend_out = 0.
+    strip.use_auto_blend = strip.use_animated_influence = strip.use_animated_time = False
+    strip.use_animated_time_cyclic = strip.use_reverse = strip.use_sync_length = False
+
+
+def prepare_preview_reference(context, session, reference_packet_file, reference_packet_sha256, *,
+                              model_file, model_sha256):
+    """Return (Action, slot) from one restored native-clock reference import.
+
+    Only the base animation is imported. Complete reference packet bytes stay
+    unchanged; its Rigging/weapon inputs never acquire a session or carrier.
+    This does not select the reference: use set_preview_reference afterwards.
+    """
+    _validate(session)
+    rig = session['rig']
+    _require(context.scene is session['scene'] and session['tracks'] and session['enabled']
+             and not session['source_read_only'] and session['edit_role'] == 'BASE'
+             and not session['tweak_enabled'] and not rig.animation_data.use_tweak_mode
+             and not _SUSPENDED.get(rig.as_pointer(), 0) and rig.as_pointer() not in _BUSY
+             and ua.active_preview(rig) is None,
+             'Prepare a reference on its enabled Custom BASE owner outside Tweak/export.')
+    _reference_model_identity(session, model_file, model_sha256)
+    packet = ua.load_package(reference_packet_file)
+    _require(packet['_sha256'] == reference_packet_sha256,
+             'The actual complete reference packet differs from its supplied SHA256.')
+    action, slot = None, None
+    original_data, original_rest = rig.data, ua._rest_state(rig.data)
+    actions_before, data_before = set(bpy.data.actions), set(bpy.data.armatures)
+    base_motion = _motion(session['base_action'], session['base_slot'])
+    input_motion = _motion(session['input_action'], session['input_slot'])
+    try:
+        with base_only(context, rig, action=session['base_action']):
+            prior = composition._prior(context, rig)
+            try:
+                result = ua._import_package_action(context, rig, packet, start_frame=1., native_timebase=True)
+                action = result.action
+                _require(action not in actions_before and action.get(ua.TARGET_KEY) is rig,
+                         'The native reference import returned a foreign Action.')
+                slot = rig.animation_data.action_slot_handle
+                ua.restore_preview(context, rig)
+                _require(rig.data is original_data and ua._rest_state(rig.data) == original_rest
+                         and ua.active_preview(rig) is None,
+                         'Restore the complete temporary native reference preview before accepting it.')
+            except Exception as primary:
+                # The known returned Action alone authenticates a temporary
+                # data copy. Never sweep new IDs or force a foreign replacement.
+                errors = []
+                try:
+                    preview = action.get(ua.PREVIEW_DATA_KEY) if action is not None and action not in actions_before else None
+                    if rig.data is not original_data:
+                        _require(preview is rig.data and preview not in data_before
+                                 and action.get(ua.ORIGINAL_DATA_KEY) is original_data
+                                 and ua._rest_state(original_data) == original_rest
+                                 and set(preview.bones.keys()) == set(original_data.bones.keys())
+                                 and all(ua._same_rest_bone(original_data.bones[name], bone)
+                                         for name, bone in preview.bones.items()),
+                                 'A temporary reference data copy changed; preserve it for inspection.')
+                        ua._swap_armature_data(context, rig, original_data)
+                    if action is not None and rig.get(ua.ACTIVE_KEY) is action:
+                        rig.pop(ua.ACTIVE_KEY, None)
+                    composition._restore_prior(context, rig, prior)
+                    _restore_live_pose(rig, prior)
+                    if preview is not None:
+                        _require(preview.users == int(preview.use_fake_user),
+                                 'The temporary reference data gained another owner; preserve it.')
+                        preview.use_fake_user = False
+                        ua._discard_preview_data(action, preview)
+                except Exception as error:
+                    errors.append(str(error))
+                if errors:
+                    primary.add_note('Reference import recovery: ' + '; '.join(errors))
+                raise
+        _reference_admission(context, session, action, slot, reference_packet_file,
+            reference_packet_sha256, model_file, model_sha256, _creating=True)
+        _require(_motion(session['base_action'], session['base_slot']) == base_motion
+                 and _motion(session['input_action'], session['input_slot']) == input_motion,
+                 'Preparing a reference changed the formal base or twenty input curves.')
+        _validate(session)
+        return action, slot
+    except Exception as primary:
+        if action is not None and action not in actions_before:
+            try:
+                _require(rig.get(ua.ACTIVE_KEY) is not action
+                         and rig.animation_data.action is not action
+                         and action.users == int(action.use_fake_user),
+                         'The failed reference Action still has another owner; preserve it.')
+                action.use_fake_user = False
+                bpy.data.actions.remove(action)
+            except Exception as error:
+                primary.add_note('Failed reference Action retained: ' + str(error))
+        raise
+
+
+def set_preview_reference(context, session, reference_action=None, reference_slot=None, *,
+                          reference_packet_file=None, reference_packet_sha256=None,
+                          model_file=None, model_sha256=None):
+    """Preview a sealed read-only base on normalized input phase; never rebind export.
+
+    Supply an actual native-clock import restored with Unity's public preview
+    recovery, including its original target/scene metadata. Reference packet
+    Rigging/weapon data is never imported or solved here. Call in BASE role with
+    native Tweak ended. Passing no reference restores the formal base strip.
+    """
+    _validate(session)
+    rig, pointer = session['rig'], session['rig'].as_pointer()
+    _require(context.scene is session['scene'] and session['tracks'] and session['enabled']
+             and not session['source_read_only'] and session['edit_role'] == 'BASE'
+             and not session['tweak_enabled'] and not rig.animation_data.use_tweak_mode
+             and not _SUSPENDED.get(pointer, 0) and pointer not in _BUSY,
+             'Change the reference on its enabled Custom BASE preview outside Tweak/export.')
+    if reference_action is None:
+        _require(all(value is None for value in (reference_slot, reference_packet_file,
+            reference_packet_sha256, model_file, model_sha256)), 'Restore BASE without replacement provenance.')
+        reference = None
+    else:
+        reference = _reference_admission(context, session, reference_action, reference_slot,
+            reference_packet_file, reference_packet_sha256, model_file, model_sha256)
+    before = _detached(session)
+    prior = composition._prior(context, rig)
+    base_motion, input_motion = _motion(session['base_action'], session['base_slot']), _motion(session['input_action'], session['input_slot'])
+    strip = _tracks(session)['BASE'].strips[0]
+    old = before['tracks']['BASE']
+    _BUSY.add(pointer)
+    try:
+        action, slot, timing = _preview_base_timing(session, reference)
+        _assign_preview_base(strip, action, slot, timing)
+        if reference is None:
+            session.pop('preview_reference', None)
+        else:
+            session['preview_reference'] = reference
+        session['tracks']['BASE'] = {'name': old['name'], 'action': action, 'slot': slot,
+            'fields': {key: composition._plain(getattr(strip, key)) for key in composition._STRIP_FIELDS}}
+        ua._set_frame(context.scene, context.scene.frame_current + context.scene.frame_subframe)
+        _apply(context, session)
+        _require(_motion(session['base_action'], session['base_slot']) == base_motion
+                 and _motion(session['input_action'], session['input_slot']) == input_motion,
+                 'Changing a preview reference modified the independent base or twenty input curves.')
+        _validate(session)
+        _store(rig, session)
+        _HANDLER_ERRORS.pop(pointer, None)
+    except Exception as primary:
+        errors = []
+        try:
+            strip.action, strip.action_slot = old['action'], composition._slot(old['action'], old['slot'])
+            for key, value in old['fields'].items():
+                if key not in ('frame_start', 'frame_end'):
+                    setattr(strip, key, value)
+            strip.frame_start, strip.frame_end = old['fields']['frame_start'], old['fields']['frame_end']
+        except Exception as error:
+            errors.append('prior reference strip: ' + str(error))
+        session.clear()
+        session.update(before)
+        for label, operation in (('prior native state', lambda: composition._restore_prior(context, rig, prior)),
+                ('live preview', lambda: _restore_live_pose(rig, prior)),
+                ('persistent owner', lambda: _store(rig, session))):
+            try:
+                operation()
+            except Exception as error:
+                errors.append(label + ': ' + str(error))
+        if errors:
+            primary.add_note('Preview reference recovery: ' + '; '.join(errors))
+        raise
+    finally:
+        _BUSY.discard(pointer)
+    return session
 
 
 def _make_tracks(context, session):
@@ -560,6 +907,7 @@ def _make_tracks(context, session):
     context.scene.frame_end = start + max(1, math.ceil(session['capture']['duration'] * scene_rate))
     context.scene.frame_preview_start, context.scene.frame_preview_end = start, context.scene.frame_end
     session['scene_clock'] = [context.scene.render.fps, context.scene.render.fps_base]
+    session['scene_start'] = start
     for role, action, slot in (('BASE', session['base_action'], session['base_slot']),
                                ('RIGGING', session['input_action'], session['input_slot'])):
         rate = (ua.native_action_frame_rate(action) if role == 'BASE'
@@ -585,10 +933,13 @@ def _make_tracks(context, session):
                     ad.nla_tracks.remove(added)
             raise
         strip = track.strips[0]
+        if role == 'BASE' and session.get('preview_reference') is not None:
+            selected, selected_slot, timing = _preview_base_timing(session, session['preview_reference'])
+            _assign_preview_base(strip, selected, selected_slot, timing)
+            action, slot = selected, selected_slot
         session['tracks'][role] = {'name': track.name, 'action': action, 'slot': slot,
             'fields': {field: composition._plain(getattr(strip, field))
                        for field in composition._STRIP_FIELDS}}
-    session['scene_start'] = start
 
 
 def _time(context, session):
@@ -603,8 +954,9 @@ def _time(context, session):
     return min(duration, max(0., seconds))
 
 
-def _sample(session, time):
-    curves = _curves(session['input_action'], session['input_slot'])
+def _sample(session, time, *, curves=None):
+    if curves is None:
+        curves = _curves(session['input_action'], session['input_slot'])
     frame = 1. + time * session['capture']['sampleRate']
     controls = []
     for side in _SIDES:
@@ -711,43 +1063,58 @@ def _read_target(context, session, entry):
 
 
 def _apply(context, session):
-    _validate(session)
-    rig, inventory = session['rig'], _inventory(session)
-    time, c = _time(context, session), _matrix(session['conversion'])
-    values = _sample(session, time)
-    # The ordinary base importer keys exact FK=0.  A frame update must have
-    # evaluated that base before this explicit post-frame preview step.
-    base = {}
-    for row in session['native_bindings']:
-        entry = inventory['rigs']['ARM', row['native_side']]
-        _require(limb_ik_fk.mode_for_rig(rig, entry) == 'FK',
-                 'Evaluate the independent base FK Action before applying Rigging inputs.')
-        base[row['native_side']] = {name: rig.pose.bones[name].matrix.copy() for name in entry['chain']}
-    for index, (binding, row, inputs) in enumerate(zip(session['capture']['bindings'], session['native_bindings'], values)):
-        entry = inventory['rigs']['ARM', row['native_side']]
-        enabled = binding['constraintWeight'] == 1.
-        if enabled:
-            limb_ik_fk.switch_limb(context, rig, ('ARM', row['native_side']), 'IK',
-                keyframe=False, desired_pose=base[row['native_side']], sync_display=False)
-        unity = _parent_at(session, index, 'targetParentRoot', time) @ Matrix.LocRotScale(
-            Vector(inputs['targetPosition']), Quaternion((inputs['targetRotation'][3], *inputs['targetRotation'][:3])), Vector((1., 1., 1.)))
-        desired = _tip_from_unity(session, index, unity)
-        native_base = rig.matrix_world @ base[row['native_side']][row['chain'][2]]
-        desired = Matrix.LocRotScale(desired.translation if binding['targetPositionWeight'] else native_base.translation,
-            desired.to_quaternion() if binding['targetRotationWeight'] else native_base.to_quaternion(), Vector((1., 1., 1.)))
-        _write_target(context, session, index, entry, desired)
-        if binding['hintWeight']:
-            point = c @ (_parent_at(session, index, 'hintParentRoot', time) @ Vector(inputs['hintPosition']))
-            pole = rig.pose.bones[row['pole']]
-            matrix = pole.matrix.copy()
-            matrix.translation = rig.matrix_world.inverted() @ point
-            pole.matrix = matrix
-            limb_ik_fk._update(context, rig)
-    session['_time'] = time
-    session['_left_parent'] = _rows(_parent_at(session, 1, 'targetParentRoot', time))
-    bone_collections.sync_limb_display(rig, inventory,
-        keys=tuple(('ARM', row['native_side']) for row in session['native_bindings']), force_flags=True)
-    _restrict_inputs(session)
+    # Original20's post-FK IK transaction must publish Forearm output only
+    # after the final pose/mode (including rollback); ordinary paths are inert.
+    from contextlib import nullcontext
+    scope = nullcontext()
+    if 'original_inputs' in session:
+        from . import forearm_twist
+        scope = forearm_twist.defer_runtime(context)
+    with scope:
+        _validate(session)
+        rig, inventory = session['rig'], _inventory(session)
+        time, c = _time(context, session), _matrix(session['conversion'])
+        values = _sample(session, time)
+        # The ordinary base importer keys exact FK=0.  A frame update must have
+        # evaluated that base before this explicit post-frame preview step.
+        base = {}
+        for row in session['native_bindings']:
+            entry = inventory['rigs']['ARM', row['native_side']]
+            _require(limb_ik_fk.mode_for_rig(rig, entry) == 'FK',
+                     'Evaluate the independent base FK Action before applying Rigging inputs.')
+            base[row['native_side']] = {name: rig.pose.bones[name].matrix.copy() for name in entry['chain']}
+        for index, (binding, row, inputs) in enumerate(zip(session['capture']['bindings'], session['native_bindings'], values)):
+            entry = inventory['rigs']['ARM', row['native_side']]
+            enabled = binding['constraintWeight'] == 1.
+            if enabled:
+                limb_ik_fk.switch_limb(context, rig, ('ARM', row['native_side']), 'IK',
+                    keyframe=False, desired_pose=base[row['native_side']], sync_display=False)
+            unity = _parent_at(session, index, 'targetParentRoot', time) @ Matrix.LocRotScale(
+                Vector(inputs['targetPosition']), Quaternion((inputs['targetRotation'][3], *inputs['targetRotation'][:3])), Vector((1., 1., 1.)))
+            desired = _tip_from_unity(session, index, unity)
+            native_base = rig.matrix_world @ base[row['native_side']][row['chain'][2]]
+            desired = Matrix.LocRotScale(desired.translation if binding['targetPositionWeight'] else native_base.translation,
+                desired.to_quaternion() if binding['targetRotationWeight'] else native_base.to_quaternion(), Vector((1., 1., 1.)))
+            if binding['hintWeight']:
+                point = c @ (_parent_at(session, index, 'hintParentRoot', time) @ Vector(inputs['hintPosition']))
+                pole = rig.pose.bones[row['pole']]
+                matrix = pole.matrix.copy()
+                matrix.translation = rig.matrix_world.inverted() @ point
+                pole.matrix = matrix
+                limb_ik_fk._update(context, rig)
+            # Auto Align encodes its offset against the solved natural hand.
+            # Finalize this arm's Pole first, then its Target, before the Left
+            # input reads the current RightHand as its dynamic parent.
+            _write_target(context, session, index, entry, desired)
+        session['_time'] = time
+        session['_left_parent'] = _rows(_parent_at(session, 1, 'targetParentRoot', time))
+        # Matching defers display until both arms and their Targets are final.
+        # Original20 still needs the official ring/Body membership handoff;
+        # retain the artist's hide flags while synchronizing those owned outputs.
+        bone_collections.sync_limb_display(rig, inventory,
+            keys=tuple(('ARM', row['native_side']) for row in session['native_bindings']),
+            force_flags='original_inputs' not in session)
+        _restrict_inputs(session)
 
 
 @contextmanager
@@ -798,24 +1165,44 @@ def _depsgraph(scene, *_args):
             if session['scene'] is not scene or not session['enabled'] or '_left_parent' not in session:
                 continue
             with _context(session) as context:
-                _restore_preview_mode(context, session)
-                binding = session['capture']['bindings'][1]
-                if not binding['constraintWeight']:
-                    continue
-                time = session['_time']
-                before = _matrix(session['_left_parent'])
-                after = _parent_at(session, 1, 'targetParentRoot', time)
-                if max(abs(a - b) for a, b in zip(_rows(before), _rows(after))) <= 1e-7:
-                    continue
-                entry = _inventory(session)['rigs']['ARM', 'L']
-                unity = _unity_from_tip(session, 1, _read_target(context, session, entry))
-                local = before.inverted() @ unity
-                wanted = _tip_from_unity(session, 1, after @ local)
-                present = _read_target(context, session, entry)
-                wanted = Matrix.LocRotScale(wanted.translation if binding['targetPositionWeight'] else present.translation,
-                    wanted.to_quaternion() if binding['targetRotationWeight'] else present.to_quaternion(), Vector((1., 1., 1.)))
-                _write_target(context, session, 1, entry, wanted)
-                session['_left_parent'] = _rows(after)
+                from contextlib import nullcontext
+                scope = nullcontext()
+                if 'original_inputs' in session:
+                    inventory = _inventory(session)
+                    mode_changed = any(binding['constraintWeight'] and
+                        limb_ik_fk.mode_for_rig(rig, inventory['rigs']['ARM', row['native_side']]) != 'IK'
+                        for binding, row in zip(session['capture']['bindings'], session['native_bindings']))
+                    binding = session['capture']['bindings'][1]
+                    parent_changed = False
+                    if binding['constraintWeight']:
+                        before = _matrix(session['_left_parent'])
+                        after = _parent_at(session, 1, 'targetParentRoot', session['_time'])
+                        parent_changed = max(abs(a - b) for a, b in zip(_rows(before), _rows(after))) > 1e-7
+                    if not mode_changed and not parent_changed:
+                        continue
+                    from . import forearm_twist
+                    scope = forearm_twist.defer_runtime(context)
+                # Re-read the dynamic parent after restoring the final native mode.
+                # Nested mode restoration defers to this callback's final Target.
+                with scope:
+                    _restore_preview_mode(context, session)
+                    binding = session['capture']['bindings'][1]
+                    if not binding['constraintWeight']:
+                        continue
+                    time = session['_time']
+                    before = _matrix(session['_left_parent'])
+                    after = _parent_at(session, 1, 'targetParentRoot', time)
+                    if max(abs(a - b) for a, b in zip(_rows(before), _rows(after))) <= 1e-7:
+                        continue
+                    entry = _inventory(session)['rigs']['ARM', 'L']
+                    unity = _unity_from_tip(session, 1, _read_target(context, session, entry))
+                    local = before.inverted() @ unity
+                    wanted = _tip_from_unity(session, 1, after @ local)
+                    present = _read_target(context, session, entry)
+                    wanted = Matrix.LocRotScale(wanted.translation if binding['targetPositionWeight'] else present.translation,
+                        wanted.to_quaternion() if binding['targetRotationWeight'] else present.to_quaternion(), Vector((1., 1., 1.)))
+                    _write_target(context, session, 1, entry, wanted)
+                    session['_left_parent'] = _rows(after)
         except Exception as error:
             _handler_error(rig, session, error)
         finally:
@@ -835,22 +1222,37 @@ def _handler_error(rig, session, error):
 
 
 def _restore_preview_mode(context, session):
-    # A dependency reevaluation may key BASE's FK=0 again at the same frame.
-    # Reestablish the original native IK mode without replaying source inputs
-    # or overwriting current unkeyed Target/Pole/ORI poses.
     rig, inventory = session['rig'], _inventory(session)
-    for binding, row in zip(session['capture']['bindings'], session['native_bindings']):
-        entry = inventory['rigs']['ARM', row['native_side']]
-        if not binding['constraintWeight'] or limb_ik_fk.mode_for_rig(rig, entry) == 'IK':
-            continue
-        names = {row['target'], row['pole']} | {entry[key].name for key in ('ori_upper', 'ori_lower') if entry.get(key)}
-        bases = {name: rig.pose.bones[name].matrix_basis.copy() for name in names}
-        desired = {name: rig.pose.bones[name].matrix.copy() for name in row['chain']}
-        limb_ik_fk.switch_limb(context, rig, ('ARM', row['native_side']), 'IK',
-            keyframe=False, desired_pose=desired, sync_display=False)
-        for name, matrix in bases.items():
-            rig.pose.bones[name].matrix_basis = matrix
-        limb_ik_fk._update(context, rig)
+    if not any(binding['constraintWeight'] and
+            limb_ik_fk.mode_for_rig(rig, inventory['rigs']['ARM', row['native_side']]) != 'IK'
+            for binding, row in zip(session['capture']['bindings'], session['native_bindings'])):
+        return
+    # Original20's post-FK IK transaction must publish Forearm output only
+    # after the final pose/mode (including rollback); ordinary paths are inert.
+    from contextlib import nullcontext
+    scope = nullcontext()
+    if 'original_inputs' in session:
+        from . import forearm_twist
+        scope = forearm_twist.defer_runtime(context)
+    with scope:
+        # A dependency reevaluation may key BASE's FK=0 again at the same frame.
+        # Reestablish the original native IK mode without replaying source inputs
+        # or overwriting current unkeyed Target/Pole/ORI poses.
+        for binding, row in zip(session['capture']['bindings'], session['native_bindings']):
+            entry = inventory['rigs']['ARM', row['native_side']]
+            if not binding['constraintWeight'] or limb_ik_fk.mode_for_rig(rig, entry) == 'IK':
+                continue
+            names = {row['target'], row['pole']} | {entry[key].name for key in ('ori_upper', 'ori_lower') if entry.get(key)}
+            bases = {name: rig.pose.bones[name].matrix_basis.copy() for name in names}
+            desired = {name: rig.pose.bones[name].matrix.copy() for name in row['chain']}
+            limb_ik_fk.switch_limb(context, rig, ('ARM', row['native_side']), 'IK',
+                keyframe=False, desired_pose=desired, sync_display=False)
+            for name, matrix in bases.items():
+                rig.pose.bones[name].matrix_basis = matrix
+            limb_ik_fk._update(context, rig)
+        if 'original_inputs' in session:
+            bone_collections.sync_limb_display(rig, inventory,
+                keys=tuple(('ARM', row['native_side']) for row in session['native_bindings']), force_flags=False)
 
 
 def _handlers():
@@ -881,6 +1283,10 @@ def activate(context, session, *, edit_role='BASE', enabled=False):
     _require(edit_role in {'BASE', 'RIGGING'} and type(enabled) is bool,
              'Choose BASE or RIGGING and an explicit native-editing flag.')
     _validate(session)
+    _require('original_inputs' not in session or edit_role != 'BASE' or not enabled,
+             'Original control inputs keep Source and Body read-only; edit Target/Hint instead.')
+    _require(not session.get('preview_reference') or edit_role != 'BASE' or not enabled,
+             'The preview reference is read-only; restore the formal base before BASE Tweak.')
     _require(context.scene is session['scene'], 'Activate Rigging in its saved owning scene.')
     _require(not session['source_read_only'] or edit_role == 'BASE' and not enabled,
              'Source Rigging inputs are read-only; activate Custom to edit.')
@@ -888,80 +1294,88 @@ def activate(context, session, *, edit_role='BASE', enabled=False):
     prior, display = composition._prior(context, rig), bone_display._snapshot(rig)
     before = _detached({key: value for key, value in session.items() if not key.startswith('_')})
     volatile = {key: deepcopy(value) for key, value in session.items() if key.startswith('_')}
-    _BUSY.add(pointer)
-    try:
-        if rig.animation_data and rig.animation_data.use_tweak_mode:
-            tracks = _tracks(session)
-            _require(session['tweak_enabled'], 'Another native Tweak session is active.')
-            composition._tweak(context, rig, tracks[session['edit_role']], enabled=False)
-        if not session['tracks']:
-            _make_tracks(context, session)
-        tracks = _tracks(session)
-        for track in tracks.values():
-            track.mute = False
-        session['edit_role'], session['tweak_enabled'] = edit_role, enabled
-        session['enabled'] = bool(session['capture']['previewEnabled'])
-        context.scene.tool_settings.use_keyframe_insert_auto = False
-        if enabled:
-            composition._tweak(context, rig, tracks[edit_role], enabled=True)
-        ua._set_frame(context.scene, context.scene.frame_current + context.scene.frame_subframe)
-        if session['enabled']:
-            _apply(context, session)
-        else:
-            _restrict_inputs(session)
-        _store(rig, session)
-        _HANDLER_ERRORS.pop(pointer, None)
-    except Exception as primary:
-        errors = []
+    # Original20's post-FK IK transaction must publish Forearm output only
+    # after the final pose/mode (including rollback); ordinary paths are inert.
+    from contextlib import nullcontext
+    scope = nullcontext()
+    if 'original_inputs' in session:
+        from . import forearm_twist
+        scope = forearm_twist.defer_runtime(context)
+    with scope:
+        _BUSY.add(pointer)
         try:
             if rig.animation_data and rig.animation_data.use_tweak_mode:
-                composition._tweak(context, rig, None, enabled=False)
-        except Exception as error:
-            errors.append('leave owned Tweak: ' + str(error))
-        if not before['tracks']:
-            for row in session['tracks'].values():
-                try:
-                    track = rig.animation_data.nla_tracks.get(row['name'])
-                    _require(track is not None and len(track.strips) == 1
-                             and track.strips[0].action is row['action']
-                             and track.strips[0].action_slot_handle == row['slot'],
-                             'A partially-created preview track changed; it was retained.')
-                    rig.animation_data.nla_tracks.remove(track)
-                except Exception as error:
-                    errors.append('new owned track: ' + str(error))
-            for key, row in session['properties_before'].items():
-                try:
-                    if row['present']:
-                        rig[key] = row['value']
-                    else:
-                        rig.pop(key, None)
-                except Exception as error:
-                    errors.append('prior input property: ' + str(error))
-        session.clear()
-        session.update(before)
-        session.update(volatile)
-        for label, operation in (
-                ('prior native state', lambda: composition._restore_prior(context, rig, prior)),
-                ('display', lambda: bone_display._restore(rig, display))):
-            try:
-                operation()
-            except Exception as error:
-                errors.append(label + ': ' + str(error))
-        try:
-            if before['tweak_enabled']:
-                composition._tweak(context, rig, _tracks(session)[before['edit_role']], enabled=True)
-                _restore_live_pose(rig, prior)
+                tracks = _tracks(session)
+                _require(session['tweak_enabled'], 'Another native Tweak session is active.')
+                composition._tweak(context, rig, tracks[session['edit_role']], enabled=False)
+            if not session['tracks']:
+                _make_tracks(context, session)
+            tracks = _tracks(session)
+            for track in tracks.values():
+                track.mute = False
+            session['edit_role'], session['tweak_enabled'] = edit_role, enabled
+            session['enabled'] = bool(session['capture']['previewEnabled'])
+            context.scene.tool_settings.use_keyframe_insert_auto = False
+            if enabled:
+                composition._tweak(context, rig, tracks[edit_role], enabled=True)
+            ua._set_frame(context.scene, context.scene.frame_current + context.scene.frame_subframe)
+            if session['enabled']:
+                _apply(context, session)
+            else:
+                _restrict_inputs(session)
             _store(rig, session)
-        except Exception as error:
-            errors.append('owned session: ' + str(error))
-        if errors:
-            primary.add_note('Rigging activation recovery: ' + '; '.join(errors))
-        raise
-    finally:
-        _BUSY.discard(pointer)
-    if session['enabled']:
-        _handlers()
-    return session
+            _HANDLER_ERRORS.pop(pointer, None)
+        except Exception as primary:
+            errors = []
+            try:
+                if rig.animation_data and rig.animation_data.use_tweak_mode:
+                    composition._tweak(context, rig, None, enabled=False)
+            except Exception as error:
+                errors.append('leave owned Tweak: ' + str(error))
+            if not before['tracks']:
+                for row in session['tracks'].values():
+                    try:
+                        track = rig.animation_data.nla_tracks.get(row['name'])
+                        _require(track is not None and len(track.strips) == 1
+                                 and track.strips[0].action is row['action']
+                                 and track.strips[0].action_slot_handle == row['slot'],
+                                 'A partially-created preview track changed; it was retained.')
+                        rig.animation_data.nla_tracks.remove(track)
+                    except Exception as error:
+                        errors.append('new owned track: ' + str(error))
+                for key, row in session['properties_before'].items():
+                    try:
+                        if row['present']:
+                            rig[key] = row['value']
+                        else:
+                            rig.pop(key, None)
+                    except Exception as error:
+                        errors.append('prior input property: ' + str(error))
+            session.clear()
+            session.update(before)
+            session.update(volatile)
+            for label, operation in (
+                    ('prior native state', lambda: composition._restore_prior(context, rig, prior)),
+                    ('display', lambda: bone_display._restore(rig, display))):
+                try:
+                    operation()
+                except Exception as error:
+                    errors.append(label + ': ' + str(error))
+            try:
+                if before['tweak_enabled']:
+                    composition._tweak(context, rig, _tracks(session)[before['edit_role']], enabled=True)
+                    _restore_live_pose(rig, prior)
+                _store(rig, session)
+            except Exception as error:
+                errors.append('owned session: ' + str(error))
+            if errors:
+                primary.add_note('Rigging activation recovery: ' + '; '.join(errors))
+            raise
+        finally:
+            _BUSY.discard(pointer)
+        if session['enabled']:
+            _handlers()
+        return session
 
 
 def _restrict_inputs(session):
@@ -977,7 +1391,7 @@ def _restrict_inputs(session):
                   'lock_scale': before['scale'], 'lock_rotation_w': before['rotation_w'],
                   'lock_rotations_4d': before['rotation_4d']}
         selectable = before['select']
-        permitted = (pb.name not in covered if session['edit_role'] == 'BASE'
+        permitted = (pb.name not in covered and 'original_inputs' not in session if session['edit_role'] == 'BASE'
                      else pb.name in targets or pb.name in poles)
         if not permitted:
             wanted.update(lock_location=(True,) * 3, lock_rotation=(True,) * 3,
@@ -999,7 +1413,7 @@ def _restrict_inputs(session):
             if pb.bone.hide:
                 pb.bone.hide = False
             body = bone_collections.body_collection(rig)
-            if body is not None and pb.name not in body.bones:
+            if body is not None and pb.name not in body.bones and 'original_inputs' not in session:
                 body.assign(pb.bone)
         for field, value in wanted.items():
             actual = getattr(pb, field)
@@ -1100,7 +1514,10 @@ def capture_inputs(context, session, *, source_packet_sha256, work_item_id,
              and expected_action == session['base_action'].name
              and source_action_slot == session['base_slot'],
              'Rigging export identities do not match the bound base and input Actions.')
-    samples = [{'time': frame['time'], 'controls': _sample(session, frame['time'])}
+    # This synchronous read does not change frames or yield to Blender. Validate
+    # the saved curves once for this export, retaining per-sample value checks.
+    curves = _curves(session['input_action'], session['input_slot'])
+    samples = [{'time': frame['time'], 'controls': _sample(session, frame['time'], curves=curves)}
                for frame in session['capture']['frames']]
     return contract.build_export(session['capture'], samples,
         source_packet_sha256=source_packet_sha256, work_item_id=work_item_id,
@@ -1116,6 +1533,8 @@ def base_only(context, rig, action=None):
     if session is None:
         yield
         return
+    _require('original_inputs' not in session,
+             'Publish the twenty control inputs separately; their Source is not a Body export Action.')
     _require(action is None or action is session['base_action'],
              'Base-only export must use the exact bound base Action.')
     pointer = rig.as_pointer()
@@ -1133,6 +1552,7 @@ def base_only(context, rig, action=None):
                   if tracks else prior['snapshot']['frame'])
     _SUSPENDED[pointer] = 1
     _BUSY.add(pointer)
+    primary = None
     try:
         if rig.animation_data and rig.animation_data.use_tweak_mode:
             _require(session['tweak_enabled'], 'A foreign Tweak session cannot be suspended for export.')
@@ -1149,20 +1569,42 @@ def base_only(context, rig, action=None):
             _require(limb_ik_fk.mode_for_rig(rig, entry) == 'FK',
                      'The independent base Action does not restore exact FK inputs.')
         yield
+    except BaseException as error:
+        primary = error
+        raise
     finally:
+        errors = []
         try:
-            composition._restore_prior(context, rig, prior)
+            try:
+                composition._restore_prior(context, rig, prior)
+            except Exception as error:
+                errors.append('prior native state: ' + str(error))
             if session['enabled']:
                 # Reevaluate FK base first; do not match the combined pose back
                 # into the base.  Native preview and its unkeyed inputs recover
                 # from the captured prior pose/control properties instead.
                 if session['tweak_enabled']:
-                    composition._tweak(context, rig, _tracks(session)[session['edit_role']], enabled=True)
-                _restore_live_pose(rig, prior)
-            bone_display._restore(rig, display)
+                    try:
+                        composition._tweak(context, rig, _tracks(session)[session['edit_role']], enabled=True)
+                    except Exception as error:
+                        errors.append('owned Tweak: ' + str(error))
+                try:
+                    _restore_live_pose(rig, prior)
+                except Exception as error:
+                    errors.append('live input pose: ' + str(error))
+            try:
+                bone_display._restore(rig, display)
+            except Exception as error:
+                errors.append('display: ' + str(error))
         finally:
             _SUSPENDED.pop(pointer, None)
             _BUSY.discard(pointer)
+        if errors:
+            message = 'Base-only preview recovery: ' + '; '.join(errors)
+            if primary is not None:
+                primary.add_note(message)
+            else:
+                raise ValueError(message)
 
 
 @contextmanager
@@ -1251,40 +1693,54 @@ def restore_owned(context, rig):
     if session is None:
         return
     pointer = rig.as_pointer()
-    _BUSY.add(pointer)
-    _SUSPENDED[pointer] = _SUSPENDED.get(pointer, 0) + 1
-    try:
-        tracks = _tracks(session) if session['tracks'] else {}
-        if rig.animation_data and rig.animation_data.use_tweak_mode:
-            _require(session['tweak_enabled'], 'Close the foreign native Tweak session first.')
-            composition._tweak(context, rig, tracks[session['edit_role']], enabled=False)
-        if 'weapon_preview' in session:
-            from . import animation_composition_weapon as weapon
-            token = next((value for value in reversed(_OWNED_TOKENS.get(pointer, ()))
-                          if value['status'] == 'pending' and value['session']['owner'] == session['owner']), None)
-            if token is None:
-                weapon.remove_rigging_context(context, rig, session=session)
-            else:
-                _detach_weapon(rig, token)
-        for track in tracks.values():
-            rig.animation_data.nla_tracks.remove(track)
-        for key, row in session['properties_before'].items():
-            if row['present']:
-                rig[key] = row['value']
-            else:
-                rig.pop(key, None)
-        composition._restore_prior(context, rig, session['prior'])
-        bone_display._restore(rig, session['display'])
-        rig.pop(SESSION_KEY, None)
-        rig.pop(_REFS_KEY, None)
-        _CACHE.pop(pointer, None)
-        _HANDLER_ERRORS.pop(pointer, None)
-        # No successful carrier (including read-only Source), base Action,
-        # original ID, cache, or authored key is removed on a normal close.
-    finally:
-        _SUSPENDED.pop(pointer, None)
-        _BUSY.discard(pointer)
-        _remove_handlers_if_idle()
+    token = None
+    if 'weapon_preview' in session:
+        from . import animation_composition_weapon as weapon
+        token = next((value for value in reversed(_OWNED_TOKENS.get(pointer, ()))
+                      if value['status'] == 'pending' and value['session']['owner'] == session['owner']), None)
+        if token is None:
+            # A rejected normal close must retain the native Tweak state too.
+            # Transaction-owned displays follow the existing detach path.
+            weapon.validate_removal(rig)
+    # Original20's post-FK IK transaction must publish Forearm output only
+    # after the final pose/mode (including rollback); ordinary paths are inert.
+    from contextlib import nullcontext
+    scope = nullcontext()
+    if 'original_inputs' in session:
+        from . import forearm_twist
+        scope = forearm_twist.defer_runtime(context)
+    with scope:
+        _BUSY.add(pointer)
+        _SUSPENDED[pointer] = _SUSPENDED.get(pointer, 0) + 1
+        try:
+            tracks = _tracks(session) if session['tracks'] else {}
+            if rig.animation_data and rig.animation_data.use_tweak_mode:
+                _require(session['tweak_enabled'], 'Close the foreign native Tweak session first.')
+                composition._tweak(context, rig, tracks[session['edit_role']], enabled=False)
+            if 'weapon_preview' in session:
+                if token is None:
+                    weapon.remove_rigging_context(context, rig, session=session)
+                else:
+                    _detach_weapon(rig, token)
+            for track in tracks.values():
+                rig.animation_data.nla_tracks.remove(track)
+            for key, row in session['properties_before'].items():
+                if row['present']:
+                    rig[key] = row['value']
+                else:
+                    rig.pop(key, None)
+            composition._restore_prior(context, rig, session['prior'])
+            bone_display._restore(rig, session['display'])
+            rig.pop(SESSION_KEY, None)
+            rig.pop(_REFS_KEY, None)
+            _CACHE.pop(pointer, None)
+            _HANDLER_ERRORS.pop(pointer, None)
+            # No successful carrier (including read-only Source), base Action,
+            # original ID, cache, or authored key is removed on a normal close.
+        finally:
+            _SUSPENDED.pop(pointer, None)
+            _BUSY.discard(pointer)
+            _remove_handlers_if_idle()
 
 
 def _capture_owned(context, rig):
@@ -1443,11 +1899,51 @@ def _restore_owned_state(context, rig, state):
     _consume_token(rig, state, 'restored')
 
 
+def _cancel_reacquire():
+    global _REACQUIRE_TIMER, _REACQUIRE_GENERATION
+    _REACQUIRE_GENERATION += 1
+    timer, _REACQUIRE_TIMER = _REACQUIRE_TIMER, None
+    _REACQUIRE_PENDING.clear()
+    if timer is not None and bpy.app.timers.is_registered(timer):
+        bpy.app.timers.unregister(timer)
+
+
+def _deferred_reacquire(generation):
+    """One read-only retry after lifecycle evaluation settles; never poll."""
+    global _REACQUIRE_TIMER
+    if generation != _REACQUIRE_GENERATION:
+        return None
+    pending = tuple(_REACQUIRE_PENDING.items())
+    _REACQUIRE_PENDING.clear()
+    _REACQUIRE_TIMER = None
+    for pointer, (name, payload) in pending:
+        try:
+            rig = bpy.data.objects.get(name)
+            if (rig is None or rig.as_pointer() != pointer
+                    or rig.get(SESSION_KEY) != payload):
+                # A newer explicit operation owns this state now. The stale
+                # admission may neither evict its cache nor replace its error.
+                continue
+            session = current(rig)
+            _validate_preview_reference(session, files=True)
+            _HANDLER_ERRORS.pop(pointer, None)
+            if session['enabled']:
+                _handlers()
+        except Exception as error:
+            _CACHE.pop(pointer, None)
+            first = _HANDLER_ERRORS.get(pointer, 'Lifecycle admission failed.')
+            _HANDLER_ERRORS[pointer] = first + '; deferred lifecycle admission: ' + str(error)
+    _remove_handlers_if_idle()
+    return None
+
+
 @bpy.app.handlers.persistent
 def _reacquire(_unused=None):
     # Fresh IDs after load/Undo/Redo are admitted read-only. Registration never
     # executes a solver, a stored script, or a frame evaluation. The first
     # owned seek/explicit Activate restores the committed preview inputs.
+    global _REACQUIRE_TIMER
+    _cancel_reacquire()
     _CACHE.clear()
     _BUSY.clear()
     _SUSPENDED.clear()
@@ -1458,28 +1954,81 @@ def _reacquire(_unused=None):
             continue
         try:
             session = current(rig)
+            _validate_preview_reference(session, files=True)
             if session['enabled']:
                 _handlers()
         except Exception as error:
-            _HANDLER_ERRORS[rig.as_pointer()] = str(error)
+            pointer = rig.as_pointer()
+            _CACHE.pop(pointer, None)
+            _HANDLER_ERRORS[pointer] = str(error)
+            # Scalars only: the callback reacquires the current native ID and
+            # repeats every identity, transform, NLA/Tweak and file check.
+            payload = rig[SESSION_KEY]
+            if isinstance(payload, str):
+                _REACQUIRE_PENDING[pointer] = (rig.name, payload)
     _remove_handlers_if_idle()
+    if _REACQUIRE_PENDING:
+        generation = _REACQUIRE_GENERATION
+        _REACQUIRE_TIMER = lambda generation=generation: _deferred_reacquire(generation)
+        try:
+            bpy.app.timers.register(_REACQUIRE_TIMER, first_interval=0., persistent=False)
+        except Exception as error:
+            for pointer in _REACQUIRE_PENDING:
+                _HANDLER_ERRORS[pointer] += '; cannot schedule lifecycle admission: ' + str(error)
+            _REACQUIRE_PENDING.clear()
+            _REACQUIRE_TIMER = None
+
+
+def _registration_reacquire(generation):
+    """Admit fresh IDs once Blender leaves its restricted add-on registration."""
+    global _REACQUIRE_TIMER
+    if generation != _REACQUIRE_GENERATION:
+        return None
+    _REACQUIRE_TIMER = None
+    _reacquire()
+    return None
 
 
 def register():
+    global _REACQUIRE_TIMER
+    # In-place reload replaces function objects. Remove only this module's old
+    # registrations before admitting fresh IDs or installing its new callbacks.
+    for collection, callback in ((bpy.app.handlers.load_post, _reacquire),
+            (bpy.app.handlers.undo_post, _reacquire), (bpy.app.handlers.redo_post, _reacquire),
+            (bpy.app.handlers.frame_change_post, _frame), (bpy.app.handlers.depsgraph_update_post, _depsgraph)):
+        for previous in tuple(collection):
+            if (previous is not callback and getattr(previous, '__module__', None) == __name__
+                    and getattr(previous, '__name__', None) == callback.__name__):
+                collection.remove(previous)
     for collection in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
         if _reacquire not in collection:
             collection.append(_reacquire)
-    _reacquire()
+    if hasattr(bpy.data, 'objects'):
+        _reacquire()
+    else:
+        # addon_utils.enable temporarily replaces bpy.data with _RestrictData.
+        # Retain only a generation number; unregister/reload cancels this timer.
+        _cancel_reacquire()
+        generation = _REACQUIRE_GENERATION
+        _REACQUIRE_TIMER = lambda generation=generation: _registration_reacquire(generation)
+        try:
+            bpy.app.timers.register(_REACQUIRE_TIMER, first_interval=0., persistent=False)
+        except Exception:
+            _REACQUIRE_TIMER = None
+            raise
 
 
 def unregister():
     # Persistent ownership and saved input Actions remain available for an
     # explicit reactivation. No artist state is changed during module unload.
+    _cancel_reacquire()
     for collection, callback in ((bpy.app.handlers.load_post, _reacquire),
             (bpy.app.handlers.undo_post, _reacquire), (bpy.app.handlers.redo_post, _reacquire),
             (bpy.app.handlers.frame_change_post, _frame), (bpy.app.handlers.depsgraph_update_post, _depsgraph)):
-        if callback in collection:
-            collection.remove(callback)
+        for previous in tuple(collection):
+            if (previous is callback or (getattr(previous, '__module__', None) == __name__
+                    and getattr(previous, '__name__', None) == callback.__name__)):
+                collection.remove(previous)
     _CACHE.clear()
     _BUSY.clear()
     _SUSPENDED.clear()

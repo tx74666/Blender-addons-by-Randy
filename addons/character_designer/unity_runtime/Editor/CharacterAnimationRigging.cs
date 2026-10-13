@@ -400,9 +400,9 @@ namespace CharacterDesigner.Unity.Editor
                     PathOf(target.transform, targetTransform.parent) == b.targetParentPath && PathOf(target.transform, hint.parent) == b.hintParentPath,
                     "Arm controls must have distinct actual targets/hints and exact parent paths.");
                 bool left = arm == 1;
-                Require(animators[0].GetBoneTransform(left ? HumanBodyBones.LeftUpperArm : HumanBodyBones.RightUpperArm) == Resolve(target.transform, b.rootPath) &&
-                    animators[0].GetBoneTransform(left ? HumanBodyBones.LeftLowerArm : HumanBodyBones.RightLowerArm) == Resolve(target.transform, b.midPath) &&
-                    animators[0].GetBoneTransform(left ? HumanBodyBones.LeftHand : HumanBodyBones.RightHand) == Resolve(target.transform, b.tipPath),
+                Require(AvatarBone(target, animators[0], left ? HumanBodyBones.LeftUpperArm : HumanBodyBones.RightUpperArm) == Resolve(target.transform, b.rootPath) &&
+                    AvatarBone(target, animators[0], left ? HumanBodyBones.LeftLowerArm : HumanBodyBones.RightLowerArm) == Resolve(target.transform, b.midPath) &&
+                    AvatarBone(target, animators[0], left ? HumanBodyBones.LeftHand : HumanBodyBones.RightHand) == Resolve(target.transform, b.tipPath),
                     "The IK chain is not the target Avatar's actual arm mapping.");
                 Require(Resolve(target.transform, b.midPath).IsChildOf(Resolve(target.transform, b.rootPath)) &&
                     Resolve(target.transform, b.tipPath).IsChildOf(Resolve(target.transform, b.midPath)), "The actual arm chain hierarchy is invalid.");
@@ -410,6 +410,16 @@ namespace CharacterDesigner.Unity.Editor
                     Require(Finite(weight) && weight >= 0 && weight <= 1, "Capture the actual finite IK/Rig weights.");
             }
         }
+        static Transform AvatarBone(GameObject target, Animator animator, HumanBodyBones bone)
+        {
+            string humanName = HumanTrait.BoneName[(int)bone];
+            var entries = animator.avatar.humanDescription.human.Where(value => value.humanName == humanName).ToArray();
+            Require(entries.Length == 1, "The Avatar mapping is missing or ambiguous: " + bone + ".");
+            var matches = target.GetComponentsInChildren<Transform>(true).Where(value => value.name == entries[0].boneName).ToArray();
+            Require(matches.Length == 1, "The mapped arm bone is missing or ambiguous: " + bone + ".");
+            return matches[0];
+        }
+
         static void ValidateFrames(Frame[] frames, float duration, float sampleRate, bool previewMatrices)
         {
             Require(Finite(duration) && duration > 0 && Finite(sampleRate) && sampleRate > 0 && sampleRate <= 1000 &&

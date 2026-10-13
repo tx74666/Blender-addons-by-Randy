@@ -68,7 +68,18 @@ def _clip_key(record):
 
 
 def _validate_route(saved, clip, link, item=None):
-    if (link['targetGuid'].lower() != saved.target_guid or
+    target_guid = saved.target_guid
+    if item is not None and _item_workspace(item):
+        record = _fresh_workspace(saved, item)
+        actual = next((row for row in record['clips'] if _clip_key(row) == item.clip_key), None)
+        if (actual is None or actual.get('needsRebuild') or not actual.get('linkManifest')
+                or Path(actual['linkManifest']).resolve() != Path(item.manifest_path).resolve()
+                or workspace.route_identity(actual) != workspace.route_identity(clip)
+                or Path(bpy.path.abspath(record['modelFile'])).resolve() != Path(item.model_file).resolve()
+                or record['modelSha256'].lower() != item.model_sha256):
+            raise ValueError('The attached work item lost its own prepared workspace, route or model.')
+        target_guid = record['targetGuid'].lower()
+    if (link['targetGuid'].lower() != target_guid or
             workspace.route_identity(clip) != workspace.route_identity(link)):
         raise ValueError('The prepared Link belongs to another work item, source, character or destination slot.')
     if item is not None and (item.clip_key != _clip_key(link) or
@@ -154,6 +165,148 @@ def _prepared(saved, clip_key, *, existing_target=False):
     return record, clip, link, packet, export_name, model
 
 
+def _item_workspace(item):
+    path, identity = getattr(item, 'workspace_path', ''), getattr(item, 'workspace_identity', '')
+    if bool(path) != bool(identity):
+        raise ValueError('The attached workspace path and identity must remain paired.')
+    return bool(path)
+
+
+def _original_rigging_mapping(context, packet, model, model_sha256):
+    from contextlib import nullcontext
+    from . import animation_worklist_target as target
+    saved = state(context)
+    rig = saved.rig
+    setup = getattr(context.scene, 'character_designer_setup', None)
+    if rig is None or getattr(setup, 'rig', None) is not rig or not target.is_adopted(rig):
+        raise ValueError('Attach prepared Rigging only to this scene\'s already adopted Main Rig.')
+    if (Path(bpy.path.abspath(saved.model_file)).resolve() != Path(model).resolve()
+            or saved.model_sha256 != model_sha256):
+        raise ValueError('The attached work must use the same physical Main Rig model; no rebind or repair is allowed.')
+    rigging = _rigging_module(rig)
+    with (rigging.base_only(context, rig) if rigging else nullcontext()):
+        target.ensure_active(context, rig)
+        original = target._load(rig)
+        mapping = ua._mapping(rig, packet, context.scene.unit_settings.scale_length)
+        if mapping.controls is None or frozenset(mapping.indices) != frozenset(original['mapped_names']):
+            raise ValueError('The attached packet must match the original Main Rig\'s complete validated bone domain.')
+
+
+def _attached_context(saved, workspace_path, work_item_id):
+    record = workspace.load_workspace(bpy.path.abspath(workspace_path))
+    request = workspace.prepare_request(record)
+    chosen = workspace.work_item_id({'workItemId': work_item_id}) if work_item_id is not None else None
+    if chosen == '' or chosen is None and (request is None or not request[1]):
+        raise ValueError('Select an actual prepared WorkID or one unique current Rigging preparation request.')
+    candidates = []
+    for clip in record['clips']:
+        work_id = workspace.work_item_id(clip)
+        if (not work_id or chosen is not None and work_id != chosen
+                or chosen is None and work_id not in request[1]
+                or clip.get('needsRebuild') or not clip.get('linkManifest')):
+            continue
+        link = links.load_link(clip['linkManifest'])
+        if (link['targetGuid'].lower() != record['targetGuid'].lower()
+                or workspace.route_identity(clip) != workspace.route_identity(link)):
+            raise ValueError('The prepared work file and typed Link disagree about their actual target or route.')
+        packet, export_name = source._packet(link)
+        if 'rigging' not in packet:
+            continue
+        if (link.get('composition') is not None or clip.get('composition') is not None
+                or link.get('sourceOnly') is True or link.get('compositionReferenceSource') is True):
+            raise ValueError('Attach needs an editable ordinary typed Rigging work, not a composition/reference route.')
+        model, digest = source._source_model(link, record['modelFile'])
+        if digest != record['modelSha256'].lower():
+            raise ValueError('The prepared workspace model differs from its physical typed Link model.')
+        candidates.append(dict(record=record, clip=clip, link=link, packet=packet,
+            export_name=export_name, model=model, model_sha256=digest,
+            workspace_path=record['_manifest_path'], workspace_identity=_identity(record),
+            workspace_id=record['workspaceId'],
+            workspace_sha256=links._sha256(Path(record['_manifest_path'])),
+            link_sha256=links._sha256(Path(link['_manifest_path']))))
+    if len(candidates) != 1:
+        raise ValueError('The current prepared selection must identify exactly one ready Rigging work; none was guessed.')
+    return candidates[0]
+
+
+def _check_attached_context(context, prepared, *, mapping=True):
+    if (links._sha256(Path(prepared['workspace_path'])) != prepared['workspace_sha256']
+            or links._sha256(Path(prepared['link']['_manifest_path'])) != prepared['link_sha256']
+            or links._sha256(Path(prepared['packet']['_path'])) != prepared['packet']['_sha256']
+            or links._sha256(prepared['model']) != prepared['model_sha256']):
+        raise ValueError('An attached preparation changed; no row or baseline was accepted.')
+    if (workspace.load_workspace(prepared['workspace_path']) != prepared['record']
+            or links.load_link(prepared['link']['_manifest_path']) != prepared['link']
+            or prepared['workspace_identity'] != _identity(prepared['record'])
+            or prepared['workspace_id'] != prepared['record']['workspaceId']
+            or prepared['clip'] not in prepared['record']['clips']):
+        raise ValueError('The attached context no longer matches its actual prepared files.')
+    if mapping:
+        _original_rigging_mapping(context, prepared['packet'], prepared['model'], prepared['model_sha256'])
+
+
+def attach_prepared_rigging_work(context, workspace_path, work_item_id=None):
+    """Explicitly add one real Rigging work without reconnecting the old library."""
+    _idle(context)
+    prepared = _attached_context(state(context), workspace_path, work_item_id)
+    _check_attached_context(context, prepared)
+    return add(context, _clip_key(prepared['clip']), _prepared_context=prepared)
+
+
+def _rigging_entry_packet(context, item):
+    saved = state(context)
+    _item_workspace(item)
+    record = _fresh_workspace(saved, item)
+    clip = next((row for row in record['clips'] if _clip_key(row) == item.clip_key), None)
+    if clip is None or clip.get('needsRebuild') or not clip.get('linkManifest'):
+        raise ValueError('The Rigging work is no longer actually prepared.')
+    link = links.load_link(item.manifest_path)
+    _validate_route(saved, clip, link, item)
+    packet, _name = source._packet(link)
+    model, digest = source._source_model(link, item.model_file)
+    if digest != item.model_sha256:
+        raise ValueError('The Rigging row\'s physical model changed.')
+    if 'rigging' in packet:
+        if (item.custom_action is None or item.custom_action.library is not None
+                or 'character_designer_rigging_capture_v1' not in item.custom_action
+                or item.custom_action.get(links.PACKAGE_HASH_KEY) != packet['_sha256']
+                or Path(item.custom_action.get(links.PACKAGE_KEY, '')).resolve() != Path(packet['_path']).resolve()):
+            raise ValueError('The prepared Rigging work lost its local Custom base.')
+        rigging = _rigging_module(item.rig, item.custom_action, packet=packet)
+        capture = rigging.capture_for_action(item.custom_action, item.custom_slot, item.work_item_id)
+        from .animation_rigging_contract import validate_capture
+        if capture != validate_capture(packet['rigging'], packet=packet):
+            raise ValueError('The Custom Rigging capture changed; no ordinary activation fallback is allowed.')
+        if _item_workspace(item) and item.workspace_identity != saved.workspace_identity:
+            _original_rigging_mapping(context, packet, model, digest)
+    return link, packet
+
+
+def validate_rigging_entry(context, item, session):
+    """Reauthenticate the selected Custom before native Edit/Save controls."""
+    saved = state(context)
+    rows = (current(context), _item(saved, item.item_id))
+    pointer = item.as_pointer()
+    if (not pointer or item.side != 'CUSTOM' or any(row is None or row.as_pointer() != pointer
+            or row.item_id != item.item_id or row.rig != item.rig or row.work_item_id != item.work_item_id
+            or row.side != 'CUSTOM' for row in rows)):
+        raise ValueError('Select the exact Custom Rigging row before editing or saving controls.')
+    _check_baseline(item)
+    link, packet = _rigging_entry_packet(context, item)
+    if ('rigging' not in packet or session is None or session['rig'] is not item.rig
+            or session['scene'] is not context.scene or session['source_read_only']
+            or session['base_action'] is not item.custom_action or session['base_slot'] != item.custom_slot
+            or session['work_item_id'] != workspace.work_item_id(link)
+            or session['source_packet_sha256'] != packet['_sha256']
+            or session['input_action'] is not item.custom_action.get('character_designer_rigging_input_action_v1')):
+        raise ValueError('The current Rigging session lost its exact row, packet or native Action owner.')
+    rigging = _rigging_module(item.rig, item.custom_action, packet=packet)
+    proof = rigging.input_proof(item.rig, item.custom_action, item.custom_slot, item.work_item_id)
+    if (proof['input_action'] != session['input_action'].name or proof['input_slot'] != session['input_slot']
+            or session['capture'] != rigging.capture_for_action(item.custom_action, item.custom_slot, item.work_item_id)):
+        raise ValueError('The native input Action/slot or original capture changed.')
+
+
 def _clean_action(action):
     from . import animation_worklist_target as target
     # Session pointers recursively pull rigs/scenes into a source-only library.
@@ -219,12 +372,22 @@ def _find_owned_rig(context, saved):
     return candidates[0] if candidates else None
 
 
-def _editing_data(context, rig):
+def _editing_data(context, rig, *, packet=None):
     if ua.active_preview(rig):
         ua.restore_preview(context, rig)
+    translated = None
+    if packet is not None and 'rigging' in packet:
+        mapping = ua._mapping(rig, packet, context.scene.unit_settings.scale_length)
+        if mapping.controls is None:
+            raise ValueError('Rigging motion editing needs its validated native control plan.')
+        translated = mapping.controls.mapped_names - mapping.controls.delegated_names
     data = rig.data.copy()
     data.name = rig.data.name + ' · Motion Worklist'
-    ua._swap_armature_data(context, rig, data, allow_joint_translation=True)
+    if translated is None:
+        ua._swap_armature_data(context, rig, data, allow_joint_translation=True)
+    else:
+        ua._swap_armature_data(context, rig, data, allow_joint_translation=True,
+                              joint_translation_names=translated)
     context.view_layer.update()
 
 
@@ -362,7 +525,7 @@ def _composition_add_route(context, saved, clip_key, existing, *, activate_new, 
         activate_new=activate_new, _collection=_collection)
 
 
-def add(context, clip_key, *, activate_new=True, _collection=False):
+def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_context=None):
     from . import animation_composition as composition
     if composition.active(state(context).rig):
         raise ValueError('Close Composition before switching or removing worklist Actions; both drafts are retained.')
@@ -370,16 +533,35 @@ def add(context, clip_key, *, activate_new=True, _collection=False):
     _idle(context, _collection=_collection)
     saved = state(context)
     existing = next((item for item in saved.items if item.clip_key == clip_key), None)
-    handled, item = _composition_add_route(context, saved, clip_key, existing,
-        activate_new=activate_new, _collection=_collection)
-    if handled:
-        return item
+    if _prepared_context is not None:
+        _check_attached_context(context, _prepared_context)
+        if clip_key != _clip_key(_prepared_context['clip']):
+            raise ValueError('The attached work key differs from its actual prepared context.')
+    else:
+        handled, item = _composition_add_route(context, saved, clip_key, existing,
+            activate_new=activate_new, _collection=_collection)
+        if handled:
+            return item
     if existing:
+        if _prepared_context is not None:
+            if (not _item_workspace(existing)
+                    or existing.workspace_path != _prepared_context['workspace_path']
+                    or existing.workspace_identity != _prepared_context['workspace_identity']):
+                raise ValueError('This WorkID already belongs to another preserved row; it was not reassigned.')
+            _rigging_entry_packet(context, existing)
         if activate_new:
             activate(context, existing.item_id, 'CUSTOM', _collection=_collection)
         return existing
-    _record, clip, link, packet, export_name, model = _prepared(
-        saved, clip_key, existing_target=target.is_adopted(saved.rig))
+    if _prepared_context is None:
+        _record, clip, link, packet, export_name, model = _prepared(
+            saved, clip_key, existing_target=target.is_adopted(saved.rig))
+        cache_owner = saved
+    else:
+        from types import SimpleNamespace
+        _record, clip, link, packet, export_name, model = (
+            _prepared_context[key] for key in ('record', 'clip', 'link', 'packet', 'export_name', 'model'))
+        cache_owner = SimpleNamespace(workspace_id=_prepared_context['workspace_id'],
+            model_sha256=_prepared_context['model_sha256'])
     rigging = _rigging_module(saved.rig, packet=packet)
     old_context = source._context_state(context)
     previous_target = context.window_manager.character_designer_animation.target
@@ -440,7 +622,10 @@ def add(context, clip_key, *, activate_new=True, _collection=False):
             if target.managed(rig):
                 target.ensure_active(context, rig)
             else:
-                _editing_data(context, rig)
+                if 'rigging' in packet:
+                    _editing_data(context, rig, packet=packet)
+                else:
+                    _editing_data(context, rig)
         if rig.name not in context.scene.objects or rig.type != 'ARMATURE' or rig.library:
             raise ValueError('Return to this worklist\'s independent editing scene.')
         if baseline is None:
@@ -456,7 +641,7 @@ def add(context, clip_key, *, activate_new=True, _collection=False):
         if existing_edit is None:
             custom.name = saved.target_name + ' · ' + clip['clipName'] + ' · Custom'
         item_id = uuid.uuid4().hex
-        linked, cache_file, cache_hash = _linked_baseline(saved, baseline, item_id, clip['clipName'])
+        linked, cache_file, cache_hash = _linked_baseline(cache_owner, baseline, item_id, clip['clipName'])
         # Re-check inputs before publishing a row; preparation may have changed
         # while the synchronous native bake was running.
         latest = links.load_link(link['_manifest_path'])
@@ -467,13 +652,19 @@ def add(context, clip_key, *, activate_new=True, _collection=False):
         if 'rigging' in packet:
             rigging.import_inputs(context, rig, packet, base_action=custom, base_slot=_slot(custom).handle,
                 work_item_id=workspace.work_item_id(clip))
+        if _prepared_context is not None:
+            _check_attached_context(context, _prepared_context, mapping=False)
         item = saved.items.add()
         item.item_id, item.clip_key, item.name = item_id, clip_key, clip['clipName']
         item.work_item_id = workspace.work_item_id(clip)
         item.rig, item.source_action, item.custom_action = rig, linked, custom
         item.source_slot, item.custom_slot = _slot(linked).handle, _slot(custom).handle
         item.manifest_path, item.link_identity = link['_manifest_path'], _encoded(link)
-        item.export_rig_name, item.model_file, item.model_sha256 = export_name, str(model), saved.model_sha256
+        item.export_rig_name, item.model_file, item.model_sha256 = export_name, str(model), cache_owner.model_sha256
+        if _prepared_context is not None:
+            item.workspace_path = _prepared_context['workspace_path']
+            item.workspace_identity = _prepared_context['workspace_identity']
+            item.new_animation = False
         item.source_file, item.source_hash = cache_file, cache_hash
         saved.rig = rig
         rig['character_designer_animation_source_model_sha256'] = saved.model_sha256
@@ -593,6 +784,11 @@ def activate(context, item_id, side='CUSTOM', *, _collection=False):
     item = _item(saved, item_id)
     if side == 'SOURCE' and getattr(item, 'new_animation', False):
         raise ValueError('This new Action has no Original or Source version.')
+    if _item_workspace(item) and not getattr(item, 'new_animation', False):
+        # File/route/capture admission precedes closing a preview or assigning
+        # any Action. Missing captured Rigging never becomes ordinary editing.
+        _check_baseline(item)
+        _rigging_entry_packet(context, item)
     rig = item.rig
     rigging = _rigging_module(rig, item.custom_action)
     captured = _capture_rig(context, rig) if rigging else None
@@ -721,6 +917,8 @@ def sync(context, *, _collection=False, _collection_proof=None):
     from . import animation_composition as composition
     if composition.item_spec(item) is not None:
         return composition.begin_sync(context, item, collection=_collection, collection_proof=_collection_proof)
+    if _item_workspace(item) and not getattr(item, 'new_animation', False):
+        _rigging_entry_packet(context, item)
     _check_baseline(item)
     from contextlib import nullcontext
     rigging = _rigging_module(item.rig, item.custom_action)

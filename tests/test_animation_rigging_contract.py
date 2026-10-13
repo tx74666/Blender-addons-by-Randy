@@ -63,6 +63,24 @@ def packet(value):
         'frames': [{'time': frame['time']} for frame in value['frames']], 'bones': bones}
 
 
+def soldier_capture():
+    """QA923 Soldier hierarchy verbatim; unrelated identities/frames use this fixture."""
+    value = capture()
+    torso = 'Skeleton/mixamorig:Hips/mixamorig:Spine/mixamorig:Spine1/mixamorig:Spine2'
+    for side, binding in zip(('Right', 'Left'), value['bindings']):
+        root = torso + '/mixamorig:' + side + 'Shoulder/mixamorig:' + side + 'Arm'
+        mid = root + '/mixamorig:' + side + 'ForeArm'
+        owner = 'Skeleton/Rig 1/' + side + 'Arm'
+        target_parent = value['bindings'][0]['tipPath'] if side == 'Left' else owner
+        target, hint = ('LeftArm_target', 'LeftArm_hint') if side == 'Left' else ('Rig 1_target', 'Rig 1_hint')
+        binding.update(rigPath='Skeleton/Rig 1', constraintPath=owner,
+            rootPath=root, midPath=mid, tipPath=mid + '/mixamorig:' + side + 'Hand',
+            targetPath=target_parent + '/' + target, targetParentPath=target_parent,
+            hintPath=owner + '/' + hint, hintParentPath=owner)
+    value['bindingsSha256'] = contract.bindings_digest(value['bindings'])
+    return value
+
+
 def samples(value):
     return [{'time': frame['time'], 'controls': [
         {name: deepcopy(control[name]) for name in contract.LOCAL_FIELDS}
@@ -83,6 +101,78 @@ APPLY_IDENTITY = {'targetLayoutSha256': '7' * 64, 'baseControllerGuid': '8' * 32
 
 
 class RiggingCaptureTests(unittest.TestCase):
+    def test_actual_soldier_mixamo_hierarchy_is_preserved_without_name_rewriting(self):
+        value = soldier_capture()
+        expected = deepcopy(value['bindings'])
+        actual = contract.validate_capture(value, packet=packet(value))
+        self.assertEqual(actual['bindings'], expected)
+        self.assertIn('/mixamorig:RightHand', actual['bindings'][0]['tipPath'])
+        self.assertEqual(actual['bindings'][1]['targetParentPath'], expected[0]['tipPath'])
+        self.assertEqual(actual['bindingsSha256'], contract.bindings_digest(expected))
+
+    def test_colon_is_legal_in_every_transform_binding_and_packet_hierarchy(self):
+        value = capture()
+        for binding in value['bindings']:
+            for field in contract.BINDING_PATH_ORDER:
+                binding[field] = '/'.join('ns:' + part for part in binding[field].split('/'))
+        value['bindingsSha256'] = contract.bindings_digest(value['bindings'])
+        actual = contract.validate_capture(value, packet=packet(value))
+        self.assertEqual(actual['bindings'], value['bindings'])
+        self.assertEqual(actual['sourceClipPath'], 'Assets/Animation/Aim.anim')
+
+    def test_colon_weapon_socket_mount_keeps_fixed_capture_and_return_shapes(self):
+        value = soldier_capture()
+        value.update(APPLY_IDENTITY)
+        value['weaponPreview'] = weapon_preview(value)
+        value['weaponPreview']['weaponSocketPath'] = value['bindings'][0]['tipPath'] + '/weapon:GunSocket'
+        actual = contract.validate_capture(value, packet=packet(value))
+        exported = contract.build_export(actual, samples(actual), **IDENTITY)
+        self.assertEqual(len(actual), 22)
+        self.assertEqual(len(actual['weaponPreview']), 10)
+        self.assertEqual(len(exported), 14)
+        self.assertEqual(actual['weaponPreview']['weaponRigBonePath'], value['bindings'][0]['tipPath'])
+        self.assertNotIn('weaponPreview', exported)
+        self.assertEqual(actual['weaponPreview']['weaponContextFile'], 'D:/Character/Gun/weapon_context.json')
+
+    def test_source_asset_path_colon_and_existing_file_boundaries_stay_rejected(self):
+        for path in ('Assets/Animation/ns:Aim.anim', 'C:/Animation/Aim.anim',
+                     '/Assets/Aim.anim', 'Assets\\Aim.anim', 'Assets/../Aim.anim',
+                     'Assets/./Aim.anim', 'Assets//Aim.anim', 'Assets/Aim.anim/', 'Assets/Aim\x1f.anim'):
+            with self.subTest(path=path):
+                value = soldier_capture()
+                value['sourceClipPath'] = path
+                with self.assertRaises(ValueError):
+                    contract.validate_capture(value)
+        for path in ('relative/weapon_context.json', 'D:/Gun/../weapon_context.json'):
+            with self.subTest(context_file=path):
+                value = soldier_capture()
+                value['weaponPreview'] = weapon_preview(value)
+                value['weaponPreview']['weaponContextFile'] = path
+                with self.assertRaises(ValueError):
+                    contract.validate_capture(value)
+
+    def test_transform_colon_preserves_root_separator_traversal_and_control_guards(self):
+        invalid = ('/ns:Arm', 'ns:Arm/', 'ns:Arm//Hand', 'ns:Arm\\Hand',
+                   'ns:Arm/./Hand', 'ns:Arm/../Hand', 'ns:Arm/Hand\x1f', '')
+        for path in invalid:
+            with self.subTest(binding_path=path):
+                value = soldier_capture()
+                value['bindings'][0]['rootPath'] = path
+                with self.assertRaises(ValueError):
+                    contract.validate_capture(value)
+            with self.subTest(packet_path=path):
+                value = soldier_capture()
+                base = packet(value)
+                base['bones'][0]['path'] = path
+                with self.assertRaises(ValueError):
+                    contract.validate_capture(value, packet=base)
+            with self.subTest(socket_path=path):
+                value = soldier_capture()
+                value['weaponPreview'] = weapon_preview(value)
+                value['weaponPreview']['weaponSocketPath'] = path
+                with self.assertRaises(ValueError):
+                    contract.validate_capture(value)
+
     def test_optional_display_weapon_preserves_exact_packet_mount_and_owned_context(self):
         value = capture()
         value['weaponPreview'] = weapon_preview(value)

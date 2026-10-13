@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 25),
+    "version": (0, 77, 38),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -97,6 +97,10 @@ from .animation_composition_ui import COMPOSITION_CLASSES
 from .animation_composition import (
     register_runtime as register_composition_runtime,
     unregister_runtime as unregister_composition_runtime,
+)
+from .unity_animation_rigging import (
+    register as register_rigging_runtime,
+    unregister as unregister_rigging_runtime,
 )
 from .ui_constants import (
     SIDEBAR_CATEGORY,
@@ -8859,6 +8863,7 @@ def register():
         register_finger_root_runtime()
         register_animation_runtime()
         register_composition_runtime()
+        register_rigging_runtime()
         register_reference_view_handlers()
         body_calibration_ui.register()
         control_pose_assets.register()
@@ -8954,6 +8959,7 @@ def register():
         register_finger_root_runtime()
         register_animation_runtime()
         register_composition_runtime()
+        register_rigging_runtime()
         register_reference_view_handlers()
         body_calibration_ui.register()
         control_pose_assets.register()
@@ -8980,6 +8986,7 @@ def register():
         unregister_refine_symmetry_runtime()
         unregister_finger_bones_runtime()
         unregister_finger_root_runtime()
+        unregister_rigging_runtime()
         unregister_composition_runtime()
         unregister_animation_runtime()
         unregister_forearm_twist_runtime()
@@ -9026,6 +9033,7 @@ def unregister():
     unregister_refine_symmetry_runtime()
     unregister_finger_bones_runtime()
     unregister_finger_root_runtime()
+    unregister_rigging_runtime()
     unregister_composition_runtime()
     unregister_animation_runtime()
     stop_skirt_runtime()

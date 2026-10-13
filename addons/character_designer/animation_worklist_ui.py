@@ -8,6 +8,10 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, PropertyGroup, UIList
 
+from .animation_original_inputs_ui import (
+    ORIGINAL_INPUT_CLASSES, draw_original_inputs, has_original_inputs, original_inputs_live,
+)
+
 
 _DRAGS = []
 _SCAN_PENDING = None
@@ -182,6 +186,20 @@ def _editable_rigging(context):
         and not display['source_read_only']) else (None, None)
 
 
+def _prepared_rigging_target(context):
+    """Cheap display eligibility; execute reauthenticates the actual inputs."""
+    settings = _state(context)
+    setup = getattr(context.scene, 'character_designer_setup', None)
+    main = getattr(setup, 'rig', None)
+    rig = getattr(settings, 'rig', None)
+    objects = getattr(context.scene, 'objects', None)
+    return bool(settings is not None and settings.workspace_path and main is not None
+                and rig is main and hasattr(rig, 'get')
+                and getattr(rig, 'type', None) == 'ARMATURE' and rig.library is None
+                and objects is not None and objects.get(rig.name) is rig
+                and rig.get('character_designer_worklist_main_session_v1') is not None)
+
+
 def _run_rigging(operator, context, *, edit_role=None):
     try:
         item = _selected(_state(context))
@@ -192,6 +210,7 @@ def _run_rigging(operator, context, *, edit_role=None):
         if (session is None or session['rig'] is not item.rig or session['scene'] is not context.scene
                 or session['base_action'] is not item.custom_action or session['source_read_only']):
             raise ValueError('This entry has no editable Rigging session in the current scene.')
+        _backend().validate_rigging_entry(context, item, session)
         if edit_role is not None:
             unity_animation_rigging.activate(context, session, edit_role=edit_role, enabled=True)
             action = session['base_action'] if edit_role == 'BASE' else session['input_action']
@@ -383,6 +402,36 @@ class CHARACTERDESIGNER_OT_worklist_connect(Operator):
 
     def execute(self, context):
         return _run(self, context, 'connect', self.filepath)
+
+
+class CHARACTERDESIGNER_OT_worklist_add_prepared_animation(Operator):
+    bl_idname = 'character_designer.worklist_add_prepared_animation'
+    bl_label = 'Add Prepared Animation'
+    bl_description = ('Choose a Unity workspace JSON for one prepared Rigging animation; '
+                      'keep this Main Rig, workspace and existing entries')
+    bl_options = {'REGISTER'}
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default='character_animation_workspace.json;*.workspace.json;*.json',
+                               options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        return _prepared_rigging_target(context) and _idle(context)
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        if not _prepared_rigging_target(context) or not _idle(context):
+            message = 'Use the same adopted Main Rig before adding a prepared Rigging animation.'
+            settings = _state(context)
+            if settings is not None:
+                settings.status, settings.has_error = message, True
+            self.report({'ERROR'}, message)
+            _redraw(context)
+            return {'CANCELLED'}
+        return _run(self, context, 'attach_prepared_rigging_work', self.filepath)
 
 
 class CHARACTERDESIGNER_OT_worklist_refresh(Operator):
@@ -798,6 +847,8 @@ class CHARACTERDESIGNER_UL_animation_worklist(UIList):
 
 
 def _draw_rigging(layout, context, item):
+    if item is not None and has_original_inputs(item.rig):
+        return
     display = _rigging_display(item.rig) if item is not None else None
     action = item.source_action if item is not None and item.side == 'SOURCE' else getattr(item, 'custom_action', None)
     if (not display or display['rig'] is not item.rig or display['scene'] is not context.scene
@@ -825,6 +876,10 @@ def _draw_rigging(layout, context, item):
 
 
 def draw_worklist(layout, context):
+    draw_original_inputs(layout, context)
+    old_controls = layout.column()
+    old_controls.enabled = not original_inputs_live(context)
+    layout = old_controls
     from .animation_composition_ui import draw_composition
     draw_composition(layout, context)
     settings = _state(context)
@@ -857,6 +912,12 @@ def draw_worklist(layout, context):
         batch.enabled = _idle(context)
         batch.operator('character_designer.worklist_add_ready', text='Import Prepared', icon='IMPORT')
         batch.operator('character_designer.worklist_sync_changed', text='Export Changes', icon='EXPORT')
+        if _prepared_rigging_target(context):
+            prepared = box.row()
+            prepared.enabled = _idle(context)
+            prepared.operator_context = 'INVOKE_DEFAULT'
+            prepared.operator('character_designer.worklist_add_prepared_animation',
+                              text='Add Prepared Animation', icon='ADD')
         if settings.items:
             box.template_list('CHARACTERDESIGNER_UL_animation_worklist', '', settings, 'items',
                               settings, 'active_index', rows=4, maxrows=8, sort_lock=True)
@@ -891,10 +952,12 @@ def draw_worklist(layout, context):
 
 
 WORKLIST_CLASSES = (
+    *ORIGINAL_INPUT_CLASSES,
     CharacterDesignerAnimationWorklistCatalog,
     CharacterDesignerAnimationWorklistItem,
     CharacterDesignerAnimationWorklistState,
     CHARACTERDESIGNER_OT_worklist_connect,
+    CHARACTERDESIGNER_OT_worklist_add_prepared_animation,
     CHARACTERDESIGNER_OT_worklist_refresh,
     CHARACTERDESIGNER_OT_worklist_use_main_rig,
     CHARACTERDESIGNER_OT_worklist_restore_main_rig,

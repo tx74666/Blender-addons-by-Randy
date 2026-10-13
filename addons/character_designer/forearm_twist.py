@@ -53,6 +53,10 @@ class ForearmTwistError(ValueError):
     pass
 
 
+class ForearmTwistPoseRangeError(ForearmTwistError):
+    """Valid calibration whose current pose cannot produce a correction."""
+
+
 class ForearmTwistRecaptureRequired(ForearmTwistError):
     """A Setup preview can repair this record without removing its owned key."""
     pass
@@ -389,8 +393,16 @@ def _calculate_object(obj, depsgraph):
             _calculate_records(obj, depsgraph)
 
 
+def _target_only_change(before, after):
+    return (set(before) == set(after)
+            and all(set(before[side]) == set(after[side])
+                    and {k: v for k, v in before[side].items() if k != "target"}
+                    == {k: v for k, v in after[side].items() if k != "target"}
+                    for side in before))
+
+
 def _apply_runtime_records(obj, records, depsgraph):
-    """Commit migration and its evaluated output together, or restore both."""
+    """Keep a validated target link when only the current pose is unsupported."""
     old_json = obj.get(RECORD_KEY)
     old_index = obj.active_shape_key_index
     snapshots, added = [], []
@@ -411,16 +423,19 @@ def _apply_runtime_records(obj, records, depsgraph):
                 _KEY_REFERENCES[(obj.as_pointer(), side)] = key
         _write_records(obj, records)
         _calculate_records(obj, depsgraph)
-    except Exception:
+    except Exception as exc:
         for key in added:
             obj.shape_key_remove(key)
         for key, coords, value, mute in snapshots:
             key.data.foreach_set("co", coords)
             key.value, key.mute = value, mute
-        if old_json is None:
-            obj.pop(RECORD_KEY, None)
-        else:
-            obj[RECORD_KEY] = old_json
+        keep_target = (isinstance(exc, ForearmTwistPoseRangeError) and not added
+                       and _target_only_change(old_records, records))
+        if not keep_target:
+            if old_json is None:
+                obj.pop(RECORD_KEY, None)
+            else:
+                obj[RECORD_KEY] = old_json
         for identity in tuple(_KEY_REFERENCES):
             if identity[0] == obj.as_pointer():
                 _KEY_REFERENCES.pop(identity, None)
@@ -486,6 +501,7 @@ def _calculate_records(obj, depsgraph):
             and _OUTPUT_CACHE.get(obj.as_pointer()) == managed_coordinates):
         return
     outputs = []
+    outside_pose_range = False
     for side, record in records.items():
         key = _managed_key(obj, side, record)
         if key is None or key.relative_key != keys.reference_key or key.vertex_group:
@@ -500,8 +516,6 @@ def _calculate_records(obj, depsgraph):
         axis = (lower_bone.tail_local - lower_bone.head_local).normalized()
         pivot = armature.data.bones[hand].head_local
         angle = twist_angle(transforms[lower], transforms[hand], axis)
-        if record.get("enabled", True) and abs(angle) > MAX_ANGLE + 1.0e-5:
-            raise ForearmTwistError("Forearm twist is outside the prototype's -120 to +120 degree range.")
         knots = list(profile.profile_knots(record["rings"]))
         bounded = "range_start" in record
         if bounded:
@@ -516,6 +530,9 @@ def _calculate_records(obj, depsgraph):
                                               transition=record.get('transition', .1))
         else:
             sampler = profile.compile_sampler([{'position': p, 'ratio': r} for p, r in knots])
+        if abs(angle) > MAX_ANGLE + 1.0e-5:
+            outside_pose_range = True
+            continue
         output = []
         for i, position in zip(record["vertices"], record["positions"]):
             ratio, influence = sampler(position)
@@ -527,6 +544,11 @@ def _calculate_records(obj, depsgraph):
             corrected = corrected_vertex(point, transforms, weights[i], lower, hand, axis, pivot, ratio, angle=angle)
             output.append((i, keys.reference_key.data[i].co + influence * (from_arm @ corrected - base[i])))
         outputs.append((key, record.get("enabled", True), output))
+    # Finish validating every active side before classifying this as only a
+    # pose-range failure. A later invalid profile/rest/output must still roll
+    # back the entire migration, including the derived target metadata.
+    if outside_pose_range:
+        raise ForearmTwistPoseRangeError("Forearm twist is outside the prototype's -120 to +120 degree range.")
     # Commit only after every side has passed, so a failed inverse never leaves
     # a half-written mesh.  All unselected coordinates remain their Basis.
     for key, enabled, output in outputs:

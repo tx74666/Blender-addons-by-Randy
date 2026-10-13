@@ -11,6 +11,12 @@ CANONICAL = Path(__file__).resolve().parents[1] / 'addons' / 'character_designer
 
 
 class ID(dict):
+    def __eq__(self, other):
+        return self is other
+
+    def __ne__(self, other):
+        return self is not other
+
     __hash__ = object.__hash__
 
 
@@ -29,6 +35,7 @@ class Scene(ID):
 class Object(ID):
     def __init__(self, collection):
         super().__init__()
+        self.name = 'Owned weapon object'
         self.users_collection = [collection]
 
 
@@ -120,6 +127,62 @@ class WeaponOwnershipTests(unittest.TestCase):
     def test_external_native_object_reference_rejects(self):
         self.users[self.obj].add(self.other)
         self.reject_without_deleting()
+
+    def scene_bases(self, included, *, extra_references=0):
+        self.scene.view_layers = [SimpleNamespace(objects=Table(self.obj) if present else Table())
+                                  for present in included]
+        self.scene.user_of_id = Mock(return_value=sum(included) + extra_references)
+        self.users[self.obj].add(self.scene)
+
+    def test_exact_owning_scene_bases_allow_removal(self):
+        self.scene_bases([True])
+        self.weapon.remove_context(None, self.rig)
+        self.assertNotIn(self.weapon.RECORD, self.rig)
+        self.assertEqual(self.bpy.data.objects.removed, [self.obj])
+        self.assertEqual(self.bpy.data.collections.removed, [self.collection])
+        self.scene.user_of_id.assert_called_once_with(self.obj)
+
+    def test_multiple_and_excluded_view_layers_use_exact_membership_count(self):
+        for included in ([True, True], [True, False]):
+            with self.subTest(included=included):
+                self.scene_bases(included)
+                record, objects = self.weapon.validate_removal(self.rig)
+                self.assertIs(record, self.rig[self.weapon.RECORD])
+                self.assertEqual(objects, (self.obj,))
+                self.assertFalse(self.bpy.data.objects.removed or self.bpy.data.collections.removed)
+
+    def test_extra_owning_scene_reference_rejects_without_mutation(self):
+        for included in ([True], [True, True]):
+            with self.subTest(included=included):
+                self.scene_bases(included, extra_references=1)
+                self.scene['external'] = {'nested': self.obj}
+                self.reject_without_deleting()
+                self.assertIs(self.scene['external']['nested'], self.obj)
+
+    def test_scene_user_with_no_base_membership_rejects(self):
+        self.scene_bases([False], extra_references=1)
+        self.reject_without_deleting()
+
+    def test_scene_reference_count_below_membership_rejects(self):
+        self.scene_bases([True, True])
+        self.scene.user_of_id.return_value = 1
+        self.reject_without_deleting()
+
+    def test_another_scene_is_not_allowed_by_its_matching_base_count(self):
+        self.scene_bases([True])
+        self.other.view_layers = [SimpleNamespace(objects=Table(self.obj))]
+        self.other.user_of_id = Mock(return_value=1)
+        self.users[self.obj].add(self.other)
+        self.reject_without_deleting()
+        self.other.user_of_id.assert_not_called()
+
+    def test_exact_scene_bases_do_not_allow_external_object_or_action(self):
+        self.scene_bases([True])
+        for owner in (Object(self.collection), ID()):
+            with self.subTest(owner_type=type(owner).__name__):
+                self.users[self.obj].add(owner)
+                self.reject_without_deleting()
+                self.users[self.obj].remove(owner)
 
     def test_foreign_collection_reference_rejects_even_with_mocked_count(self):
         self.users[self.collection].add(self.other)

@@ -7,6 +7,7 @@ Only the imported model receives the already target-evaluated Unity Action.
 from dataclasses import dataclass
 import hashlib
 import inspect
+import json
 from pathlib import Path
 import re
 
@@ -225,6 +226,19 @@ def _import_prepared_source(context, link, packet, export_name, path, digest, *,
                                       scene.unit_settings.scale_length)
         except bone_rest_lengths.BoneLengthError as error:
             raise _error(str(error)) from error
+        if native_timebase and 'rigging' in packet:
+            # The formal Worklist route needs existing Native ARM controls.
+            # Only this freshly imported model is eligible for their setup.
+            # Authenticate its unmodified native skeleton before generating
+            # controls; the enclosing fresh-ID transaction owns rollback.
+            if _sha256(path) != digest:
+                raise _error('The linked model changed before fresh arm setup.')
+            mapping = unity_animation._mapping(rig, packet, scene.unit_settings.scale_length)
+            from .animation_rigging_setup import prepare_fresh_arm_controls
+            proof = prepare_fresh_arm_controls(context, rig, packet, mapping,
+                existing_ids=existing, model_file=path, model_sha256=digest)
+            rig['character_designer_fresh_arm_setup_v1'] = json.dumps(
+                proof, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
         # _mapping checks every bind origin and parent; no tolerance relaxation,
         # body-only fallback or X-rest substitution is permitted in this route.
         result = (_import_action(context, rig, packet, start_frame, native_timebase=True)

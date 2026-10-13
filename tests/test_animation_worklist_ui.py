@@ -77,11 +77,16 @@ class WorklistUI(unittest.TestCase):
         # tests exercise Worklist controls and retain all their assertions.
         pose_capture = ModuleType(package_name + '.control_pose_capture')
         pose_capture.draw = Mock()
+        # Composition has its own renderer/session fixture. Keep these tests
+        # on the actual Worklist drawing, operators and callback guards.
+        composition_ui = ModuleType(package_name + '.animation_composition_ui')
+        composition_ui.draw_composition = Mock()
         modules = patch.dict(sys.modules, {
             package_name: package, 'bpy': bpy, 'bpy.props': props, 'bpy.types': types,
             animation.__name__: animation, self.backend.__name__: self.backend,
             self.collection.__name__: self.collection,
             pose_capture.__name__: pose_capture,
+            composition_ui.__name__: composition_ui,
         })
         modules.start()
         self.addCleanup(modules.stop)

@@ -53,9 +53,16 @@ def _text(value, label, *, empty=False):
     return value
 
 
-def _path(value, label, *, empty=False):
+def _transform_path(value, label, *, empty=False):
     value = _text(value, label, empty=empty)
-    if value and ('\\' in value or ':' in value or any(part in ('', '.', '..') for part in value.split('/'))):
+    if value and ('\\' in value or any(part in ('', '.', '..') for part in value.split('/'))):
+        raise ValueError('Rigging ' + label + ' must be an exact relative source path.')
+    return value
+
+
+def _asset_path(value, label):
+    value = _transform_path(value, label)
+    if ':' in value:
         raise ValueError('Rigging ' + label + ' must be an exact relative source path.')
     return value
 
@@ -159,7 +166,7 @@ def _weapon_preview(value):
     for name in ('weaponGuid', 'weaponPrefabGuid'):
         result[name] = _hex(value[name], 32, name, nonzero=True)
     for name in ('weaponSocketPath', 'weaponRigBonePath'):
-        result[name] = _path(value[name], name)
+        result[name] = _transform_path(value[name], name)
     if _parent(result['weaponSocketPath']) != result['weaponRigBonePath']:
         raise ValueError('The display weapon socket must be a direct child of its captured hand mount.')
     for name in ('weaponLocalMatrix', 'weaponPrefabLocalMatrix'):
@@ -233,9 +240,9 @@ def _bindings(value):
         _shape(binding, BINDING_FIELDS, 'binding')
         row = deepcopy(binding)
         for name in ('rigPath', 'constraintPath', 'rootPath', 'midPath', 'tipPath', 'targetPath', 'hintPath'):
-            row[name] = _path(binding[name], name)
+            row[name] = _transform_path(binding[name], name)
         for name in ('targetParentPath', 'hintParentPath'):
-            row[name] = _path(binding[name], name, empty=True)
+            row[name] = _transform_path(binding[name], name, empty=True)
         if (not row['constraintPath'].startswith(row['rigPath'] + '/')
                 or _parent(row['midPath']) != row['rootPath'] or _parent(row['tipPath']) != row['midPath']
                 or _parent(row['targetPath']) != row['targetParentPath']
@@ -316,7 +323,7 @@ def validate_capture(value, *, packet=None):
     if value['sourceMode'] == 'clip':
         if not CLIP_FIELDS <= set(value):
             raise ValueError('An explicit rigging source clip needs its complete identity.')
-        result['sourceClipPath'] = _path(value['sourceClipPath'], 'sourceClipPath')
+        result['sourceClipPath'] = _asset_path(value['sourceClipPath'], 'sourceClipPath')
         result['sourceClipGuid'] = _hex(value['sourceClipGuid'], 32, 'sourceClipGuid', nonzero=True)
         result['sourceClipLocalId'] = _int64(value['sourceClipLocalId'], 'sourceClipLocalId', nonzero=True)
         result['sourceClipSha256'] = _hex(value['sourceClipSha256'], 64, 'sourceClipSha256')
@@ -352,7 +359,7 @@ def validate_capture(value, *, packet=None):
         rows = packet.get('bones')
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             raise ValueError('Rigging admission needs the packet exact bone hierarchy.')
-        by_path = {_path(row.get('path'), 'packet bone path'): index for index, row in enumerate(rows)}
+        by_path = {_transform_path(row.get('path'), 'packet bone path'): index for index, row in enumerate(rows)}
         if len(by_path) != len(rows):
             raise ValueError('The packet bone paths are ambiguous.')
         if result.get('weaponPreview') is not None:

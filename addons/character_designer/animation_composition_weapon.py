@@ -385,19 +385,36 @@ def validate_owned(rig):
     return record, objects
 
 
-def remove_context(context, rig):
+def validate_removal(rig):
+    """Preflight every owned display reference before any close mutation."""
     import bpy
     record, objects = validate_owned(rig)
     collection = record['collection']
     scene, root = record['scene'], record['scene'].collection
-    assets = {key: tuple(record.get('assets', {}).get(key, {}).values()) for key in _ASSET_TABLES}
     allowed = {rig, collection, *objects}
     users = bpy.data.user_map()
     for obj in objects:
-        _require(all(owner in allowed for owner in users.get(obj, set())),
+        object_users = users.get(obj, set())
+        if scene in object_users:
+            # Blender counts one Scene Base reference per containing ViewLayer.
+            # Any extra Scene ID property, driver, camera or other reference must
+            # still fail; membership alone is not permission to unlink it.
+            memberships = sum(layer.objects.get(obj.name) == obj for layer in scene.view_layers)
+            _require(memberships > 0 and scene.user_of_id(obj) == memberships,
+                     'The owning Scene has an extra weapon reference; preserve it for inspection.')
+            object_users = object_users - {scene}
+        _require(all(owner in allowed for owner in object_users),
                  'An external object uses this weapon context; preserve it for inspection.')
     _require(collection.users == 2 and all(owner in {rig, scene, root}
         for owner in users.get(collection, set())), 'Weapon context collection gained an external user.')
+    return record, objects
+
+
+def remove_context(context, rig):
+    import bpy
+    record, objects = validate_removal(rig)
+    collection = record['collection']
+    assets = {key: tuple(record.get('assets', {}).get(key, {}).values()) for key in _ASSET_TABLES}
     del rig[RECORD]
     for obj in objects:
         bpy.data.objects.remove(obj, do_unlink=True)

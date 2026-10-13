@@ -853,7 +853,10 @@ def register():
 
 def unregister():
     global _REGISTERED, _SAVE_RESUME
-    suspend(reason='Character Designer stopped automatic Dress motion; the current shape is kept.')
+    # Failed initialization may clean up under Blender's restricted context.
+    # An adapter that never started owns no saved Automatic state to suspend.
+    if _REGISTERED or _SESSIONS:
+        suspend(reason='Character Designer stopped automatic Dress motion; the current shape is kept.')
     for name, function in (('frame_change_pre', _frame_pre), ('save_pre', _save_pre), ('save_post', _save_post),
                            ('load_pre', _lifecycle_pre), ('load_post', _load_post), ('undo_pre', _lifecycle_pre),
                            ('redo_pre', _lifecycle_pre), ('undo_post', _undo_post), ('redo_post', _undo_post),
