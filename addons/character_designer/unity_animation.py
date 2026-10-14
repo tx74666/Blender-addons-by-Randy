@@ -327,7 +327,10 @@ def _discard_preview_data(action, data):
 
 def _same_rest_bone(original, preview):
     """Connected is the only structural flag changed by our disposable data copy."""
-    if (original.parent.name if original.parent else None) != (preview.parent.name if preview.parent else None):
+    parent = original.parent
+    original_parent = parent.name if parent else None
+    parent = preview.parent
+    if original_parent != (parent.name if parent else None):
         return False
     if any(getattr(original, field) != getattr(preview, field) for field in
            ("use_deform", "use_inherit_rotation", "inherit_scale", "use_local_location", "use_relative_parent")):
@@ -340,13 +343,36 @@ def _same_rest_bone(original, preview):
 
 
 def _rest_state(data):
-    return {bone.name: {"parent": bone.parent.name if bone.parent else None,
+    result = {}
+    for bone in data.bones:
+        name, parent = bone.name, bone.parent
+        result[name] = {"parent": parent.name if parent else None,
                        "head": list(bone.head_local), "tail": list(bone.tail_local),
                        "matrix": [float(v) for row in bone.matrix_local for v in row],
                        **{field: getattr(bone, field) for field in
                           ("use_connect", "use_deform", "use_inherit_rotation", "inherit_scale",
                            "use_local_location", "use_relative_parent")}}
-            for bone in data.bones}
+    return result
+
+
+def _same_current_rest_bone(original, preview):
+    """Compare two complete native snapshots read in this invocation only.
+
+    Rest vectors contain the exact float32 RNA components. Rebuilding their
+    mathutils vectors keeps the native subtraction/length arithmetic; Python
+    scalar norms and per-axis checks would change the old boundary behavior.
+    """
+    if original['parent'] != preview['parent']:
+        return False
+    if any(original[field] != preview[field] for field in
+           ("use_deform", "use_inherit_rotation", "inherit_scale", "use_local_location", "use_relative_parent")):
+        return False
+    if ((Vector(original['head']) - Vector(preview['head'])).length > 1e-6
+            or (Vector(original['tail']) - Vector(preview['tail'])).length > 1e-6):
+        return False
+    # Keep max and its row-major order, including its existing NaN semantics.
+    return max(abs(original['matrix'][index] - preview['matrix'][index])
+               for index in range(16)) <= 1e-6
 
 
 _SAVED_REST_FIELDS = frozenset(('parent', 'head', 'tail', 'matrix', 'use_connect', 'use_deform',
@@ -410,8 +436,8 @@ def _matches_saved_rest_state(current, saved):
     return True
 
 
-def _matches_rest_state(data, saved):
-    current = _rest_state(data)
+def _matches_current_rest_state(current, saved):
+    """Compare a freshly read full snapshot; never store a passed proof."""
     if isinstance(saved, _SavedRestState):
         return _matches_saved_rest_state(current, saved)
     if not isinstance(saved, dict) or set(saved) != set(current):
@@ -429,6 +455,17 @@ def _matches_rest_state(data, saved):
             elif old != value:
                 return False
     return True
+
+
+def _matches_rest_state(data, saved):
+    # Keep the public comparison eager, including ordinary malformed records.
+    return _matches_current_rest_state(_rest_state(data), saved)
+
+
+def _read_matched_rest_state(data, saved):
+    """Return this call's current native snapshot only after its full proof."""
+    current = _rest_state(data)
+    return current if _matches_current_rest_state(current, saved) else None
 
 
 def _snapshot(context, target, controls=None):

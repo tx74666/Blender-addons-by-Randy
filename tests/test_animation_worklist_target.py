@@ -55,6 +55,13 @@ class TargetTests(unittest.TestCase):
         self.ua._matches_rest_state = Mock(return_value=True)
         self.ua._compile_saved_rest_state = Mock(return_value=None)
         self.ua._same_rest_bone = Mock(return_value=True)
+        # The real helper reads a complete native snapshot. These adoption
+        # fixtures isolate ownership gates; native field comparisons have a
+        # separate differential contract suite.
+        self.ua._read_matched_rest_state = lambda data, saved: (
+            {bone.name: {'use_connect': bone.use_connect} for bone in data.bones}
+            if self.ua._matches_rest_state(data, saved) else None)
+        self.ua._same_current_rest_bone = self.ua._same_rest_bone
         self.ua.restore_preview = Mock()
         self.ua._swap_armature_data = Mock()
         self.ua.PREVIEW_DATA_KEY = 'preview_data'

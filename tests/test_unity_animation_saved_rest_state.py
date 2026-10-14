@@ -16,7 +16,7 @@ SOURCE = Path(__file__).resolve().parents[1] / 'addons' / 'character_designer' /
 
 def load_contract():
     names = {'_SavedRestState', '_compile_saved_rest_state', '_matches_saved_rest_state',
-             '_matches_rest_state', '_same_rest_bone'}
+             '_matches_current_rest_state', '_matches_rest_state', '_same_rest_bone'}
     constants = {'_SAVED_REST_FIELDS', '_SAVED_REST_VECTOR_LENGTHS'}
     tree = ast.parse(SOURCE.read_text(encoding='utf-8'), filename=str(SOURCE))
     nodes = [node for node in tree.body if

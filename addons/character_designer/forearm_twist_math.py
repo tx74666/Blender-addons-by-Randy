@@ -99,20 +99,30 @@ def _weights(transforms, weights):
     return {name: weight / total for name, weight in result.items()}
 
 
-def blended_matrix(transforms, weights, *, _matrix_rows=None):
+def blended_matrix(transforms, weights, *, _matrix_rows=None, _blend_cache=None):
     """Actual linear skinning matrix for normalized deform-bone weights."""
     weights = _weights(transforms, weights)
     if not weights:
         return Matrix.Identity(4)
+    # A trusted runtime caller can provide a dictionary local to one synchronous
+    # calculation with fixed native transforms/rows. Key only AFTER the existing
+    # checks/normalization: desired and actual paths normalize a different number
+    # of times and must retain their exact, ordered floating-point expressions.
+    # Never share a cached mutable Matrix with a caller.
+    cache_key = tuple(weights.items()) if _blend_cache is not None else None
+    cached = _blend_cache.get(cache_key) if _blend_cache is not None else None
     # Runtime callers may snapshot native matrix rows once for their current
     # synchronous calculation. Keep the weight checks, scalar multiply/sum
     # order and final Matrix rounding identical to direct mathutils access.
     source = transforms if _matrix_rows is None else _matrix_rows
-    result = Matrix(tuple(tuple(sum(weight * source[name][row][column]
-                                    for name, weight in weights.items())
-                              for column in range(4)) for row in range(4)))
+    result = (cached.copy() if cached is not None else
+              Matrix(tuple(tuple(sum(weight * source[name][row][column]
+                                     for name, weight in weights.items())
+                               for column in range(4)) for row in range(4))))
     if not _finite(value for row in result for value in row):
         raise TwistMathError("Blended deformation contains non-finite values")
+    if _blend_cache is not None and cached is None:
+        _blend_cache[cache_key] = result.copy()
     return result
 
 
@@ -126,7 +136,8 @@ def rotate_about_axis(point, axis, pivot, angle):
 
 
 def desired_vertex(point, transforms, weights, lower_name, hand_name,
-                   axis, pivot, ratio, *, angle=None, _matrix_rows=None):
+                   axis, pivot, ratio, *, angle=None, _matrix_rows=None,
+                   _blend_cache=None):
     """Return the desired post-Armature position before inverse skinning.
 
     Replace only the lower/hand contribution.  Lower receives ``ratio * angle``
@@ -147,7 +158,8 @@ def desired_vertex(point, transforms, weights, lower_name, hand_name,
     if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
         raise TwistMathError("Ring twist ratio must be between zero and one")
     weights = _weights(transforms, weights)
-    actual = blended_matrix(transforms, weights, _matrix_rows=_matrix_rows) @ point
+    actual = blended_matrix(transforms, weights, _matrix_rows=_matrix_rows,
+                            _blend_cache=_blend_cache) @ point
     lower_weight = weights.get(lower_name, 0.0)
     hand_weight = weights.get(hand_name, 0.0)
     if lower_weight + hand_weight == 0.0:
@@ -172,7 +184,7 @@ def desired_vertex(point, transforms, weights, lower_name, hand_name,
 
 def corrected_vertex(point, transforms, weights, lower_name, hand_name,
                      axis, pivot, ratio, *, angle=None, max_condition=1.0e5,
-                     _matrix_rows=None):
+                     _matrix_rows=None, _blend_cache=None):
     """Return an absolute pre-Armature point producing ``desired_vertex``.
 
     Inverse LBS cannot repair a singular transform (the familiar 50/50 blend at
@@ -182,8 +194,9 @@ def corrected_vertex(point, transforms, weights, lower_name, hand_name,
     point = _point(point)
     desired = desired_vertex(point, transforms, weights, lower_name, hand_name,
                              axis, pivot, ratio, angle=angle,
-                             _matrix_rows=_matrix_rows)
-    actual = blended_matrix(transforms, weights, _matrix_rows=_matrix_rows)
+                             _matrix_rows=_matrix_rows, _blend_cache=_blend_cache)
+    actual = blended_matrix(transforms, weights, _matrix_rows=_matrix_rows,
+                            _blend_cache=_blend_cache)
     delta = desired - actual @ point
     if delta.length_squared < 1.0e-18:
         return point.copy()

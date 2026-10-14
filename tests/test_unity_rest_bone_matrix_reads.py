@@ -90,15 +90,16 @@ def run(function, configure=lambda original, preview: None):
 
 
 def property_order(events):
-    """Keep first matrix reads; repeated reads carry no new static property."""
-    result, matrices = [], set()
+    """Keep first parent/matrix reads of these static native properties."""
+    result, repeated = [], set()
     for event in events:
         if event[0] != 'field':
             continue
-        if event[2] == 'matrix_local':
-            if event[1] in matrices:
+        if event[2] in {'matrix_local', 'parent'}:
+            key = event[1], event[2]
+            if key in repeated:
                 continue
-            matrices.add(event[1])
+            repeated.add(key)
         result.append(event)
     return result
 

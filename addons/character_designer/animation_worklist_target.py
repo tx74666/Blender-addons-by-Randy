@@ -499,11 +499,15 @@ def _validated_names(names):
 
 def _prove_motion_data(original, motion, original_rest, motion_rest, mapped_names):
     from . import unity_animation as ua, limb_ik, skirt_rig
-    if (not ua._matches_rest_state(original, original_rest)
-            or not ua._matches_rest_state(motion, motion_rest)):
+    original_current = ua._read_matched_rest_state(original, original_rest)
+    if original_current is None:
+        raise ValueError('The saved artist or owned motion-copy Rest changed; no validation exception was granted.')
+    # Preserve the original refusal before attempting any motion native read.
+    motion_current = ua._read_matched_rest_state(motion, motion_rest)
+    if motion_current is None:
         raise ValueError('The saved artist or owned motion-copy Rest changed; no validation exception was granted.')
     names = frozenset(mapped_names)
-    if set(motion.bones.keys()) != set(original.bones.keys()) or not names.issubset(original.bones.keys()):
+    if motion_current.keys() != original_current.keys() or not names.issubset(original_current):
         raise ValueError('The owned motion copy changed the artist bone inventory.')
     # Exported Hair source chains may carry hair_bones ownership. They are
     # authored packet bones, whereas generated controls and Dress are not.
@@ -511,10 +515,11 @@ def _prove_motion_data(original, motion, original_rest, motion_rest, mapped_name
     translated = set()
     for bone in motion.bones:
         protected = original.bones[bone.name]
-        if not ua._same_rest_bone(protected, bone):
+        protected_rest, bone_rest = original_current[bone.name], motion_current[bone.name]
+        if not ua._same_current_rest_bone(protected_rest, bone_rest):
             raise ValueError('The owned motion copy changed Rest geometry, parents or inheritance: ' + bone.name)
-        if bool(bone.use_connect) != bool(protected.use_connect):
-            if (not protected.use_connect or bone.use_connect or bone.name not in names
+        if bool(bone_rest['use_connect']) != bool(protected_rest['use_connect']):
+            if (not protected_rest['use_connect'] or bone_rest['use_connect'] or bone.name not in names
                     or any(protected.get(key) is not None or bone.get(key) is not None for key in owner_keys)):
                 raise ValueError('An unapproved connected-bone flag changed in the motion copy: ' + bone.name)
             translated.add(bone.name)

@@ -201,6 +201,7 @@ class FollowTwistMathTests(unittest.TestCase):
                           "other": other}
             rows = {name: tuple(tuple(row) for row in matrix)
                     for name, matrix in transforms.items()}
+            blend_cache = {}
             for weights in weights_cases:
                 with self.subTest(alpha=alpha, beta=beta, weights=weights):
                     direct = geometry.blended_matrix(transforms, weights)
@@ -222,6 +223,11 @@ class FollowTwistMathTests(unittest.TestCase):
                                     self.assertEqual(tuple(direct), tuple(prepared))
                                     self.assertEqual(struct.pack("=3f", *direct),
                                                      struct.pack("=3f", *prepared))
+                                    cached = function(*args, angle=angle, _matrix_rows=rows,
+                                                      _blend_cache=blend_cache)
+                                    self.assertEqual(tuple(direct), tuple(cached))
+                                    self.assertEqual(struct.pack("=3f", *direct),
+                                                     struct.pack("=3f", *cached))
                 self.assertEqual(weights, before_weights)
             self.assertEqual(rows, {name: tuple(tuple(row) for row in matrix)
                                     for name, matrix in transforms.items()})
@@ -279,18 +285,32 @@ class FollowTwistMathTests(unittest.TestCase):
                     "lower", "hand", current["axis"], current["pivot"], current["ratio"])
             for function in (geometry.desired_vertex, geometry.corrected_vertex):
                 with self.subTest(case=index, function=function.__name__):
-                    self.assertEqual(failure(function, args, {"angle": current["angle"]}),
+                    expected = failure(function, args, {"angle": current["angle"]})
+                    self.assertEqual(expected,
                                      failure(function, args, {"angle": current["angle"],
                                                               "_matrix_rows": rows}))
+                    blend_cache = {}
+                    for _ in range(2):
+                        self.assertEqual(expected,
+                                         failure(function, args, {"angle": current["angle"],
+                                                                  "_matrix_rows": rows,
+                                                                  "_blend_cache": blend_cache}))
         for current, kwargs in ((axial_transforms(0.0, math.pi), {}),
                                 (transforms, {"max_condition": 2.9})):
             rows = {name: tuple(tuple(row) for row in matrix)
                     for name, matrix in current.items()}
             args = (POINT, current, weights, "lower", "hand", AXIS, PIVOT, 0.5)
             with self.subTest(inverse_guard=kwargs):
-                self.assertEqual(failure(geometry.corrected_vertex, args, kwargs),
+                expected = failure(geometry.corrected_vertex, args, kwargs)
+                self.assertEqual(expected,
                                  failure(geometry.corrected_vertex, args,
                                          {**kwargs, "_matrix_rows": rows}))
+                blend_cache = {}
+                for _ in range(2):
+                    self.assertEqual(expected,
+                                     failure(geometry.corrected_vertex, args,
+                                             {**kwargs, "_matrix_rows": rows,
+                                              "_blend_cache": blend_cache}))
 
     def test_prepared_rows_keep_weight_checks_and_zero_delta_early_return(self):
         transforms = axial_transforms(0.2, 0.3)
@@ -315,8 +335,101 @@ class FollowTwistMathTests(unittest.TestCase):
             direct = geometry.corrected_vertex(*args, angle=angle, max_condition=0.0)
             prepared = geometry.corrected_vertex(*args, angle=angle, max_condition=0.0,
                                                  _matrix_rows=rows)
+            blend_cache = {}
+            for _ in range(2):
+                cached = geometry.corrected_vertex(*args, angle=angle, max_condition=0.0,
+                                                   _matrix_rows=rows, _blend_cache=blend_cache)
+                self.assertEqual(tuple(cached), tuple(direct))
             self.assertEqual(tuple(direct), tuple(POINT))
             self.assertEqual(tuple(prepared), tuple(direct))
+
+    def test_blend_cache_uses_exact_ordered_normalized_weights(self):
+        transforms = {**axial_transforms(0.31, 0.62),
+                      "other": Matrix.Translation((-0.31, 0.23, 0.11))}
+        rows = {name: tuple(tuple(row) for row in matrix)
+                for name, matrix in transforms.items()}
+        weights = {"lower": 0.1281599137849305,
+                   "hand": 0.12181411510790636,
+                   "other": 0.7500359711071631}
+        # Desired normalizes first, then blended_matrix normalizes it again;
+        # actual normalizes the original once. Those float64 tuples differ.
+        once = geometry._weights(transforms, weights)
+        twice = geometry._weights(transforms, once)
+        self.assertNotEqual(tuple(once.items()), tuple(twice.items()))
+        blend_cache = {}
+        for current in (weights, dict(reversed(tuple(weights.items())))):
+            args = (POINT, transforms, current, "lower", "hand", AXIS, PIVOT, 0.43)
+            direct = geometry.corrected_vertex(*args, angle=0.62, _matrix_rows=rows)
+            cached = geometry.corrected_vertex(*args, angle=0.62, _matrix_rows=rows,
+                                               _blend_cache=blend_cache)
+            self.assertEqual(struct.pack("=3f", *direct), struct.pack("=3f", *cached))
+            once = geometry._weights(transforms, current)
+            twice = geometry._weights(transforms, once)
+            self.assertIn(tuple(once.items()), blend_cache)
+            self.assertIn(tuple(twice.items()), blend_cache)
+        self.assertEqual({tuple(name for name, _weight in key) for key in blend_cache},
+                         {tuple(weights), tuple(reversed(weights))})
+
+    def test_blend_cache_hits_still_check_weights_and_reduce_construction(self):
+        transforms = axial_transforms(0.2, 0.3)
+        rows = {name: tuple(tuple(row) for row in matrix)
+                for name, matrix in transforms.items()}
+        weights = {"lower": 0.4, "hand": 0.6}
+        blend_cache = {}
+        with patch.object(geometry, "_weights", wraps=geometry._weights) as checked, \
+             patch.object(geometry, "Matrix", wraps=Matrix) as constructed:
+            for point in (POINT, Vector((0.17, 0.21, 0.09)), POINT):
+                geometry.corrected_vertex(point, transforms, weights, "lower", "hand",
+                                          AXIS, PIVOT, 0.5, _matrix_rows=rows,
+                                          _blend_cache=blend_cache)
+            self.assertEqual(checked.call_count, 9)
+            # All six blends have identical ordered normalized coefficients.
+            self.assertEqual(constructed.call_count, 1)
+        # A previous successful cached blend does not bypass a later guard.
+        for invalid in ({"lower": math.nan}, {"lower": -0.1, "hand": 1.1},
+                        {"lower": 0.2}, {"missing": 1.0}):
+            with self.assertRaises(geometry.TwistMathError):
+                geometry.blended_matrix(transforms, invalid, _matrix_rows=rows,
+                                        _blend_cache=blend_cache)
+
+    def test_blend_cache_returned_matrices_cannot_pollute_stored_value(self):
+        transforms = axial_transforms(0.2, 0.3)
+        rows = {name: tuple(tuple(row) for row in matrix)
+                for name, matrix in transforms.items()}
+        weights = {"lower": 0.4, "hand": 0.6}
+        expected = geometry.blended_matrix(transforms, weights, _matrix_rows=rows)
+        before = tuple(tuple(row) for row in expected)
+        blend_cache = {}
+        first = geometry.blended_matrix(transforms, weights, _matrix_rows=rows,
+                                        _blend_cache=blend_cache)
+        first[0][0] = math.nan
+        hit = geometry.blended_matrix(transforms, weights, _matrix_rows=rows,
+                                      _blend_cache=blend_cache)
+        self.assertEqual(tuple(tuple(row) for row in hit), before)
+        hit[1][2] = math.inf
+        again = geometry.blended_matrix(transforms, weights, _matrix_rows=rows,
+                                        _blend_cache=blend_cache)
+        self.assertEqual(tuple(tuple(row) for row in again), before)
+
+    def test_blend_cache_is_local_to_changed_transform_calculations(self):
+        weights = {"lower": 0.4, "hand": 0.6}
+        outputs = []
+        for alpha, beta in ((0.2, 0.3), (0.6, -0.7), (0.2, 0.3)):
+            transforms = axial_transforms(alpha, beta)
+            rows = {name: tuple(tuple(row) for row in matrix)
+                    for name, matrix in transforms.items()}
+            # The runtime creates this after its cache-hit early return,
+            # freshly for each _calculate_records call's current native rows.
+            blend_cache = {}
+            args = (POINT, transforms, weights, "lower", "hand", AXIS, PIVOT, 0.43)
+            direct = geometry.corrected_vertex(*args, angle=beta, _matrix_rows=rows)
+            for _ in range(2):
+                cached = geometry.corrected_vertex(*args, angle=beta, _matrix_rows=rows,
+                                                   _blend_cache=blend_cache)
+                self.assertEqual(tuple(cached), tuple(direct))
+            outputs.append(tuple(cached))
+        self.assertNotEqual(outputs[0], outputs[1])
+        self.assertEqual(outputs[0], outputs[2])
 
 
 if __name__ == "__main__":

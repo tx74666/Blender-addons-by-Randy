@@ -505,6 +505,9 @@ def _calculate_records(obj, depsgraph):
     # sums rather than constructing mathutils row wrappers for every vertex.
     matrix_rows = {name: tuple(tuple(row) for row in matrix)
                    for name, matrix in transforms.items()}
+    # Fixed inputs only within this call. Do not move the blended Matrix cache
+    # beside the persistent pose/output caches or reuse it across evaluations.
+    blend_cache = {}
     outputs = []
     outside_pose_range = False
     for side, record in records.items():
@@ -547,7 +550,8 @@ def _calculate_records(obj, depsgraph):
                 continue
             point = to_arm @ base[i]
             corrected = corrected_vertex(point, transforms, weights[i], lower, hand, axis, pivot, ratio,
-                                         angle=angle, _matrix_rows=matrix_rows)
+                                         angle=angle, _matrix_rows=matrix_rows,
+                                         _blend_cache=blend_cache)
             output.append((i, keys.reference_key.data[i].co + influence * (from_arm @ corrected - base[i])))
         outputs.append((key, record.get("enabled", True), output))
     # Finish validating every active side before classifying this as only a
