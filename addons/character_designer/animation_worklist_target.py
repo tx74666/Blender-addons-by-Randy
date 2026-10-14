@@ -10,6 +10,7 @@ import json
 import math
 import hashlib
 from dataclasses import dataclass
+from functools import lru_cache
 
 import bpy
 
@@ -302,6 +303,149 @@ def _load(rig):
         raise ValueError('The saved Main Rig adoption record is unreadable; no changes were made.') from exc
 
 
+@dataclass(frozen=True)
+class _SavedReference:
+    key: str
+
+
+@dataclass(frozen=True)
+class _SavedDictionary:
+    items: tuple
+
+
+@dataclass(frozen=True)
+class _SavedList:
+    items: tuple
+
+
+@dataclass(frozen=True)
+class _RestRecordPlan:
+    references: tuple
+    rig_key: str
+    target_key: str
+    original_data_key: str
+    motion_data_key: str
+    original_rest: object
+    motion_rest: object
+    mapped_names: object
+    original_rest_proof: object
+    motion_rest_proof: object
+
+
+def _reference_key(value):
+    if (isinstance(value, dict) and set(value) == {'$id'}
+            and isinstance(value['$id'], str)):
+        return value['$id']
+    return None
+
+
+def _scan_rest_record(value, references):
+    """Prove every decoded branch, including branches outside the projection."""
+    if isinstance(value, dict):
+        if set(value) == {'$id'}:
+            key = _reference_key(value)
+            if key is None:
+                return False  # Preserve unusual reference-key semantics in _load.
+            references[key] = None
+            return True
+        return all(_scan_rest_record(entry, references) for entry in value.values())
+    if isinstance(value, list):
+        return all(_scan_rest_record(entry, references) for entry in value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return False  # _load preserves the order of reference/finite failures.
+    return True
+
+
+def _freeze_rest_record(value):
+    if isinstance(value, dict):
+        key = _reference_key(value)
+        if key is not None:
+            return _SavedReference(key)
+        return _SavedDictionary(tuple((key, _freeze_rest_record(entry))
+                                      for key, entry in value.items()))
+    if isinstance(value, list):
+        return _SavedList(tuple(_freeze_rest_record(entry) for entry in value))
+    return value
+
+
+def _materialize_rest_record(value, references):
+    if isinstance(value, _SavedReference):
+        return references[value.key]
+    if isinstance(value, _SavedDictionary):
+        return {key: _materialize_rest_record(entry, references) for key, entry in value.items}
+    if isinstance(value, _SavedList):
+        return [_materialize_rest_record(entry, references) for entry in value.items]
+    return value
+
+
+@lru_cache(maxsize=1)
+def _compile_rest_record(raw):
+    """Cache immutable text proof, never native IDs or a passed Rest check."""
+    encoded = json.loads(raw)
+    if not isinstance(encoded, dict) or 'capture' not in encoded or 'capture_sha256' not in encoded:
+        return None
+    digest = hashlib.sha256(json.dumps(encoded['capture'], ensure_ascii=False,
+        allow_nan=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    if digest != encoded.pop('capture_sha256'):
+        raise ValueError('The saved Main Rig recovery snapshot changed or was truncated.')
+    expected = {'version', 'rig', 'scene', 'view_layer', 'workspace_identity', 'capture',
+                'packet_path', 'packet_sha256', 'motion_data', 'motion_rest', 'mapped_names'}
+    if set(encoded) != expected or encoded.get('version') != 1:
+        return None
+    capture = encoded['capture']
+    if (not isinstance(capture, dict) or not isinstance(capture.get('targets'), list)
+            or not capture['targets'] or not isinstance(capture['targets'][0], dict)):
+        return None
+    artist = capture['targets'][0]
+    if not {'target', 'data', 'rest'}.issubset(artist):
+        return None
+    keys = tuple(_reference_key(value) for value in
+                 (encoded['rig'], artist['target'], artist['data'], encoded['motion_data']))
+    if any(key is None for key in keys):
+        return None
+    references = {}
+    if not _scan_rest_record(encoded, references):
+        return None
+    from . import unity_animation as ua
+    return _RestRecordPlan(tuple(references), *keys, _freeze_rest_record(artist['rest']),
+                           _freeze_rest_record(encoded['motion_rest']),
+                           _freeze_rest_record(encoded['mapped_names']),
+                           ua._compile_saved_rest_state(artist['rest']),
+                           ua._compile_saved_rest_state(encoded['motion_rest']))
+
+
+def _load_rest_record(rig, *, _for_rest_proof=False):
+    """Read the needed Rest fields while freshly resolving every saved ID."""
+    try:
+        raw = rig[SESSION]
+        plan = _compile_rest_record(raw) if isinstance(raw, str) else None
+        if plan is None:
+            return _load(rig)
+        saved = rig.get(REFS, {})
+        references = {}
+        for key in plan.references:
+            target = saved.get(key)
+            if target is None:
+                raise ValueError('A saved Main Rig recovery data block was removed.')
+            references[key] = target
+        if references[plan.rig_key] is not rig:
+            raise ValueError('The saved Main Rig adoption record is incomplete.')
+        if references[plan.target_key] is not rig:
+            raise ValueError('The saved Main Rig recovery snapshot belongs to another rig.')
+        original_rest = (plan.original_rest_proof if _for_rest_proof else None)
+        motion_rest = (plan.motion_rest_proof if _for_rest_proof else None)
+        return {'rig': rig, 'capture': {'targets': [{'target': rig,
+                    'data': references[plan.original_data_key],
+                    'rest': original_rest if original_rest is not None else
+                        _materialize_rest_record(plan.original_rest, references)}]},
+                'motion_data': references[plan.motion_data_key],
+                'motion_rest': motion_rest if motion_rest is not None else
+                    _materialize_rest_record(plan.motion_rest, references),
+                'mapped_names': _materialize_rest_record(plan.mapped_names, references)}
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError('The saved Main Rig adoption record is unreadable; no changes were made.') from exc
+
+
 def capture_session_metadata(rig):
     return {key: (dict(rig[key]) if key == REFS else rig[key])
             for key in (SESSION, REFS, RESTORED) if key in rig}
@@ -398,7 +542,7 @@ def validation_rest_view(rig, mapped_names):
     """
     if not is_adopted(rig):
         return None
-    return _validation_rest_view(rig, mapped_names, _load(rig))
+    return _validation_rest_view(rig, mapped_names, _load_rest_record(rig, _for_rest_proof=True))
 
 
 def control_rest_view(rig):
@@ -409,7 +553,7 @@ def control_rest_view(rig):
     """
     if not is_adopted(rig):
         return None
-    record = _load(rig)
+    record = _load_rest_record(rig, _for_rest_proof=True)
     names = record['mapped_names']
     _validated_names(names)
     original = record['capture']['targets'][0]['data']

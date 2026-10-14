@@ -500,6 +500,11 @@ def _calculate_records(obj, depsgraph):
     if (_CACHE.get(obj.as_pointer()) == signature and managed_state == expected_state
             and _OUTPUT_CACHE.get(obj.as_pointer()) == managed_coordinates):
         return
+    # These are immutable values from this call's native deformation matrices,
+    # not a cross-frame validation cache. Reuse their rows during scalar LBS
+    # sums rather than constructing mathutils row wrappers for every vertex.
+    matrix_rows = {name: tuple(tuple(row) for row in matrix)
+                   for name, matrix in transforms.items()}
     outputs = []
     outside_pose_range = False
     for side, record in records.items():
@@ -541,7 +546,8 @@ def _calculate_records(obj, depsgraph):
             if influence == 0.0:
                 continue
             point = to_arm @ base[i]
-            corrected = corrected_vertex(point, transforms, weights[i], lower, hand, axis, pivot, ratio, angle=angle)
+            corrected = corrected_vertex(point, transforms, weights[i], lower, hand, axis, pivot, ratio,
+                                         angle=angle, _matrix_rows=matrix_rows)
             output.append((i, keys.reference_key.data[i].co + influence * (from_arm @ corrected - base[i])))
         outputs.append((key, record.get("enabled", True), output))
     # Finish validating every active side before classifying this as only a
@@ -1057,22 +1063,30 @@ def _prepare_runtime_records(obj):
         for side in ('L', 'R'):
             if side not in resolved:
                 resolved[side] = _resolve_rig(obj, side, _inventory=inventory)
-        records, _other = _prepare_mirror(obj, source_side, source, records=records, _resolved=resolved)
+        # Every existing side was checked above in this same read-only pass.
+        # Keep this reuse local; the next runtime call validates every side again.
+        records, _other = _prepare_mirror(obj, source_side, source, records=records,
+                                        _resolved=resolved, _records_current=True)
     return records
 
 
-def _prepare_mirror(obj, source_side, source_record=None, *, records=None, complete_missing=False, _resolved=None):
+def _prepare_mirror(obj, source_side, source_record=None, *, records=None, complete_missing=False,
+                    _resolved=None, _records_current=False):
     records = _records(obj) if records is None else records
     source = source_record if source_record is not None else records.get(source_side)
     if source is None:
         raise ForearmTwistError("Calibrate this arm before syncing the other arm.")
     arm, source_rig = _resolved[source_side] if _resolved is not None else _resolve_rig(obj, source_side)
-    source = _current_record(obj, arm, source_rig, source_side, source, records)
+    # Only runtime preparation supplies current records from its preceding
+    # per-side checks. Ordinary mirror/setup callers still validate here.
+    if not _records_current:
+        source = _current_record(obj, arm, source_rig, source_side, source, records)
     target_side = "R" if source_side == "L" else "L"
     _arm, target_rig = _resolved[target_side] if _resolved is not None else _resolve_rig(obj, target_side)
     target = records.get(target_side)
     if target is not None:
-        target = _current_record(obj, arm, target_rig, target_side, target, records)
+        if not _records_current:
+            target = _current_record(obj, arm, target_rig, target_side, target, records)
         if target.get('distribution') != source.get('distribution'):
             raise ForearmTwistError('The arms use different twist profiles; explicitly recapture both arms before syncing.')
         _managed_key(obj, target_side, target)

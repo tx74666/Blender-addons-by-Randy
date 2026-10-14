@@ -783,7 +783,7 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
         if scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
             continue
         if (armature.type != "ARMATURE" or armature.mode == "EDIT"
-                or armature.library or armature.data.library or not _single_data_user(armature)
+                or armature.library or armature.data.library
                 or not armature.is_editable or not armature.data.get(PROFILE_KEY)
                 or armature.data.get(AUTO_KEY) == 0 or not has_layout_backup(armature)
                 or VIEW_KEY in armature.data):
@@ -796,6 +796,11 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
         modes = state[0]
         previous = _FRAME_CACHE.get(key)
         if previous == state:
+            continue
+        # An unchanged display performs no writes. Authenticate data ownership
+        # only when a display update is needed, before publishing cache state or
+        # changing any collection/bone flags. Recovery references stay live.
+        if not _single_data_user(armature):
             continue
         # Cache unsuccessful cases too: no repeated errors or retries per frame.
         _FRAME_CACHE[key] = state

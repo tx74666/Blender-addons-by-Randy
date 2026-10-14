@@ -9,7 +9,9 @@ correction functions.
 import importlib.util
 import math
 from pathlib import Path
+import struct
 import unittest
+from unittest.mock import patch
 
 from mathutils import Matrix, Vector
 
@@ -182,6 +184,139 @@ class FollowTwistMathTests(unittest.TestCase):
         output = self.corrected(common, weights, 0.5)
         self.close(output, POINT)
         self.close(skin_matrix(common, weights) @ output, y_arc(POINT, math.pi))
+
+    def test_prepared_rows_match_direct_matrix_access_exactly(self):
+        whole = (Matrix.Translation((0.37, -0.81, 0.59))
+                 @ Matrix.Rotation(0.43, 4, "Z")
+                 @ Matrix.Rotation(-0.29, 4, "X") @ Matrix.Scale(1.7, 4))
+        other = Matrix.Translation((-0.31, 0.23, 0.11)) @ Matrix.Rotation(0.51, 4, "Z")
+        points = (POINT, Vector((-0.11, 0.17, 0.39)), Vector((0.0, 1.0, -0.0)))
+        weights_cases = ({}, {"lower": 1.0}, {"hand": 1.0},
+                         {"lower": 0.5, "hand": 0.5},
+                         {"lower": 0.33001, "hand": 0.47, "other": 0.2},
+                         {"other": 0.2, "hand": 0.47, "lower": 0.33001})
+        for alpha, beta in ((38.0, 47.0), (-64.0, 22.0), (51.0, -51.0),
+                            (0.0, -120.0), (0.0, 120.0), (86.0, 0.0)):
+            transforms = {**axial_transforms(math.radians(alpha), math.radians(beta), whole),
+                          "other": other}
+            rows = {name: tuple(tuple(row) for row in matrix)
+                    for name, matrix in transforms.items()}
+            for weights in weights_cases:
+                with self.subTest(alpha=alpha, beta=beta, weights=weights):
+                    direct = geometry.blended_matrix(transforms, weights)
+                    prepared = geometry.blended_matrix(transforms, weights, _matrix_rows=rows)
+                    self.assertEqual(tuple(tuple(row) for row in direct),
+                                     tuple(tuple(row) for row in prepared))
+                before_weights = weights.copy()
+                for point in points:
+                    for ratio in (0.0, 0.11, 0.43, 0.9, 1.0):
+                        for function in (geometry.desired_vertex, geometry.corrected_vertex):
+                            for angle in (None, math.radians(beta)):
+                                with self.subTest(alpha=alpha, beta=beta, weights=weights,
+                                                  point=tuple(point), ratio=ratio,
+                                                  function=function.__name__, angle=angle):
+                                    args = (point, transforms, weights, "lower", "hand",
+                                            AXIS, PIVOT, ratio)
+                                    direct = function(*args, angle=angle)
+                                    prepared = function(*args, angle=angle, _matrix_rows=rows)
+                                    self.assertEqual(tuple(direct), tuple(prepared))
+                                    self.assertEqual(struct.pack("=3f", *direct),
+                                                     struct.pack("=3f", *prepared))
+                self.assertEqual(weights, before_weights)
+            self.assertEqual(rows, {name: tuple(tuple(row) for row in matrix)
+                                    for name, matrix in transforms.items()})
+
+    def test_prepared_rows_keep_validation_errors_and_precedence(self):
+        transforms = axial_transforms(0.2, 0.3)
+        weights = {"lower": 0.5, "hand": 0.5}
+        reflected = Matrix.Diagonal((-1.0, 1.0, 1.0, 1.0))
+        scaled = Matrix.Diagonal((2.0, 1.0, 1.0, 1.0))
+        sheared = Matrix.Identity(4)
+        sheared[0][1] = 0.2
+        nonaffine = Matrix.Identity(4)
+        nonaffine[3][0] = 0.2
+        nonfinite = Matrix.Identity(4)
+        nonfinite[0][0] = math.inf
+        cases = [
+            {"point": (math.nan, 0.0, 0.0)},
+            {"axis": (0.0, 0.0, 0.0)},
+            {"axis": (math.inf, 1.0, 0.0)},
+            {"pivot": (0.0, math.inf, 0.0)},
+            {"ratio": -0.1}, {"ratio": 1.1}, {"ratio": math.nan},
+            {"weights": {"lower": -0.2, "hand": 1.2}},
+            {"weights": {"lower": math.nan}},
+            {"weights": {"lower": 0.2}},
+            {"weights": {"missing": 1.0}},
+            {"transforms": {"lower": transforms["lower"]}, "weights": {"lower": 1.0}},
+            {"angle": math.inf}, {"angle": math.nan},
+            {"transforms": {**transforms, "lower": reflected}},
+            {"transforms": {**transforms, "lower": scaled}},
+            {"transforms": {**transforms, "lower": sheared}},
+            {"transforms": {**transforms, "lower": nonaffine}},
+            {"transforms": {**transforms, "lower": nonfinite}},
+            {"transforms": {"lower": Matrix.Identity(4),
+                            "hand": Matrix.Rotation(math.pi, 4, "X")}},
+            # Point validation must still win over these later invalid inputs.
+            {"point": (math.nan, 0.0, 0.0), "axis": (0.0, 0.0, 0.0),
+             "weights": {"missing": 1.0}, "angle": math.inf},
+            {"axis": (0.0, 0.0, 0.0), "ratio": -0.1,
+             "weights": {"missing": 1.0}},
+        ]
+
+        def failure(function, args, kwargs):
+            try:
+                function(*args, **kwargs)
+            except Exception as exc:
+                return type(exc), str(exc)
+            self.fail("Expected the existing invalid input to be rejected")
+
+        for index, case in enumerate(cases):
+            current = {"point": POINT, "transforms": transforms, "weights": weights,
+                       "axis": AXIS, "pivot": PIVOT, "ratio": 0.5, "angle": None, **case}
+            rows = {name: tuple(tuple(row) for row in matrix)
+                    for name, matrix in current["transforms"].items()}
+            args = (current["point"], current["transforms"], current["weights"],
+                    "lower", "hand", current["axis"], current["pivot"], current["ratio"])
+            for function in (geometry.desired_vertex, geometry.corrected_vertex):
+                with self.subTest(case=index, function=function.__name__):
+                    self.assertEqual(failure(function, args, {"angle": current["angle"]}),
+                                     failure(function, args, {"angle": current["angle"],
+                                                              "_matrix_rows": rows}))
+        for current, kwargs in ((axial_transforms(0.0, math.pi), {}),
+                                (transforms, {"max_condition": 2.9})):
+            rows = {name: tuple(tuple(row) for row in matrix)
+                    for name, matrix in current.items()}
+            args = (POINT, current, weights, "lower", "hand", AXIS, PIVOT, 0.5)
+            with self.subTest(inverse_guard=kwargs):
+                self.assertEqual(failure(geometry.corrected_vertex, args, kwargs),
+                                 failure(geometry.corrected_vertex, args,
+                                         {**kwargs, "_matrix_rows": rows}))
+
+    def test_prepared_rows_keep_weight_checks_and_zero_delta_early_return(self):
+        transforms = axial_transforms(0.2, 0.3)
+        rows = {name: tuple(tuple(row) for row in matrix)
+                for name, matrix in transforms.items()}
+        for prepared in (None, rows):
+            with patch.object(geometry, "_weights", wraps=geometry._weights) as checked, \
+                 patch.object(geometry, "blended_matrix", wraps=geometry.blended_matrix) as blended:
+                geometry.corrected_vertex(POINT, transforms, {"lower": 0.4, "hand": 0.6},
+                                          "lower", "hand", AXIS, PIVOT, 0.5,
+                                          _matrix_rows=prepared)
+                self.assertEqual(checked.call_count, 3)
+                self.assertEqual(blended.call_count, 2)
+        # A singular actual blend needs no inverse when the requested delta is
+        # zero. Unweighted input also returns before checking the unused angle.
+        for current, current_weights, angle in ((axial_transforms(0.0, math.pi),
+                                                {"lower": 0.5, "hand": 0.5}, 0.0),
+                                               ({}, {}, math.nan)):
+            rows = {name: tuple(tuple(row) for row in matrix)
+                    for name, matrix in current.items()}
+            args = (POINT, current, current_weights, "lower", "hand", AXIS, PIVOT, 0.5)
+            direct = geometry.corrected_vertex(*args, angle=angle, max_condition=0.0)
+            prepared = geometry.corrected_vertex(*args, angle=angle, max_condition=0.0,
+                                                 _matrix_rows=rows)
+            self.assertEqual(tuple(direct), tuple(POINT))
+            self.assertEqual(tuple(prepared), tuple(direct))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Main Rig adoption ownership, persistence and non-mutating failure gates."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -52,6 +53,7 @@ class TargetTests(unittest.TestCase):
         self.ua._mapping = Mock(return_value=SimpleNamespace(indices={'forearm.L': 0}))
         self.ua._rest_state = Mock(return_value={'Rest': 'unchanged'})
         self.ua._matches_rest_state = Mock(return_value=True)
+        self.ua._compile_saved_rest_state = Mock(return_value=None)
         self.ua._same_rest_bone = Mock(return_value=True)
         self.ua.restore_preview = Mock()
         self.ua._swap_armature_data = Mock()
@@ -393,6 +395,271 @@ class TargetTests(unittest.TestCase):
         self.target._store(self.rig, record)
         self.rig.data = ID(name='Foreign Data', bones=motion.bones)
         with self.assertRaisesRegex(ValueError, 'owned motion-copy Rest changed'):
+            self.target.control_rest_view(self.rig)
+
+    def write_encoded(self, encoded, *, rehash=False):
+        if rehash:
+            encoded['capture_sha256'] = hashlib.sha256(json.dumps(encoded['capture'],
+                ensure_ascii=False, allow_nan=False, sort_keys=True,
+                separators=(',', ':')).encode('utf-8')).hexdigest()
+        self.rig[self.target.SESSION] = json.dumps(encoded, ensure_ascii=False)
+
+    def test_rest_projection_compiles_once_and_keeps_native_proof_fresh(self):
+        original, bone, motion = self.motion_copy()
+        with patch.object(self.target, '_load', wraps=self.target._load) as full_load:
+            with patch.object(self.target.json, 'loads', wraps=json.loads) as parse:
+                self.target.control_rest_view(self.rig)
+                self.target.control_rest_view(self.rig)
+                self.assertEqual(parse.call_count, 1)
+            full_load.assert_not_called()
+        self.assertEqual(self.ua._matches_rest_state.call_count, 4)
+        self.assertEqual(self.ua._same_rest_bone.call_count, 2)
+        self.ua._matches_rest_state.return_value = False
+        with self.assertRaisesRegex(ValueError, 'owned motion-copy Rest changed'):
+            self.target.control_rest_view(self.rig)
+
+    def test_rest_projection_exact_text_change_recompiles_with_one_entry_bound(self):
+        self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        encoded['packet_path'] = 'new historical packet path'
+        self.write_encoded(encoded)
+        with patch.object(self.target.json, 'loads', wraps=json.loads) as parse:
+            self.target.control_rest_view(self.rig)
+            self.assertEqual(parse.call_count, 1)
+        self.assertEqual(self.target._compile_rest_record.cache_info().currsize, 1)
+
+    def test_rest_projection_warm_cache_rejects_lost_unused_references(self):
+        self.motion_copy()
+        record = self.target._load(self.rig)
+        unused = ID(name='Saved unused recovery ID')
+        record['capture']['context']['active'] = unused
+        record['capture']['metadata'] = [{'owner': unused}]
+        record['capture']['targets'][0]['action'] = unused
+        self.target._store(self.rig, record)
+        self.target.control_rest_view(self.rig)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        nodes = (encoded['capture']['context']['active'],
+                 encoded['capture']['metadata'][0]['owner'],
+                 encoded['capture']['targets'][0]['action'])
+        saved = dict(self.rig[self.target.REFS])
+        for node in nodes:
+            with self.subTest(key=node['$id']):
+                self.rig[self.target.REFS] = dict(saved)
+                del self.rig[self.target.REFS][node['$id']]
+                with self.assertRaisesRegex(ValueError, 'removed'):
+                    self.target.control_rest_view(self.rig)
+
+    def test_rest_projection_warm_cache_uses_replaced_reference_map(self):
+        original, bone, motion = self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        copied = self.data.copy()
+        refs = dict(self.rig[self.target.REFS])
+        refs[encoded['capture']['targets'][0]['data']['$id']] = copied
+        self.rig[self.target.REFS] = refs
+        view = self.target.control_rest_view(self.rig)
+        self.assertIs(view.source_bone(bone), copied.bones[bone.name])
+
+    def test_rest_projection_warm_cache_rejects_replaced_rig_and_first_target(self):
+        self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        saved = dict(self.rig[self.target.REFS])
+        for node, message in ((encoded['rig'], 'incomplete'),
+                              (encoded['capture']['targets'][0]['target'], 'another rig')):
+            with self.subTest(key=node['$id']):
+                self.rig[self.target.REFS] = dict(saved)
+                self.rig[self.target.REFS][node['$id']] = ID(name='Foreign saved rig')
+                with self.assertRaisesRegex(ValueError, message):
+                    self.target.control_rest_view(self.rig)
+
+    def test_rest_projection_returns_fresh_mutable_containers(self):
+        self.motion_copy()
+        record = self.target._load(self.rig)
+        record['capture']['targets'][0]['rest'] = {'bone': {'matrix': [[1.0, 2.0]]}}
+        record['motion_rest'] = {'bone': {'matrix': [[3.0, 4.0]]}}
+        self.target._store(self.rig, record)
+        first = self.target._load_rest_record(self.rig)
+        first['capture']['targets'][0]['rest']['bone']['matrix'][0][0] = 99.0
+        first['motion_rest']['bone']['matrix'].clear()
+        first['mapped_names'].clear()
+        second = self.target._load_rest_record(self.rig)
+        self.assertEqual(second['capture']['targets'][0]['rest'], {'bone': {'matrix': [[1.0, 2.0]]}})
+        self.assertEqual(second['motion_rest'], {'bone': {'matrix': [[3.0, 4.0]]}})
+        self.assertEqual(second['mapped_names'], ['forearm.L'])
+        with self.assertRaises(AttributeError):
+            self.target._compile_rest_record(self.rig[self.target.SESSION]).rig_key = 'changed'
+
+    def test_rest_projection_optional_compiled_proof_keeps_default_container_contract(self):
+        self.motion_copy()
+        self.ua._compile_saved_rest_state.side_effect = ('immutable original proof', 'immutable motion proof')
+        projected = self.target._load_rest_record(self.rig, _for_rest_proof=True)
+        self.assertEqual(projected['capture']['targets'][0]['rest'], 'immutable original proof')
+        self.assertEqual(projected['motion_rest'], 'immutable motion proof')
+        ordinary = self.target._load_rest_record(self.rig)
+        self.assertEqual(ordinary['capture']['targets'][0]['rest'], {'Rest': 'unchanged'})
+        self.assertEqual(ordinary['motion_rest'], {'Rest': 'motion copy'})
+        ordinary['motion_rest'].clear()
+        self.assertEqual(self.target._load_rest_record(self.rig)['motion_rest'], {'Rest': 'motion copy'})
+
+    def test_rest_projection_compiled_proof_does_not_skip_unused_reference_check(self):
+        self.motion_copy()
+        self.ua._compile_saved_rest_state.side_effect = ('immutable original proof', 'immutable motion proof')
+        self.target._load_rest_record(self.rig, _for_rest_proof=True)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        del self.rig[self.target.REFS][encoded['scene']['$id']]
+        with self.assertRaisesRegex(ValueError, 'removed'):
+            self.target._load_rest_record(self.rig, _for_rest_proof=True)
+
+    def test_rest_projection_rejects_capture_hash_change_after_warm_cache(self):
+        self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        encoded['capture']['context']['unused'] = 'tampered'
+        self.write_encoded(encoded)
+        with self.assertRaisesRegex(ValueError, 'changed or was truncated'):
+            self.target.control_rest_view(self.rig)
+
+    def test_rest_projection_rejects_nonfinite_values_outside_needed_fields(self):
+        self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        encoded = json.loads(self.rig[self.target.SESSION])
+        for bad in (float('nan'), float('inf'), float('-inf')):
+            for location in ('capture', 'outside'):
+                with self.subTest(value=bad, location=location):
+                    changed = json.loads(json.dumps(encoded))
+                    if location == 'capture':
+                        changed['capture']['context']['unused'] = bad
+                    else:
+                        changed['packet_path'] = {'unused': [bad]}
+                    self.write_encoded(changed)
+                    with self.assertRaises(ValueError):
+                        self.target._load_rest_record(self.rig)
+                    with self.assertRaises(ValueError):
+                        self.target._load(self.rig)
+
+    def test_rest_projection_preserves_missing_reference_before_later_nonfinite_failure(self):
+        self.motion_copy()
+        raw = self.rig[self.target.SESSION]
+        saved = dict(self.rig[self.target.REFS])
+        for warm in (False, True):
+            with self.subTest(warm=warm):
+                self.rig[self.target.SESSION] = raw
+                self.rig[self.target.REFS] = dict(saved)
+                self.target._compile_rest_record.cache_clear()
+                if warm:
+                    self.target.control_rest_view(self.rig)
+                encoded = json.loads(raw)
+                del self.rig[self.target.REFS][encoded['scene']['$id']]
+                encoded['packet_path'] = float('nan')
+                self.write_encoded(encoded)
+                errors = []
+                for reader in (self.target._load, self.target._load_rest_record):
+                    try:
+                        reader(self.rig)
+                    except ValueError as exc:
+                        errors.append((type(exc), str(exc)))
+                self.assertEqual(len(errors), 2)
+                self.assertEqual(errors[0], errors[1])
+                self.assertIn('removed', errors[0][1])
+
+    def test_rest_projection_preserves_extra_id_field_as_plain_dictionary(self):
+        self.motion_copy()
+        encoded = json.loads(self.rig[self.target.SESSION])
+        encoded['packet_path'] = {'$id': 'not a real reference', 'extra': 1}
+        self.write_encoded(encoded)
+        self.assertIsNotNone(self.target.control_rest_view(self.rig))
+        encoded['packet_path']['extra'] = float('nan')
+        self.write_encoded(encoded)
+        with self.assertRaisesRegex(ValueError, 'not finite'):
+            self.target.control_rest_view(self.rig)
+
+    def test_rest_projection_preserves_unusual_reference_key_semantics(self):
+        self.motion_copy()
+        encoded = json.loads(self.rig[self.target.SESSION])
+        encoded['packet_path'] = {'$id': 12}
+        self.rig[self.target.REFS][12] = ID(name='Legacy nonstring reference')
+        self.write_encoded(encoded)
+        with patch.object(self.target, '_load', wraps=self.target._load) as full_load:
+            self.target.control_rest_view(self.rig)
+            full_load.assert_called_once_with(self.rig)
+        encoded['packet_path'] = {'$id': ['unhashable key']}
+        self.write_encoded(encoded)
+        for reader in (self.target._load, self.target._load_rest_record):
+            with self.assertRaisesRegex(ValueError, 'unreadable'):
+                reader(self.rig)
+
+    def test_rest_projection_preserves_legacy_schema_and_mapping_boundaries(self):
+        original, bone, motion = self.motion_copy()
+        encoded = json.loads(self.rig[self.target.SESSION])
+        encoded['version'] = True  # _load historically accepts True == 1.
+        encoded['capture']['targets'][0]['extra'] = {'nested': [1, 2]}
+        encoded['mapped_names'] = None
+        self.write_encoded(encoded, rehash=True)
+        self.assertIsNotNone(self.target.validation_rest_view(self.rig, (bone.name,)))
+        with self.assertRaisesRegex(ValueError, 'mapped'):
+            self.target.control_rest_view(self.rig)
+        encoded['extra'] = 42
+        self.write_encoded(encoded)
+        for reader in (self.target._load, self.target._load_rest_record):
+            with self.assertRaisesRegex(ValueError, 'incomplete'):
+                reader(self.rig)
+
+    def test_rest_projection_malformed_target_shape_uses_original_reader(self):
+        self.motion_copy()
+        original = json.loads(self.rig[self.target.SESSION])
+        variants = ({}, [], [None], [{'target': {'$id': 'missing'}}])
+        for targets in variants:
+            with self.subTest(targets=targets):
+                encoded = json.loads(json.dumps(original))
+                encoded['capture']['targets'] = targets
+                self.write_encoded(encoded, rehash=True)
+                errors = []
+                for reader in (self.target._load, self.target._load_rest_record):
+                    try:
+                        reader(self.rig)
+                    except Exception as exc:
+                        errors.append((type(exc), str(exc)))
+                self.assertEqual(len(errors), 2)
+                self.assertEqual(errors[0], errors[1])
+
+    def test_rest_projection_ordinary_rig_does_not_compile_and_restore_stays_full(self):
+        with patch.object(self.target, '_compile_rest_record', wraps=self.target._compile_rest_record) as compile_record:
+            self.assertIsNone(self.target.control_rest_view(self.rig))
+            self.assertIsNone(self.target.validation_rest_view(self.rig, ('forearm.L',)))
+            compile_record.assert_not_called()
+        self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        with patch.object(self.target, '_load', wraps=self.target._load) as full_load:
+            with patch.object(self.target, '_validate_record'):
+                self.target.restore_main_rig(self.context)
+            full_load.assert_called_once_with(self.rig)
+
+    def test_rest_projection_warm_cache_keeps_inventory_and_ownership_checks(self):
+        original, bone, motion = self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        bone[self.limb.OWNER_KEY] = 'changed after validation'
+        with self.assertRaisesRegex(ValueError, 'unapproved connected-bone flag'):
+            self.target.control_rest_view(self.rig)
+        del bone[self.limb.OWNER_KEY]
+        motion.bones['new bone'] = ID(name='new bone', id_data=motion, use_connect=False)
+        with self.assertRaisesRegex(ValueError, 'bone inventory'):
+            self.target.control_rest_view(self.rig)
+
+    def test_rest_projection_warm_cache_rejects_changed_motion_identity_and_geometry(self):
+        original, bone, motion = self.motion_copy()
+        self.target.control_rest_view(self.rig)
+        self.rig.data = ID(name='New foreign data', bones=motion.bones)
+        with self.assertRaisesRegex(ValueError, 'owned motion-copy Rest changed'):
+            self.target.control_rest_view(self.rig)
+        self.rig.data = motion
+        self.ua._matches_rest_state.side_effect = (True, False)
+        with self.assertRaisesRegex(ValueError, 'owned motion-copy Rest changed'):
+            self.target.control_rest_view(self.rig)
+        self.ua._matches_rest_state.side_effect = None
+        self.ua._same_rest_bone.return_value = False
+        with self.assertRaisesRegex(ValueError, 'geometry, parents or inheritance'):
             self.target.control_rest_view(self.rig)
 
     def test_adoption_rejects_different_prepared_packet_bone_inventories(self):

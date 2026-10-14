@@ -1,4 +1,5 @@
 """Forearm cached preflight stays exact across direct RNA and runtime edits."""
+import json
 import math
 import os
 import sys
@@ -29,6 +30,64 @@ def ready():
 
 def managed(obj):
     return [obj.data.shape_keys.key_blocks[r['key']] for r in runtime._records(obj).values()]
+
+
+def test_paired_preparation_checks_each_existing_side_once_per_call():
+    f, _graph = ready()
+    obj = f['mesh']
+    raw, records = obj[runtime.RECORD_KEY], runtime._records(obj)
+    before_keys = fixtures.key_snapshot(obj, names=tuple(obj.data.shape_keys.key_blocks.keys()))
+    structure = fixtures.structure_snapshot(f['armature'], obj)
+    with patch.object(runtime, '_current_record', wraps=runtime._current_record) as current:
+        for _ in range(3):
+            current.reset_mock()
+            with cache.read_scope():
+                prepared = runtime._prepare_runtime_records(obj)
+            assert current.call_count == 2, 'Check each existing side once in every preparation'
+            assert {call.args[3] for call in current.call_args_list} == {'L', 'R'}
+            assert prepared == records
+        current.reset_mock()
+        with cache.read_scope():
+            mirrored, target_side = runtime._prepare_mirror(obj, 'L')
+        assert current.call_count == 2, 'Ordinary mirror callers still validate both sides'
+        assert {call.args[3] for call in current.call_args_list} == {'L', 'R'}
+        assert mirrored == records and target_side == 'R'
+    assert obj[runtime.RECORD_KEY] == raw, 'Read-only preparation must not commit records'
+    assert fixtures.key_snapshot(obj, names=tuple(obj.data.shape_keys.key_blocks.keys())) == before_keys
+    assert fixtures.structure_snapshot(f['armature'], obj) == structure
+
+
+def test_paired_preparation_rechecks_a_direct_saved_rest_edit():
+    f, _graph = ready()
+    obj, arm = f['mesh'], f['armature']
+    raw, records = obj[runtime.RECORD_KEY], runtime._records(obj)
+    before_keys = fixtures.key_snapshot(obj, names=tuple(obj.data.shape_keys.key_blocks.keys()))
+    structure = fixtures.structure_snapshot(arm, obj)
+    try:
+        with patch.object(runtime, '_current_record', wraps=runtime._current_record) as current, \
+             patch.object(runtime, '_capture_record', wraps=runtime._capture_record) as capture:
+            with cache.read_scope():
+                runtime._prepare_runtime_records(obj)
+            assert current.call_count == 2 and capture.call_count == 0
+            # Direct saved Rest edits have no update_tag/view_layer notification.
+            # The following call must check them afresh, then prepare the same
+            # current Rest migration as before the duplicate check was removed.
+            records['L']['rest'][0][1][0] += .125
+            changed_raw = json.dumps(records, separators=(',', ':'), sort_keys=True)
+            obj[runtime.RECORD_KEY] = changed_raw
+            current.reset_mock()
+            with cache.read_scope():
+                prepared = runtime._prepare_runtime_records(obj)
+            assert current.call_count == 2
+            assert {call.args[3] for call in current.call_args_list} == {'L', 'R'}
+            assert capture.call_count == 1, 'A changed saved Rest must prepare a fresh migration'
+            assert prepared['L']['rest'] == runtime._rest_signature(arm, records['L']['chain'])
+            assert obj[runtime.RECORD_KEY] == changed_raw, 'Preparation must not apply the migration'
+    finally:
+        obj[runtime.RECORD_KEY] = raw
+    assert fixtures.key_snapshot(obj, names=tuple(obj.data.shape_keys.key_blocks.keys())) == before_keys
+    assert fixtures.structure_snapshot(arm, obj) == structure
+    fixtures.assert_runtime_geometry(f, 'Paired preparation after a direct saved Rest edit')
 
 
 def test_warm_and_unrelated_updates_skip_heavy_geometry_proofs():

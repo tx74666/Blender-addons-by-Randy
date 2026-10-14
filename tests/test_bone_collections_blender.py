@@ -2,6 +2,7 @@
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import bpy
 from mathutils import Vector
@@ -629,6 +630,108 @@ def test_temporary_view_blocks_structure_and_playback_membership():
     assert rig.data.collections["Original"].is_visible == before["collections"][-1]["visible"]
 
 
+def frame_visibility_fixture():
+    rig, settings, _original = fixture("DIRECT_PREROLL")
+    settings.selected_limb = "LEFT_ARM"
+    assert bpy.ops.character_designer.limb_ik_build_selected() == {"FINISHED"}
+    source = limb_ik._validate_inventory(rig)["rigs"][("ARM", "L")]
+    groups._FRAME_CACHE.clear()
+    groups._frame_visibility(bpy.context.scene, objects=(rig,))
+    assert groups._FRAME_CACHE[rig.as_pointer()] == groups._display_frame_state(
+        rig, groups.body_collection(rig))
+    return rig, source
+
+
+def test_steady_display_skips_ownership_without_writing():
+    rig, source = frame_visibility_fixture()
+    rig.data.bones[source["pole"].name].hide = True
+    before = groups.snapshot_layout(rig)
+    bone_flags = {bone.name: (bone.hide, bone.hide_select) for bone in rig.data.bones}
+    cached = dict(groups._FRAME_CACHE)
+    foreign = bpy.data.objects.new("Foreign steady display reference", None)
+    bpy.context.collection.objects.link(foreign)
+    foreign["data_reference"] = rig.data
+    try:
+        with patch.object(groups, "_single_data_user", side_effect=AssertionError("No display update needed")) as proof, \
+             patch.object(groups, "sync_limb_display", side_effect=AssertionError("Steady display must not write")) as sync:
+            groups._frame_visibility(bpy.context.scene, objects=(rig,))
+        assert proof.call_count == sync.call_count == 0
+        assert groups.snapshot_layout(rig) == before
+        assert {bone.name: (bone.hide, bone.hide_select) for bone in rig.data.bones} == bone_flags
+        assert groups._FRAME_CACHE == cached
+    finally:
+        foreign.pop("data_reference", None)
+        bpy.data.objects.remove(foreign, do_unlink=True)
+
+
+def test_ineligible_display_skips_ownership_without_caching():
+    rig, _source = frame_visibility_fixture()
+    before = groups.snapshot_layout(rig)
+    cached = dict(groups._FRAME_CACHE)
+    for key, value in ((groups.PROFILE_KEY, 0), (groups.AUTO_KEY, 0),
+                       (groups.VIEW_KEY, "temporary view active")):
+        present, original = key in rig.data, rig.data.get(key)
+        rig.data[key] = value
+        try:
+            with patch.object(groups, "_single_data_user", side_effect=AssertionError("Ineligible display")) as proof, \
+                 patch.object(groups, "sync_limb_display", side_effect=AssertionError("Ineligible display must not write")) as sync:
+                groups._frame_visibility(bpy.context.scene, objects=(rig,))
+            assert proof.call_count == sync.call_count == 0
+            assert groups._FRAME_CACHE == cached
+        finally:
+            if present:
+                rig.data[key] = original
+            else:
+                rig.data.pop(key, None)
+    with patch.object(groups, "has_layout_backup", return_value=False), \
+         patch.object(groups, "_single_data_user", side_effect=AssertionError("Missing layout backup")) as proof:
+        groups._frame_visibility(bpy.context.scene, objects=(rig,))
+    assert proof.call_count == 0
+    assert groups.snapshot_layout(rig) == before
+    assert groups._FRAME_CACHE == cached
+
+
+def test_changed_display_rejects_foreign_data_reference_before_writing():
+    rig, source = frame_visibility_fixture()
+    body = groups.body_collection(rig)
+    body.is_visible = False
+    rig.data.collections["Original"].is_visible = True
+    rig.data.collections["Original"].is_solo = True
+    before = groups.snapshot_layout(rig)
+    bone_flags = {bone.name: (bone.hide, bone.hide_select) for bone in rig.data.bones}
+    cached = dict(groups._FRAME_CACHE)
+    foreign = bpy.data.objects.new("Foreign armature data reference", None)
+    bpy.context.collection.objects.link(foreign)
+    foreign["data_reference"] = rig.data
+    assert rig.data.users > 1
+    target = rig.pose.bones[source["target"].name]
+    try:
+        target["ik_fk"] = 0.0
+        with patch.object(groups, "_single_data_user", wraps=groups._single_data_user) as proof, \
+             patch.object(groups, "sync_limb_display", wraps=groups.sync_limb_display) as sync:
+            groups._frame_visibility(bpy.context.scene, objects=(rig,))
+        assert proof.call_count == 1 and sync.call_count == 0
+        assert groups.snapshot_layout(rig) == before
+        assert {bone.name: (bone.hide, bone.hide_select) for bone in rig.data.bones} == bone_flags
+        assert groups._FRAME_CACHE == cached, "Rejected ownership must not publish the changed display state"
+    finally:
+        foreign.pop("data_reference", None)
+        bpy.data.objects.remove(foreign, do_unlink=True)
+    with patch.object(groups, "sync_limb_display", wraps=groups.sync_limb_display) as sync:
+        groups._frame_visibility(bpy.context.scene, objects=(rig,))
+    assert sync.call_count == 1 and sync.call_args.kwargs["force_flags"]
+    assert set(source["chain"]) <= members(rig, "Body")
+    assert not body.is_visible
+    assert rig.data.collections["Original"].is_visible and rig.data.collections["Original"].is_solo
+    target["ik_fk"] = 1.0
+    with patch.object(groups, "sync_limb_display", wraps=groups.sync_limb_display) as sync:
+        groups._frame_visibility(bpy.context.scene, objects=(rig,))
+    assert sync.call_count == 1 and sync.call_args.kwargs["force_flags"]
+    assert not set(source["chain"]) & members(rig, "Body")
+    assert not body.is_visible
+    assert rig.data.collections["Original"].is_visible and rig.data.collections["Original"].is_solo
+
+
 def main():
     ensure_registered()
     for cls in groups.BONE_COLLECTION_CLASSES:
@@ -648,6 +751,9 @@ def main():
         test_legacy_animation_layout_upgrade()
         test_hair_and_original_boundaries_with_hidden_machinery()
         test_temporary_view_blocks_structure_and_playback_membership()
+        test_steady_display_skips_ownership_without_writing()
+        test_ineligible_display_skips_ownership_without_caching()
+        test_changed_display_rejects_foreign_data_reference_before_writing()
         for method in ("DIRECT_PREROLL", "ROLL_DECOUPLED"):
             test_foot_controls_collections(method)
             print(f"PASS foot collections {method}")

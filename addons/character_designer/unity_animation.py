@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from types import MappingProxyType
 
 import bpy
 from mathutils import Matrix, Vector
@@ -333,7 +334,8 @@ def _same_rest_bone(original, preview):
         return False
     if (original.head_local - preview.head_local).length > 1e-6 or (original.tail_local - preview.tail_local).length > 1e-6:
         return False
-    return max(abs(original.matrix_local[i][j] - preview.matrix_local[i][j])
+    original_matrix, preview_matrix = original.matrix_local, preview.matrix_local
+    return max(abs(original_matrix[i][j] - preview_matrix[i][j])
                for i in range(4) for j in range(4)) <= 1e-6
 
 
@@ -347,8 +349,71 @@ def _rest_state(data):
             for bone in data.bones}
 
 
+_SAVED_REST_FIELDS = frozenset(('parent', 'head', 'tail', 'matrix', 'use_connect', 'use_deform',
+    'use_inherit_rotation', 'inherit_scale', 'use_local_location', 'use_relative_parent'))
+_SAVED_REST_VECTOR_LENGTHS = {'head': 3, 'tail': 3, 'matrix': 16}
+
+
+@dataclass(frozen=True)
+class _SavedRestState:
+    names: frozenset
+    rows: object
+
+
+def _compile_saved_rest_state(saved):
+    """Detach ordinary saved JSON Rest only; never compile a native proof.
+
+    Unusual values retain the normal materializer/comparison path, including
+    its exception order. No native ID, data pointer or current state is read.
+    """
+    if type(saved) is not dict or any(type(name) is not str for name in saved):
+        return None
+    rows = {}
+    for name, fields in saved.items():
+        if type(fields) is not dict or set(fields) != _SAVED_REST_FIELDS:
+            return None
+        row = {}
+        for field, value in fields.items():
+            if field in _SAVED_REST_VECTOR_LENGTHS:
+                if type(value) is not list or len(value) != _SAVED_REST_VECTOR_LENGTHS[field]:
+                    return None
+                try:
+                    if any(type(number) not in (int, float, bool) or not math.isfinite(number)
+                           for number in value):
+                        return None
+                except (OverflowError, ValueError):
+                    return None
+                row[field] = tuple(value)
+            else:
+                if (type(value) not in (str, bool, int, float, type(None))
+                        or isinstance(value, float) and not math.isfinite(value)):
+                    return None
+                row[field] = value
+        rows[name] = MappingProxyType(row)
+    return _SavedRestState(frozenset(rows), MappingProxyType(rows))
+
+
+def _matches_saved_rest_state(current, saved):
+    if saved.names != frozenset(current):
+        return False
+    for name, fields in current.items():
+        if set(fields) != _SAVED_REST_FIELDS:
+            return False
+        row = saved.rows[name]
+        for field, value in fields.items():
+            old = row[field]
+            if field in _SAVED_REST_VECTOR_LENGTHS:
+                if len(old) != len(value) or any(abs(x - y) > 1e-6 for x, y in zip(old, value)):
+                    return False
+            elif old != value:
+                return False
+    return True
+
+
 def _matches_rest_state(data, saved):
     current = _rest_state(data)
+    if isinstance(saved, _SavedRestState):
+        return _matches_saved_rest_state(current, saved)
     if not isinstance(saved, dict) or set(saved) != set(current):
         return False
     for name, fields in current.items():

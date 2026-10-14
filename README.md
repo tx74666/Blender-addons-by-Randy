@@ -54,7 +54,21 @@ Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.55 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.55.zip](dist/rr_helper-0.2.55.zip) |
-| Character Designer | 0.77.2 | [character_designer](addons/character_designer) | [character_designer-0.77.2.zip](dist/character_designer-0.77.2.zip) |
+| Character Designer | 0.77.40 | [character_designer](addons/character_designer) | [character_designer-0.77.40.zip](dist/character_designer-0.77.40.zip) |
+
+Character Designer 0.77.40 compiles unchanged recovery text and saved Rest
+constants while freshly checking every native reference and current Rest.
+Forearm calculations reuse matrix rows within one call. The same saved X
+background evaluation measured about 158 ms on 0.77.39 and 103–105 ms on the
+new code, with identical observed output; viewport FPS remains separate.
+[Measurements and validation](docs/releases/CharacterDesigner_0.77.40_playback_rest_20261014.md).
+
+Character Designer 0.77.39 reduces repeated playback validation on adopted
+Main Rigs. Unchanged bone displays avoid a full recovery ownership proof; actual
+display changes retain strict current checks. Forearm preparation validates each
+saved side once per pass. Same saved-scene background evaluation fell from about
+354 ms to 170–175 ms, with matching observed output; viewport FPS is separate.
+[Measurements and validation](docs/releases/CharacterDesigner_0.77.39_playback_validation_20261014.md).
 
 Character Designer 0.77.2 makes a legacy hand Pose apply when an unrelated arm
 or controller is selected, while preserving intentional partial finger
