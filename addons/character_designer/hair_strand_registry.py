@@ -64,24 +64,24 @@ def _geometry(source):
     return points, edges, faces, topology
 
 
-def _rest(bone, order):
+def _rest(bone, order, *, source_rest=None):
     """Relations use chain indices, so a bone rename is not a structural edit."""
     parent = bone.parent
     return {'head': list(bone.head_local), 'tail': list(bone.tail_local),
             'matrix': [list(row) for row in bone.matrix_local],
             'parent_index': order.get(parent.name, -1) if parent else -1,
-            'connected': bool(bone.use_connect), 'deform': bool(bone.use_deform),
+            'connected': bool(_source_bone(bone, source_rest).use_connect), 'deform': bool(bone.use_deform),
             'inherit_scale': bone.inherit_scale,
             'inherit_rotation': bool(bone.use_inherit_rotation),
             'local_location': bool(bone.use_local_location)}
 
 
-def _anchor(bone):
+def _anchor(bone, *, source_rest=None):
     if bone is None:
         return None
     return {'name': bone.name, 'matrix': [list(row) for row in bone.matrix_local],
             'head': list(bone.head_local), 'tail': list(bone.tail_local),
-            'connected': bool(bone.use_connect), 'deform': bool(bone.use_deform)}
+            'connected': bool(_source_bone(bone, source_rest).use_connect), 'deform': bool(bone.use_deform)}
 
 
 def _same_anchor(before, actual):
@@ -89,6 +89,26 @@ def _same_anchor(before, actual):
         return before is actual
     return {key: value for key, value in before.items() if key != 'name'} == {
         key: value for key, value in actual.items() if key != 'name'}
+
+
+def _source_rest_view(armature):
+    """Authenticate only the connected-flag exception of a managed copy."""
+    from . import animation_worklist_target
+    if not animation_worklist_target.is_adopted(armature):
+        return None
+    try:
+        return animation_worklist_target.control_rest_view(armature)
+    except ValueError as exc:
+        raise HairStrandRegistryError('Hair motion Rest proof failed: ' + str(exc)) from exc
+
+
+def _source_bone(bone, source_rest):
+    if bone is None or source_rest is None:
+        return bone
+    try:
+        return source_rest.source_bone(bone)
+    except ValueError as exc:
+        raise HairStrandRegistryError('Hair motion Rest proof failed: ' + str(exc)) from exc
 
 
 def _live(source, *, check_layers=False):
@@ -115,6 +135,7 @@ def _live(source, *, check_layers=False):
                     or bone.get(hair.SIGNATURE_KEY) not in signatures or not bone.use_deform):
                 raise HairStrandRegistryError('Hair bone source ownership changed; restore it before reconciling.')
             owned.setdefault(bone.get(hair.SIGNATURE_KEY), []).append(bone)
+    source_rest = _source_rest_view(armature)
     strands = []
     for order, chain in enumerate(record['chains']):
         if chain.get('members'):
@@ -139,7 +160,8 @@ def _live(source, *, check_layers=False):
             raise HairStrandRegistryError('Hair chain parenting contains a disconnected component.')
         for index, bone in enumerate(ordered):
             expected = chain['rest'][index]
-            if bone.use_connect != expected['connected'] or index and bone.parent != ordered[index - 1]:
+            if (_source_bone(bone, source_rest).use_connect != expected['connected']
+                    or index and bone.parent != ordered[index - 1]):
                 raise HairStrandRegistryError('Hair connection or ordered parent relationships changed.')
             # The existing registry can prove a renamed external anchor. Before
             # initialization the binding must still resolve its recorded one.
@@ -150,7 +172,7 @@ def _live(source, *, check_layers=False):
                     raise HairStrandRegistryError('Hair attachment changed; restore the recorded parent.')
                 old = _saved(source)
                 previous = next((item for item in old['strands'] if item['signature'] == signature), None)
-                if previous is None or not _same_anchor(previous['anchor'], _anchor(root.parent)):
+                if previous is None or not _same_anchor(previous['anchor'], _anchor(root.parent, source_rest=source_rest)):
                     raise HairStrandRegistryError('The renamed Hair attachment no longer has its saved Rest proof.')
             if source.vertex_groups.get(bone.name) is None:
                 raise HairStrandRegistryError('An owned Hair bone has lost its corresponding vertex group.')
@@ -177,7 +199,10 @@ def _live(source, *, check_layers=False):
         strands.append({'strand_id': strand_id, 'chain_id': chain_id,
             'signature': signature, 'order': order,
             'bones': [bone.name for bone in ordered],
-            'rest': [_rest(bone, indices) for bone in ordered], 'anchor': _anchor(root.parent),
+            # Keep all live Rest fields exact; only the authenticated temporary
+            # connected editing flag projects back to the artist source.
+            'rest': [_rest(bone, indices, source_rest=source_rest) for bone in ordered],
+            'anchor': _anchor(root.parent, source_rest=source_rest),
             'vertices': vertices, 'layers': layers,
             'pair_id': None, 'mirror_id': None, 'side': 'U', 'pair_proof': 'NONE',
             'vertex_map': [], 'boundary_map': []})

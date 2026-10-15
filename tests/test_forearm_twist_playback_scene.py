@@ -78,6 +78,20 @@ class Object(ID):
     pass
 
 
+class MatrixRows(tuple):
+    def copy(self):
+        return MatrixRows(tuple(tuple(row) for row in self))
+
+
+class ParentResetObject(Object):
+    """Native parent/type/bone assignment resets inverse before restoration."""
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in {'parent', 'parent_type', 'parent_bone'} and self.__dict__.get('reset_enabled'):
+            super().__setattr__('matrix_parent_inverse', MatrixRows(
+                tuple(tuple(float(i == j) for j in range(4)) for i in range(4))))
+
+
 class RNA(CustomProperties):
     """A non-ID struct with an explicit ID owner and observable writes."""
     def __init__(self, pointer, owner, values=None):
@@ -125,7 +139,7 @@ def namespace():
     tree = ast.parse(PATH.read_text(encoding='utf-8'))
     definitions = {'PlaybackSceneError', '_require', '_pointer', '_copy_id_properties',
                    '_remap_rna', '_remap_animation', '_actions_for_id', '_action_curves',
-                   '_detach_unused_asset_references', 'PlaybackSceneSession'}
+                   '_detach_unused_asset_references', '_copy_view_layer_state', 'PlaybackSceneSession'}
     constants = {'_DATA_COLLECTIONS', '_GEOMETRY_COLLECTIONS', '_READONLY_OBJECT_POINTERS'}
     nodes = []
     for node in tree.body:
@@ -145,6 +159,85 @@ def namespace():
 class SceneRemapTests(unittest.TestCase):
     def setUp(self):
         self.scope = namespace()
+
+    def base_fixture(self):
+        class Members(dict):
+            active = None
+            def __iter__(self):
+                return iter(self.values())
+        class Layer:
+            def __init__(self, name, objects, active):
+                self.name, self.objects = name, Members((obj.name_full, obj) for obj in objects)
+                self.objects.active = active
+            def update(self):
+                for obj in self.objects:
+                    if obj.hidden[self]:
+                        obj.selected[self] = False
+        class Actor(Object):
+            def __init__(self, pointer, name):
+                super().__init__(pointer, name)
+                self.name_full, self.hidden, self.selected, self.writes = name, {}, {}, []
+            def hide_get(self, *, view_layer):
+                return self.hidden[view_layer]
+            def select_get(self, *, view_layer):
+                return self.selected[view_layer]
+            def hide_set(self, value, *, view_layer):
+                self.writes.append(('hide', view_layer.name, value))
+                self.hidden[view_layer] = value
+            def select_set(self, value, *, view_layer):
+                self.writes.append(('select', view_layer.name, value))
+                self.selected[view_layer] = value
+        class Collection(ID):
+            def __init__(self, pointer, name, hide):
+                super().__init__(pointer, name)
+                self.name_full, self.hide_select = name, hide
+        old, new = [Actor(1, 'Rig'), Actor(2, 'Backup')], [Actor(3, 'Rig Playback'), Actor(4, 'Backup Playback')]
+        left = [Layer('Main', old, old[0]), Layer('Other', [old[0]], None)]
+        right = [Layer('Main', new, None), Layer('Other', [new[0]], new[0])]
+        for index, layers in enumerate((left, right)):
+            for layer in layers:
+                for obj in layer.objects:
+                    obj.hidden[layer], obj.selected[layer] = False, False
+        old[1].hidden[left[0]], old[0].selected[left[0]] = True, True
+        old[0].hidden[left[1]] = True
+        source, target = ID(10, 'Source'), ID(11, 'Target')
+        source.view_layers, source.objects = left, old
+        target.view_layers, target.objects = right, new
+        a, b = Collection(12, 'Locked', True), Collection(13, 'Locked Playback', False)
+        session = self.scope['PlaybackSceneSession'](source, target, object_map=dict(zip(old, new)),
+            id_map={source: target, a: b, **dict(zip(old, new))})
+        self.scope['bpy'].types.Collection = Collection
+        self.scope['bpy'].app = SimpleNamespace(background=True)
+        self.scope['bpy'].context.scene, self.scope['bpy'].context.view_layer = source, left[0]
+        return session, old, new, left, right, a, b
+
+    def test_per_layer_base_copy_restores_hidden_selected_active_and_excluded_membership(self):
+        session, old, new, left, right, a, b = self.base_fixture()
+        result = self.scope['_copy_view_layer_state'](session)
+        self.assertEqual(result['context_view_layer'], 'Main')
+        self.assertEqual([row['active'] for row in result['layers']], ['Rig Playback', None])
+        self.assertTrue(new[1].hide_get(view_layer=right[0]))
+        self.assertTrue(new[0].select_get(view_layer=right[0]))
+        self.assertTrue(new[0].hide_get(view_layer=right[1]))
+        self.assertTrue(b.hide_select)
+        self.assertEqual(old[0].writes + old[1].writes, [])
+        self.assertFalse(any(layer == 'Other' for kind, layer, value in new[1].writes))
+        self.assertEqual(result, self.scope['_copy_view_layer_state'](session))
+
+    def test_base_copy_rejects_membership_before_any_target_writes(self):
+        session, old, new, left, right, a, b = self.base_fixture()
+        right[1].objects[new[1].name_full] = new[1]
+        with self.assertRaisesRegex(self.scope['PlaybackSceneError'], 'membership'):
+            self.scope['_copy_view_layer_state'](session)
+        self.assertFalse(b.hide_select)
+        self.assertEqual(new[0].writes + new[1].writes, [])
+
+    def test_base_copy_does_not_silently_accept_native_setter_readback_failure(self):
+        session, old, new, left, right, a, b = self.base_fixture()
+        new[1].hide_set = lambda *args, **kwargs: None
+        with self.assertRaisesRegex(self.scope['PlaybackSceneError'], 'state differs'):
+            self.scope['_copy_view_layer_state'](session)
+        self.assertEqual(old[0].writes + old[1].writes, [])
 
     def test_second_custom_property_remap_keeps_the_owned_clone(self):
         source, clone = Object(1, 'Source'), Object(2, 'Clone')
@@ -167,6 +260,98 @@ class SceneRemapTests(unittest.TestCase):
         self.assertIs(target_root.dependency, clone)
         self.assertEqual(target_root.native_writes, [('dependency', clone)])
         self.assertEqual(external, [])
+
+    def test_unset_registered_pg_pointer_is_not_read_or_materialized(self):
+        class LazyOwner(ID):
+            def is_property_set(self, name):
+                return False
+            @property
+            def cycles(self):
+                self.materialized = True
+                raise AssertionError('Unset registered PG getter ran')
+        source, target = ID(1), LazyOwner(2)
+        target.materialized = False
+        group_base = SimpleNamespace(identifier='PropertyGroup', base=None)
+        target.bl_rna.properties = [SimpleNamespace(identifier='cycles', type='POINTER', is_runtime=True,
+            fixed_type=SimpleNamespace(identifier='CyclesWorldSettings', base=group_base))]
+        self.scope['_remap_rna'](target, {source: target}, set(), [])
+        self.assertFalse(target.materialized)
+        self.assertEqual(target.values, {})
+
+    def test_stored_registered_pg_raw_and_native_object_references_still_remap(self):
+        source, target, old_obj, new_obj = ID(1), ID(2), Object(3), Object(4)
+        nested = RNA(5, target, values={'raw_object': old_obj})
+        nested.reference = old_obj
+        nested.bl_rna.properties = [SimpleNamespace(identifier='reference', type='POINTER',
+            is_runtime=False, is_readonly=False)]
+        target.group = nested
+        target.is_property_set = lambda name: True
+        target.bl_rna.properties = [SimpleNamespace(identifier='group', type='POINTER', is_runtime=True,
+            fixed_type=SimpleNamespace(identifier='StoredGroup', base=SimpleNamespace(identifier='PropertyGroup', base=None)))]
+        external = []
+        self.scope['_remap_rna'](target, {source: target, old_obj: new_obj}, set(), external)
+        self.assertIs(nested['raw_object'], new_obj)
+        self.assertIs(nested.reference, new_obj)
+        self.assertEqual(external, [])
+
+    def test_native_pg_runtime_non_pg_pointer_and_collections_are_not_skipped(self):
+        for kind, runtime, fixed_name, collection in (
+                ('POINTER', False, 'PropertyGroup', False),
+                ('POINTER', True, 'Object', False),
+                ('COLLECTION', True, 'PropertyGroup', True)):
+            with self.subTest(kind=kind, runtime=runtime, fixed_name=fixed_name):
+                source, target, old_obj, new_obj = ID(1), ID(2), Object(3), Object(4)
+                nested = RNA(5, target, values={'object': old_obj})
+                target.value = [nested] if collection else (old_obj if fixed_name == 'Object' else nested)
+                target.is_property_set = lambda name: False
+                target.bl_rna.properties = [SimpleNamespace(identifier='value', type=kind, is_runtime=runtime,
+                    is_readonly=False, fixed_type=SimpleNamespace(identifier=fixed_name, base=None))]
+                self.scope['_remap_rna'](target, {source: target, old_obj: new_obj}, set(), [])
+                if fixed_name == 'Object':
+                    self.assertIs(target.value, new_obj)
+                else:
+                    self.assertIs(nested['object'], new_obj)
+
+    def test_parent_pointer_remap_preserves_inverse_and_binding_without_world_assignment(self):
+        for parent_type, bone, vertices in (('OBJECT', '', (0, 0, 0)),
+                                            ('BONE', 'Hand.L', (0, 0, 0)),
+                                            ('VERTEX_3', '', (2, 4, 7))):
+            with self.subTest(parent_type=parent_type):
+                source_parent, clone_parent = Object(1), Object(2)
+                source, target = Object(3), ParentResetObject(4)
+                target.set_pointer_fields(parent=source_parent)
+                target.parent_type, target.parent_bone = parent_type, bone
+                target.parent_vertices = vertices
+                target.matrix_parent_inverse = MatrixRows(((2., -0., 0., 3.), (0., .5, 0., -2.),
+                                                          (0., 0., 1., 4.), (0., 0., 0., 1.)))
+                before = tuple(tuple(float(value).hex() for value in row) for row in target.matrix_parent_inverse)
+                target.reset_enabled = True
+                id_map = {source_parent: clone_parent, source: target}
+                self.scope['_remap_rna'](target, id_map, set(), [])
+                self.assertIs(target.parent, clone_parent)
+                self.assertEqual((target.parent_type, target.parent_bone, tuple(target.parent_vertices)),
+                                 (parent_type, bone, vertices))
+                self.assertEqual(tuple(tuple(float(value).hex() for value in row) for row in target.matrix_parent_inverse), before)
+                self.assertEqual(target.native_writes, [('parent', clone_parent)])
+                self.scope['_remap_rna'](target, id_map, set(), [])
+                self.assertEqual(target.native_writes, [('parent', clone_parent)])
+                self.assertNotIn('matrix_world', target.__dict__)
+                self.assertEqual(source.native_writes, [])
+
+    def test_parent_inverse_readback_rejects_lost_signed_zero(self):
+        class WrongInverse(ParentResetObject):
+            def __setattr__(self, name, value):
+                if name == 'matrix_parent_inverse' and self.__dict__.get('corrupt_restore'):
+                    value = MatrixRows(tuple(tuple(0. if item == 0. else item for item in row) for row in value))
+                super().__setattr__(name, value)
+        old, new, source, target = Object(1), Object(2), Object(3), WrongInverse(4)
+        target.set_pointer_fields(parent=old)
+        target.parent_type, target.parent_bone, target.parent_vertices = 'OBJECT', '', (0, 0, 0)
+        target.matrix_parent_inverse = MatrixRows(((1., -0., 0., 0.), (0., 1., 0., 0.),
+                                                  (0., 0., 1., 0.), (0., 0., 0., 1.)))
+        target.reset_enabled = target.corrupt_restore = True
+        with self.assertRaisesRegex(self.scope['PlaybackSceneError'], 'parent inverse changed'):
+            self.scope['_remap_rna'](target, {old: new, source: target}, set(), [])
 
     def test_source_owned_subtree_is_rejected_before_reading_or_writing_properties(self):
         source_owner, target_owner = ID(1, 'Source'), ID(2, 'Clone')

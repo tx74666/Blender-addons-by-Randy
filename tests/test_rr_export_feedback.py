@@ -302,6 +302,27 @@ class GroupDiscoveryTests(unittest.TestCase):
         self.assertEqual([], self.make_panel(1, visible=False))
         self.assertEqual([], self.make_panel(1, expanded=False))
 
+    def test_collapsed_group_does_not_resolve_members_or_selection(self):
+        namespace = {
+            name: mock.Mock(side_effect=AssertionError("Collapsed Group queried scene membership"))
+            for name in ("selected_object_manager_assembly_root", "object_manager_group_from_settings",
+                         "selected_objects_for_object_manager_assembly")
+        }
+        load_functions(namespace)
+        context = SimpleNamespace(selected_objects=[object(), object()])
+        settings = SimpleNamespace(show_export_queue_section=False, show_export_group_section=True,
+                                   show_export_icon_section=False)
+        headers = []
+        panel = SimpleNamespace(
+            draw_export_section_filter=lambda *_args: None,
+            draw_fold_panel=lambda _layout, _settings, prop, text: headers.append((prop, text)),
+        )
+        panel.draw_export_group_box = lambda *args: namespace["draw_export_group_box"](panel, *args)
+        layout = LayoutRecorder()
+        namespace["draw_exporter_page"](panel, layout, context, settings)
+        self.assertEqual([("export_group_expanded", "Group")], headers)
+        self.assertEqual([], layout.events)
+
 
 class ExportResourceUiTests(unittest.TestCase):
     def namespace(self):

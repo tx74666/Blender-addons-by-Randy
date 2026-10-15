@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 61),
+    "version": (0, 2, 62),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -20,6 +20,7 @@ import tempfile
 import textwrap
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import bpy
@@ -703,6 +704,41 @@ def export_identity_root_label(root):
 
 
 _EXPORT_IDENTITY_LOOKUP_CACHE = None
+_EXPORT_IDENTITY_LOOKUP_EPOCH = object()
+
+
+@contextmanager
+def export_identity_lookup_scope():
+    """Share pure lookups only within one synchronous read-only operation."""
+    global OBJECT_MANAGER_REPAIR_ALLOWED, _EXPORT_IDENTITY_LOOKUP_CACHE
+
+    previous_repair_state = OBJECT_MANAGER_REPAIR_ALLOWED
+    previous_lookup_cache = _EXPORT_IDENTITY_LOOKUP_CACHE
+    OBJECT_MANAGER_REPAIR_ALLOWED = False
+    if previous_repair_state or previous_lookup_cache is None:
+        _EXPORT_IDENTITY_LOOKUP_CACHE = {}
+    try:
+        yield
+    finally:
+        _EXPORT_IDENTITY_LOOKUP_CACHE = previous_lookup_cache
+        OBJECT_MANAGER_REPAIR_ALLOWED = previous_repair_state
+
+
+@contextmanager
+def suspend_export_identity_lookup_cache():
+    """Never reuse pre-evaluation lookups across dependency-graph callbacks."""
+    global _EXPORT_IDENTITY_LOOKUP_CACHE
+
+    previous_lookup_cache = _EXPORT_IDENTITY_LOOKUP_CACHE
+    if previous_lookup_cache is not None:
+        previous_lookup_cache.clear()
+    _EXPORT_IDENTITY_LOOKUP_CACHE = None
+    try:
+        yield
+    finally:
+        if previous_lookup_cache is not None:
+            previous_lookup_cache.clear()
+        _EXPORT_IDENTITY_LOOKUP_CACHE = previous_lookup_cache
 
 
 def _memoize_export_identity_lookup(function):
@@ -718,7 +754,12 @@ def _memoize_export_identity_lookup(function):
             return function(*args, **kwargs)
         key = (function.__name__, args, tuple(sorted(kwargs.items())))
         if key not in cache:
+            epoch = cache.setdefault(_EXPORT_IDENTITY_LOOKUP_EPOCH, object())
             value = function(*args, **kwargs)
+            if cache.get(_EXPORT_IDENTITY_LOOKUP_EPOCH) is not epoch:
+                # A nested geometry evaluation may run third-party callbacks.
+                # Its caller's in-flight result must not repopulate that cache.
+                return list(value) if isinstance(value, list) else value
             cache[key] = list(value) if isinstance(value, list) else value
         value = cache[key]
         return list(value) if isinstance(value, list) else value
@@ -731,36 +772,28 @@ def _memoize_export_identity_lookup(function):
 
 def live_export_identity_roots(extra_roots=None):
     """Return actual asset roots without repairing or changing Object Manager data."""
-    global OBJECT_MANAGER_REPAIR_ALLOWED, _EXPORT_IDENTITY_LOOKUP_CACHE
-
-    previous_repair_state = OBJECT_MANAGER_REPAIR_ALLOWED
-    previous_lookup_cache = _EXPORT_IDENTITY_LOOKUP_CACHE
-    OBJECT_MANAGER_REPAIR_ALLOWED = False
-    _EXPORT_IDENTITY_LOOKUP_CACHE = {}
-    try:
+    with export_identity_lookup_scope():
         candidates = get_export_roots(list(bpy.data.objects))
         candidates.extend(root for root in (extra_roots or []) if root is not None)
         expanded = expand_related_export_roots(candidates)
-    finally:
-        _EXPORT_IDENTITY_LOOKUP_CACHE = previous_lookup_cache
-        OBJECT_MANAGER_REPAIR_ALLOWED = previous_repair_state
 
-    roots = []
-    seen = set()
-    for candidate in expanded:
-        if (
-            candidate is None
-            or candidate in seen
-            or candidate.type not in {"EMPTY", "MESH"}
-            or is_collision_helper(candidate)
-            or not get_export_asset_meshes(candidate)
-        ):
-            continue
-        roots.append(candidate)
-        seen.add(candidate)
-    return roots
+        roots = []
+        seen = set()
+        for candidate in expanded:
+            if (
+                candidate is None
+                or candidate in seen
+                or candidate.type not in {"EMPTY", "MESH"}
+                or is_collision_helper(candidate)
+                or not get_export_asset_meshes(candidate)
+            ):
+                continue
+            roots.append(candidate)
+            seen.add(candidate)
+        return roots
 
 
+@export_identity_lookup_scope()
 def collect_export_identity_conflicts(root, candidate_roots=None):
     """Collect identity aliases that would let one live asset overwrite another."""
     if root is None:
@@ -1660,6 +1693,7 @@ def selected_object_manager_assembly_root(context):
     return None
 
 
+@_memoize_export_identity_lookup
 def object_manager_member_objects(root):
     if root is None:
         return []
@@ -1685,6 +1719,7 @@ def object_manager_member_objects(root):
     return members
 
 
+@_memoize_export_identity_lookup
 def object_manager_selection_objects(root):
     """Return selectable leaf objects for a group, including nested groups."""
     members = []
@@ -1876,6 +1911,7 @@ def get_export_asset_meshes(root):
     return get_asset_meshes(root)
 
 
+@_memoize_export_identity_lookup
 def get_collision_meshes(root):
     if root is None or is_unity_layout_reference(root):
         return []
@@ -1940,9 +1976,10 @@ def get_export_roots(objects):
         and not is_collision_helper(obj)
         and get_asset_meshes(obj)
     ]
+    candidate_set = set(candidates)
     return [
         obj for obj in candidates
-        if not has_candidate_parent(obj, candidates)
+        if not has_candidate_parent(obj, candidate_set)
     ]
 
 
@@ -2955,21 +2992,22 @@ def mesh_objects_have_export_geometry(meshes):
         return False
 
     try:
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        for mesh in meshes:
-            evaluated = mesh.evaluated_get(depsgraph)
-            if evaluated.data is not None and len(evaluated.data.vertices):
-                return True
-        mesh_set = set(meshes)
-        return any(
-            instance.is_instance
-            and instance.parent is not None
-            and instance.parent.original in mesh_set
-            and instance.object.type == "MESH"
-            and instance.object.data is not None
-            and len(instance.object.data.vertices)
-            for instance in depsgraph.object_instances
-        )
+        with suspend_export_identity_lookup_cache():
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            for mesh in meshes:
+                evaluated = mesh.evaluated_get(depsgraph)
+                if evaluated.data is not None and len(evaluated.data.vertices):
+                    return True
+            mesh_set = set(meshes)
+            return any(
+                instance.is_instance
+                and instance.parent is not None
+                and instance.parent.original in mesh_set
+                and instance.object.type == "MESH"
+                and instance.object.data is not None
+                and len(instance.object.data.vertices)
+                for instance in depsgraph.object_instances
+            )
     except (RuntimeError, ReferenceError, AttributeError) as exception:
         raise RuntimeError(
             "Could not verify generated export geometry; check the evaluated meshes and retry."
@@ -10419,8 +10457,9 @@ class ExportSettingsOutputRootProxy:
 
 def validate_export_batch_identities(export_roots):
     roots = [root for root in export_roots or [] if root is not None]
-    for root in roots:
-        validate_export_identity(root, roots)
+    with export_identity_lookup_scope():
+        for root in roots:
+            validate_export_identity(root, roots)
     return roots
 
 
@@ -14648,11 +14687,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
             self.draw_export_queue_box(layout, context, settings)
 
         if settings.show_export_group_section:
-            assembly_root = selected_object_manager_assembly_root(context)
-            if assembly_root is None and context.selected_objects:
-                assembly_root = object_manager_group_from_settings(settings)
-            create_members = selected_objects_for_object_manager_assembly(context)
-            self.draw_export_group_box(layout, context, settings, assembly_root, create_members)
+            self.draw_export_group_box(layout, context, settings)
 
         if settings.show_export_icon_section:
             self.draw_icon_page(layout, context, settings)
@@ -14843,11 +14878,15 @@ class RR_PT_builder_exporter(bpy.types.Panel):
                     seen,
                 )
 
-    def draw_export_group_box(self, layout, context, settings, assembly_root, create_members):
-        can_create = len(create_members) >= 2
+    def draw_export_group_box(self, layout, context, settings):
         group_panel = self.draw_fold_panel(layout, settings, "export_group_expanded", "Group")
         if group_panel is None:
             return
+        assembly_root = selected_object_manager_assembly_root(context)
+        if assembly_root is None and context.selected_objects:
+            assembly_root = object_manager_group_from_settings(settings)
+        create_members = selected_objects_for_object_manager_assembly(context)
+        can_create = len(create_members) >= 2
         group_box = group_panel.box()
         type_row = group_box.row(align=True)
         type_row.prop(settings, "object_manager_assembly_type", text="")

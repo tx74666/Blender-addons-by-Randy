@@ -88,6 +88,15 @@ def _remap_rna(struct, id_map, visited, external):
             continue
         if prop.type not in {'POINTER', 'COLLECTION'}:
             continue
+        if prop.type == 'POINTER' and getattr(prop, 'is_runtime', False):
+            fixed = prop.fixed_type
+            while fixed is not None and fixed.identifier != 'PropertyGroup':
+                fixed = fixed.base
+            # Getting an unset registered PG pointer creates saved backing
+            # storage on the copied ID. It has no stored references to remap.
+            # Native pointers, collections and stored groups retain traversal.
+            if fixed is not None and not struct.is_property_set(name):
+                continue
         try:
             value = getattr(struct, name)
         except (AttributeError, RuntimeError, ReferenceError):
@@ -100,7 +109,28 @@ def _remap_rna(struct, id_map, visited, external):
                 if replacement is not None:
                     _require(not prop.is_readonly,
                              f'Cannot remap readonly dependency {struct.bl_rna.identifier}.{name}')
-                    setattr(struct, name, replacement)
+                    if isinstance(struct, bpy.types.Object) and name == 'parent':
+                        # Native parent/type/bone setters reset parent inverse.
+                        # Preserve the copied child's binding, not a recomposed
+                        # world matrix; the source is never written or read here.
+                        parent_type, parent_bone = struct.parent_type, struct.parent_bone
+                        parent_vertices = tuple(struct.parent_vertices)
+                        inverse = struct.matrix_parent_inverse.copy()
+                        inverse_hex = tuple(tuple(float(item).hex() for item in row) for row in inverse)
+                        setattr(struct, name, replacement)
+                        struct.parent_type = parent_type
+                        struct.parent_bone = parent_bone
+                        struct.parent_vertices = parent_vertices
+                        struct.matrix_parent_inverse = inverse
+                        _require(struct.parent == replacement and struct.parent_type == parent_type
+                                 and struct.parent_bone == parent_bone
+                                 and tuple(struct.parent_vertices) == parent_vertices,
+                                 'Copied Object parent binding changed during remap')
+                        _require(tuple(tuple(float(item).hex() for item in row)
+                                       for row in struct.matrix_parent_inverse) == inverse_hex,
+                                 'Copied Object parent inverse changed during remap')
+                    else:
+                        setattr(struct, name, replacement)
                 elif _pointer(value) in owned_pointers:
                     continue
                 elif isinstance(value, bpy.types.Object) and name not in _READONLY_OBJECT_POINTERS:
@@ -264,6 +294,7 @@ class PlaybackSceneSession:
     closed: bool = False
     bindings: list = field(default_factory=list)
     detached_asset_references: list = field(default_factory=list)
+    view_layer_state: dict = field(default_factory=dict)
 
     def inspect(self):
         return {
@@ -317,6 +348,95 @@ class PlaybackSceneSession:
         self.object_map.clear()
         self.id_map.clear()
         self.objects.clear()
+
+
+def _copy_view_layer_state(session):
+    """Copy per-Base state after relinking new Object IDs, never artist state.
+
+    Object.copy cannot carry Base.hidden or each layer's selection/active Base.
+    Excluded objects have no Base and are deliberately not passed to hide_set.
+    This helper also supports the sealed private validation adapter.
+    """
+    _require(bpy.app.background and not session.closed,
+             'Base-state copy requires an open private background session')
+    source, target = session.source_scene, session.scene
+    _require(source is not target and session.id_map.get(source) is target,
+             'Base-state Scene ownership differs')
+    _require(bpy.context.scene is source and bpy.context.view_layer in tuple(source.view_layers),
+             'Source context View Layer must be explicit before copying Base state')
+    context_layer = bpy.context.view_layer.name
+    source_layers = {layer.name: layer for layer in source.view_layers}
+    target_layers = {layer.name: layer for layer in target.view_layers}
+    _require(len(source_layers) == len(source.view_layers)
+             and len(target_layers) == len(target.view_layers)
+             and set(source_layers) == set(target_layers), 'Copied View Layer names/count differ')
+    _require(set(session.object_map) == set(source.objects)
+             and len(set(session.object_map.values())) == len(session.object_map)
+             and not (set(session.object_map) & set(session.object_map.values()))
+             and set(target.objects) == set(session.object_map.values())
+             and all(session.id_map.get(old) is new for old, new in session.object_map.items()),
+             'Base-state Object mapping is not isolated/complete')
+    collections = [(old, new) for old, new in session.id_map.items()
+                   if isinstance(old, bpy.types.Collection)]
+    _require(all(isinstance(new, bpy.types.Collection) and old is not new
+                 for old, new in collections)
+             and not ({old for old, new in collections} & {new for old, new in collections})
+             and len({new for old, new in collections}) == len(collections),
+             'Base-state Collection mapping is not isolated')
+
+    def snapshot(scene):
+        layers = []
+        for layer in scene.view_layers:
+            # These RNA reads ensure the Base list is synchronized first.
+            active = layer.objects.active
+            rows = [{'name': obj.name_full, 'hidden': bool(obj.hide_get(view_layer=layer)),
+                     'selected': bool(obj.select_get(view_layer=layer))}
+                    for obj in sorted(layer.objects, key=lambda item: item.name_full)]
+            layers.append({'name': layer.name, 'objects': rows,
+                           'active': active.name_full if active is not None else None})
+        return layers
+
+    source_before = snapshot(source)
+    source_collections = [(old, bool(old.hide_select)) for old, new in collections]
+    # Preflight every membership before the first target state write.
+    for name, source_layer in source_layers.items():
+        target_layer = target_layers[name]
+        expected = {session.object_map[obj] for obj in source_layer.objects}
+        _require(set(target_layer.objects) == expected,
+                 'Mapped Base membership differs for View Layer: ' + name)
+    for old, new in collections:
+        if new.hide_select != old.hide_select:
+            new.hide_select = old.hide_select
+    for row in source_before:
+        source_layer, target_layer = source_layers[row['name']], target_layers[row['name']]
+        for item in row['objects']:
+            old = source_layer.objects[item['name']]
+            new = session.object_map[old]
+            new.hide_set(item['hidden'], view_layer=target_layer)
+            new.select_set(item['selected'], view_layer=target_layer)
+        active = source_layer.objects.active
+        target_layer.objects.active = session.object_map[active] if active is not None else None
+        target_layer.update()
+    expected_layers = [{'name': row['name'], 'objects': [
+        {**item, 'name': session.object_map[source_layers[row['name']].objects[item['name']]].name_full}
+        for item in row['objects']], 'active': session.object_map[source_layers[row['name']].objects.active].name_full
+        if source_layers[row['name']].objects.active is not None else None} for row in source_before]
+    for row in expected_layers:
+        row['objects'].sort(key=lambda item: item['name'])
+    observed = snapshot(target)
+    _require(observed == expected_layers, 'Copied Base hidden/selected/active state differs')
+    _require(snapshot(source) == source_before
+             and all(bool(old.hide_select) == state for old, state in source_collections)
+             and bpy.context.scene is source and bpy.context.view_layer.name == context_layer,
+             'Copying Base state changed the source')
+    _require(all(bool(new.hide_select) == bool(old.hide_select) for old, new in collections),
+             'Copied Collection selectability differs')
+    result = {'schema': 'character-designer.private-view-layer-state/1',
+              'context_view_layer': context_layer, 'layers': observed,
+              'collection_hide_select': sorted(({'name': new.name_full, 'hide_select': bool(new.hide_select)}
+                  for old, new in collections), key=lambda item: item['name'])}
+    session.view_layer_state = result
+    return result
 
 
 def build_isolated_scene(source_scene):
@@ -491,6 +611,7 @@ def build_isolated_scene(source_scene):
                 for attribute in ('exclude', 'hide_viewport', 'holdout', 'indirect_only'):
                     setattr(copied, attribute, getattr(original_layer, attribute))
             target_layer.update()
+        _copy_view_layer_state(session)
         _require(len(scene.objects) == len(source_scene.objects), 'Copied scene object membership changed')
         _require(set(session.object_map) == set(source_scene.objects), 'Source scene object mapping is incomplete')
         after = _inventory()
