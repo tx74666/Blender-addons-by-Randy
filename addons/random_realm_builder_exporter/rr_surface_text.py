@@ -127,6 +127,33 @@ def _source_topology_fingerprint(mesh):
     return hashlib.sha256(repr([(tuple(poly.vertices)) for poly in mesh.polygons]).encode()).hexdigest()
 
 
+def _source_topology_preserves_bound_faces(mesh, expected_topology, indices):
+    """Prove the saved source is intact, allowing only appended polygons.
+
+    Older bindings store a whole-mesh digest rather than a region snapshot.
+    Match its exact list serialization against current prefixes, so Shift+D
+    additions are safe without guessing which old face a saved index meant.
+    All bound indices must still belong to that proven original prefix.
+    Coordinates remain deformable, as with the original topology contract.
+    """
+    if not expected_topology or not indices or min(indices) < 0:
+        return False
+    required_count = max(indices) + 1
+    if required_count > len(mesh.polygons):
+        return False
+    digest = hashlib.sha256(b"[")
+    for count, polygon in enumerate(mesh.polygons, 1):
+        if count > 1:
+            digest.update(b", ")
+        digest.update(repr(tuple(polygon.vertices)).encode())
+        if count >= required_count:
+            candidate = digest.copy()
+            candidate.update(b"]")
+            if candidate.hexdigest() == expected_topology:
+                return True
+    return False
+
+
 def _evaluated_geometry_signature(obj, attribute_name):
     """Copy a geometry/tag digest before freeing the evaluated temporary mesh.
 
@@ -258,7 +285,7 @@ def _evaluated_sampling_mesh(source, verify_export_modifiers=True):
     if sample.get("rr_surface_role") != "sampling_surface" or not indices:
         raise RuntimeError("Surface Text has no selected sampling region; bind the existing text to selected faces.")
     expected_topology = str(sample.get("rr_surface_source_topology", ""))
-    if not expected_topology or expected_topology != _source_topology_fingerprint(target.data):
+    if not _source_topology_preserves_bound_faces(target.data, expected_topology, indices):
         raise RuntimeError("Surface Text source topology changed or predates region validation; rebind its selected faces.")
     if min(indices) < 0 or max(indices) >= len(target.data.polygons):
         raise RuntimeError("Surface Text selected face indices are no longer valid; rebind its selected faces.")
