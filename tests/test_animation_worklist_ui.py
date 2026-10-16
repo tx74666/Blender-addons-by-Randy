@@ -17,8 +17,17 @@ SOURCE = Path(__file__).resolve().parents[1] / 'addons/character_designer'
 class Layout:
     def __init__(self, records=None, enabled=True):
         self.records = records if records is not None else []
-        self.enabled = enabled
+        self._parent_enabled = enabled
+        self._enabled = True
         self.operator_context = None
+
+    @property
+    def enabled(self):
+        return self._parent_enabled and self._enabled
+
+    @enabled.setter
+    def enabled(self, value):
+        self._enabled = value
 
     def row(self, **_kwargs):
         return Layout(self.records, self.enabled)
@@ -518,8 +527,6 @@ class WorklistUI(unittest.TestCase):
         self.state.scan_completed = True
         layout = Layout()
         self.ui.draw_worklist(layout, self.context)
-        self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
-            self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
         labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
         self.assertNotIn('Unknown: select explicitly to sync.', labels)
         self.assertIn('Unsupported animated dependency.', labels)
@@ -541,8 +548,7 @@ class WorklistUI(unittest.TestCase):
             with self.subTest(state=state):
                 item.scan_state = state
                 layout = Layout()
-                self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
-                    self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
+                self.ui._draw_worklist_actions(layout, self.context, self.state)
                 selections = [active for kind, value, active in layout.records
                               if kind == 'prop' and value[0] == 'sync_selected']
                 self.assertEqual(selections, [])
@@ -563,9 +569,6 @@ class WorklistUI(unittest.TestCase):
                 patch.object(self.ui, '_backend', side_effect=AssertionError('Draw called backend')):
             layout = Layout()
             self.ui.draw_worklist(layout, self.context)
-            for index, item in enumerate(self.state.items):
-                self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
-                    self.context, layout, self.state, item, 0, self.state, 'active_index', index)
         self.assertEqual([(item.scan_state, item.scan_reason, item.sync_selected, item.last_synced_receipt)
                           for item in self.state.items], before)
         for name in ('scan_changes', 'begin_add_ready', 'begin_sync_changed', 'cancel'):
@@ -573,6 +576,8 @@ class WorklistUI(unittest.TestCase):
 
     def test_draw_does_not_read_files_or_call_backend(self):
         layout = Layout()
+        before = self.state.active_index, [(item.side, item.rig.animation_data.action)
+                                          for item in self.state.items]
         with patch.object(Path, 'open', side_effect=AssertionError('UI read a file')), \
                 patch.object(Path, 'is_dir', side_effect=AssertionError('UI probed a directory')), \
                 patch.object(self.ui, '_backend', side_effect=AssertionError('UI called the backend')):
@@ -581,16 +586,21 @@ class WorklistUI(unittest.TestCase):
         self.assertIn('Character: Cosha', labels)
         self.assertIn('Scene: Animation Worklist · Cosha', labels)
         self.assertNotIn('Source: Soldier', labels)
-        lists = [value[0] for kind, value, _enabled in layout.records if kind == 'list']
-        self.assertEqual(len(lists), 1)
-        self.assertEqual(lists[0][0], 'CHARACTERDESIGNER_UL_animation_worklist')
-        self.assertEqual(lists[0][3], 'items')
+        self.assertFalse(any(kind == 'list' for kind, _value, _enabled in layout.records))
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
             ('character_designer.worklist_connect', 'Connect'),
             ('character_designer.worklist_refresh', ''),
             ('character_designer.worklist_add_ready', 'Import Prepared'),
-            ('character_designer.worklist_sync_changed', 'Export Changes')])
+            ('character_designer.worklist_sync_changed', 'Export Changes'),
+            ('character_designer.worklist_activate', 'Walk'),
+            ('character_designer.worklist_activate', 'Walk'),
+            ('character_designer.worklist_activate', 'Run'),
+            ('character_designer.worklist_activate', 'Run'),
+            ('character_designer.worklist_activate', 'Idle'),
+            ('character_designer.worklist_activate', 'Idle')])
+        self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
+                                                   for item in self.state.items]), before)
         self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
                              for kind, value, _enabled in layout.records))
 
@@ -608,13 +618,17 @@ class WorklistUI(unittest.TestCase):
         self.ui.draw_worklist(layout, self.context)
         self.assertFalse(any(kind == 'operator' and value[0] == 'character_designer.worklist_add'
                              for kind, value, _enabled in layout.records))
-        self.assertEqual([value[0][3] for kind, value, _enabled in layout.records if kind == 'list'], ['items'])
+        actions = [value[2] for kind, value, _enabled in layout.records
+                   if kind == 'operator' and value[0] == 'character_designer.worklist_activate']
+        self.assertEqual([(payload.item_id, payload.side) for payload in actions], [
+            ('id-Walk', 'SOURCE'), ('id-Walk', 'CUSTOM'),
+            ('id-Run', 'SOURCE'), ('id-Run', 'CUSTOM'),
+            ('id-Idle', 'SOURCE'), ('id-Idle', 'CUSTOM')])
 
     def test_row_actions_use_stable_item_ids_and_correct_sides(self):
         item = self.state.items[1]
         layout = Layout()
-        self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
-            self.context, layout, self.state, item, 0, self.state, 'active_index', 1)
+        self.ui._draw_worklist_actions(layout, self.context, SimpleNamespace(items=[item]))
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         for _name, _options, payload in buttons:
             self.assertEqual(payload.item_id, 'id-Run')
@@ -628,8 +642,7 @@ class WorklistUI(unittest.TestCase):
 
     def test_row_names_both_actions_with_distinct_icons_without_remove(self):
         layout = Layout()
-        self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
-            self.context, layout, self.state, self.state.items[0], 0, self.state, 'active_index', 0)
+        self.ui._draw_worklist_actions(layout, self.context, SimpleNamespace(items=[self.state.items[0]]))
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([name for name, _options, _payload in buttons], [
             'character_designer.worklist_activate', 'character_designer.worklist_activate'])
@@ -649,8 +662,7 @@ class WorklistUI(unittest.TestCase):
                 self.animation._link_idle.return_value = not busy
                 item.source_action = None
                 layout = Layout()
-                self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
-                    self.context, layout, self.state, item, 0, self.state, 'active_index', 0)
+                self.ui._draw_worklist_actions(layout, self.context, SimpleNamespace(items=[item]))
                 self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
                                  [False, not busy])
 
@@ -1109,7 +1121,7 @@ class WorklistUI(unittest.TestCase):
         buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertIn('character_designer.worklist_use_main_rig', buttons)
 
-    def test_adopted_main_rig_exposes_persistent_restore_button(self):
+    def test_adopted_main_rig_exposes_persistent_restore_button_only_in_advanced(self):
         main = SimpleNamespace(name='CoshaRig', get=lambda key:
                                'saved record' if key == 'character_designer_worklist_main_session_v1' else None)
         self.context.scene.character_designer_setup = SimpleNamespace(rig=main)
@@ -1119,13 +1131,16 @@ class WorklistUI(unittest.TestCase):
         self.assertTrue(operator.poll(self.context))
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         self.backend.restore_main_rig.assert_called_once_with(self.context)
-        layout = Layout()
-        self.ui.draw_worklist(layout, self.context)
-        buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
-        self.assertIn('character_designer.worklist_restore_main_rig', buttons)
-        self.assertNotIn('character_designer.worklist_use_main_rig', buttons)
+        for opened in (False, True):
+            with self.subTest(advanced=opened):
+                self.state.show_advanced = opened
+                layout = Layout()
+                self.ui.draw_worklist(layout, self.context)
+                buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+                self.assertEqual('character_designer.worklist_restore_main_rig' in buttons, opened)
+                self.assertNotIn('character_designer.worklist_use_main_rig', buttons)
 
-    def test_connected_panel_keeps_playback_and_cancel_without_legacy_controls(self):
+    def test_connected_panel_keeps_cancel_and_uses_native_timeline_without_duplicate_controls(self):
         animation = self.load_animation()
         self.context.scene = self.origin_scene
         self.context.scene.frame_current = 7
@@ -1134,7 +1149,9 @@ class WorklistUI(unittest.TestCase):
         layout = Layout()
         animation.CHARACTERDESIGNER_PT_animation.draw(SimpleNamespace(layout=layout), self.context)
         buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
-        self.assertIn('character_designer.animation_play_pause', buttons)
+        self.assertNotIn('character_designer.animation_play_pause', buttons)
+        self.assertFalse(any(kind == 'prop' and value[0] == 'frame_current'
+                             for kind, value, _enabled in layout.records))
         self.assertIn('character_designer.animation_export_cancel', buttons)
         self.assertNotIn('character_designer.animation_link_import', buttons)
         self.assertNotIn('character_designer.animation_unity_import', buttons)

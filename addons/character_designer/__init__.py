@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 43),
+    "version": (0, 77, 44),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",

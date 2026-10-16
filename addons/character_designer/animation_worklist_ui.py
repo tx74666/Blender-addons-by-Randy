@@ -166,6 +166,8 @@ def _rigging_display(rig):
 def _active_side(item, side):
     action = item.source_action if side == 'SOURCE' else item.custom_action
     rig = item.rig
+    if getattr(getattr(rig, 'data', None), 'pose_position', 'POSE') == 'REST':
+        return False
     if action is None or rig is None or rig.animation_data is None or item.side != side:
         return False
     if rig.animation_data.action == action:
@@ -339,7 +341,7 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     composition_base_item_id: StringProperty(name='A Work Copy', options={'HIDDEN'})
     catalog: CollectionProperty(type=CharacterDesignerAnimationWorklistCatalog)
     items: CollectionProperty(type=CharacterDesignerAnimationWorklistItem)
-    # Highlight only: loading a .blend or selecting a row must not swap Actions.
+    # The explicit Source/Custom buttons select entries; file load never swaps Actions.
     active_index: IntProperty(default=-1, min=-1)
     catalog_index: IntProperty(default=-1, min=-1)
     search: StringProperty(name='Search Clips', options={'TEXTEDIT_UPDATE'})
@@ -459,7 +461,8 @@ class CHARACTERDESIGNER_OT_worklist_use_main_rig(Operator):
         settings = _state(context)
         setup = getattr(context.scene, 'character_designer_setup', None)
         return (settings is not None and bool(settings.workspace_path)
-                and getattr(setup, 'rig', None) is not None and _idle(context))
+                and getattr(setup, 'rig', None) is not None and _idle(context)
+                and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'})
 
     def execute(self, context):
         return _run(self, context, 'adopt_main_rig')
@@ -468,7 +471,8 @@ class CHARACTERDESIGNER_OT_worklist_use_main_rig(Operator):
 class CHARACTERDESIGNER_OT_worklist_restore_main_rig(Operator):
     bl_idname = 'character_designer.worklist_restore_main_rig'
     bl_label = 'Restore Main Rig'
-    bl_description = 'Validate and restore the preceding artist Action, rig data, Original mode and display; keep local drafts'
+    bl_description = ('Exit animation editing and restore the state before Use Main Rig; keep local drafts. '
+                      'Use Rest Pose to view the resting model instead')
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -476,10 +480,40 @@ class CHARACTERDESIGNER_OT_worklist_restore_main_rig(Operator):
         settings = _state(context)
         rig = getattr(settings, 'rig', None)
         return (rig is not None and hasattr(rig, 'get')
-                and rig.get('character_designer_worklist_main_session_v1') is not None and _idle(context))
+                and rig.get('character_designer_worklist_main_session_v1') is not None and _idle(context)
+                and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'})
 
     def execute(self, context):
         return _run(self, context, 'restore_main_rig')
+
+
+class CHARACTERDESIGNER_OT_worklist_pose_position(Operator):
+    bl_idname = 'character_designer.worklist_pose_position'
+    bl_label = 'Show Rest Pose or Animation Pose'
+    bl_description = ('Switch the Main Rig display without changing animations or bone rest data; '
+                      'choose Pose or an animation to resume')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    position: EnumProperty(items=(('REST', 'Rest Pose', 'Show the undeformed resting model'),
+                                 ('POSE', 'Pose', 'Show the current animation pose')))
+
+    @classmethod
+    def poll(cls, context):
+        from . import animation_rest_pose
+        return _idle(context) and animation_rest_pose.can_show(context)
+
+    def execute(self, context):
+        from . import animation_rest_pose
+        try:
+            if self.position == 'REST':
+                animation_rest_pose.show_rest(context)
+            else:
+                animation_rest_pose.show_pose(context)
+        except (ValueError, RuntimeError, AttributeError, ReferenceError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        _redraw(context)
+        return {'FINISHED'}
 
 
 class CHARACTERDESIGNER_OT_worklist_add(Operator):
@@ -826,21 +860,17 @@ class CHARACTERDESIGNER_UL_animation_catalog(UIList):
             controls.operator('character_designer.worklist_add', text='', icon='ADD').clip_key = item.clip_key
 
 
-class CHARACTERDESIGNER_UL_animation_worklist(UIList):
-    def filter_items(self, _context, _data, _propname):
-        return [], []  # Keep the imported order and stable item identities.
-
-    def draw_filter(self, _context, _layout):
-        pass
-
-    def draw_item(self, context, layout, _data, item, _icon, _active_data,
-                  _active_propname, _index=0, _flt_flag=0):
-        row = layout.row(align=True)
-        row.enabled = _idle(context)
+def _draw_worklist_actions(layout, context, settings):
+    # Plain rows avoid UIList's whole-row selection border. The Sidebar scrolls
+    # the full list, and each explicit button keeps the existing active semantics.
+    column = layout.column(align=True)
+    column.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
+    for item in settings.items:
+        row = column.row(align=True)
         for side, icon, action in (('SOURCE', 'LINKED', item.source_action),
                                    ('CUSTOM', 'EDITMODE_HLT', item.custom_action)):
             cell = row.row(align=True)
-            cell.enabled = row.enabled and action is not None
+            cell.enabled = action is not None
             activate = cell.operator('character_designer.worklist_activate', text=item.name, icon=icon,
                                      depress=_active_side(item, side))
             activate.item_id, activate.side = item.item_id, side
@@ -894,6 +924,15 @@ def draw_worklist(layout, context):
     header.operator('character_designer.worklist_refresh', text='', icon='FILE_REFRESH')
     box.label(text='Scene: ' + getattr(context.scene, 'name', 'Unnamed'), icon='SCENE_DATA')
     busy = scan_pending() or _collection().running()
+    from . import animation_rest_pose
+    if animation_rest_pose.can_show(context):
+        display_rig = animation_rest_pose.get_rig(context)
+        pose_row = box.row(align=True)
+        pose_row.enabled = _idle(context)
+        for position, label in (('REST', 'Rest Pose'), ('POSE', 'Pose')):
+            show = pose_row.operator('character_designer.worklist_pose_position', text=label,
+                                     depress=display_rig.data.pose_position == position)
+            show.position = position
     if settings.workspace_path:
         box.label(text='Character: ' + (settings.target_name or 'Unnamed'))
         setup = getattr(context.scene, 'character_designer_setup', None)
@@ -905,7 +944,6 @@ def draw_worklist(layout, context):
             if (rig is not None and hasattr(rig, 'get')
                     and rig.get('character_designer_worklist_main_session_v1') is not None):
                 row.label(text='Rig: ' + rig.name, icon='ARMATURE_DATA')
-                row.operator('character_designer.worklist_restore_main_rig', text='Restore Main Rig', icon='LOOP_BACK')
             else:
                 row.operator('character_designer.worklist_use_main_rig', text='Use Main Rig', icon='ARMATURE_DATA')
         batch = box.row(align=True)
@@ -919,8 +957,7 @@ def draw_worklist(layout, context):
             prepared.operator('character_designer.worklist_add_prepared_animation',
                               text='Add Prepared Animation', icon='ADD')
         if settings.items:
-            box.template_list('CHARACTERDESIGNER_UL_animation_worklist', '', settings, 'items',
-                              settings, 'active_index', rows=4, maxrows=8, sort_lock=True)
+            _draw_worklist_actions(box, context, settings)
         else:
             box.label(text='Prepare motions in Unity, then click Import Prepared.', icon='INFO')
         _draw_rigging(box, context, _selected(settings))
@@ -929,6 +966,10 @@ def draw_worklist(layout, context):
                       icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
         if settings.show_advanced:
             box.operator('character_designer.worklist_register_new', text='New Action', icon='ACTION')
+            if (rig is not None and hasattr(rig, 'get')
+                    and rig.get('character_designer_worklist_main_session_v1') is not None):
+                box.operator('character_designer.worklist_restore_main_rig',
+                             text='Restore Main Rig', icon='LOOP_BACK')
     if busy:
         box.operator('character_designer.worklist_cancel_collection', text='Cancel', icon='CANCEL')
     unresolved = any(
@@ -961,6 +1002,7 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_refresh,
     CHARACTERDESIGNER_OT_worklist_use_main_rig,
     CHARACTERDESIGNER_OT_worklist_restore_main_rig,
+    CHARACTERDESIGNER_OT_worklist_pose_position,
     CHARACTERDESIGNER_OT_worklist_add,
     CHARACTERDESIGNER_OT_worklist_add_ready,
     CHARACTERDESIGNER_OT_worklist_scan_changes,
@@ -976,5 +1018,4 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_rigging_edit,
     CHARACTERDESIGNER_OT_worklist_save_controls,
     CHARACTERDESIGNER_UL_animation_catalog,
-    CHARACTERDESIGNER_UL_animation_worklist,
 )

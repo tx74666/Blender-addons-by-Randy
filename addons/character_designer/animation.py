@@ -727,12 +727,6 @@ class CHARACTERDESIGNER_PT_animation(Panel):
         draw_worklist(layout, context)
         worklist = context.scene.character_designer_animation_worklist
         if worklist.workspace_path:
-            if worklist.rig:
-                row = layout.row(align=True)
-                playing = context.screen and context.screen.is_animation_playing
-                row.operator('character_designer.animation_play_pause', text='Pause' if playing else 'Play',
-                             icon='PAUSE' if playing else 'PLAY')
-                row.prop(context.scene, 'frame_current', text='Frame')
             from .animation_export import active_job
             if active_job():
                 layout.operator('character_designer.animation_export_cancel', icon='CANCEL')

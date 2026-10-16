@@ -1,5 +1,22 @@
 # Animation Worklist
 
+## Rest Pose and compact animation rows (0.77.44)
+
+**Rest Pose** shows the Main Rig in Blender's native rest display. **Pose**
+returns to the retained animation pose. These switches preserve Actions,
+keyframes, bone rest data and the current mesh Edit Mode selection. Selecting
+an animation also leaves a Rest display opened by these buttons. Finish Edit
+Mode before switching animations or entering Main Rig animation editing.
+
+Each row has the original animation on the left and the editable work copy on
+the right, without a surrounding list selection border. Use the Sidebar's
+normal scrolling for longer lists and Blender's Space/Timeline for playback
+and frame changes.
+
+**Advanced > Restore Main Rig** exits animation editing and restores the artist
+state recorded before **Use Main Rig**. It retains local animation drafts; use
+**Use Main Rig** again to continue editing them. It is separate from Rest Pose.
+
 Available in **Character Designer 0.69.0 > Animation**. The real Walk_N and Idle
 pair passed Blender import, independent editing, save/reopen, per-entry Sync,
 Unity candidate preview and private-character Apply. See the [local release and

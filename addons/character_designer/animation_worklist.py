@@ -442,6 +442,12 @@ def _finish_rig(context, rig, captured):
 
 
 def adopt_main_rig(context):
+    from .animation_rest_pose import resume_for_operation
+    with resume_for_operation(context, getattr(getattr(context.scene, 'character_designer_setup', None), 'rig', None)):
+        return _adopt_main_rig(context)
+
+
+def _adopt_main_rig(context):
     from .animation_worklist_target import adopt_main_rig as adopt
     rig = getattr(getattr(context.scene, 'character_designer_setup', None), 'rig', None)
     rigging = _rigging_module(rig)
@@ -459,6 +465,12 @@ def adopt_main_rig(context):
 
 
 def restore_main_rig(context):
+    from .animation_rest_pose import resume_for_operation
+    with resume_for_operation(context, state(context).rig):
+        return _restore_main_rig(context)
+
+
+def _restore_main_rig(context):
     from . import animation_composition as composition
     if composition.active(state(context).rig):
         raise ValueError('Close Composition before restoring Main Rig; its native draft is retained.')
@@ -773,6 +785,12 @@ def _association(item, prepared=None):
 
 
 def activate(context, item_id, side='CUSTOM', *, _collection=False):
+    from .animation_rest_pose import resume_for_operation
+    with resume_for_operation(context, state(context).rig):
+        return _activate_worklist_action(context, item_id, side, _collection=_collection)
+
+
+def _activate_worklist_action(context, item_id, side='CUSTOM', *, _collection=False):
     from . import animation_composition as composition
     if composition.active(state(context).rig):
         raise ValueError('Close Composition before switching or removing worklist Actions; both drafts are retained.')
