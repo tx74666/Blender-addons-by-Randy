@@ -22,7 +22,7 @@ def product():
              and node.name in names]
     namespace = {'array': array, 'RECORD_KEY': RECORD_KEY, 'MAX_ANGLE': math.radians(120),
                  '_CACHE': {}, '_OUTPUT_CACHE': {}, '_KEY_REFERENCES': {}, '_ERRORS': {},
-                 '_BUSY': False}
+                 '_BUSY': False, '_HISTORY_RECOVERY_PENDING': False}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), namespace)
     return namespace
 

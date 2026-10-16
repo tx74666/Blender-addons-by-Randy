@@ -47,6 +47,7 @@ _RUNTIME_REGISTERED = False
 _INITIALIZE_PENDING = False
 _SCENE_CLEANUP_PENDING = False
 _SCENE_STATE_ACTIVE = False
+_HISTORY_RECOVERY_PENDING = False
 
 
 class ForearmTwistError(ValueError):
@@ -618,12 +619,20 @@ def update_runtime(scene, depsgraph=None):
     global _BUSY
     if _BUSY:
         return
+    if _HISTORY_RECOVERY_PENDING:
+        # Undo/Redo replaces native IDs before its post callbacks finish. Never
+        # request evaluation inside that stack; resume only with a graph Blender
+        # supplies after the restore, including any preview rollback it needs.
+        if depsgraph is None or _complete_history_recovery():
+            return
+    owners = tuple(obj for obj in scene.objects
+                   if obj.type == "MESH" and RECORD_KEY in obj)
+    if not owners:
+        return
     _BUSY = True
     try:
         depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
-        for obj in scene.objects:
-            if obj.type != "MESH" or RECORD_KEY not in obj:
-                continue
+        for obj in owners:
             try:
                 _calculate_object(obj, depsgraph)
             except Exception as exc:
@@ -646,6 +655,11 @@ def update_runtime(scene, depsgraph=None):
 
 @persistent
 def _graph_post(scene, depsgraph):
+    if _BUSY:
+        return
+    if _HISTORY_RECOVERY_PENDING:
+        update_runtime(scene, depsgraph)
+        return
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
     update_runtime(scene, depsgraph)
@@ -653,6 +667,11 @@ def _graph_post(scene, depsgraph):
 
 @persistent
 def _frame_post(scene, depsgraph=None):
+    if _BUSY:
+        return
+    if _HISTORY_RECOVERY_PENDING:
+        update_runtime(scene, depsgraph)
+        return
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
     update_runtime(scene, depsgraph)
@@ -660,8 +679,9 @@ def _frame_post(scene, depsgraph=None):
 
 @persistent
 def _load_post(_dummy):
-    global _SESSION
+    global _SESSION, _HISTORY_RECOVERY_PENDING
     _SESSION = None
+    _HISTORY_RECOVERY_PENDING = False
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
     _CACHE.clear()
@@ -678,16 +698,37 @@ def _load_post(_dummy):
 
 @persistent
 def _undo_post(_dummy):
-    if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
-        _complete_runtime_lifecycle()
+    global _SESSION, _HISTORY_RECOVERY_PENDING
+    # Only discard Python state here. Preview recovery can remove Shape Keys
+    # and restore Object/Pose/Edit Mode, so it belongs after native Undo too.
+    _SESSION = None
+    _HISTORY_RECOVERY_PENDING = True
     _CACHE.clear()
     validation_cache.clear()
     _OUTPUT_CACHE.clear()
     _KEY_REFERENCES.clear()
     _ERRORS.clear()
-    _recover_previews()
-    _remember_named_keys()
-    update_runtime(bpy.context.scene)
+
+
+def _complete_history_recovery():
+    """Drain once on a supplied graph; signal when recovery invalidated it."""
+    global _BUSY, _HISTORY_RECOVERY_PENDING
+    _HISTORY_RECOVERY_PENDING = False
+    previous_busy = _BUSY
+    _BUSY = True
+    try:
+        lifecycle = _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING
+        if lifecycle:
+            _complete_runtime_lifecycle()
+        restored = _recover_previews()
+        _remember_named_keys()
+        for scene in bpy.data.scenes:
+            _set_render_lock(scene)
+        # A rollback may change pose, keys and editor modes. Its tagged updates
+        # will provide a fresh graph; do not correct against the pre-rollback one.
+        return lifecycle or restored
+    finally:
+        _BUSY = previous_busy
 
 
 @persistent
@@ -703,10 +744,12 @@ def _recover_previews():
     The interactive session lives in Python, but an unrelated Blender Undo
     operator can snapshot its temporary datablocks. A small serialized rollback
     marker keeps those snapshots reversible after the Python session is gone.
+    Return whether a rollback touched scene data, invalidating its prior graph.
     """
     global _SESSION
     if _SESSION is not None:
-        return
+        return False
+    restored = False
     for obj in tuple(bpy.data.objects):
         if obj.type != "MESH" or PREVIEW_KEY not in obj:
             continue
@@ -719,11 +762,13 @@ def _recover_previews():
                           old_key_coordinates=([p.co.copy() for p in key.data]
                                                if marker.pop("had_calibration", False) and key is not None else None))
             _SESSION = marker
+            restored = True
             finish_test(bpy.context, False, refresh=False)
         except (KeyError, ValueError, TypeError, ReferenceError, RuntimeError) as exc:
             _ERRORS[obj.name] = f"Could not restore interrupted calibration: {exc}"
             if _SESSION is not None:
                 break
+    return restored
 
 
 def _rotation_vector(quaternion):
@@ -1976,7 +2021,7 @@ def _scene_data_available():
 
 def _cleanup_runtime_scene():
     """Finish scene-side teardown only when Blender exposes live datablocks."""
-    global _SESSION, _SCENE_STATE_ACTIVE
+    global _SESSION, _SCENE_STATE_ACTIVE, _HISTORY_RECOVERY_PENDING
     try:
         if _SESSION is not None:
             try:
@@ -2003,6 +2048,7 @@ def _cleanup_runtime_scene():
                 del scene[LOCK_KEY]
     finally:
         _SCENE_STATE_ACTIVE = False
+        _HISTORY_RECOVERY_PENDING = False
         _CACHE.clear()
         _OUTPUT_CACHE.clear()
         _KEY_REFERENCES.clear()
@@ -2058,8 +2104,10 @@ def register_forearm_twist_runtime():
 
 def unregister_forearm_twist_runtime():
     global _DRAW_HANDLE, _RUNTIME_REGISTERED, _INITIALIZE_PENDING, _SCENE_CLEANUP_PENDING
+    global _HISTORY_RECOVERY_PENDING
     _RUNTIME_REGISTERED = False
     _INITIALIZE_PENDING = False
+    _HISTORY_RECOVERY_PENDING = False
     _SCENE_CLEANUP_PENDING |= _SCENE_STATE_ACTIVE or _SESSION is not None
     for name, handler in _HANDLERS:
         handlers = getattr(bpy.app.handlers, name)

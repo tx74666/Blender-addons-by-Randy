@@ -119,6 +119,8 @@ def connect(context, filepath):
     saved.target_name = record['targetName']
     saved.model_file, saved.model_sha256 = record['modelFile'], record['modelSha256'].lower()
     _fill_catalog(saved, record)
+    if hasattr(saved, 'connection_check_failed'):
+        saved.connection_check_failed = False
     saved.status, saved.has_error = 'Library connected. Prepare a clip in Unity, then add it to the worklist.', False
     return saved
 
@@ -788,6 +790,34 @@ def activate(context, item_id, side='CUSTOM', *, _collection=False):
     from .animation_rest_pose import resume_for_operation
     with resume_for_operation(context, state(context).rig):
         return _activate_worklist_action(context, item_id, side, _collection=_collection)
+
+
+def resume_and_activate(context, item_id, side='CUSTOM'):
+    """One explicit animation click resumes the retained artist work session."""
+    from . import animation_worklist_target as target
+    from . import animation_composition as composition
+    _idle(context)
+    saved = state(context)
+    item = _item(saved, item_id)
+    if side not in {'SOURCE', 'CUSTOM'}:
+        raise ValueError('Choose Source or Custom.')
+    if side == 'SOURCE' and getattr(item, 'new_animation', False):
+        raise ValueError('This new Action has no Original or Source version.')
+    if composition.active(item.rig):
+        raise ValueError('Close Composition before switching worklist Actions; both drafts are retained.')
+    _check_baseline(item)
+    if not target.managed(item.rig) or target.is_adopted(item.rig):
+        return activate(context, item_id, side)
+    adopt_main_rig(context)
+    try:
+        return activate(context, item_id, side)
+    except Exception as exc:
+        try:
+            restore_main_rig(context)
+        except Exception as recovery:
+            raise RuntimeError('Animation activation failed and the saved artist recovery snapshot '
+                               'could not be restored: ' + str(recovery)) from exc
+        raise
 
 
 def _activate_worklist_action(context, item_id, side='CUSTOM', *, _collection=False):

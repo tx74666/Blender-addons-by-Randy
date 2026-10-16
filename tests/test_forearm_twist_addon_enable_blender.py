@@ -20,7 +20,7 @@ sys.path.insert(0, TESTS)
 ERRORS = []
 
 
-def record_error():
+def record_error(*_args):
     ERRORS.append(traceback.format_exc())
 
 

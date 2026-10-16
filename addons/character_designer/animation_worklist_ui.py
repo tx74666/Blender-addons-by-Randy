@@ -149,6 +149,36 @@ def _selected(settings):
     return None
 
 
+def _workspace_connection_display(settings):
+    """Display the last explicit workspace check, without touching its files.
+
+    A saved path alone is not connection evidence. The backend writes the
+    persistent identity only after loading and validating a Unity workspace.
+    This is a file exchange, so the checkmark does not promise a live Unity
+    process or continuous checks of files that may have changed on disk.
+    """
+    if not getattr(settings, 'workspace_path', ''):
+        return 'Connect', 'FILE_FOLDER'
+    if getattr(settings, 'connection_check_failed', False):
+        return 'Check Failed', 'ERROR'
+    if getattr(settings, 'workspace_identity', ''):
+        return 'Connected', 'CHECKMARK'
+    return 'Check Connection', 'QUESTION'
+
+
+def _run_workspace(operator, context, name, *args):
+    result = _run(operator, context, name, *args)
+    settings = _state(context)
+    if settings is not None:
+        if result == {'FINISHED'}:
+            settings.connection_check_failed = False
+        elif name == 'refresh':
+            # A failed attempt to choose another workspace leaves the current
+            # connection intact; a failed recheck marks the current one.
+            settings.connection_check_failed = True
+    return result
+
+
 def _catalog_matches(item, search):
     text = (item.name + ' ' + item.source_name).casefold()
     return all(term in text for term in search.casefold().split())
@@ -350,6 +380,7 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     prepare_request_id: StringProperty(options={'HIDDEN'})
     prepared_work_item_ids: StringProperty(options={'HIDDEN'})
     workspace_identity: StringProperty(options={'HIDDEN'})
+    connection_check_failed: BoolProperty(default=False, options={'HIDDEN'})
     target_name: StringProperty(name='Character')
     target_guid: StringProperty(options={'HIDDEN'})
     model_file: StringProperty(subtype='FILE_PATH', options={'HIDDEN'})
@@ -367,7 +398,7 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
 class CHARACTERDESIGNER_OT_worklist_connect(Operator):
     bl_idname = 'character_designer.worklist_connect'
     bl_label = 'Connect Workspace'
-    bl_description = 'Open a Unity animation workspace or a readable .workspace.json entry'
+    bl_description = 'Choose or change the connected Unity animation workspace'
     bl_options = {'REGISTER'}
     filepath: StringProperty(subtype='FILE_PATH')
     filter_glob: StringProperty(default='character_animation_workspace.json;*.json', options={'HIDDEN'})
@@ -375,6 +406,21 @@ class CHARACTERDESIGNER_OT_worklist_connect(Operator):
     @classmethod
     def poll(cls, context):
         return _state(context) is not None and _idle(context)
+
+    @classmethod
+    def description(cls, context, _properties):
+        settings = _state(context)
+        if settings is None or not settings.workspace_path:
+            return 'Choose a Unity animation workspace or a readable .workspace.json entry'
+        label, _icon = _workspace_connection_display(settings)
+        if label == 'Connected':
+            status = ('Workspace validated at the last successful Connect or Refresh. '
+                      'Use Refresh to check its files again.')
+        elif label == 'Check Failed':
+            status = 'The last Refresh failed. Existing animations and edits are kept.'
+        else:
+            status = 'A workspace path is saved, but has no validated connection identity. Use Refresh to check it.'
+        return status + '\nClick to choose another workspace.\n' + settings.workspace_path
 
     def invoke(self, context, _event):
         if not self.filepath:
@@ -403,7 +449,7 @@ class CHARACTERDESIGNER_OT_worklist_connect(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        return _run(self, context, 'connect', self.filepath)
+        return _run_workspace(self, context, 'connect', self.filepath)
 
 
 class CHARACTERDESIGNER_OT_worklist_add_prepared_animation(Operator):
@@ -447,13 +493,14 @@ class CHARACTERDESIGNER_OT_worklist_refresh(Operator):
         return settings is not None and bool(settings.workspace_path) and _idle(context)
 
     def execute(self, context):
-        return _run(self, context, 'refresh')
+        return _run_workspace(self, context, 'refresh')
 
 
 class CHARACTERDESIGNER_OT_worklist_use_main_rig(Operator):
     bl_idname = 'character_designer.worklist_use_main_rig'
-    bl_label = 'Use Main Rig'
-    bl_description = 'Validate prepared motion on this scene Main Rig and retain a persistent artist recovery snapshot'
+    bl_label = 'Edit Animations'
+    bl_description = ('Continue editing connected animations with this character and its existing controllers; '
+                      'keep a recovery snapshot of the character before animation editing')
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -471,7 +518,7 @@ class CHARACTERDESIGNER_OT_worklist_use_main_rig(Operator):
 class CHARACTERDESIGNER_OT_worklist_restore_main_rig(Operator):
     bl_idname = 'character_designer.worklist_restore_main_rig'
     bl_label = 'Restore Main Rig'
-    bl_description = ('Exit animation editing and restore the state before Use Main Rig; keep local drafts. '
+    bl_description = ('Exit animation editing and restore the state before Edit Animations; keep local drafts. '
                       'Use Rest Pose to view the resting model instead')
     bl_options = {'REGISTER'}
 
@@ -633,7 +680,14 @@ class CHARACTERDESIGNER_OT_worklist_activate(Operator):
         return _state(context) is not None and _idle(context)
 
     def execute(self, context):
-        return _run(self, context, 'activate', self.item_id, side=self.side)
+        settings = _state(context)
+        rig = getattr(settings, 'rig', None)
+        get = getattr(rig, 'get', None)
+        restored = get('character_designer_worklist_main_restored_v1') if callable(get) else None
+        needs_resume = (type(restored) in (bool, int) and restored == 1
+                        and get('character_designer_worklist_main_session_v1') is None)
+        return _run(self, context, 'resume_and_activate' if needs_resume else 'activate',
+                    self.item_id, side=self.side)
 
 
 class CHARACTERDESIGNER_OT_worklist_remove(Operator):
@@ -920,7 +974,8 @@ def draw_worklist(layout, context):
     header = box.row(align=True)
     header.label(text='Animations', icon='ACTION')
     header.operator_context = 'INVOKE_DEFAULT'
-    header.operator('character_designer.worklist_connect', text='Connect', icon='FILE_FOLDER')
+    connection_label, connection_icon = _workspace_connection_display(settings)
+    header.operator('character_designer.worklist_connect', text=connection_label, icon=connection_icon)
     header.operator('character_designer.worklist_refresh', text='', icon='FILE_REFRESH')
     box.label(text='Scene: ' + getattr(context.scene, 'name', 'Unnamed'), icon='SCENE_DATA')
     busy = scan_pending() or _collection().running()
@@ -945,7 +1000,7 @@ def draw_worklist(layout, context):
                     and rig.get('character_designer_worklist_main_session_v1') is not None):
                 row.label(text='Rig: ' + rig.name, icon='ARMATURE_DATA')
             else:
-                row.operator('character_designer.worklist_use_main_rig', text='Use Main Rig', icon='ARMATURE_DATA')
+                row.operator('character_designer.worklist_use_main_rig', text='Edit Animations', icon='ARMATURE_DATA')
         batch = box.row(align=True)
         batch.enabled = _idle(context)
         batch.operator('character_designer.worklist_add_ready', text='Import Prepared', icon='IMPORT')

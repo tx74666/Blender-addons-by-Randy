@@ -39,6 +39,7 @@ _IN_TIMER = False
 _WRITE_DEPTH = 0
 _BACKEND_CACHE = None
 _BACKEND_CACHE_TIME = 0.0
+_TEARDOWN_REASON = None
 _CHANNELS = ('location', 'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle', 'scale')
 _DEFAULTS = {'wiggle_stiff': 400.0, 'wiggle_damp': 8.0, 'wiggle_gravity': 0.25,
              'wiggle_mass': 1.0, 'wiggle_stretch': 0.0, 'wiggle_chain': True}
@@ -393,6 +394,8 @@ def _list_remove(scene, rig_name, names):
 
 
 def _start(context, source):
+    if _TEARDOWN_REASON is not None and _finish_deferred_stop() is not None:
+        _fail('Finish the pending Dress motion cleanup in the active scene before starting Automatic.')
     backend = _backend()
     if source.as_pointer() not in _SESSIONS:
         _recover_source(source)
@@ -849,6 +852,39 @@ def register():
         if function not in collection:
             collection.append(function)
     _REGISTERED = True
+    if _TEARDOWN_REASON is not None:
+        _schedule_deferred_stop(_TEARDOWN_REASON)
+
+
+def _scene_context_available():
+    return (hasattr(bpy.data, 'objects') and hasattr(bpy.data, 'scenes')
+            and getattr(bpy.context, 'scene', None) is not None)
+
+
+def _schedule_deferred_stop(reason):
+    global _TEARDOWN_REASON
+    _TEARDOWN_REASON = reason
+    if not bpy.app.timers.is_registered(_finish_deferred_stop):
+        bpy.app.timers.register(_finish_deferred_stop, first_interval=0.0)
+
+
+def _finish_deferred_stop():
+    """Restore owned native flags once RestrictBlend exposes live scene data."""
+    global _TEARDOWN_REASON
+    if _TEARDOWN_REASON is None:
+        return None
+    if not _scene_context_available():
+        return 0.05
+    for key, saved in list(_SESSIONS.items()):
+        try:
+            _stop(key, reason=_TEARDOWN_REASON)
+        except Exception:
+            # _stop removes its row first. Preserve that exact recovery record
+            # if a native setter failed; do not lose it or retry forever.
+            _SESSIONS.setdefault(key, saved)
+            raise
+    _TEARDOWN_REASON = None
+    return None
 
 
 def unregister():
@@ -856,7 +892,13 @@ def unregister():
     # Failed initialization may clean up under Blender's restricted context.
     # An adapter that never started owns no saved Automatic state to suspend.
     if _REGISTERED or _SESSIONS:
-        suspend(reason='Character Designer stopped automatic Dress motion; the current shape is kept.')
+        reason = 'Character Designer stopped automatic Dress motion; the current shape is kept.'
+        if _scene_context_available():
+            suspend(reason=reason)
+        elif _SESSIONS:
+            # Keep native recovery references until the restricted registration
+            # context exits. An idle adapter needs only callback cleanup.
+            _schedule_deferred_stop(reason)
     for name, function in (('frame_change_pre', _frame_pre), ('save_pre', _save_pre), ('save_post', _save_post),
                            ('load_pre', _lifecycle_pre), ('load_post', _load_post), ('undo_pre', _lifecycle_pre),
                            ('redo_pre', _lifecycle_pre), ('undo_post', _undo_post), ('redo_post', _undo_post),

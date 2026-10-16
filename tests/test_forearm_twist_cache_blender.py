@@ -283,8 +283,8 @@ def test_failed_proof_is_rechecked_after_undo_and_unload():
         runtime.update_runtime(bpy.context.scene, graph)
         assert pairs.call_count == 1 and all(key.mute for key in managed(obj))
         runtime._undo_post(None)
-        assert pairs.call_count == 2, 'Undo must discard the old failed proof and validate again'
-        runtime.update_runtime(bpy.context.scene, graph)
+        assert pairs.call_count == 1, 'Undo must defer native evaluation until a supplied graph'
+        runtime._graph_post(bpy.context.scene, graph)
         assert pairs.call_count == 2 and obj.name in runtime._ERRORS
         runtime.unregister_forearm_twist_runtime()
         assert not cache._TOPOLOGY and not cache._MIRROR

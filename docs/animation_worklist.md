@@ -1,5 +1,18 @@
 # Animation Worklist
 
+## Connection and resuming edits (0.77.45)
+
+**Connected** and its checkmark mean the saved workspace identity passed the
+last Connect/Refresh. This is a file exchange with Unity; Unity need not remain
+open. Click Connected to choose another workspace, or Refresh to check it again.
+An unsuccessful Refresh displays **Check Failed** and retains the existing work.
+
+After restoring the artist state, click the original or work animation directly
+to resume editing. **Edit Animations** is the explicit entry for the same current
+character. Finishing Mesh Edit Mode is still required before switching Actions.
+Rest Pose changes only the native pose display; it does not exit animation
+editing or select Original bone display.
+
 ## Rest Pose and compact animation rows (0.77.44)
 
 **Rest Pose** shows the Main Rig in Blender's native rest display. **Pose**

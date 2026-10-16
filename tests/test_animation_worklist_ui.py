@@ -75,7 +75,7 @@ class WorklistUI(unittest.TestCase):
         animation = ModuleType(package_name + '.animation')
         animation._link_idle = Mock(return_value=True)
         self.backend = ModuleType(package_name + '.animation_worklist')
-        for method in ('connect', 'refresh', 'add', 'activate', 'remove', 'move', 'sync'):
+        for method in ('connect', 'refresh', 'add', 'activate', 'resume_and_activate', 'remove', 'move', 'sync'):
             setattr(self.backend, method, Mock())
         self.collection = ModuleType(package_name + '.animation_worklist_collection')
         for method in ('begin_add_ready', 'scan_changes', 'begin_sync_changed', 'cancel', 'stop'):
@@ -120,6 +120,8 @@ class WorklistUI(unittest.TestCase):
                    for name, source, ready in (('Walk', 'Soldier', True), ('Dance', 'Civilian', False))]
         self.state = SimpleNamespace(items=items, catalog=catalog, active_index=0, catalog_index=1,
                                      search='', workspace_path='character_animation_workspace.json',
+                                     workspace_identity='validated-workspace-identity',
+                                     connection_check_failed=False,
                                      target_name='Cosha', show_catalog=True, status='', has_error=False,
                                      collection_status='', scan_completed=False, show_advanced=False)
         self.context = SimpleNamespace(
@@ -285,6 +287,65 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(operator.filepath, 'D:/HandChosen/Cosha.workspace.json')
         self.animation.unity_exchange_folder.assert_not_called()
         self.backend.connect.assert_not_called()
+
+    def test_connection_header_distinguishes_saved_path_from_validated_workspace(self):
+        for path, identity, failed, text, icon in (
+                ('', '', False, 'Connect', 'FILE_FOLDER'),
+                ('', 'old-identity', False, 'Connect', 'FILE_FOLDER'),
+                ('workspace.json', '', False, 'Check Connection', 'QUESTION'),
+                ('workspace.json', 'validated-identity', False, 'Connected', 'CHECKMARK'),
+                ('workspace.json', 'validated-identity', True, 'Check Failed', 'ERROR')):
+            with self.subTest(path=path, identity=identity, failed=failed):
+                self.state.workspace_path = path
+                self.state.workspace_identity = identity
+                self.state.connection_check_failed = failed
+                layout = Layout()
+                with patch.object(Path, 'open', side_effect=AssertionError('UI read a file')), \
+                        patch.object(Path, 'is_file', side_effect=AssertionError('UI probed a file')), \
+                        patch.object(Path, 'is_dir', side_effect=AssertionError('UI probed a folder')), \
+                        patch.object(self.ui, '_backend', side_effect=AssertionError('UI called the backend')):
+                    self.ui.draw_worklist(layout, self.context)
+                buttons = [value for kind, value, _enabled in layout.records
+                           if kind == 'operator' and value[0] == 'character_designer.worklist_connect']
+                self.assertEqual(len(buttons), 1)
+                self.assertEqual((buttons[0][1]['text'], buttons[0][1]['icon']), (text, icon))
+
+    def test_connection_tooltip_identifies_saved_check_and_keeps_workspace_change_available(self):
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect
+        description = operator.description(self.context, None)
+        self.assertIn('last successful Connect or Refresh', description)
+        self.assertIn('Use Refresh', description)
+        self.assertIn('choose another workspace', description)
+        self.assertIn(self.state.workspace_path, description)
+        self.state.has_error = True  # An unrelated animation error is not disconnection evidence.
+        self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
+        self.assertTrue(operator.poll(self.context))
+
+    def test_failed_refresh_marks_current_connection_without_clearing_saved_work(self):
+        self.backend.refresh.side_effect = ValueError('Workspace identity changed.')
+        before = self.state.workspace_path, self.state.workspace_identity, self.state.items[:]
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_refresh()
+        self.assertEqual(operator.execute(self.context), {'CANCELLED'})
+        self.assertTrue(self.state.connection_check_failed)
+        self.assertEqual(self.ui._workspace_connection_display(self.state), ('Check Failed', 'ERROR'))
+        self.assertEqual((self.state.workspace_path, self.state.workspace_identity, self.state.items), before)
+        self.assertIn('last Refresh failed', self.ui.CHARACTERDESIGNER_OT_worklist_connect.description(self.context, None))
+        self.backend.refresh.side_effect = None
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.assertFalse(self.state.connection_check_failed)
+        self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
+
+    def test_rejected_replacement_keeps_previous_connection_check(self):
+        self.backend.connect.side_effect = ValueError('Another character workspace cannot replace this worklist.')
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect()
+        operator.filepath = 'different-workspace.json'
+        self.assertEqual(operator.execute(self.context), {'CANCELLED'})
+        self.assertFalse(self.state.connection_check_failed)
+        self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
+        self.backend.connect.side_effect = None
+        self.state.connection_check_failed = True
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        self.assertFalse(self.state.connection_check_failed)
 
     def test_rna_contract_has_no_action_switching_update_callbacks(self):
         state = self.ui.CharacterDesignerAnimationWorklistState.__annotations__
@@ -589,7 +650,7 @@ class WorklistUI(unittest.TestCase):
         self.assertFalse(any(kind == 'list' for kind, _value, _enabled in layout.records))
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
-            ('character_designer.worklist_connect', 'Connect'),
+            ('character_designer.worklist_connect', 'Connected'),
             ('character_designer.worklist_refresh', ''),
             ('character_designer.worklist_add_ready', 'Import Prepared'),
             ('character_designer.worklist_sync_changed', 'Export Changes'),
@@ -639,6 +700,32 @@ class WorklistUI(unittest.TestCase):
         self.state.items.reverse()
         self.assertEqual(activate.execute(self.context), {'FINISHED'})
         self.backend.activate.assert_called_once_with(self.context, 'id-Run', side='SOURCE')
+
+    def test_restored_character_action_buttons_resume_both_sides_without_selection_guessing(self):
+        for restored in (True, 1):
+            for side in ('SOURCE', 'CUSTOM'):
+                with self.subTest(restored=restored, side=side):
+                    self.state.rig = SimpleNamespace(get=lambda key:
+                        restored if key == 'character_designer_worklist_main_restored_v1' else None)
+                    self.backend.resume_and_activate.reset_mock()
+                    operator = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
+                    operator.item_id, operator.side = 'id-Run', side
+                    self.assertEqual(operator.execute(self.context), {'FINISHED'})
+                    self.backend.resume_and_activate.assert_called_once_with(self.context, 'id-Run', side=side)
+                    self.backend.activate.assert_not_called()
+
+    def test_action_buttons_only_resume_explicit_restored_flag_without_active_session(self):
+        for restored, session in ((None, None), (False, None), (0, None), ('1', None),
+                                  (Mock(), None), (True, 'active-session'), (1, 'active-session')):
+            with self.subTest(restored=restored, session=session):
+                self.state.rig = SimpleNamespace(get=lambda key:
+                    restored if key == 'character_designer_worklist_main_restored_v1' else session)
+                self.backend.activate.reset_mock()
+                operator = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
+                operator.item_id, operator.side = 'id-Walk', 'CUSTOM'
+                self.assertEqual(operator.execute(self.context), {'FINISHED'})
+                self.backend.activate.assert_called_once_with(self.context, 'id-Walk', side='CUSTOM')
+                self.backend.resume_and_activate.assert_not_called()
 
     def test_row_names_both_actions_with_distinct_icons_without_remove(self):
         layout = Layout()
@@ -1120,6 +1207,10 @@ class WorklistUI(unittest.TestCase):
         self.ui.draw_worklist(layout, self.context)
         buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertIn('character_designer.worklist_use_main_rig', buttons)
+        self.assertEqual([value[1]['text'] for kind, value, _enabled in layout.records
+                          if kind == 'operator' and value[0] == 'character_designer.worklist_use_main_rig'],
+                         ['Edit Animations'])
+        self.assertIn('existing controllers', operator.bl_description)
 
     def test_adopted_main_rig_exposes_persistent_restore_button_only_in_advanced(self):
         main = SimpleNamespace(name='CoshaRig', get=lambda key:
