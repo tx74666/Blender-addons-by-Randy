@@ -127,10 +127,16 @@ class UnifiedWorkflowTests(unittest.TestCase):
             items={**ready, 'ARMS': {'state': 'READY'}}))
         with patch.object(c, 'status', side_effect=lambda context, rig, part: ready[part]):
             layout = Layout(); actions.draw_actions(layout, bpy.context)
-            self.assertEqual(layout.buttons, [('character_designer.body_setup', 'Generate')])
+            self.assertEqual(layout.buttons, [('character_designer.body_setup', 'Generate'),
+                ('character_designer.body_region', 'Release Controls'),
+                ('character_designer.move_character', 'Move Character'),
+                ('character_designer.ground_character', 'Ground Character')])
             self.bank.slots['THUMB.R'].guide.confirmed = False
             layout = Layout(); actions.draw_actions(layout, bpy.context)
-            self.assertEqual(layout.buttons, [])
+            self.assertEqual(layout.buttons, [('character_designer.body_region', 'Release Controls'),
+                ('character_designer.move_character', 'Move Character'),
+                ('character_designer.ground_character', 'Ground Character')])
+            self.assertIn('Both Legs: Not Built', layout.labels)
             reports = []
             operator = SimpleNamespace(action='GENERATE', report=lambda level, message: reports.append(message))
             with patch.object(actions._service(), 'generate', side_effect=AssertionError('Stale gate bypass')):
@@ -143,7 +149,9 @@ class UnifiedWorkflowTests(unittest.TestCase):
         with patch.object(actions, '_has_generated', return_value=True), \
              patch.object(c, 'generation_ready', side_effect=AssertionError('Legacy first-build gate')):
             layout = Layout(); actions.draw_actions(layout, bpy.context)
-            self.assertEqual([text for _, text in layout.buttons], ['Update', 'Edit Weights', 'Remove Generated Controls'])
+            self.assertEqual([text for _, text in layout.buttons],
+                ['Update', 'Edit Weights', 'Remove Generated Controls', 'Release Controls',
+                 'Move Character', 'Ground Character'])
             for action, function in (('GENERATE', 'generate'), ('REMOVE', 'remove')):
                 with patch.object(actions._service(), function, return_value={}) as call:
                     operator = SimpleNamespace(action=action, report=lambda *args: None)

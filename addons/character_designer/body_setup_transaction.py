@@ -246,7 +246,8 @@ def capture(context, rig):
     without adding users to an original widget or changing dependency guards.
     """
     from . import limb_ik, bone_collections, widget_collections
-    if rig.type != 'ARMATURE' or rig.library or rig.data.library or rig.data.users != 1 or rig.mode == 'EDIT':
+    if (rig.type != 'ARMATURE' or rig.library or rig.data.library
+            or not limb_ik._single_armature_user(rig) or rig.mode == 'EDIT'):
         raise ValueError('Body transactions need a local single-user armature outside Edit Mode.')
     resources = widget_collections._resources(rig)
     leaves = {entry['collection'] for entry in resources}
@@ -518,7 +519,9 @@ def restore(context, rig, snapshot):
             setattr(pb, key, _decode(value, remap))
         for key, value in state['bone_pointers'].items():
             setattr(bone, key, _decode(value, remap))
-        pb.matrix_basis = Matrix(state['basis'])
+        # Pose RNA above restores the authored location, rotation and scale
+        # channels exactly. Assigning their derived matrix afterwards would
+        # decompose it again, changing small native inputs during rollback.
         control_colors.restore_bone_state(pb, state['colors'])
         _constraints(pb, state['constraints'], remap)
     _constraints(rig, snapshot['constraints'], remap)

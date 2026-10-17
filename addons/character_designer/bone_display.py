@@ -54,10 +54,8 @@ def _editable(rig):
 
 
 def _single_data_user(rig):
-    if rig.data.users == 1:
-        return True
-    from . import animation_worklist_target
-    return animation_worklist_target.single_armature_user(rig)
+    from . import limb_ik
+    return limb_ik._single_armature_user(rig)
 
 
 def dress_rigs(context, main):
@@ -292,10 +290,12 @@ def show_native(context, main, mode):
         raise ValueError('This character has no bound bones in that group yet.')
     rigs = _affected(context, main)
     for rig in rigs:
-        _editable(rig)
+        if rig is not main:
+            _editable(rig)
     checkpoint = _checkpoint(rigs)
     try:
-        restore_view(main)
+        if VIEW_KEY in main.data:
+            restore_view(main)
         snapshots = {str(i): _snapshot(rig) for i, rig in enumerate(rigs)}
         for rig in rigs:
             names = targets.get(rig, set())
@@ -398,11 +398,13 @@ def show_controls(context, main, role='ALL', *, toggle=False):
         raise ValueError('Organize or create the controls in this group first.')
     rigs = _affected(context, main)
     for rig in rigs:
-        _editable(rig)
+        if rig is not main:
+            _editable(rig)
     checkpoint = _checkpoint(rigs)
     was_native_view = view_mode(main) is not None
     try:
-        restore_view(main)
+        if VIEW_KEY in main.data:
+            restore_view(main)
         visible = not _controls_visible(collections) if toggle and not was_native_view else True
         for rig in rigs:
             for collection in rig.data.collections_all:

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 45),
+    "version": (0, 77, 48),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -75,6 +75,8 @@ from .bone_display_sync import register as register_bone_display_sync, unregiste
 from .torso_ui import TORSO_UI_CLASSES
 from .eye_ui import EYE_UI_CLASSES
 from .body_controls_ui import BODY_CONTROL_UI_CLASSES
+from .body_region_ui import BODY_REGION_UI_CLASSES, CharacterDesignerBodyRegionState
+from .character_ground import CHARACTER_GROUND_CLASSES, CharacterDesignerGroundState
 from .control_colors import CONTROL_COLOR_CLASSES
 from .bone_color_palette import BONE_COLOR_PALETTE_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
@@ -204,6 +206,7 @@ ADDON_MODULE_NAME = (__package__ or os.path.basename(ADDON_SOURCE_ROOT)).split("
 ADDON_REFRESH_PENDING = False
 ADDON_REFRESH_LAST_STATE = False
 ADDON_REFRESH_LAST_ERROR = ""
+SOURCE_WATCH_INTERVAL = 10.0
 
 WORKSPACE_FILTER_GUARD_INTERVAL = 1.0
 WORKSPACE_FILTER_GUARD_FIRST_INTERVAL = 0.1
@@ -394,10 +397,25 @@ def _tag_view3d_redraw():
                 area.tag_redraw()
 
 
+def _source_watch_busy():
+    """Keep development-only filesystem checks away from animation playback."""
+    window_manager = getattr(bpy.context, "window_manager", None)
+    if window_manager is None:
+        return False
+    if getattr(window_manager, "is_interface_locked", False):
+        return True
+    return any(
+        getattr(getattr(window, "screen", None), "is_animation_playing", False)
+        for window in getattr(window_manager, "windows", ())
+    )
+
+
 def _source_watch_deferred():
     global ADDON_REFRESH_LAST_STATE, ADDON_REFRESH_LAST_ERROR
 
     try:
+        if ADDON_REFRESH_PENDING or _source_watch_busy():
+            return SOURCE_WATCH_INTERVAL
         changed = _source_changed()
         if changed != ADDON_REFRESH_LAST_STATE:
             ADDON_REFRESH_LAST_STATE = changed
@@ -405,7 +423,7 @@ def _source_watch_deferred():
     except Exception as exc:
         ADDON_REFRESH_LAST_ERROR = f"Source watcher failed: {exc}"
         _tag_view3d_redraw()
-    return 1.0
+    return SOURCE_WATCH_INTERVAL
 
 
 def _register_source_watch():
@@ -416,7 +434,7 @@ def _register_source_watch():
         if not bpy.app.timers.is_registered(_source_watch_deferred):
             bpy.app.timers.register(
                 _source_watch_deferred,
-                first_interval=1.0,
+                first_interval=SOURCE_WATCH_INTERVAL,
                 persistent=True,
             )
     except Exception as exc:
@@ -8716,6 +8734,8 @@ CLASSES = (
     *TORSO_UI_CLASSES,
     *EYE_UI_CLASSES,
     *BODY_CONTROL_UI_CLASSES,
+    *BODY_REGION_UI_CLASSES,
+    *CHARACTER_GROUND_CLASSES,
     *CONTROL_COLOR_CLASSES,
     *BONE_COLOR_PALETTE_CLASSES,
     *FOREARM_TWIST_CLASSES,
@@ -8796,6 +8816,16 @@ def _validate_registration_integrity():
             or setup_property.fixed_type != CharacterDesignerSetup.bl_rna):
         errors.append("missing or stale Scene character setup")
 
+    region_property = bpy.types.Scene.bl_rna.properties.get("character_designer_body_region")
+    if (region_property is None or region_property.type != "POINTER"
+            or region_property.fixed_type != CharacterDesignerBodyRegionState.bl_rna):
+        errors.append("missing or stale Scene regional controls settings")
+
+    ground_property = bpy.types.Scene.bl_rna.properties.get("character_designer_ground")
+    if (ground_property is None or ground_property.type != "POINTER"
+            or ground_property.fixed_type != CharacterDesignerGroundState.bl_rna):
+        errors.append("missing or stale Scene character placement settings")
+
     worklist_property = bpy.types.Scene.bl_rna.properties.get("character_designer_animation_worklist")
     if (worklist_property is None or worklist_property.type != "POINTER"
             or worklist_property.fixed_type != CharacterDesignerAnimationWorklistState.bl_rna):
@@ -8837,6 +8867,8 @@ def register():
     skirt_registered = hasattr(bpy.types.WindowManager, "character_designer_skirt")
     animation_registered = hasattr(bpy.types.WindowManager, "character_designer_animation")
     setup_registered = hasattr(bpy.types.Scene, "character_designer_setup")
+    region_registered = hasattr(bpy.types.Scene, "character_designer_body_region")
+    ground_registered = hasattr(bpy.types.Scene, "character_designer_ground")
     worklist_registered = hasattr(bpy.types.Scene, "character_designer_animation_worklist")
     unity_export_registered = hasattr(bpy.types.Object, "character_designer_unity_export")
     registration_state = (
@@ -8852,6 +8884,8 @@ def register():
         skirt_registered,
         animation_registered,
         setup_registered,
+        region_registered,
+        ground_registered,
         worklist_registered,
         unity_export_registered,
     )
@@ -8886,6 +8920,8 @@ def register():
     registered = []
     added_properties = []
     added_setup = False
+    added_region = False
+    added_ground = False
     added_worklist = False
     added_export = False
     try:
@@ -8894,6 +8930,10 @@ def register():
             registered.append(cls)
         bpy.types.Scene.character_designer_setup = PointerProperty(type=CharacterDesignerSetup)
         added_setup = True
+        bpy.types.Scene.character_designer_body_region = PointerProperty(type=CharacterDesignerBodyRegionState)
+        added_region = True
+        bpy.types.Scene.character_designer_ground = PointerProperty(type=CharacterDesignerGroundState)
+        added_ground = True
         bpy.types.Scene.character_designer_animation_worklist = PointerProperty(type=CharacterDesignerAnimationWorklistState)
         added_worklist = True
         bpy.types.Object.character_designer_unity_export = PointerProperty(type=CharacterDesignerUnityExport)
@@ -9002,6 +9042,10 @@ def register():
         _unregister_source_watch()
         if added_setup and hasattr(bpy.types.Scene, "character_designer_setup"):
             del bpy.types.Scene.character_designer_setup
+        if added_region and hasattr(bpy.types.Scene, "character_designer_body_region"):
+            del bpy.types.Scene.character_designer_body_region
+        if added_ground and hasattr(bpy.types.Scene, "character_designer_ground"):
+            del bpy.types.Scene.character_designer_ground
         if added_worklist and hasattr(bpy.types.Scene, "character_designer_animation_worklist"):
             del bpy.types.Scene.character_designer_animation_worklist
         if added_export and hasattr(bpy.types.Object, "character_designer_unity_export"):
@@ -9048,6 +9092,10 @@ def unregister():
     _unregister_source_watch()
     if hasattr(bpy.types.Scene, "character_designer_setup"):
         del bpy.types.Scene.character_designer_setup
+    if hasattr(bpy.types.Scene, "character_designer_body_region"):
+        del bpy.types.Scene.character_designer_body_region
+    if hasattr(bpy.types.Scene, "character_designer_ground"):
+        del bpy.types.Scene.character_designer_ground
     if hasattr(bpy.types.Scene, "character_designer_animation_worklist"):
         del bpy.types.Scene.character_designer_animation_worklist
     if hasattr(bpy.types.Object, "character_designer_unity_export"):

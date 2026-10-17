@@ -54,7 +54,20 @@ Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.55 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.55.zip](dist/rr_helper-0.2.55.zip) |
-| Character Designer | 0.77.40 | [character_designer](addons/character_designer) | [character_designer-0.77.40.zip](dist/character_designer-0.77.40.zip) |
+| Character Designer | 0.77.47 | [character_designer](addons/character_designer) | [character_designer-0.77.47.zip](dist/character_designer-0.77.47.zip) |
+
+Character Designer 0.77.47 lets edited native leg, foot and toe geometry return
+from **Original** to existing **Controls**, preserving the new Rest and artist
+model inputs. Retained animation owners are authenticated against their earlier
+Rest or an accepted revision; historical animation records are retained.
+See [the return workflow](docs/body_region_controls.md) and
+[validation record](docs/releases/CharacterDesigner_0.77.47_original_leg_return_20261017.md).
+
+Character Designer 0.77.46 adds **Edit One Part** for releasing and rebuilding
+leg or arm controls around adjusted original bones, plus **Character Placement**
+for signed vertical movement and grounding the visible model at world Z=0.
+[Usage and current scope](docs/body_region_controls.md) ·
+[Validation and release record](docs/releases/CharacterDesigner_0.77.46_regional_placement_20261017.md).
 
 Character Designer 0.77.40 compiles unchanged recovery text and saved Rest
 constants while freshly checking every native reference and current Rest.

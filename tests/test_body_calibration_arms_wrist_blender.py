@@ -67,8 +67,11 @@ class ArmsWristTests(unittest.TestCase):
              patch.object(display,'_finger_token',side_effect=AssertionError('Finger mesh traversal')):
             layout=Layout(); ui.draw(layout,bpy.context)
             self.assertEqual(layout.enums,['ARMS','LEGS','FINGERS'])
-            self.assertEqual(layout.props,[])
-            self.assertEqual(layout.buttons,[])
+            self.assertEqual(layout.props,['region','distance'])
+            self.assertEqual(layout.buttons,[('character_designer.body_region','Release Controls'),
+                ('character_designer.move_character','Move Character'),
+                ('character_designer.ground_character','Ground Character')])
+            self.assertIn('Both Legs: Not Built',layout.labels)
             self.assertTrue(hands.fingers_visible(bpy.context))
             for enabled in (False,True):
                 eye.overlays_enabled=enabled

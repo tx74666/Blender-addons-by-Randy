@@ -642,11 +642,14 @@ class CHARACTERDESIGNER_OT_limb_ik_analyze(Operator):
 
 
 def _single_armature_user(armature):
-    """Accept only proven Worklist references beyond the native Object user."""
+    """Accept only proven recovery references beyond the native Object user."""
     if armature.data.users == 1:
         return True
     from . import animation_worklist_target
-    return animation_worklist_target.single_armature_user(armature)
+    if animation_worklist_target.single_armature_user(armature):
+        return True
+    from . import body_region
+    return body_region.verified_single_armature_user(armature)
 
 
 def _require_active_armature(context, settings, *, analyzed=True):
@@ -5554,12 +5557,24 @@ def _build_plans(
     decorate_source_widgets=True,
     foot_widget_kinds=None,
     target_rotation_version=None,
+    region_rebind=False,
 ):
     from . import body_calibration
+    if region_rebind:
+        # Only the explicit saved regional-release workflow may accept edited
+        # native Rest without re-running whole-body calibration or pre-roll.
+        from . import body_region
+        body_region.authorize_build(armature, plans)
+    elif armature.data.get('character_designer_body_region_release_v1') is not None:
+        from . import body_region
+        released = body_region._load(armature)
+        if any(f'{p.chain.kind}:{p.chain.side}' in released for p in plans):
+            raise LimbIKError('This part is released for editing. Use Edit One Part > Rebuild Controls to accept its current original bones.')
     if body_calibration.calibrated(armature):
         if schema != DIRECT_PREROLL_SCHEMA:
             raise LimbIKError("This character uses confirmed Direct calibration; do not replace it with a different solver implicitly.")
-        body_calibration.require_confirmed(context, armature)
+        if not region_rebind:
+            body_calibration.require_confirmed(context, armature)
     inventory = _validate_inventory(armature)
     if target_rotation_version is None:
         requested_target_rotation_version = _default_target_rotation_version(schema)
@@ -5629,7 +5644,7 @@ def _build_plans(
             del armature.data[TARGET_ROTATION_VERSION_KEY]
         if _is_direct_preroll_schema(schema):
             from . import body_calibration
-            if body_calibration.calibrated(armature):
+            if body_calibration.calibrated(armature) or region_rebind:
                 missing = body_calibration.register_direct_rest(context, armature, missing, transaction)
             else:
                 missing = _apply_direct_preroll(context, armature, missing, transaction)
@@ -5649,6 +5664,8 @@ def _build_plans(
             foot_widget_kinds=foot_widget_kinds,
             target_rotation_version=requested_target_rotation_version,
         )
+        if region_rebind:
+            body_region.attach_new_root_inputs(context, armature, missing)
         verified = _validate_inventory(armature)
         if (
             verified["schema"] != schema
@@ -5660,7 +5677,7 @@ def _build_plans(
             if (plan.chain.kind, plan.chain.side) not in verified["rigs"]:
                 raise LimbIKError(f"Generated {plan.chain.side} {plan.chain.kind.title()} rig did not pass ownership verification.")
         context.view_layer.update()
-        if body_calibration.calibrated(armature):
+        if body_calibration.calibrated(armature) or region_rebind:
             # Rest is already confirmed. Match only generated controls to the
             # exact saved pose before validation; no skin/rest matrix round trip.
             limb_ik_fk.ensure_switching(armature, verified,
@@ -5672,13 +5689,13 @@ def _build_plans(
         replanned_bones = {
             name
             for plan in missing
-            if not plan.preserve_pole_angle
+            if not plan.preserve_pole_angle and not region_rebind
             for name in (plan.chain.upper, plan.chain.lower)
         }
         auto_replanned_ends = {
             plan.chain.end
             for plan in missing
-            if plan.auto_align and not plan.preserve_pole_angle
+            if plan.auto_align and not plan.preserve_pole_angle and not region_rebind
         }
         for name, desired in source_pose_before.items():
             # An explicit Pole direction intentionally re-planes the two-bone
@@ -5699,7 +5716,7 @@ def _build_plans(
                     f"Master/IK setup could not preserve source pose on '{name}' "
                     f"(position {position_error:.4g}, rotation {rotation_error:.4g})."
                 )
-        if _is_direct_preroll_schema(schema):
+        if _is_direct_preroll_schema(schema) and not region_rebind:
             for plan in missing:
                 if plan.preserve_pole_angle:
                     continue
@@ -6886,6 +6903,8 @@ def _finish_control_colors(operator, armature, *, removed=False):
 
 
 def _require_ik_for_rig_edit(armature, inventory):
+    if 'character_designer_body_region_release_v1' in armature.data:
+        raise LimbIKError('Rebuild released parts in Edit One Part before rebuilding or removing the complete rig.')
     if limb_fk_visuals.get_record(armature):
         raise LimbIKError("Remove FK Rings before rebuilding or removing Limb IK.")
     if limb_fk_visuals.has_ik_size_backup(armature):

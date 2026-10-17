@@ -129,14 +129,14 @@ def _owned_constraint_pointers(rig, inventory):
 
 
 def _refuse_dependencies(rig, inventory, keys):
-    from . import foot_controls
+    from . import foot_controls, body_region
     chains = [inventory['rigs'][key]['chain'] for key in keys]
     own_constraints = _owned_constraint_pointers(rig, inventory)
     problems = limb_ik._direct_source_dependency_problems(
         rig, chains, owned_constraints=own_constraints)
     if problems:
         raise ValueError('Rest resync cannot preserve this dependency: ' + problems[0] + '.')
-    affected = {name for chain in chains for name in chain}
+    affected = {name for key in keys for name in limb_ik_fk.pose_names(inventory['rigs'][key])}
     for key in keys:
         entry = inventory['rigs'][key]
         affected.update(bone.name for bone in (entry['target'], entry['pole']) if bone is not None)
@@ -144,16 +144,18 @@ def _refuse_dependencies(rig, inventory, keys):
     # A Rest edit of an ancestor also reinterprets descendant local channels.
     affected.update(b.name for b in rig.data.bones
                     if any(parent.name in affected for parent in b.parent_recursive))
-    owned_paths = limb_ik_fk.owned_driver_paths(rig)
+    # The inventory above authenticated the Foot graph as well as IK/FK.
+    # Native Foot drivers read and drive the selected leg's owned mechanisms.
+    owned_paths = limb_ik_fk.owned_driver_paths(rig) | foot_controls.owned_driver_paths(rig)
     for owner in (rig, rig.data):
         for action in limb_ik._actions_for_id(owner):
-            if any(limb_ik._path_mentions_bone(curve.data_path, affected)
+            if any(body_region._path_mentions(curve.data_path, affected)
                    for curve in limb_ik._fcurves_for_action(action)):
                 raise ValueError(f"Action '{action.name}' animates the Rest resync region; preserve or retarget that animation first.")
         for curve in owner.animation_data.drivers if owner.animation_data else ():
             if owner == rig and curve.data_path in owned_paths:
                 continue
-            if limb_ik._path_mentions_bone(curve.data_path, affected):
+            if body_region._path_mentions(curve.data_path, affected):
                 raise ValueError('An authored driver writes to the Rest resync region; preserve that dependency first.')
     # Matching changes authored local channels even when the final skin is
     # identical. Do not reinterpret external readers of those local values.
@@ -164,10 +166,18 @@ def _refuse_dependencies(rig, inventory, keys):
                 continue
             for variable in curve.driver.variables:
                 for target in variable.targets:
-                    if target.id == rig and (target.bone_target in affected
-                            or limb_ik._path_mentions_bone(target.data_path, affected)):
+                    if target.id in (rig, rig.data) and (target.bone_target in affected
+                            or body_region._path_mentions(target.data_path, affected)):
                         raise ValueError('An external driver reads the Rest resync region; preserve that dependency first.')
     for obj in bpy.data.objects:
+        if obj.parent is rig and obj.parent_type == 'BONE' and obj.parent_bone in affected:
+            raise ValueError(f"A bone attachment on '{obj.name}' reads the Rest resync region; preserve that dependency first.")
+        for modifier in obj.modifiers:
+            for object_field, bone_field in (('object', 'subtarget'),
+                                              ('object_from', 'bone_from'), ('object_to', 'bone_to')):
+                if (getattr(modifier, object_field, None) is rig
+                        and getattr(modifier, bone_field, '') in affected):
+                    raise ValueError(f"A modifier on '{obj.name}' reads the Rest resync region; preserve that dependency first.")
         if any(limb_ik._constraint_references_controls(con, rig, affected) for con in obj.constraints):
             raise ValueError(f"An object constraint on '{obj.name}' reads the Rest resync region; preserve that dependency first.")
         if obj.type != 'ARMATURE' or obj.pose is None:
@@ -176,6 +186,8 @@ def _refuse_dependencies(rig, inventory, keys):
             for con in pb.constraints:
                 if (obj.as_pointer(), pb.as_pointer(), con.as_pointer()) in own_constraints:
                     continue
+                if obj is rig and pb.name in affected:
+                    raise ValueError(f"An authored constraint on '{pb.name}' edits the Rest resync region; preserve that dependency first.")
                 if limb_ik._constraint_references_controls(con, rig, affected):
                     raise ValueError(f"An authored constraint on '{obj.name}:{pb.name}' reads the Rest resync region; preserve that dependency first.")
 
@@ -213,7 +225,7 @@ def _corrective_checkpoint(rig):
             seen.add(key.as_pointer())
             coords = array('f', [0.0]) * (len(key.data) * 3)
             key.data.foreach_get('co', coords)
-            outputs.append({'key': key, 'pointer': key.as_pointer(), 'name': key.name,
+            outputs.append({'pointer': key.as_pointer(), 'name': key.name,
                             'coords': coords, 'value': key.value, 'mute': key.mute})
         pointer = obj.as_pointer()
         result.append({'object': obj, 'pointer': pointer, 'mesh': obj.data,
@@ -252,8 +264,8 @@ def restore_correctives(plan):
                 records = forearm_twist._records(obj)
                 added_owned = set()
                 for side, record in records.items():
-                    key = forearm_twist._KEY_REFERENCES.get((pointer, side))
-                    if (key is not None and key.id_data == keys and key.name == record.get('key')
+                    key = forearm_twist._cached_key(obj, side, record.get('key'))
+                    if (key is not None and key.name == record.get('key')
                             and key.as_pointer() not in state['key_pointers']):
                         added_owned.add(key.as_pointer())
                 additions = current_pointers - state['key_pointers']
@@ -262,9 +274,10 @@ def restore_correctives(plan):
                 for key in tuple(keys.key_blocks):
                     if key.as_pointer() in additions:
                         obj.shape_key_remove(key)
+                live = {key.as_pointer(): key for key in keys.key_blocks}
                 for output in state['outputs']:
-                    key = output['key']
-                    if key.as_pointer() != output['pointer'] or len(key.data) * 3 != len(output['coords']):
+                    key = live.get(output['pointer'])
+                    if key is None or len(key.data) * 3 != len(output['coords']):
                         raise ValueError('A managed corrective output changed identity during Rest resync.')
                     key.name = output['name']
                     key.data.foreach_set('co', output['coords'])
@@ -294,7 +307,8 @@ def prepare(context, rig, saved):
     from . import body_original_mode as original, forearm_original_inventory
     from . import body_setup_removal
     if (rig is None or rig.type != 'ARMATURE' or rig.library or rig.data.library
-            or rig.override_library or rig.data.users != 1 or context.mode not in {'OBJECT', 'POSE'}):
+            or rig.override_library or not limb_ik._single_armature_user(rig)
+            or context.mode not in {'OBJECT', 'POSE'}):
         raise ValueError('Rest resync needs a local single-user rig in Object or Pose Mode.')
     current, changed = _geometry_changes(rig, saved)
     if not changed:
@@ -305,15 +319,20 @@ def prepare(context, rig, saved):
     registry = limb_ik._load_direct_rest_registry(rig, strict=True)
     registry_raw = rig.data.get(limb_ik.DIRECT_REST_KEY)
     raw_entries = json.loads(registry_raw)['limbs']
-    supported = {name for entry in registry['limbs'].values() for name in entry['chain'][:2]}
-    unsupported = changed - supported
-    if unsupported:
-        raise ValueError('Rest resync supports existing Direct upper/lower source frames only: '
-                         + ', '.join(sorted(unsupported)[:4]) + '. Keep Original and preserve these edits.')
     view = OriginalRestView(rig, saved, current, changed)
     inventory = forearm_original_inventory.validate(rig, original_rest=view)
+    # End/toe edits are only accepted for a verified existing leg graph. The
+    # generated Foot pivots and all helper Rest frames stay immutable; matching
+    # adapts the current pose rather than pretending to rebuild those pivots.
+    supported = {name for key, entry in inventory['rigs'].items()
+                 for name in (limb_ik_fk.pose_names(entry) if key[0] == 'LEG'
+                              else entry['chain'][:2])}
+    unsupported = changed - supported
+    if unsupported:
+        raise ValueError('Rest resync supports existing Direct source frames and verified leg/foot bones only: '
+                         + ', '.join(sorted(unsupported)[:4]) + '. Keep Original and preserve these edits.')
     keys = {key for key, entry in inventory['rigs'].items()
-            if changed.intersection(entry['chain'][:2])}
+            if changed.intersection(limb_ik_fk.pose_names(entry))}
     if not keys:
         raise ValueError('No verified Direct chain owns the edited native Rest.')
     _refuse_dependencies(rig, inventory, keys)
@@ -342,7 +361,7 @@ def prepare(context, rig, saved):
             for name, matrix in desired.items()}
     channels = original._channels(rig)
     return {'rig': rig, 'view': view, 'rest': native, 'changed': changed, 'keys': keys,
-            'sources': {name for key in keys for name in inventory['rigs'][key]['chain']},
+            'sources': {name for key in keys for name in limb_ik_fk.pose_names(inventory['rigs'][key])},
             'desired': desired, 'skin': skin,
             'surfaces': body_setup_removal._bound_surfaces(context, rig),
             'deform_flags': {b.name: bool(b.use_deform) for b in rig.data.bones},

@@ -130,12 +130,49 @@ def _preview_key_name(obj, marker):
     return name
 
 
+def _key_identity(obj, key):
+    """Retain primitive lifetime proof only, never a cached KeyBlock RNA wrapper."""
+    keys = obj.data.shape_keys
+    object_uid = getattr(obj, 'session_uid', None)
+    keys_uid = getattr(keys, 'session_uid', None)
+    if (type(object_uid) is not int or object_uid <= 0
+            or type(keys_uid) is not int or keys_uid <= 0):
+        return None
+    return (1, object_uid, keys_uid, keys.as_pointer(), key.as_pointer())
+
+
+def _cached_key(obj, side, expected=None):
+    """Resolve a proven runtime token only; never claim a key by its name."""
+    identity = (obj.as_pointer(), side)
+    keys = obj.data.shape_keys
+    token = _KEY_REFERENCES.get(identity)
+    # Old runtime versions stored RNA objects here. Do not access ANY attribute
+    # of such a value: even id_data/as_pointer may crash before Python can raise.
+    valid = (type(token) is tuple and len(token) == 5
+             and all(type(value) is int for value in token) and token[0] == 1
+             and keys is not None and token[1] == getattr(obj, 'session_uid', None)
+             and token[2] == getattr(keys, 'session_uid', None)
+             and token[3] == keys.as_pointer())
+    if not valid:
+        _KEY_REFERENCES.pop(identity, None)
+        return None
+    named = keys.key_blocks.get(expected) if isinstance(expected, str) else None
+    # Normal frame updates use the indexed name lookup only. A full live
+    # member search is necessary solely after a rename or name collision.
+    if named is not None and named.as_pointer() == token[4]:
+        return named
+    cached = next((key for key in keys.key_blocks if key.as_pointer() == token[4]), None)
+    if cached is None:
+        _KEY_REFERENCES.pop(identity, None)
+    return cached
+
+
 def _managed_key(obj, side, record, *, required=True, repair_name=True):
     """Resolve the owned key without mistaking a renamed key for deleted data.
 
-    RNA references survive ordinary renames while this runtime is loaded. They
-    are deliberately discarded across file load and undo, and validated against
-    the current Key datablock and its membership before being reused.
+    Primitive session identities survive ordinary renames, but never dereference
+    a KeyBlock retained from deleted meshes. Object/Key session UIDs also reject
+    reused allocator addresses. Only a freshly obtained live member is returned.
     """
     if not isinstance(record, dict) or not isinstance(record.get("key"), str):
         if required:
@@ -143,18 +180,9 @@ def _managed_key(obj, side, record, *, required=True, repair_name=True):
         return None
     identity = (obj.as_pointer(), side)
     keys = obj.data.shape_keys
-    cached = _KEY_REFERENCES.get(identity)
-    if cached is not None:
-        try:
-            valid = (keys is not None and cached.id_data.as_pointer() == keys.as_pointer()
-                     and any(key.as_pointer() == cached.as_pointer() for key in keys.key_blocks))
-        except (ReferenceError, AttributeError):
-            valid = False
-        if not valid:
-            _KEY_REFERENCES.pop(identity, None)
-            cached = None
-    expected = record["key"]
+    expected = record['key']
     named = keys.key_blocks.get(expected) if keys is not None else None
+    cached = _cached_key(obj, side, expected)
     if cached is not None:
         if not repair_name:
             return cached
@@ -164,7 +192,7 @@ def _managed_key(obj, side, record, *, required=True, repair_name=True):
             cached.name = expected
         return cached
     if named is not None:
-        _KEY_REFERENCES[identity] = named
+        _KEY_REFERENCES[identity] = _key_identity(obj, named)
         return named
     if required:
         raise ForearmTwistError(
@@ -421,7 +449,7 @@ def _apply_runtime_records(obj, records, depsgraph):
                 key = _new_output_key(obj, record)
                 added.append(key)
                 key.mute = True
-                _KEY_REFERENCES[(obj.as_pointer(), side)] = key
+                _KEY_REFERENCES[(obj.as_pointer(), side)] = _key_identity(obj, key)
         _write_records(obj, records)
         _calculate_records(obj, depsgraph)
     except Exception as exc:
@@ -1218,7 +1246,7 @@ def mirror_calibration(context, obj, source_side, *, _from_test=False):
     try:
         if target_side not in _records(obj):
             added = _new_output_key(obj, records[target_side])
-            _KEY_REFERENCES[(obj.as_pointer(), target_side)] = added
+            _KEY_REFERENCES[(obj.as_pointer(), target_side)] = _key_identity(obj, added)
         _write_records(obj, records)
         context.view_layer.update()
         _calculate_object(obj, context.evaluated_depsgraph_get())
@@ -1544,7 +1572,7 @@ def start_test(context, obj, side="L", *, symmetry=False, recapture=False, rings
             record["paired"] = bool(symmetry)
             key = new_key = _new_output_key(obj, record)
             records[side] = record
-            _KEY_REFERENCES[(obj.as_pointer(), side)] = key
+            _KEY_REFERENCES[(obj.as_pointer(), side)] = _key_identity(obj, key)
         # Don't publish a record for a counterpart whose owned key does not exist yet.
         records = {s: r for s, r in records.items() if s == side or s in old_records}
         record["paired"] = bool(symmetry)

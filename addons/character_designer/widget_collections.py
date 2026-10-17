@@ -62,8 +62,9 @@ def _owned(collection, role):
 
 
 def _editable(context, armature):
+    from . import limb_ik
     if (armature is None or armature.type != 'ARMATURE' or armature.library or armature.data.library
-            or not armature.is_editable or armature.data.users != 1
+            or not armature.is_editable or not limb_ik._single_armature_user(armature)
             or armature.name not in context.scene.objects):
         raise ValueError('Choose a local, single-user character armature in the current scene.')
 

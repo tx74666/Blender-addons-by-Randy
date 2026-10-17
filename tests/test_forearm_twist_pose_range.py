@@ -16,7 +16,7 @@ RECORD_KEY = 'character_designer_forearm_twist_v1'
 def product():
     names = {'ForearmTwistError', 'ForearmTwistPoseRangeError',
              'ForearmTwistRecaptureRequired', '_target_only_change',
-             '_apply_runtime_records', '_calculate_records', 'update_runtime'}
+             '_key_identity', '_apply_runtime_records', '_calculate_records', 'update_runtime'}
     tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))
              and node.name in names]

@@ -104,6 +104,10 @@ def draw_actions(layout, context, *, ready=None):
                      icon='TRASH').action = 'REMOVE'
     except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
         layout.label(text=str(exc), icon='ERROR')
+    finally:
+        from . import body_region_ui, character_ground
+        body_region_ui.draw(layout, context)
+        character_ground.draw(layout, context)
 
 
 def draw_plan(layout, context):

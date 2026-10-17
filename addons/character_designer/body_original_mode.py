@@ -527,12 +527,14 @@ def _ensure_dress_editable(context, rig, saved):
 
 
 def leave(context, rig):
-    from . import forearm_twist
-    with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
-        return _leave(context, rig, refresh)
+    from . import forearm_twist, body_original_owner
+    def transfer(finalize=None):
+        with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
+            return _leave(context, rig, refresh, finalize=finalize)
+    return body_original_owner.run_return(context, rig, transfer)
 
 
-def _leave(context, rig, refresh):
+def _leave(context, rig, refresh, *, finalize=None):
     from . import body_rest_resync as resync
     saved = _require(context, rig)
     if not active(rig):
@@ -575,6 +577,15 @@ def _leave(context, rig, refresh):
         limb_ik._validate_inventory(rig)
         changed = {name for name in desired if poses._difference(desired[name], rig.pose.bones[name].matrix) > 1e-7}
         changed.update(forced)
+        if plan is not None and all(current_channels[name] == saved['entered_channels'][name]
+                                    for name in desired if name not in forced):
+            # Geometry edits in one limb must not rematch untouched limbs just
+            # because the Original bake rounded a native matrix by ~1e-6.
+            # In particular, matching an unchanged arm repositions its Pole
+            # along the same bend ray, changing an artist's controller layout.
+            # Authored poses outside this region retain the full match route;
+            # all native poses and bound surfaces still undergo final checks.
+            changed = set(forced)
         if changed and edited:
             poses._match(context, rig, desired, changed, preserve_modes=True,
                          precise_limbs=plan['keys'] if plan else ())
@@ -592,6 +603,8 @@ def _leave(context, rig, refresh):
         dress_pose.verify(context, rig, saved['dress_edit'], desired=dress_desired)
         resync.verify(context, rig, plan)
         resync.commit(rig, plan)
+        if finalize is not None:
+            finalize()
         for target, _view in extra_views:
             target.pop(DISPLAY_OWNER, None)
         rig.pop(DISPLAY_REFS, None)

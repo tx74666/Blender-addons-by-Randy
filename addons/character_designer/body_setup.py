@@ -140,6 +140,8 @@ def _atomic(context, rig, operation):
 def generate(context, rig):
     """Add supported missing components without rebuilding existing ones."""
     _require_rig(context, rig)
+    if 'character_designer_body_region_release_v1' in rig.data:
+        raise ValueError('Rebuild the released parts in Edit One Part before updating the whole Body Setup.')
     proposed = plan(context, rig)
     if proposed['blocked']:
         raise ValueError(' '.join(f"{entry['key']}: {entry['reason']}" for entry in proposed['components']
@@ -205,6 +207,8 @@ def remove(context, rig, *, keep_native_rest=True):
     """Remove owned body components together, retaining the visible character."""
     from . import body_setup_removal
     _require_rig(context, rig)
+    if 'character_designer_body_region_release_v1' in rig.data:
+        raise ValueError('Rebuild the released parts in Edit One Part before removing the whole Body Setup.')
     if body_calibration.calibrated(rig) and not keep_native_rest:
         raise ValueError('Confirmed calibration belongs to Apply/Undo; Remove must keep native Rest.')
     protected_rest = body_calibration.native_rest(rig)

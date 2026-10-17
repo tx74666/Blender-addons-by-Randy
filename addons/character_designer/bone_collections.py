@@ -199,10 +199,8 @@ def _write_backup(armature, backup):
 
 
 def _single_data_user(armature):
-    if armature.data.users == 1:
-        return True
-    from . import animation_worklist_target
-    return animation_worklist_target.single_armature_user(armature)
+    from . import limb_ik
+    return limb_ik._single_armature_user(armature)
 
 
 def restore_bone_collections(armature):
