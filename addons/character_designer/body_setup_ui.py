@@ -105,9 +105,10 @@ def draw_actions(layout, context, *, ready=None):
     except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
         layout.label(text=str(exc), icon='ERROR')
     finally:
-        from . import body_region_ui, character_ground
+        from . import body_region_ui
         body_region_ui.draw(layout, context)
-        character_ground.draw(layout, context)
+        from . import rig_fix_ui
+        rig_fix_ui.draw_body_adjustments(layout, context)
 
 
 def draw_plan(layout, context):

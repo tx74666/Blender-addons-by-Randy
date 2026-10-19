@@ -27,6 +27,17 @@ def _pointer(value):
         return None
 
 
+def _was_present(value, originals):
+    """Native addresses can be reused after deleting an owned widget ID.
+
+    Retain the original RNA wrapper as well as its address. A removed wrapper
+    is invalidated, so a new ID at that address remains a new resource.
+    Python references do not add Blender datablock users.
+    """
+    pointer = _pointer(value)
+    return pointer is not None and _pointer(originals.get(pointer)) == pointer
+
+
 def _encode(value):
     if isinstance(value, bpy.types.ID):
         return ('@ID', value.__class__.__name__, value.name, _pointer(value), value)
@@ -219,6 +230,80 @@ _BONE_EXCLUDE = {'name', 'parent', 'head', 'tail', 'head_local', 'tail_local', '
 _OBJECT_EXCLUDE = {'name', 'data', 'matrix_world', 'matrix_local', 'matrix_basis',
                    'dimensions', 'active_material', 'active_material_index'}
 
+# Dependency relation changes can sample an Object Action again, even without
+# moving the scene time. Keep the authored inputs of the original character
+# objects; their evaluated world matrices may legitimately change while the
+# new controls are still being matched.
+_OBJECT_INPUT_FIELDS = (
+    'parent', 'parent_type', 'parent_bone', 'parent_vertices',
+    'matrix_parent_inverse', 'rotation_mode',
+    'location', 'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle',
+    'scale', 'delta_location', 'delta_rotation_euler',
+    'delta_rotation_quaternion', 'delta_scale',
+)
+
+
+def _object_input_values(obj):
+    return {name: _encode(getattr(obj, name)) for name in _OBJECT_INPUT_FIELDS}
+
+
+def capture_object_inputs(rig):
+    """Retain original rig/bound-mesh channels, without copying any native ID."""
+    from . import widget_collections
+    widget_names = {name for entry in widget_collections._resources(rig)
+                    for name in entry['objects']}
+    objects = [rig]
+    objects.extend(obj for obj in bpy.data.objects
+                   if obj.type == 'MESH' and obj.name not in widget_names
+                   and any(mod.type == 'ARMATURE' and mod.object == rig
+                           for mod in obj.modifiers))
+    return [{'object': obj, 'pointer': _pointer(obj), 'name': obj.name,
+             'data': obj.data, 'data_pointer': _pointer(obj.data),
+             'inputs': _object_input_values(obj),
+             'basis': _encode(obj.matrix_basis)} for obj in objects]
+
+
+def _assert_object_input_ids(inputs):
+    for state in inputs:
+        obj = state['object']
+        if (_pointer(obj) != state['pointer']
+                or _pointer(obj.data) != state['data_pointer']):
+            raise ValueError(f"Original object '{state['name']}' or its data disappeared during Body setup.")
+        # Resolve the retained parent before writing anything. A deleted parent
+        # must not be silently replaced by an unrelated object with that name.
+        _decode(state['inputs']['parent'], {})
+
+
+def assert_object_inputs(inputs):
+    """Verify authored channels, not intermediate evaluated world transforms."""
+    _assert_object_input_ids(inputs)
+    for state in inputs:
+        obj = state['object']
+        changed = [name for name, value in state['inputs'].items()
+                   if _encode(getattr(obj, name)) != value]
+        if changed:
+            raise ValueError(f"Body setup changed original object '{state['name']}' inputs: {', '.join(changed)}.")
+        if _encode(obj.matrix_basis) != state['basis']:
+            raise ValueError(f"Body setup changed original object '{state['name']}' transform basis.")
+    return True
+
+
+def restore_object_inputs(context, inputs):
+    """Restore only resampled original inputs; never compensate via world space."""
+    _assert_object_input_ids(inputs)
+    changed = False
+    for state in inputs:
+        obj = state['object']
+        values = {name: value for name, value in state['inputs'].items()
+                  if _encode(getattr(obj, name)) != value}
+        if values:
+            _set_rna(obj, values, {})
+            changed = True
+    if changed:
+        context.view_layer.update()
+    assert_object_inputs(inputs)
+    return changed
+
 
 def _bone(rig, bone):
     from . import control_colors
@@ -237,6 +322,60 @@ def _bone(rig, bone):
                          ('custom_shape', 'custom_shape_transform')},
             'bone_pointers': {name: _encode(getattr(bone, name)) for name in
                               ('bbone_custom_handle_start', 'bbone_custom_handle_end')}}
+
+
+def _capture_rest_rolls(context, rig):
+    """Read native armature-space roll without editing the source armature.
+
+    Bone.matrix_local contains rounded parent products. Extracting a new roll
+    from that matrix cannot always recreate the original helper Rest within
+    its existing authentication tolerance. An independent data copy exposes
+    the stored scalar through EditBone, while source Bone/PoseBone RNA stays
+    valid for the preflighted operation.
+    """
+    from . import body_setup, bone_display_sync, limb_ik
+    saved_context = limb_ik._capture_context(context, rig)
+    previous_busy = bone_display_sync._BUSY
+    bone_display_sync._BUSY = True
+    temporary = data = None
+    try:
+        with body_setup._runtime_paused():
+            try:
+                data = rig.data.copy()
+                data.name = 'Body Recovery Roll Snapshot'
+                data.use_fake_user = False
+                # The probe needs only native bone geometry. Copied workflow
+                # identities and animation must never become a second rig.
+                data.animation_data_clear()
+                for key in tuple(data.keys()):
+                    del data[key]
+                temporary = bpy.data.objects.new('Body Recovery Roll Probe', data)
+                context.scene.collection.objects.link(temporary)
+                # _mode_set deselects every other object before Edit Mode;
+                # multi-object Edit must never include the source armature.
+                limb_ik._mode_set(context, temporary, 'EDIT')
+                if rig.data.is_editmode:
+                    raise RuntimeError('The original armature entered the recovery probe edit session.')
+                rolls = {bone.name: float(bone.roll) for bone in data.edit_bones}
+                if set(rolls) != set(rig.data.bones.keys()):
+                    raise RuntimeError('The recovery roll snapshot has a different bone set.')
+                return rolls
+            finally:
+                try:
+                    try:
+                        if temporary is not None and temporary.mode != 'OBJECT':
+                            limb_ik._mode_set(context, temporary, 'OBJECT')
+                    finally:
+                        try:
+                            if temporary is not None:
+                                bpy.data.objects.remove(temporary, do_unlink=True)
+                        finally:
+                            if data is not None:
+                                bpy.data.armatures.remove(data)
+                finally:
+                    limb_ik._restore_context(context, rig, saved_context)
+    finally:
+        bone_display_sync._BUSY = previous_busy
 
 
 def capture(context, rig):
@@ -269,11 +408,12 @@ def capture(context, rig):
              'constraints': [_constraint(con) for con in rig.constraints],
              'bones': {bone.name: _bone(rig, bone) for bone in rig.data.bones},
              'layout': _encode(bone_collections.snapshot_layout(rig)),
-             'objects_before': {obj.as_pointer() for obj in bpy.data.objects},
-             'meshes_before': {mesh.as_pointer() for mesh in bpy.data.meshes},
-             'collections_before': {collection.as_pointer() for collection in bpy.data.collections},
+             'objects_before': {obj.as_pointer(): obj for obj in bpy.data.objects},
+             'meshes_before': {mesh.as_pointer(): mesh for mesh in bpy.data.meshes},
+             'collections_before': {collection.as_pointer(): collection for collection in bpy.data.collections},
              'native_ids': [(obj, obj.as_pointer(), obj.data, _pointer(obj.data))
                             for obj in bpy.data.objects if obj.name not in widget_names],
+             'object_inputs': capture_object_inputs(rig),
              'folders': [], 'widgets': [], 'backups': [], 'closed': False}
     from . import forearm_twist
     state['corrective_records'] = [(obj, obj[forearm_twist.RECORD_KEY]) for obj in bpy.data.objects
@@ -281,6 +421,7 @@ def capture(context, rig):
                                    and any(record.get('armature') == rig.name
                                            for record in forearm_twist._records(obj).values())]
     try:
+        state['rest_rolls'] = _capture_rest_rolls(context, rig)
         for collection in folders:
             state['folders'].append({'id': collection, 'pointer': collection.as_pointer(), 'name': collection.name,
                                      'rna': _rna(collection, {'name'}), 'properties': _properties(collection),
@@ -305,9 +446,11 @@ def capture(context, rig):
                                      'hidden': [(view, obj.hide_get(view_layer=view))
                                                 for scene in bpy.data.scenes for view in scene.view_layers
                                                 if name in view.objects]})
+        restore_object_inputs(context, state['object_inputs'])
         return state
     except Exception:
         discard(state)
+        restore_object_inputs(context, state['object_inputs'])
         raise
 
 
@@ -428,14 +571,14 @@ def restore(context, rig, snapshot):
     # meshes are retained unless their module explicitly deleted them.
     owners = _owners()
     for obj in tuple(bpy.data.objects):
-        if obj.as_pointer() not in snapshot['objects_before'] and obj.get('character_designer_owner') in owners:
+        if not _was_present(obj, snapshot['objects_before']) and obj.get('character_designer_owner') in owners:
             mesh = obj.data if obj.type == 'MESH' else None
             bpy.data.objects.remove(obj, do_unlink=True)
-            if mesh and not mesh.users and mesh.as_pointer() not in snapshot['meshes_before']:
+            if mesh and not mesh.users and not _was_present(mesh, snapshot['meshes_before']):
                 bpy.data.meshes.remove(mesh)
     while True:
         empty = [collection for collection in bpy.data.collections
-                 if collection.as_pointer() not in snapshot['collections_before']
+                 if not _was_present(collection, snapshot['collections_before'])
                  and collection.get('character_designer_owner') in owners
                  and not collection.objects and not collection.children]
         if not empty:
@@ -501,7 +644,7 @@ def restore(context, rig, snapshot):
         state, bone = snapshot['bones'][name], edit[name]
         bone.parent = edit.get(state['parent']) if state['parent'] else None
         bone.head, bone.tail = state['head'], state['tail']
-        bone.align_roll(Vector(state['z']))
+        bone.roll = snapshot['rest_rolls'][name]
     for name in changed_rest:
         edit[name].use_connect = snapshot['bones'][name]['connect']
     limb_ik._mode_set(context, rig, 'OBJECT')
@@ -546,6 +689,7 @@ def restore(context, rig, snapshot):
     rig.update_tag(refresh={'OBJECT'})
     context.view_layer.update()
     limb_ik._restore_context(context, rig, snapshot['context'])
+    restore_object_inputs(context, snapshot['object_inputs'])
     assert_original_ids(snapshot)
     return {'restored': True, 'bones': len(snapshot['bones']), 'widgets': len(snapshot['widgets'])}
 

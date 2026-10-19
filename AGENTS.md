@@ -22,6 +22,67 @@
   Preserve Shape Keys and existing weights, keep topology validation
   conservative, and do not add runtime AI dependencies.
 
+# Trusted X validation (user authorization, 2026-10-18)
+
+For the user's own X files and agent-written local validation scripts, the user
+has authorized automatic execution without repeated prompts. The saved Blender
+5.2 Auto Run Python Scripts preference was already enabled; explicitly disabled
+validation launches were overriding it. Use
+`tools/run_trusted_blender_validation.py` (`--enable-autoexec`) and load these
+trusted inputs with `use_scripts=True`. Keep historical hash-pinned harnesses
+unchanged and identify new trusted derivatives in their evidence. Do not save
+factory-startup preferences over the user's preferences. The X project's
+`AGENTS.md` and `validation/autoexec_preferences_20261018` record this preference
+and the isolated native verification.
+
+Every new agent-owned Blender validation process must have a dedicated, fresh
+`BLENDER_USER_CONFIG` directory, including native GUI, background, and
+factory-startup runs. Use `tools/run_trusted_blender_validation.py`, which creates
+and records this directory inside X evidence. `--factory-startup` alone does not
+isolate Save Preferences, and disabling preference autosave does not block an
+explicit native preference save. For a saved-profile check, use `--user-startup`
+and, when needed, `--user-config-source`: the launcher copies and pins
+`userpref.blend` and optional `startup.blend` into its isolated CONFIG instead of
+writing to the source profile. Keep the artist's real preferences read-only;
+test launches do not authorize copying sandbox preferences back. Preserve the
+existing trusted-script authorization above. See
+`docs/trusted_blender_validation_preferences.md` and X's
+`validation/pole_preferences_recovery_20261018/README.md` for the incident and
+verified recovery limits.
+
+Preference hashes identify a snapshot, not a permanent expected value. A normal
+artist session or add-on can legitimately autosave updated authentication or
+extension state. Before diagnosing another profile loss, pin the current file
+and compare saved add-on membership, keymaps/keyconfig and relevant preference
+fields with the recovery evidence. Do not overwrite the current profile merely
+to regain an older accepted hash; preserve current legitimate settings and
+retain a backup before any separately authorized recovery.
+
+# Preserve artist-painted weights (user request, 2026-10-18)
+
+- Character Designer Generate/Regenerate/Rebuild Controls must inherit current
+  authored mesh weights, vertex-group names/bindings and group locks. Rebuilding
+  controllers is not authorization to run Bind Weights, automatic weighting,
+  whole-mesh transfer, normalization or a restore from an older weight backup.
+  The artist's latest completed/confirmed paint is authoritative; subsequent
+  repainting supersedes an earlier checkpoint. Do not treat a first pre-bind
+  backup as the artist's permanent best version or silently restore it.
+- Preserve weights on every surviving, identified vertex, including unrelated
+  body parts. For an explicitly requested topology/weight repair, interpolate
+  only genuinely new vertices from the corresponding local surface or connected
+  neighborhood; respect body side, region, mesh boundaries and locked groups.
+  A nearby point across a gap, such as the other leg or a shoe, is not a valid
+  donor merely because it is spatially close. Do not recompute existing paint.
+- Equal vertex counts or indices alone do not prove correspondence after mesh
+  editing/reordering. Retain a recoverable current checkpoint before weight
+  writes and establish correspondence before restoring; report ambiguity while
+  keeping existing data intact. Keep full checkpoints compressed locally and
+  concise hashes/counts in reports.
+- These are preservation requirements, not a claim that a general new-vertices
+  interpolation feature already exists. Current controller rebuild does not
+  perform weight transfer. X evidence and live checkpoint are indexed under
+  `validation/weight_preservation_20261018` in the X project.
+
 # Generated display names
 
 - Keep generated names that artists see readable. Use a purpose/source label

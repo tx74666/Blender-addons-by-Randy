@@ -305,12 +305,61 @@ class DressWiggleNativeTests(unittest.TestCase):
         frozen = phys_channels(source)
         motion._undo_post()
         self.assertFalse(motion._SESSIONS)
-        self.assertTrue(all(not rig.pose.bones[name].wiggle_tail for name in names))
-        self.assertEqual(len(bpy.context.scene.wiggle.list), 0)
+        # History never enumerates restored IDs or queues a scene scan. The
+        # artist's explicit selected-source action performs ownership recovery.
+        self.assertTrue(motion._HISTORY_RECOVERY_PENDING)
+        self.assertFalse(bpy.app.timers.is_registered(motion._resume_saved))
+        self.assertTrue(all(rig.pose.bones[name].wiggle_tail for name in names))
+        row = bpy.context.scene.wiggle.list.get(rig.name)
+        self.assertIsNotNone(row)
+        self.assertEqual(set(row.list.keys()), set(names))
         self.assertEqual(phys_channels(source), frozen)
-        motion._resume_saved()
+        motion._resume_saved()  # Even a stale already-dispatched timer is inert.
+        self.assertFalse(motion._SESSIONS)
+        self.assertTrue(all(rig.pose.bones[name].wiggle_tail for name in names))
+        motion.set_mode(bpy.context, source, 'AUTOMATIC')
         self.assertTrue(motion.status(bpy.context, source)['running'])
         self.assertEqual(phys_channels(source), frozen)
+
+    def test_native_undo_redo_defers_active_dress_recovery_and_reacquires_ids(self):
+        sources, rig = fixture()
+        source = sources[0]
+        source_name = source.name
+        previous_undo = bpy.context.preferences.edit.use_global_undo
+        bpy.context.preferences.edit.use_global_undo = True
+        try:
+            motion.set_mode(bpy.context, source, 'AUTOMATIC')
+            before, frozen = protected(source), phys_channels(source)
+            self.assertEqual(bpy.ops.ed.undo_push(message='Automatic Dress before history'), {'FINISHED'})
+            motion.set_mode(bpy.context, source, 'MANUAL')
+            self.assertEqual(bpy.ops.ed.undo_push(message='Manual Dress after history'), {'FINISHED'})
+
+            self.assertEqual(bpy.ops.ed.undo(), {'FINISHED'})
+            source = bpy.data.objects[source_name]
+            self.assertEqual(motion.mode(source), 'AUTOMATIC')
+            self.assertFalse(motion._SESSIONS)
+            self.assertTrue(motion._HISTORY_RECOVERY_PENDING)
+            self.assertEqual(phys_channels(source), frozen)
+            self.assertFalse(bpy.app.timers.is_registered(motion._resume_saved))
+            motion.set_mode(bpy.context, source, 'AUTOMATIC')
+            self.assertTrue(motion.status(bpy.context, source)['running'])
+            self.assertEqual(protected(source), before)
+            self.assertEqual(phys_channels(source), frozen)
+
+            self.assertEqual(bpy.ops.ed.redo(), {'FINISHED'})
+            source = bpy.data.objects[source_name]
+            self.assertEqual(motion.mode(source), 'MANUAL')
+            self.assertFalse(motion._SESSIONS)
+            self.assertTrue(motion._HISTORY_RECOVERY_PENDING)
+            motion._resume_saved()
+            self.assertTrue(motion._HISTORY_RECOVERY_PENDING)
+            self.assertFalse(motion.status(bpy.context, source)['running'])
+            motion.set_mode(bpy.context, source, 'MANUAL')
+            self.assertEqual(motion.mode(source), 'MANUAL')
+            self.assertEqual(protected(source), before)
+            self.assertEqual(phys_channels(source), frozen)
+        finally:
+            bpy.context.preferences.edit.use_global_undo = previous_undo
 
     def test_manual_parameter_edit_and_other_scene_flags_are_retained(self):
         sources, rig = fixture()
@@ -402,14 +451,23 @@ class DressWiggleNativeTests(unittest.TestCase):
         for source in sources:
             motion.set_mode(bpy.context, source, 'AUTOMATIC')
         with tempfile.TemporaryDirectory(prefix='cd-dress-export-gate-') as directory:
+            # Match every declared CharacterDesignerUnityExport default. This
+            # fixture does not register the export UI's PropertyGroup, but the
+            # real material capture must still receive its complete settings.
+            config = SimpleNamespace(
+                directory='', filename='', asset_id='native-test', extras=[],
+                simple_materials=[], unity_material_matches=[],
+                show_objects=False, show_materials=False, show_warnings=False,
+                last_status='', last_report='')
             with patch.object(unity_export, 'collect_character',
                               return_value={'objects': [sources[0], rig], 'warnings': []}), \
                  patch.object(unity_export, '_target', return_value=(Path(directory), 'Dress.fbx')), \
                  patch.object(unity_export, '_previous', return_value=None), \
                  patch.object(unity_export, '_capture_hair_motion',
-                              side_effect=RuntimeError('snapshot barrier')):
+                              side_effect=RuntimeError('snapshot barrier')) as snapshot:
                 with self.assertRaisesRegex(RuntimeError, 'snapshot barrier'):
-                    unity_export.begin_export(bpy.context, rig, SimpleNamespace(asset_id='native-test'))
+                    unity_export.begin_export(bpy.context, rig, config)
+                snapshot.assert_called_once_with([sources[0], rig])
         self.assertEqual(motion.mode(sources[0]), 'MANUAL')
         self.assertEqual(motion.mode(sources[1]), 'AUTOMATIC')
         self.assertTrue(motion.status(bpy.context, sources[1])['running'])
@@ -437,7 +495,13 @@ class DressWiggleNativeTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(DressWiggleNativeTests)
+    selected = argument('--test')
+    if selected:
+        if selected.startswith('test_'):
+            selected = 'DressWiggleNativeTests.' + selected
+        suite = unittest.defaultTestLoader.loadTestsFromName(selected, module=sys.modules[__name__])
+    else:
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(DressWiggleNativeTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     report = {'passed': result.wasSuccessful(), 'tests_run': result.testsRun,
               'failures': [(str(test), error) for test, error in result.failures],

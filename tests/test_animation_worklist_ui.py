@@ -34,6 +34,10 @@ class Layout:
 
     column = box = row
 
+    def split(self, **kwargs):
+        self.records.append(('split', kwargs, self.enabled))
+        return Layout(self.records, self.enabled)
+
     def label(self, **kwargs):
         self.records.append(('label', kwargs, self.enabled))
 
@@ -68,6 +72,7 @@ class WorklistUI(unittest.TestCase):
 
         class UIList:
             bitflag_filter_item = 1 << 30
+            filter_name = ''
 
         types.Operator, types.UIList, types.PropertyGroup = Operator, UIList, object
         types.Action, types.Object, types.Armature = object, object, object
@@ -148,6 +153,16 @@ class WorklistUI(unittest.TestCase):
                 self.context.scene, self.context.window = scene, window
 
         self.context.temp_override = override
+
+    def draw_action_row(self, item):
+        """Draw one native-list row with its containing list's enabled state."""
+        container = Layout()
+        self.ui._draw_worklist_actions(container, self.context, self.state)
+        enabled = next(enabled for kind, _value, enabled in container.records if kind == 'list')
+        layout = Layout(enabled=enabled)
+        self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+            self.context, layout, self.state, item, 0, self.state, 'active_index')
+        return layout
 
     def load_animation(self):
         """Load the actual coordinator; only Blender/services are substitutes."""
@@ -608,8 +623,7 @@ class WorklistUI(unittest.TestCase):
         for state in ('BLOCKED', 'NOT_SCANNED', 'CHANGED', 'UNCHANGED', 'UNKNOWN'):
             with self.subTest(state=state):
                 item.scan_state = state
-                layout = Layout()
-                self.ui._draw_worklist_actions(layout, self.context, self.state)
+                layout = self.draw_action_row(item)
                 selections = [active for kind, value, active in layout.records
                               if kind == 'prop' and value[0] == 'sync_selected']
                 self.assertEqual(selections, [])
@@ -630,6 +644,8 @@ class WorklistUI(unittest.TestCase):
                 patch.object(self.ui, '_backend', side_effect=AssertionError('Draw called backend')):
             layout = Layout()
             self.ui.draw_worklist(layout, self.context)
+            for item in self.state.items:
+                self.draw_action_row(item)
         self.assertEqual([(item.scan_state, item.scan_reason, item.sync_selected, item.last_synced_receipt)
                           for item in self.state.items], before)
         for name in ('scan_changes', 'begin_add_ready', 'begin_sync_changed', 'cancel'):
@@ -643,23 +659,27 @@ class WorklistUI(unittest.TestCase):
                 patch.object(Path, 'is_dir', side_effect=AssertionError('UI probed a directory')), \
                 patch.object(self.ui, '_backend', side_effect=AssertionError('UI called the backend')):
             self.ui.draw_worklist(layout, self.context)
+            for item in self.state.items:
+                self.draw_action_row(item)
         labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
         self.assertIn('Character: Cosha', labels)
         self.assertIn('Scene: Animation Worklist · Cosha', labels)
         self.assertNotIn('Source: Soldier', labels)
-        self.assertFalse(any(kind == 'list' for kind, _value, _enabled in layout.records))
+        lists = [value for kind, value, _enabled in layout.records if kind == 'list']
+        self.assertEqual(len(lists), 1)
+        args, options = lists[0]
+        self.assertEqual(args, ('CHARACTERDESIGNER_UL_animation_worklist', 'actions', self.state,
+                                'items', self.state, 'active_index'))
+        self.assertEqual((options['rows'], options['maxrows']), (5, 5))
+        self.assertIn('Source', labels)
+        self.assertIn('Custom', labels)
+        self.assertIn(self.ui.CHARACTERDESIGNER_UL_animation_worklist, self.ui.WORKLIST_CLASSES)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
             ('character_designer.worklist_connect', 'Connected'),
             ('character_designer.worklist_refresh', ''),
             ('character_designer.worklist_add_ready', 'Import Prepared'),
-            ('character_designer.worklist_sync_changed', 'Export Changes'),
-            ('character_designer.worklist_activate', 'Walk'),
-            ('character_designer.worklist_activate', 'Walk'),
-            ('character_designer.worklist_activate', 'Run'),
-            ('character_designer.worklist_activate', 'Run'),
-            ('character_designer.worklist_activate', 'Idle'),
-            ('character_designer.worklist_activate', 'Idle')])
+            ('character_designer.worklist_sync_changed', 'Export Changes')])
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
                                                    for item in self.state.items]), before)
         self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
@@ -679,17 +699,37 @@ class WorklistUI(unittest.TestCase):
         self.ui.draw_worklist(layout, self.context)
         self.assertFalse(any(kind == 'operator' and value[0] == 'character_designer.worklist_add'
                              for kind, value, _enabled in layout.records))
-        actions = [value[2] for kind, value, _enabled in layout.records
+        ui_list = self.ui.CHARACTERDESIGNER_UL_animation_worklist()
+        flags, order = ui_list.filter_items(self.context, self.state, 'items')
+        self.assertTrue(not flags or all(flag & ui_list.bitflag_filter_item for flag in flags))
+        self.assertEqual(order, [])
+        actions = [value[2] for item in self.state.items
+                   for kind, value, _enabled in self.draw_action_row(item).records
                    if kind == 'operator' and value[0] == 'character_designer.worklist_activate']
         self.assertEqual([(payload.item_id, payload.side) for payload in actions], [
             ('id-Walk', 'SOURCE'), ('id-Walk', 'CUSTOM'),
             ('id-Run', 'SOURCE'), ('id-Run', 'CUSTOM'),
             ('id-Idle', 'SOURCE'), ('id-Idle', 'CUSTOM')])
 
+    def test_worklist_search_uses_native_names_without_reordering_or_scene_mutation(self):
+        ui_list = self.ui.CHARACTERDESIGNER_UL_animation_worklist()
+        ui_list.filter_name = 'rUn'
+        self.state.search = 'Dance'
+        before = self.state.active_index, tuple(self.state.items)
+        flags, order = ui_list.filter_items(self.context, self.state, 'items')
+        self.assertEqual(flags, [0, ui_list.bitflag_filter_item, 0])
+        self.assertEqual(order, [])
+        self.assertEqual((self.state.active_index, tuple(self.state.items)), before)
+        self.backend.activate.assert_not_called()
+        layout = Layout()
+        ui_list.draw_filter(self.context, layout)
+        props = [value[0] for kind, value, _enabled in layout.records if kind == 'prop']
+        self.assertEqual(props, ['filter_name'])
+        self.assertFalse(any(kind == 'operator' for kind, _value, _enabled in layout.records))
+
     def test_row_actions_use_stable_item_ids_and_correct_sides(self):
         item = self.state.items[1]
-        layout = Layout()
-        self.ui._draw_worklist_actions(layout, self.context, SimpleNamespace(items=[item]))
+        layout = self.draw_action_row(item)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         for _name, _options, payload in buttons:
             self.assertEqual(payload.item_id, 'id-Run')
@@ -728,8 +768,7 @@ class WorklistUI(unittest.TestCase):
                 self.backend.resume_and_activate.assert_not_called()
 
     def test_row_names_both_actions_with_distinct_icons_without_remove(self):
-        layout = Layout()
-        self.ui._draw_worklist_actions(layout, self.context, SimpleNamespace(items=[self.state.items[0]]))
+        layout = self.draw_action_row(self.state.items[0])
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([name for name, _options, _payload in buttons], [
             'character_designer.worklist_activate', 'character_designer.worklist_activate'])
@@ -739,19 +778,23 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual([options['icon'] for _name, options, _payload in buttons], ['LINKED', 'EDITMODE_HLT'])
         self.assertEqual([options['depress'] for name, options, _payload in buttons
                           if name.endswith('worklist_activate')], [False, True])
+        self.assertTrue(all(options.get('emboss') is False for _name, options, _payload in buttons))
+        self.assertTrue(any(kind == 'split' and value.get('factor') == .5
+                            for kind, value, _enabled in layout.records))
         self.assertIn('INTERNAL', self.ui.CHARACTERDESIGNER_OT_worklist_drag.bl_options)
         self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_remove, self.ui.WORKLIST_CLASSES)
 
     def test_action_cells_require_their_action_and_an_idle_worklist(self):
         item = self.state.items[0]
         for busy in (False, True):
-            with self.subTest(busy=busy):
-                self.animation._link_idle.return_value = not busy
-                item.source_action = None
-                layout = Layout()
-                self.ui._draw_worklist_actions(layout, self.context, SimpleNamespace(items=[item]))
-                self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
-                                 [False, not busy])
+            for mode in ('OBJECT', 'POSE', 'EDIT_ARMATURE'):
+                with self.subTest(busy=busy, mode=mode):
+                    self.animation._link_idle.return_value = not busy
+                    self.context.mode = mode
+                    item.source_action = None
+                    layout = self.draw_action_row(item)
+                    self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
+                                     [False, not busy and mode in {'OBJECT', 'POSE'}])
 
     def test_new_action_is_available_only_in_closed_by_default_advanced_fold(self):
         for opened in (False, True):

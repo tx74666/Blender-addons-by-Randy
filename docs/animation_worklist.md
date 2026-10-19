@@ -13,7 +13,16 @@ character. Finishing Mesh Edit Mode is still required before switching Actions.
 Rest Pose changes only the native pose display; it does not exit animation
 editing or select Original bone display.
 
-## Rest Pose and compact animation rows (0.77.44)
+## Scrollable animation list (0.77.64)
+
+Animations appear in a native Blender list with two equal columns: **Source**
+on the left and **Custom** on the right. Click an animation name in either
+column to view its original or edit the work copy. The cells have no raised
+button borders. Five visible rows keep long worklists inside their own scroll
+area. Expand the list's filter to search animation names; saved order is retained.
+Selecting list padding or reopening the file does not switch Actions.
+
+## Rest Pose (0.77.44)
 
 **Rest Pose** shows the Main Rig in Blender's native rest display. **Pose**
 returns to the retained animation pose. These switches preserve Actions,
@@ -21,10 +30,7 @@ keyframes, bone rest data and the current mesh Edit Mode selection. Selecting
 an animation also leaves a Rest display opened by these buttons. Finish Edit
 Mode before switching animations or entering Main Rig animation editing.
 
-Each row has the original animation on the left and the editable work copy on
-the right, without a surrounding list selection border. Use the Sidebar's
-normal scrolling for longer lists and Blender's Space/Timeline for playback
-and frame changes.
+Use Blender's Space/Timeline for playback and frame changes.
 
 **Advanced > Restore Main Rig** exits animation editing and restores the artist
 state recorded before **Use Main Rig**. It retains local animation drafts; use

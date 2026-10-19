@@ -65,6 +65,20 @@ def _require(context, rig):
         raise ValueError('Pause playback before moving the character.')
 
 
+def _scene_less_subtree(obj):
+    """Ignore only branches with no scene membership anywhere below them."""
+    pending, seen = [obj], set()
+    while pending:
+        item = pending.pop()
+        if item in seen:
+            continue
+        seen.add(item)
+        if item.users_scene:
+            return False
+        pending.extend(item.children)
+    return True
+
+
 def _scope(context, rig):
     from . import bone_display
     rigs = {rig} | {item for item, _record in bone_display.dress_rigs(context, rig)}
@@ -79,7 +93,9 @@ def _scope(context, rig):
         parent = pending.pop()
         for child in parent.children:
             if child.name not in context.scene.objects:
-                raise ValueError('A character child also belongs outside the current scene; keep that shared hierarchy intact.')
+                if _scene_less_subtree(child):
+                    continue
+                raise ValueError(f"Character child '{child.name}' is outside the current scene but its hierarchy contains scene objects; keep that placement intact.")
             if child not in objects:
                 objects.add(child)
                 pending.append(child)
@@ -350,7 +366,7 @@ def _verify(context, state, distance):
     return lowest
 
 
-def _translate(context, state, distance):
+def _translate(context, state, distance, *, floor_state=None, offset_state=None):
     if not math.isfinite(distance):
         raise ValueError('Enter a finite vertical distance.')
     delta = Vector((0., 0., distance))
@@ -362,32 +378,70 @@ def _translate(context, state, distance):
         if any(locked and abs(value) > 1e-8 for locked, value in zip(root.lock_location, local_delta)):
             raise ValueError(f'Unlock the required location axes on {root.name} before placement.')
         offsets[root] = local_delta
-    from . import body_setup
+    from . import body_setup, placement_offsets
+    verified = state
+    if offset_state is not None:
+        verified = dict(state)
+        verified['channels'] = dict(state['channels'])
+        for obj, planned in offset_state['expected_channels'].items():
+            before = state['channels'][obj]
+            verified['channels'][obj] = {**before, 'channels': {**before['channels'], **planned}}
     with body_setup._runtime_paused():
         try:
+            if offset_state is not None:
+                placement_offsets.apply(context, offset_state)
             for root, offset in offsets.items():
                 root.location = Vector(state['channels'][root]['channels']['location']) + offset
             _tag_scope(state['objects'])
-            lowest = _verify(context, state, distance)
+            floor_proof = None
+            if floor_state is not None:
+                from . import floor_widgets
+                floor_widgets.apply(context, floor_state)
+            lowest = _verify(context, verified, distance)
+            if floor_state is not None:
+                floor_proof = floor_widgets.verify(context, floor_state)
+            offset_proof = placement_offsets.verify(context, offset_state) if offset_state is not None else None
         except Exception as original:
-            _restore_roots(state)
-            _tag_scope(state['objects'])
-            context.view_layer.update()
+            recovery_errors = []
+            if floor_state is not None:
+                from . import floor_widgets
+                try:
+                    floor_widgets.restore(context, floor_state)
+                except Exception as exc:
+                    recovery_errors.append(exc)
+            try:
+                _restore_roots(state)
+            except Exception as exc:
+                recovery_errors.append(exc)
+            if offset_state is not None:
+                try:
+                    placement_offsets.restore(context, offset_state)
+                except Exception as exc:
+                    recovery_errors.append(exc)
+            try:
+                _tag_scope(state['objects'])
+                context.view_layer.update()
+            except Exception as exc:
+                recovery_errors.append(exc)
             for root in state['roots']:
                 if _channels(root) != state['channels'][root]:
-                    raise RuntimeError('Character placement failed and its exact local transform could not be restored; use Undo.') from original
+                    recovery_errors.append(RuntimeError(f'{root.name} local transform was not restored.'))
+            if recovery_errors:
+                raise RuntimeError('Character placement failed and recovery was incomplete; use Undo. '
+                                   + '; '.join(str(exc) for exc in recovery_errors)) from original
             raise
     return {'distance': distance, 'delta_z': distance, 'lowest_before': state['lowest'],
             'lowest_after': lowest, 'lowest_expected_after': state['lowest'] + distance,
             'lowest_error': abs(lowest - (state['lowest'] + distance)),
-            'lowest_tolerance': state['lowest_tolerance'], 'mesh_proof': state['mesh_proof'],
+            'lowest_tolerance': verified['lowest_tolerance'], 'mesh_proof': verified['mesh_proof'],
             'objects': sorted(obj.name for obj in state['objects']),
             'roots': [obj.name for obj in state['roots']],
             'meshes': [obj.name for obj in state['points']],
             'visible_meshes': sorted(obj.name for obj in state['visible']),
             'hidden_meshes': sorted(obj.name for obj in state['points'] if obj not in state['visible']),
             'hidden_mesh_policy': 'translation_invariant_local_modifiers_without_drivers',
-            'vertices': sum(len(points) // 3 for points in state['points'].values())}
+            'vertices': sum(len(points) // 3 for points in state['points'].values()),
+            'floor_widgets': floor_proof, 'placement_offsets': offset_proof}
 
 
 def move(context, rig, distance):
@@ -399,9 +453,12 @@ def move(context, rig, distance):
 
 
 def ground(context, rig):
-    """Place the currently visible evaluated character mesh bottom at world Z=0."""
+    """Place the character and its sole/Master outlines on world Z=0."""
+    from . import floor_widgets, placement_offsets
     state = _prepare(context, rig)
-    return _translate(context, state, -state['lowest'])
+    offset_state = placement_offsets.prepare(context, state['objects'], state['roots'])
+    floor_state = floor_widgets.prepare(context, rig, align_planes=True)
+    return _translate(context, state, -state['lowest'], floor_state=floor_state, offset_state=offset_state)
 
 
 class CharacterDesignerGroundState(PropertyGroup):
@@ -434,8 +491,8 @@ class CHARACTERDESIGNER_OT_move_character(Operator):
 
 class CHARACTERDESIGNER_OT_ground_character(Operator):
     bl_idname = 'character_designer.ground_character'
-    bl_label = 'Ground Character'
-    bl_description = 'Move the whole recognized character so its currently visible, evaluated mesh bottom reaches world Z=0; keep its original bones and local pose'
+    bl_label = 'Move to Floor'
+    bl_description = 'Automatically move the whole character so its lowest visible mesh point reaches world Z=0'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -457,17 +514,9 @@ def draw(layout, context):
     settings = getattr(context.scene, 'character_designer_ground', None)
     if settings is None:
         return
-    box = layout.box()
-    box.label(text='Character Placement', icon='OBJECT_ORIGIN')
-    box.prop(settings, 'distance')
-    row = box.row()
-    row.enabled = CHARACTERDESIGNER_OT_move_character.poll(context)
-    row.operator('character_designer.move_character', text='Move Character')
-    row = box.row()
+    row = layout.row()
     row.enabled = CHARACTERDESIGNER_OT_ground_character.poll(context)
-    row.operator('character_designer.ground_character', text='Ground Character')
-    box.label(text='Positive: up. Negative: down.')
-    box.label(text='Ground uses the displayed mesh pose.')
+    row.operator('character_designer.ground_character', text='Move to Floor')
 
 
 CHARACTER_GROUND_CLASSES = (

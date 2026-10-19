@@ -9,11 +9,12 @@ SOURCE = Path(__file__).resolve().parents[1] / 'addons/character_designer/skirt_
 
 class SkirtUnregisterTests(unittest.TestCase):
     def world(self, registered=False, sessions=False, error=None, restricted=False):
-        names = ('_frame_pre', '_save_pre', '_save_post', '_lifecycle_pre', '_load_post', '_undo_post', '_timer', '_resume_saved')
+        names = ('_frame_pre', '_save_pre', '_save_post', '_lifecycle_pre', '_history_pre',
+                 '_load_post', '_undo_post', '_timer', '_resume_saved')
         namespace = {name: (lambda: None) for name in names}
         mappings = {'frame_change_pre': '_frame_pre', 'save_pre': '_save_pre', 'save_post': '_save_post',
-            'load_pre': '_lifecycle_pre', 'load_post': '_load_post', 'undo_pre': '_lifecycle_pre',
-            'redo_pre': '_lifecycle_pre', 'undo_post': '_undo_post', 'redo_post': '_undo_post', 'render_pre': '_lifecycle_pre'}
+            'load_pre': '_lifecycle_pre', 'load_post': '_load_post', 'undo_pre': '_history_pre',
+            'redo_pre': '_history_pre', 'undo_post': '_undo_post', 'redo_post': '_undo_post', 'render_pre': '_lifecycle_pre'}
         foreign = object()
         handlers = SimpleNamespace(**{key: [namespace[value], foreign] for key, value in mappings.items()})
         pending = [namespace['_timer'], namespace['_resume_saved']]
@@ -23,7 +24,8 @@ class SkirtUnregisterTests(unittest.TestCase):
             if error:
                 raise RuntimeError(error)
         namespace.update(_REGISTERED=registered, _SESSIONS={1: object()} if sessions else {}, _SAVE_RESUME=['owned'],
-            _TEARDOWN_REASON=None, _IN_TIMER=False, suspend=suspend, bpy=SimpleNamespace(
+            _TEARDOWN_REASON=None, _IN_TIMER=False, _HISTORY_RECOVERY_PENDING=True,
+            suspend=suspend, bpy=SimpleNamespace(
                 context=SimpleNamespace() if restricted else SimpleNamespace(scene=object()),
                 data=SimpleNamespace() if restricted else SimpleNamespace(objects=[], scenes=[]),
                 app=SimpleNamespace(handlers=handlers, timers=SimpleNamespace(
@@ -44,6 +46,7 @@ class SkirtUnregisterTests(unittest.TestCase):
         self.assertTrue(all(value == [foreign] for value in vars(handlers).values()))
         self.assertEqual(n['_SAVE_RESUME'], [])
         self.assertFalse(n['_REGISTERED'])
+        self.assertFalse(n['_HISTORY_RECOVERY_PENDING'])
 
     def test_registered_adapter_still_suspends_saved_automatic_state(self):
         n, calls, pending, _handlers, _foreign = self.world(registered=True)
@@ -51,6 +54,7 @@ class SkirtUnregisterTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn('current shape is kept', calls[0]['reason'])
         self.assertEqual(pending, [])
+        self.assertFalse(n['_HISTORY_RECOVERY_PENDING'])
 
     def test_partial_live_session_still_suspends_even_before_registered_flag(self):
         n, calls, pending, _handlers, _foreign = self.world(sessions=True)

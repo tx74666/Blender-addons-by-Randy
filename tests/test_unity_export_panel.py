@@ -126,7 +126,7 @@ class PanelTests(unittest.TestCase):
         self.package.__path__ = [str(SOURCE)]
         bpy = ModuleType('bpy')
         props, types = ModuleType('bpy.props'), ModuleType('bpy.types')
-        for kind in ('BoolProperty', 'CollectionProperty', 'IntProperty', 'PointerProperty', 'StringProperty'):
+        for kind in ('BoolProperty', 'CollectionProperty', 'EnumProperty', 'IntProperty', 'PointerProperty', 'StringProperty'):
             setattr(props, kind, lambda _kind=kind, **kwargs: SimpleNamespace(kind=_kind, keywords=kwargs))
         types.Operator, types.Panel, types.PropertyGroup = Operator, type('Panel', (), {}), type('PropertyGroup', (), {})
         types.Object = types.Material = ID
@@ -151,7 +151,8 @@ class PanelTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config = SimpleNamespace(directory=str(self.root), filename='Character', asset_id='',
-                                      extras=Entries(), simple_materials=Entries(), last_report='', last_status='')
+                                      extras=Entries(), simple_materials=Entries(), unity_material_matches=Entries(),
+                                      last_report='', last_status='')
         for key in ('show_objects', 'show_warnings', 'show_materials'):
             definition = self.ui.CharacterDesignerUnityExport.__annotations__.get(key)
             setattr(self.config, key, definition.keywords.get('default', False) if definition else False)
@@ -172,14 +173,14 @@ class PanelTests(unittest.TestCase):
             page='MISC', mode='OBJECT', screen=None, region=SimpleNamespace(width=1000),
             preferences=SimpleNamespace(system=SimpleNamespace(ui_scale=1.0)),
             scene=SimpleNamespace(objects=IDs([*self.objects, self.excluded]),
-                                  character_designer_setup=SimpleNamespace(rig=self.rig, body=self.body)))
+                                  character_designer_setup=SimpleNamespace(rig=self.rig, body=self.body, assets=[])))
         for attribute, value in {
             'export_running': lambda: self.running,
-            'bound_meshes': lambda *_args: [self.body, self.dress, self.excluded],
-            '_bound_meshes': lambda *_args: [self.body, self.dress, self.excluded],
+            'bound_meshes': lambda *_args, **_kwargs: [self.body, self.dress, self.excluded],
+            '_bound_meshes': lambda *_args, **_kwargs: [self.body, self.dress, self.excluded],
             'collect_character': self.collect,
             '_character_armatures': lambda *_args: {self.rig},
-            '_helpers': lambda *_args: set(),
+            '_helpers': lambda *_args, **_kwargs: set(),
             '_binding_armatures': lambda *_args: {self.rig},
         }.items():
             patcher = patch.object(self.exporter, attribute, value)
@@ -213,6 +214,11 @@ class PanelTests(unittest.TestCase):
 
     def prop(self, layout, name):
         matches = [item for item in layout.events('prop') if item.name == name]
+        if not matches and name in {'show_objects', 'show_materials', 'show_warnings'}:
+            section = name.removeprefix('show_').upper()
+            matches = [item for item in layout.events('operator')
+                       if item.identifier == 'character_designer.unity_export_section'
+                       and getattr(item.properties, 'section', '') == section]
         self.assertEqual(len(matches), 1, (name, matches))
         return matches[0]
 
@@ -234,6 +240,8 @@ class PanelTests(unittest.TestCase):
             self.assertIs(definition.keywords['default'], False)
             self.assertNotIn('SKIP_SAVE', definition.keywords.get('options', ()))
         layout = self.draw()
+        self.assertFalse([item for item in layout.events('prop') if item.name == 'filename'])
+        self.assertIn('HIDDEN', self.ui.CharacterDesignerUnityExport.__annotations__['filename'].keywords['options'])
         header = self.prop(layout, 'show_objects').kwargs['text']
         self.assertTrue(header.startswith('Objects'))
         self.assertIn('2', header)
@@ -374,13 +382,11 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.prop(layout, 'show_materials').kwargs['text'], 'Use Simplified Materials · 2')
         buttons = self.buttons(layout, 'character_designer.unity_simple_material')
         toggles = [item for item in buttons if item.kwargs.get('icon', '').startswith('CHECKBOX_')]
-        by_name = {item.properties.material_name: item for item in toggles}
-        self.assertEqual(len(toggles), 3)
-        self.assertEqual(set(by_name), {'Skin', 'Cloth', 'Old Selection'})
-        self.assertEqual({name: item.properties.enabled for name, item in by_name.items()},
-                         {'Skin': False, 'Cloth': True, 'Old Selection': False})
-        self.assertEqual(by_name['Skin'].kwargs['icon'], 'CHECKBOX_HLT')
-        self.assertEqual(by_name['Cloth'].kwargs['icon'], 'CHECKBOX_DEHLT')
+        self.assertEqual(toggles, [])
+        choices, chosen = self.ui._material_choices(self.objects, self.config)
+        self.assertEqual({material.name for material in choices}, {'Skin', 'Cloth', 'Old Selection'})
+        self.assertEqual(chosen, {self.skin, self.old})
+        self.assertEqual(len(self.buttons(layout, 'character_designer.unity_choose_simple_material')), 1)
         originals = [item for item in buttons if item.kwargs.get('text', '').startswith('Use Original')]
         self.assertEqual({item.properties.material_name for item in originals}, {'Skin', 'Old Selection'})
         self.assertTrue(all(item.properties.enabled is False for item in originals))

@@ -21,6 +21,9 @@ from . import character_setup
 
 SCHEMA = "cdesigner.unity-character.v1"
 _ACTIVE_JOB = None
+UPDATE_RIG_ID = 'character_designer_unity_update_rig_id'
+UPDATE_PART_ID = 'character_designer_unity_update_part_id'
+UPDATE_PART_OWNER = 'character_designer_unity_update_part_rig_id'
 _DRESS_RECORD_KEY = 'character_designer_skirt_v1'
 _DRESS_OWNER_KEY = 'character_designer_skirt_owner'
 _DRESS_SOURCE_KEY = 'character_designer_skirt_source'
@@ -332,7 +335,28 @@ def _filename(value, rig):
     return value + '.fbx'
 
 
-def _target(config, rig):
+def _model_body(context, rig):
+    setup = character_setup.settings(context)
+    if setup is None or setup.rig != rig:
+        raise ExportError('Choose this character Main Rig in Character Setup first.')
+    body = setup.body
+    if body is None or body.type != 'MESH' or body.name not in context.scene.objects:
+        raise ExportError('Choose the character Body in Character Setup first.')
+    return body
+
+
+def model_filename(context, rig):
+    """The selected Body object is the sole model-export name source."""
+    body = _model_body(context, rig)
+    try:
+        if not body.name.strip():
+            raise ExportError('Empty Body name.')
+        return _filename(body.name, rig)
+    except ExportError as exc:
+        raise ExportError('Rename the Body object to a valid filename, without folders or reserved characters.') from exc
+
+
+def _target(config, rig, context=None):
     if not config.directory.strip():
         raise ExportError('Choose a Unity export folder first.')
     directory = Path(bpy.path.abspath(config.directory)).expanduser().resolve()
@@ -340,7 +364,32 @@ def _target(config, rig):
         raise ExportError('The export folder points to a file.')
     if directory == directory.parent:
         raise ExportError('Choose a character subfolder, not the drive root.')
-    return directory, _filename(config.filename, rig)
+    return directory, model_filename(context or bpy.context, rig)
+
+
+def _full_update_ledger_guard(model_file, asset_id):
+    """Protect accepted partial state before an ordinary full replacement.
+
+    Existing exports outside an actual Unity Assets/ProjectSettings project
+    retain their legacy behavior. The state lookup uses the saved character
+    identity independently of the current Body-derived target filename.
+    """
+    model = Path(model_file)
+    ancestors = [parent for parent in model.parents if parent.name.casefold() == 'assets']
+    if not ancestors:
+        return
+    from . import unity_update_candidate as candidate
+    project = next((assets.parent for assets in ancestors
+                    if candidate._io(assets.parent / 'Assets').is_dir()
+                    and candidate._io(assets.parent / 'ProjectSettings').is_dir()), None)
+    if project is None:
+        return
+    if not asset_id:
+        if (candidate._io(model).exists()
+                or candidate._io(model.with_suffix('.cdesigner.json')).exists()):
+            raise ExportError('The existing Unity model needs its saved character identity before a full update.')
+        return
+    candidate.require_full_update_allowed(model, asset_id=asset_id, unity_project=project)
 
 
 def _safe_file(root, relative):
@@ -356,20 +405,20 @@ def _previous(directory, filename, asset_id):
     manifest = directory / (Path(filename).stem + '.cdesigner.json')
     if not manifest.exists():
         if (directory / filename).exists():
-            raise ExportError('That FBX already exists without this tool\'s manifest. Choose another filename.')
+            raise ExportError('That FBX already exists without this tool\'s manifest. Rename the Body or choose another folder.')
         return None
     try:
         record = json.loads(manifest.read_text(encoding='utf-8'))
     except (ValueError, OSError) as exc:
         raise ExportError('The existing character export manifest cannot be read.') from exc
     if not isinstance(record, dict) or record.get('schema') != SCHEMA or record.get('asset_id') != asset_id:
-        raise ExportError('This filename belongs to a different export profile. Choose another filename.')
+        raise ExportError('This filename belongs to a different export profile. Rename the Body or choose another folder.')
     if not isinstance(record.get('files'), dict):
         raise ExportError('The existing export file inventory is invalid.')
     for relative, expected in record.get('files', {}).items():
         path = _safe_file(directory, relative)
         if path.exists() and _hash(path) != expected:
-            raise ExportError(f'{relative} was changed outside the exporter; keep it or choose a new export filename.')
+            raise ExportError(f'{relative} was changed outside the exporter; keep it and rename the Body or choose another folder.')
     return record
 
 
@@ -460,6 +509,8 @@ def begin_export(context, rig, config):
         raise ExportError('A character export is already running.')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ExportError('Finish Edit Mode before exporting; the current pose is preserved.')
+    guard_directory, guard_filename = _target(config, rig, context)
+    _full_update_ledger_guard(guard_directory / guard_filename, config.asset_id)
     # Direct refusal must precede even transient author preview restoration.
     from . import dress_export_guard
     try:
@@ -475,7 +526,9 @@ def begin_export(context, rig, config):
         if hair_wiggle_adapter.status(context)['active']:
             raise ExportError('Finish the active Hair preview before model export.')
     collected = collect_character(context, rig, config)
-    directory, filename = _target(config, rig)
+    if _model_body(context, rig) not in collected['objects']:
+        raise ExportError('The selected Body must have an enabled Armature binding to this character.')
+    directory, filename = _target(config, rig, context)
     asset_id = config.asset_id or uuid.uuid4().hex
     prior = _previous(directory, filename, asset_id)
     objects = collected['objects']
@@ -541,6 +594,354 @@ def begin_export(context, rig, config):
         raise
 
 
+def _candidate_renderer_inventory(filepath):
+    """Read actual FBX model paths and ordered, deduplicated material links.
+
+    FBX drops ordinary Armature parenting for skins, and combines repeated or
+    empty Blender material slots. Neither source object parenting nor the raw
+    Blender slot count is therefore an exported renderer identity. Unity still
+    validates the representation it actually imports before applying anything.
+    """
+    from struct import error as StructError
+    try:
+        from io_scene_fbx import parse_fbx
+        filename = os.path.abspath(os.fspath(filepath))
+        if os.name == 'nt' and not filename.startswith('\\\\?\\'):
+            filename = ('\\\\?\\UNC\\' + filename[2:] if filename.startswith('\\\\')
+                        else '\\\\?\\' + filename)
+        root, _version = parse_fbx.parse(filename)
+        sections = {element.id: element for element in root.elems}
+        elements = sections[b'Objects'].elems
+        models = {element.props[0]: element for element in elements if element.id == b'Model'}
+        materials = {element.props[0]: element for element in elements if element.id == b'Material'}
+        links = [element.props for element in sections[b'Connections'].elems
+                 if element.id == b'C' and element.props[0] == b'OO']
+        if (not models or len(models) != sum(element.id == b'Model' for element in elements)
+                or len(materials) != sum(element.id == b'Material' for element in elements)):
+            raise ExportError('The candidate context has no FBX model hierarchy.')
+
+        def name(element, *, path_part=False):
+            value = element.props[1].split(b'\x00\x01', 1)[0].decode('utf-8')
+            if (not value.strip() or path_part and (value in {'.', '..'} or '/' in value or '\\' in value)
+                    or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)):
+                raise ExportError('An exported model or material name is not a valid update identity.')
+            return value
+
+        parents = {}
+        for link in links:
+            if link[1] in models and (link[2] == 0 or link[2] in models):
+                if link[1] in parents:
+                    raise ExportError('An FBX model has ambiguous parent links.')
+                parents[link[1]] = link[2]
+
+        def path(identity):
+            names, seen = [], set()
+            while identity:
+                if identity in seen or identity not in parents:
+                    raise ExportError('The FBX model hierarchy is incomplete or cyclic.')
+                seen.add(identity)
+                names.append(name(models[identity], path_part=True))
+                identity = parents[identity]
+            return '/'.join(reversed(names))
+
+        result = []
+        for identity, model in models.items():
+            if model.props[2] != b'Mesh':
+                continue
+            result.append({'renderer_path': path(identity), 'object_name': name(model, path_part=True),
+                           'material_slots': [name(materials[link[1]]) for link in links
+                                              if link[1] in materials and link[2] == identity]})
+        if (not result or len({item['renderer_path'] for item in result}) != len(result)
+                or len({item['object_name'] for item in result}) != len(result)):
+            raise ExportError('The full FBX renderer inventory is empty or ambiguous.')
+        return sorted(result, key=lambda item: item['renderer_path'])
+    except (ImportError, KeyError, IndexError, TypeError, UnicodeError, ValueError,
+            OSError, RuntimeError, EOFError, StructError) as exc:
+        if isinstance(exc, ExportError):
+            raise
+        raise ExportError('The accepted or candidate FBX renderer inventory cannot be read.') from exc
+
+
+def _candidate_full_config(config, eligible):
+    """Project valid legacy exclusions into a detached full-context inventory."""
+    from types import SimpleNamespace
+
+    class FullContext:
+        def __init__(self):
+            self.extras = tuple(SimpleNamespace(object=entry.object,
+                enabled=True if entry.object in eligible else entry.enabled)
+                for entry in config.extras)
+
+        def __getattr__(self, name):
+            return getattr(config, name)
+
+    return FullContext()
+
+
+def _candidate_identity_plan(rig, meshes, inventory):
+    """Plan canonical IDs read-only; no path/name is migration authority."""
+    def identity(obj, key):
+        value = obj.get(key)
+        if value is not None and (type(value) is not str or not re.fullmatch('[0-9a-f]{32}', value)):
+            raise ExportError(f'{obj.name}: the saved Unity update identity is invalid.')
+        return value or uuid.uuid4().hex
+
+    writes = []
+
+    def plan(obj, key, value):
+        previous = obj.get(key)
+        if previous is not None and previous != value:
+            raise ExportError(f'{obj.name}: the mesh belongs to another registered Unity rig.')
+        if previous is None:
+            if (not getattr(obj, 'is_editable', True) or obj.library is not None
+                    or obj.override_library is not None):
+                raise ExportError(f'{obj.name}: linked or overridden objects cannot register update identities.')
+            writes.append((obj, key, value))
+
+    rig_id = identity(rig, UPDATE_RIG_ID)
+    plan(rig, UPDATE_RIG_ID, rig_id)
+    by_name = {obj.name: obj for obj in meshes}
+    if len(by_name) != len(inventory) or set(by_name) != {item['object_name'] for item in inventory}:
+        raise ExportError('The complete mesh inventory differs from the accepted model. Review Character Setup; rename or removal is not inferred.')
+    parts, part_ids = [], set()
+    for item in inventory:
+        obj = by_name[item['object_name']]
+        # FBX combines duplicate materials and skips empty slots.
+        materials = list(dict.fromkeys(slot.material for slot in obj.material_slots if slot.material is not None))
+        if [material.name for material in materials] != item['material_slots']:
+            raise ExportError(f'{obj.name}: material slot identity differs from the accepted model.')
+        part_id = identity(obj, UPDATE_PART_ID)
+        if part_id in part_ids:
+            raise ExportError('Duplicate Unity update part identities must be resolved before exporting.')
+        part_ids.add(part_id)
+        plan(obj, UPDATE_PART_ID, part_id)
+        plan(obj, UPDATE_PART_OWNER, rig_id)
+        parts.append({**item, 'part_id': part_id})
+    for obj in bpy.data.objects:
+        if obj != rig and obj.get(UPDATE_RIG_ID) == rig_id:
+            raise ExportError('Duplicate Unity update rig identities must be resolved before exporting.')
+        other_part = obj.get(UPDATE_PART_ID)
+        if obj not in meshes and isinstance(other_part, str) and other_part in part_ids:
+            raise ExportError('A Unity update part identity is duplicated outside this character.')
+    return {'rig': rig, 'rig_id': rig_id, 'parts': parts, 'writes': writes,
+            'objects': [(by_name[item['object_name']], item['object_name'], item['part_id'])
+                        for item in parts]}
+
+
+def _capture_candidate_ids(plan):
+    """Commit only new ID metadata after the complete candidate preflight."""
+    completed = []
+    try:
+        for obj, key, value in plan['writes']:
+            if key in obj:
+                raise ExportError('A Unity update identity changed while preparing the candidate.')
+            obj[key] = value
+            completed.append((obj, key, value))
+    except Exception:
+        for obj, key, value in reversed(completed):
+            if obj.get(key) == value:
+                del obj[key]
+        raise
+
+
+def _restore_candidate_ids(job):
+    if job.get('candidate_published'):
+        return
+    for obj, key, value in reversed(job.get('identity_plan', {}).get('writes', [])):
+        try:
+            if obj.get(key) == value:
+                del obj[key]
+        except ReferenceError:
+            pass
+
+
+def _validate_candidate_ids(plan):
+    rig = plan['rig']
+    if rig.get(UPDATE_RIG_ID) != plan['rig_id']:
+        raise ExportError('The registered Unity update rig changed during candidate export.')
+    for obj, name, part_id in plan['objects']:
+        if (obj.name != name or obj.get(UPDATE_PART_ID) != part_id
+                or obj.get(UPDATE_PART_OWNER) != plan['rig_id']):
+            raise ExportError('A registered Unity update part changed during candidate export.')
+    meshes = {item[0] for item in plan['objects']}
+    part_ids = {item[2] for item in plan['objects']}
+    for obj in bpy.data.objects:
+        other_part = obj.get(UPDATE_PART_ID)
+        if (obj != rig and obj.get(UPDATE_RIG_ID) == plan['rig_id']
+                or obj not in meshes and isinstance(other_part, str) and other_part in part_ids):
+            raise ExportError('A Unity update identity was duplicated during candidate export.')
+
+
+def begin_candidate_export(context, rig, config, *, selection=None, base=None):
+    """Prepare a same-skeleton mesh candidate outside live Unity assets.
+
+    The receiver, not the export worker, applies selected parts. Every skin and
+    its skeleton are context only unless explicitly selected. This entry point
+    never publishes the formal FBX and does not enable unsupported Rig updates.
+    """
+    global _ACTIVE_JOB
+    from . import unity_update_selection_ui as choices
+    if export_running():
+        raise ExportError('A character export is already running.')
+    current = choices.get_selection(context, rig)
+    if selection is not None:
+        if (not isinstance(selection, dict)
+                or set(selection.get('meshes', ())) != set(current['meshes'])
+                or selection.get('update_rig') is not current['update_rig']
+                or set(selection.get('eligible', ())) != set(current['eligible'])):
+            raise ExportError('The Unity update selection changed; prepare the current choices again.')
+    if not current['meshes'] and not current['update_rig']:
+        return None
+    if current['update_rig']:
+        raise ExportError('Partial Rig updates are not enabled. Keep Rig unchecked for a same-skeleton mesh candidate.')
+    if context.mode not in {'OBJECT', 'POSE'}:
+        raise ExportError('Finish Edit Mode before preparing a Unity update candidate.')
+    from . import unity_update_candidate as candidate
+    directory, filename = _target(config, rig, context)
+    asset_id = config.asset_id
+    if not isinstance(asset_id, str) or not re.fullmatch('[0-9a-f]{32}', asset_id):
+        raise ExportError('Export and register this character completely before preparing partial updates.')
+    prior = _previous(directory, filename, asset_id)
+    if prior is None or prior.get('ok') is not True:
+        raise ExportError('A successful accepted model bundle is required before a partial update.')
+    scope = _collection_scope(context, rig, references=_scope_references(config, character_setup.settings(context)))
+    eligible = set(scope['eligible'])
+    if eligible != set(current['eligible']):
+        raise ExportError('The character mesh bindings changed while preparing the update.')
+    full_config = _candidate_full_config(config, eligible)
+    collected = collect_character(context, rig, full_config, _scope=scope)
+    objects = collected['objects']
+    if _model_body(context, rig) not in objects:
+        raise ExportError('The selected Body must have an enabled Armature binding to this character.')
+    meshes = [obj for obj in objects if obj.type == 'MESH']
+    inventory = _candidate_renderer_inventory(directory / filename)
+    identities = _candidate_identity_plan(rig, meshes, inventory)
+    captured_base = candidate.capture_base(directory / filename,
+        directory / (Path(filename).stem + '.cdesigner.json'), asset_id=asset_id,
+        rig_id=identities['rig_id'], parts=identities['parts'])
+    if base is not None and base != captured_base:
+        raise ExportError('The accepted Unity update baseline changed; prepare the candidate again.')
+    selected_objects = set(current['meshes'])
+    mesh_ids = [item['part_id'] for item in identities['parts']
+                if next(obj for obj in meshes if obj.name == item['object_name']) in selected_objects]
+    from . import dress_export_guard
+    try:
+        dress_export_guard.reject_model_sources(objects)
+    except (ValueError, TypeError) as exc:
+        raise ExportError(str(exc)) from exc
+    # Baseline, identity, selection and direct-export admission precede any
+    # transient author-preview restoration and persistent ID registration.
+    from . import hair_wiggle_adapter
+    if hair_wiggle_adapter.status(context)['active']:
+        hair_wiggle_adapter.stop_preview(context, reason='Stopped before the model update candidate snapshot.')
+        if hair_wiggle_adapter.status(context)['active']:
+            raise ExportError('Finish the active Hair preview before preparing the candidate.')
+    from . import skirt_wiggle, unity_forearm, unity_material_match_ui
+    for source in meshes:
+        skirt_wiggle.suspend(context, source=source,
+                             reason='Model update candidate paused automatic Dress motion.')
+    dress_surfaces = _capture_dress_surfaces(objects)
+    hair_motion = _capture_hair_motion(objects)
+    owned_keys = _owned_keys(objects)
+    forearm = {obj.name: unity_forearm.capture(obj) for obj in meshes if obj.name in owned_keys}
+    material_matches = unity_material_match_ui.capture(full_config, objects, directory, asset_id)
+    temporary = tempfile.TemporaryDirectory(prefix='cdesigner-unity-update-')
+    root = Path(temporary.name)
+    stage = root / 'out'
+    stage.mkdir()
+    worker_config = root / 'CONFIG'
+    worker_config.mkdir()
+    job = {'candidate': True, 'candidate_base': captured_base, 'identity_plan': identities,
+           'mesh_ids': mesh_ids, 'update_id': uuid.uuid4().hex,
+           'temporary': temporary, 'root': root, 'stage': stage,
+           'directory': directory, 'filename': filename, 'asset_id': asset_id,
+           'rig': rig, 'config': config, 'started': time.monotonic(), 'process': None,
+           'objects': [obj.name for obj in objects], 'hair_motion': hair_motion,
+           'dress_surfaces': dress_surfaces, 'unity_material_matches': material_matches,
+           'worker_config': worker_config, 'auto_execution_enabled': True}
+    try:
+        specification = {'objects': job['objects'], 'rig': rig.name,
+            'rigs': [obj.name for obj in objects if obj.type == 'ARMATURE'],
+            'filename': filename, 'stage': str(stage), 'asset_id': asset_id,
+            'unit_scale': context.scene.unit_settings.scale_length,
+            'owned_keys': owned_keys, 'warnings': collected['warnings'],
+            'forearm': forearm, 'hair_motion': hair_motion, 'dress_surfaces': dress_surfaces,
+            'had_forearm': bool(prior.get('forearm_correction')),
+            'simple_materials': sorted({entry.material.name for entry in getattr(config, 'simple_materials', [])
+                if entry.material is not None and any(slot.material == entry.material
+                    for obj in meshes for slot in obj.material_slots)}),
+            'image_buffers': _image_buffers(objects, root)}
+        candidate.revalidate_base(captured_base)
+        _capture_candidate_ids(identities)
+        snapshot = root / 'character.blend'
+        bpy.data.libraries.write(str(snapshot), _model_snapshot_datablocks(objects, dress_surfaces),
+                                 path_remap='ABSOLUTE', fake_user=False, compress=True)
+        (root / 'job.json').write_text(json.dumps(specification, ensure_ascii=False), encoding='utf-8')
+        log = open(root / 'worker.log', 'w', encoding='utf-8')
+        job['log'] = log
+        environment = os.environ.copy()
+        environment['BLENDER_USER_CONFIG'] = str(worker_config)
+        command = [bpy.app.binary_path, '--background', '--factory-startup', '--enable-autoexec',
+                   str(snapshot), '--python-exit-code', '1', '--python',
+                   str(Path(__file__).with_name('unity_export_worker.py')), '--', str(root / 'job.json')]
+        job['process'] = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=environment,
+                                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        _ACTIVE_JOB = job
+        return job
+    except Exception:
+        try:
+            _restore_candidate_ids(job)
+        finally:
+            if job.get('log'):
+                job['log'].close()
+            temporary.cleanup()
+        raise
+
+
+def poll_candidate_export(job):
+    """Publish an immutable pending candidate; never call the full publisher."""
+    if not job.get('candidate'):
+        raise ExportError('This is not a partial-update candidate job.')
+    if job.get('cancel_requested'):
+        _cancel_candidate_export(job)
+        raise ExportError('Candidate export cancelled; the accepted Unity model is unchanged.')
+    process = job['process']
+    if process.poll() is None:
+        if time.monotonic() - job['started'] > 600:
+            cancel_export(job)
+            raise ExportError('Candidate export timed out. The accepted Unity model is unchanged.')
+        return None
+    try:
+        from . import unity_update_candidate as candidate
+        path = job['stage'] / 'result.json'
+        result = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        if process.returncode or not result.get('ok'):
+            log = (job['root'] / 'worker.log').read_text(encoding='utf-8', errors='replace')
+            raise ExportError(result.get('error') or ('Candidate export worker failed: ' + log[-1800:]))
+        _dress_publication(job, result)
+        _validate_candidate_ids(job['identity_plan'])
+        actual = _candidate_renderer_inventory(job['stage'] / job['filename'])
+        expected = [{key: item[key] for key in ('renderer_path', 'object_name', 'material_slots')}
+                    for item in job['identity_plan']['parts']]
+        if actual != expected:
+            raise ExportError('The exported renderer paths or material slots differ from the accepted part mapping.')
+        published = candidate.publish_candidate(job['candidate_base'], stage=job['stage'],
+            model_file=job['filename'], files=result.get('files', []), parts=job['identity_plan']['parts'],
+            mesh_ids=job['mesh_ids'], update_rig=False, update_id=job['update_id'])
+        job['candidate_published'] = True
+        warnings, notices = report_messages(result)
+        return {'candidate_path': str(published), 'update_id': job['update_id'],
+                'status': 'Candidate exported; Unity review and application are pending.',
+                'unity_status': 'Pending; the accepted source model is unchanged.',
+                'warnings': warnings, 'notices': notices,
+                'objects': job['objects'], 'mesh_ids': list(job['mesh_ids'])}
+    finally:
+        try:
+            _restore_candidate_ids(job)
+        finally:
+            _dispose(job)
+
+
 def report_messages(report):
     """Separate expected scope skips, including reports from earlier versions."""
     warnings, notices = [], list(report.get('notices', []))
@@ -551,6 +952,7 @@ def report_messages(report):
 
 def _publish(job, result):
     directory, stage, filename = job['directory'], job['stage'], job['filename']
+    _full_update_ledger_guard(directory / filename, job['asset_id'])
     manifest_name = Path(filename).stem + '.cdesigner.json'
     manifest = directory / manifest_name
     # A second export or an artist edit during the worker run must not be lost.
@@ -638,6 +1040,7 @@ def _publish(job, result):
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(target, saved)
         (backup / 'restore.json').write_text(json.dumps({'target': str(directory), 'existed': existed}, indent=2), encoding='utf-8')
+        _full_update_ledger_guard(directory / filename, job['asset_id'])
         for relative in files:
             target = _safe_file(directory, relative)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -645,6 +1048,7 @@ def _publish(job, result):
             scratch = target.with_name('.cdesigner-' + uuid.uuid4().hex + '.tmp')
             try:
                 shutil.copy2(_safe_file(stage, relative), scratch)
+                _full_update_ledger_guard(directory / filename, job['asset_id'])
                 os.replace(scratch, target)
                 changed.append(relative)
             finally:
@@ -673,6 +1077,8 @@ def _dispose(job):
 
 
 def poll_export(job):
+    if job.get('candidate'):
+        return poll_candidate_export(job)
     process = job['process']
     if process.poll() is None:
         if time.monotonic() - job['started'] > 600:
@@ -691,6 +1097,8 @@ def poll_export(job):
 
 
 def cancel_export(job):
+    if job.get('candidate'):
+        return _cancel_candidate_export(job)
     process = job.get('process')
     if process and process.poll() is None:
         process.terminate()
@@ -700,6 +1108,37 @@ def cancel_export(job):
             process.kill()
             process.wait(timeout=5)
     _dispose(job)
+
+
+def _cancel_candidate_export(job):
+    """Rollback ID registration even if stopping the private worker fails.
+
+    Retain the live job and its private files for a retry until worker exit is
+    confirmed. A cancelled job can never proceed to candidate publication.
+    """
+    job['cancel_requested'] = True
+    process, stop_error = job.get('process'), None
+    try:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    except Exception as exc:
+        stop_error = exc
+    try:
+        stopped = process is None or process.poll() is not None
+    except Exception:
+        stopped = False
+    try:
+        _restore_candidate_ids(job)
+    finally:
+        if stopped:
+            _dispose(job)
+    if not stopped:
+        raise ExportError('The candidate worker could not be stopped. Its private job is retained for cancellation retry; the accepted Unity model is unchanged.') from stop_error
 
 
 def stop_exports():

@@ -40,6 +40,7 @@ _WRITE_DEPTH = 0
 _BACKEND_CACHE = None
 _BACKEND_CACHE_TIME = 0.0
 _TEARDOWN_REASON = None
+_HISTORY_RECOVERY_PENDING = False
 _CHANNELS = ('location', 'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle', 'scale')
 _DEFAULTS = {'wiggle_stiff': 400.0, 'wiggle_damp': 8.0, 'wiggle_gravity': 0.25,
              'wiggle_mass': 1.0, 'wiggle_stretch': 0.0, 'wiggle_chain': True}
@@ -146,7 +147,10 @@ def status(context=None, source=None):
         if running:
             message = 'Automatic uses Wiggle 2. Manual keeps the current skirt shape.'
         elif selected == 'AUTOMATIC':
-            message = reason or (info['reason'] if not info['available'] else 'Automatic is paused. Choose Automatic to resume.')
+            if _HISTORY_RECOVERY_PENDING:
+                message = 'After Undo/Redo, choose Automatic or Manual again for this Dress. Saved Wiggle motion may still run until you choose.'
+            else:
+                message = reason or (info['reason'] if not info['available'] else 'Automatic is paused. Choose Automatic to resume.')
         else:
             message = reason or 'Manual keeps the current shape; pose the rings and handles.'
         return dict(info, mode=selected, running=running, message=message)
@@ -799,7 +803,33 @@ def _lifecycle_pre(*args):
     suspend(reason='Scene editing paused automatic Dress motion; the current shape is kept.')
 
 
+@persistent
+def _history_pre(*args):
+    # The old IDs are still live before native history replacement. Release
+    # only our solver lease and keep its preference and current PHYS channels;
+    # an explicit reconnect reads the preference from the newly restored IDs.
+    for key in list(_SESSIONS):
+        _stop(key, reason='', preserve_preference=True)
+
+
 def _resume_saved():
+    global _HISTORY_RECOVERY_PENDING
+    if not _REGISTERED:
+        _HISTORY_RECOVERY_PENDING = False
+        return None
+    # Native Undo has also crashed from a deferred scene.objects traversal.
+    # History therefore has no automatic recovery at all. This gate also
+    # neutralizes an already dispatched load callback without touching RNA.
+    # Explicit Automatic/Manual already authenticate and recover their selected
+    # source using the current user action's context, without reconnecting others.
+    if _HISTORY_RECOVERY_PENDING:
+        return None
+    # Ordinary file-load recovery retains its existing separate lifecycle.
+    if not _scene_context_available():
+        return 0.05
+    manager = getattr(bpy.context, 'window_manager', None)
+    if manager is not None and getattr(manager, 'is_interface_locked', False):
+        return 0.05
     for source in tuple(bpy.context.scene.objects):
         if source.type != 'MESH' or STATE_KEY not in source:
             continue
@@ -818,25 +848,36 @@ def _resume_saved():
     return None
 
 
+def _queue_resume_saved(first_interval):
+    """Own one pending callback without retaining any native scene reference."""
+    if bpy.app.timers.is_registered(_resume_saved):
+        bpy.app.timers.unregister(_resume_saved)
+    if _REGISTERED:
+        bpy.app.timers.register(_resume_saved, first_interval=first_interval)
+
+
 @persistent
 def _load_post(*args):
-    global _BACKEND_CACHE
+    global _BACKEND_CACHE, _HISTORY_RECOVERY_PENDING
     _BACKEND_CACHE = None
-    if not bpy.app.timers.is_registered(_resume_saved):
-        bpy.app.timers.register(_resume_saved, first_interval=0.1)
+    _HISTORY_RECOVERY_PENDING = False
+    _queue_resume_saved(0.1)
 
 
 @persistent
 def _undo_post(*args):
-    # Blender restores ID data but not Python sessions. Recover immediately so
-    # no unowned native solver step can run before the deferred safe reseed.
-    for source in tuple(bpy.context.scene.objects):
-        if source.type == 'MESH' and STATE_KEY in source:
-            try:
-                _recover_source(source)
-            except (ReferenceError, ValueError, RuntimeError):
-                pass
-    _load_post()
+    global _SAVE_RESUME, _BACKEND_CACHE, _BACKEND_CACHE_TIME, _HISTORY_RECOVERY_PENDING
+    # ed_undo_step_post can expose incompletely restored context RNA. Even
+    # enumerating scene.objects here can crash natively before Python raises.
+    # Drop stale Python references only. Neither this callback nor a timer may
+    # recover the scene after history; the artist explicitly reconnects a Dress.
+    _SESSIONS.clear()
+    _SAVE_RESUME = []
+    _BACKEND_CACHE = None
+    _BACKEND_CACHE_TIME = 0.0
+    _HISTORY_RECOVERY_PENDING = True
+    if bpy.app.timers.is_registered(_resume_saved):
+        bpy.app.timers.unregister(_resume_saved)
 
 
 def register():
@@ -846,7 +887,7 @@ def register():
     # the separate Hair adapter's conservative callback ownership gate.
     for name, function in (('save_pre', _save_pre), ('save_post', _save_post),
                            ('load_pre', _lifecycle_pre), ('load_post', _load_post),
-                           ('undo_pre', _lifecycle_pre), ('redo_pre', _lifecycle_pre),
+                           ('undo_pre', _history_pre), ('redo_pre', _history_pre),
                            ('undo_post', _undo_post), ('redo_post', _undo_post), ('render_pre', _lifecycle_pre)):
         collection = getattr(bpy.app.handlers, name)
         if function not in collection:
@@ -888,7 +929,12 @@ def _finish_deferred_stop():
 
 
 def unregister():
-    global _REGISTERED, _SAVE_RESUME
+    global _REGISTERED, _SAVE_RESUME, _HISTORY_RECOVERY_PENDING
+    # Reload/unregister must not leave a history callback able to restart the
+    # adapter after its classes and backend lifecycle have been removed.
+    if bpy.app.timers.is_registered(_resume_saved):
+        bpy.app.timers.unregister(_resume_saved)
+    _HISTORY_RECOVERY_PENDING = False
     # Failed initialization may clean up under Blender's restricted context.
     # An adapter that never started owns no saved Automatic state to suspend.
     if _REGISTERED or _SESSIONS:
@@ -900,8 +946,8 @@ def unregister():
             # context exits. An idle adapter needs only callback cleanup.
             _schedule_deferred_stop(reason)
     for name, function in (('frame_change_pre', _frame_pre), ('save_pre', _save_pre), ('save_post', _save_post),
-                           ('load_pre', _lifecycle_pre), ('load_post', _load_post), ('undo_pre', _lifecycle_pre),
-                           ('redo_pre', _lifecycle_pre), ('undo_post', _undo_post), ('redo_post', _undo_post),
+                           ('load_pre', _lifecycle_pre), ('load_post', _load_post), ('undo_pre', _history_pre),
+                           ('redo_pre', _history_pre), ('undo_post', _undo_post), ('redo_post', _undo_post),
                            ('render_pre', _lifecycle_pre)):
         collection = getattr(bpy.app.handlers, name)
         while function in collection:

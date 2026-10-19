@@ -371,7 +371,7 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     composition_base_item_id: StringProperty(name='A Work Copy', options={'HIDDEN'})
     catalog: CollectionProperty(type=CharacterDesignerAnimationWorklistCatalog)
     items: CollectionProperty(type=CharacterDesignerAnimationWorklistItem)
-    # The explicit Source/Custom buttons select entries; file load never swaps Actions.
+    # Source/Custom cells activate entries; passive list selection/file load never swaps Actions.
     active_index: IntProperty(default=-1, min=-1)
     catalog_index: IntProperty(default=-1, min=-1)
     search: StringProperty(name='Search Clips', options={'TEXTEDIT_UPDATE'})
@@ -914,20 +914,39 @@ class CHARACTERDESIGNER_UL_animation_catalog(UIList):
             controls.operator('character_designer.worklist_add', text='', icon='ADD').clip_key = item.clip_key
 
 
-def _draw_worklist_actions(layout, context, settings):
-    # Plain rows avoid UIList's whole-row selection border. The Sidebar scrolls
-    # the full list, and each explicit button keeps the existing active semantics.
-    column = layout.column(align=True)
-    column.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
-    for item in settings.items:
-        row = column.row(align=True)
+class CHARACTERDESIGNER_UL_animation_worklist(UIList):
+    def filter_items(self, _context, data, propname):
+        # This list owns its search; saved catalog search never hides imports.
+        terms = self.filter_name.casefold().split()
+        if not terms:
+            return [], []
+        return [self.bitflag_filter_item if all(term in item.name.casefold() for term in terms) else 0
+                for item in getattr(data, propname)], []
+
+    def draw_filter(self, _context, layout):
+        layout.prop(self, 'filter_name', text='', icon='VIEWZOOM')
+
+    def draw_item(self, context, layout, _data, item, _icon, _active_data,
+                  _active_propname, _index=0, _flt_flag=0):
+        columns = layout.split(factor=.5, align=True)
+        columns.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
         for side, icon, action in (('SOURCE', 'LINKED', item.source_action),
                                    ('CUSTOM', 'EDITMODE_HLT', item.custom_action)):
-            cell = row.row(align=True)
+            cell = columns.row(align=True)
             cell.enabled = action is not None
             activate = cell.operator('character_designer.worklist_activate', text=item.name, icon=icon,
-                                     depress=_active_side(item, side))
+                                     emboss=False, depress=_active_side(item, side))
             activate.item_id, activate.side = item.item_id, side
+
+
+def _draw_worklist_actions(layout, context, settings):
+    column = layout.column(align=True)
+    column.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
+    header = column.split(factor=.5, align=True)
+    header.label(text='Source', icon='LINKED')
+    header.label(text='Custom', icon='EDITMODE_HLT')
+    column.template_list('CHARACTERDESIGNER_UL_animation_worklist', 'actions',
+                         settings, 'items', settings, 'active_index', rows=5, maxrows=5)
 
 
 def _draw_rigging(layout, context, item):
@@ -1073,4 +1092,5 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_rigging_edit,
     CHARACTERDESIGNER_OT_worklist_save_controls,
     CHARACTERDESIGNER_UL_animation_catalog,
+    CHARACTERDESIGNER_UL_animation_worklist,
 )

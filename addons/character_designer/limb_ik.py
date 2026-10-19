@@ -4338,8 +4338,9 @@ def _foot_widget_fits(context, armature, plans, shapes):
         medial_sign = _foot_medial_sign(armature, plan, lateral)
         target_rotation = target.matrix.to_3x3().normalized()
         display_rotation = Matrix((lateral, forward, down)).transposed()
-        sole_gap = max(foot_length * FOOT_WIDGET_SOLE_GAP_RATIO, chain_length * 0.003)
-        desired_top = min(point.z for point in candidates) - sole_gap
+        # The fitted sole display shares the shoe bottom; Ground places both
+        # at world Z=0 without a separate display clearance or manual offset.
+        desired_top = min(point.z for point in candidates)
 
         if shape.get(KIND_KEY) in {"FOOT_L", "FOOT_R"}:
             hull = _convex_hull_2d(zip(u_values, v_values))
@@ -4733,7 +4734,10 @@ def _create_control_bones(context, armature, armature_id, plans, transaction, *,
     armature.update_tag(refresh={"OBJECT"})
     context.view_layer.update()
     context.evaluated_depsgraph_get().update()
-    context.scene.frame_set(context.scene.frame_current)
+    # Refresh topology without sampling the timeline: even a same-frame
+    # frame_set discards unkeyed Object transforms on animated bound meshes.
+    # Controller generation must retain the artist's current shoe placement.
+    context.scene.update_tag()
     context.view_layer.update()
     _mode_set(context, armature, "POSE")
     context.view_layer.update()
@@ -5648,6 +5652,8 @@ def _build_plans(
                 missing = body_calibration.register_direct_rest(context, armature, missing, transaction)
             else:
                 missing = _apply_direct_preroll(context, armature, missing, transaction)
+        fixed_poles = (body_region.layout_poles(armature, missing, source_pose_before)
+                       if region_rebind else set())
         _create_constraint_shells(armature, armature_id, missing, transaction, schema=schema, create_master=create_master)
         _create_control_bones(context, armature, armature_id, missing, transaction, schema=schema, create_master=create_master,
                               target_rotation_version=requested_target_rotation_version)
@@ -5682,10 +5688,13 @@ def _build_plans(
             # exact saved pose before validation; no skin/rest matrix round trip.
             limb_ik_fk.ensure_switching(armature, verified,
                 keys={(plan.chain.kind,plan.chain.side) for plan in missing})
+            if region_rebind:
+                body_region.position_poles(context, armature, missing, fixed_poles)
             for plan in missing:
                 limb_ik_fk.switch_limb(context,armature,(plan.chain.kind,plan.chain.side),'IK',
                     keyframe=False,desired_pose={n:source_pose_before[n] for n in plan.chain.names},
-                    calibrated_rest=True,sync_display=False)
+                    calibrated_rest=True,sync_display=False,
+                    fixed_pole=(plan.chain.kind, plan.chain.side) in fixed_poles)
         replanned_bones = {
             name
             for plan in missing
@@ -9112,6 +9121,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if not settings.show_body_setup_advanced:
             return
         layout = layout.box()
+        from . import body_region_ui
+        body_region_ui.draw_advanced(layout, context)
         layout.prop(settings, "selected_limb", text="")
         active = context.object
         if active is not None and active.type == "ARMATURE":

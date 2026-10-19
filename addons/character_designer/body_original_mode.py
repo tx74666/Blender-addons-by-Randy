@@ -565,7 +565,10 @@ def _leave(context, rig, refresh, *, finalize=None):
     dress_checkpoint = dress_pose.checkpoint(context, rig, saved['dress_edit'], targets=dress_targets)
     edited = plan is not None or any(current_channels[name] != saved['entered_channels'][name] for name in desired)
     checkpoint = (current_channels, display._snapshot(rig), _locks(rig, saved['names']),
-                  [(con, con.mute) for con, _entry in relations])
+                  [(con, con.mute) for con, _entry in relations],
+                  [(con, float(con.pole_angle)) for pb in rig.pose.bones
+                   for con in pb.constraints if con.type == 'IK'],
+                  match._leg_pole_metadata(rig))
     extra_checkpoint = [(target, display._snapshot(target)) for target, _view in extra_views]
     try:
         _restore_channels(rig, saved['channels'])
@@ -590,6 +593,9 @@ def _leave(context, rig, refresh, *, finalize=None):
             poses._match(context, rig, desired, changed, preserve_modes=True,
                          precise_limbs=plan['keys'] if plan else ())
             _update(context, rig)
+        # Returning without native edits may still restore a historical Pole
+        # offset behind the body. Repair the existing leg controls, not Rest.
+        match.repair_leg_poles(context, rig, desired_pose=desired)
         _verify(rig, desired)
         dress_pose.leave(context, rig, saved['dress_edit'], desired=dress_desired)
         display._restore(rig, saved['display'])
@@ -609,11 +615,14 @@ def _leave(context, rig, refresh, *, finalize=None):
             target.pop(DISPLAY_OWNER, None)
         rig.pop(DISPLAY_REFS, None)
     except Exception:
-        channels, view, locks, mutes = checkpoint
+        channels, view, locks, mutes, pole_angles, pole_metadata = checkpoint
         _restore_channels(rig, channels)
         _restore_locks(rig, locks)
         for con, muted in mutes:
             con.mute = muted
+        for con, angle in pole_angles:
+            con.pole_angle = angle
+        match._restore_leg_pole_metadata(rig, pole_metadata)
         dress_pose.rollback(context, dress_checkpoint)
         display._restore(rig, view)
         for target, extra_view in extra_checkpoint:

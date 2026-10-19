@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 
 import bpy
+from mathutils import Vector
 from . import (limb_ik, limb_ik_fk, body_setup, body_setup_removal,
                body_setup_transaction, body_calibration, foot_controls,
                limb_fk_visuals, root_control)
@@ -345,7 +346,123 @@ def _validate_receipts(rig, entries):
         if (not isinstance(entry.get('pole_distance'), (int, float))
                 or not math.isfinite(entry['pole_distance']) or entry['pole_distance'] <= 0):
             raise ValueError('The released Pole distance is invalid.')
+        if 'pole_layout' in entry:
+            _validate_pole_layout(entry['pole_layout'])
     return scopes
+
+
+def _validate_pole_layout(layout):
+    if (not isinstance(layout, dict) or type(layout.get('version')) is not int
+            or layout['version'] != 1):
+        raise ValueError('The released Pole layout is invalid.')
+    for name in ('axis', 'direction'):
+        values = layout.get(name)
+        if (not isinstance(values, list) or len(values) != 3
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
+                or abs(Vector(values).length - 1.0) > 1e-5):
+            raise ValueError('The released Pole layout has an invalid direction.')
+    if abs(Vector(layout['axis']).dot(Vector(layout['direction']))) > 1e-5:
+        raise ValueError('The released Pole layout is not perpendicular to its chain.')
+    for name in ('axial_ratio', 'radial_ratio'):
+        value = layout.get(name)
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or abs(value) > 3.4028234663852886e38):
+            raise ValueError('The released Pole layout has an invalid distance.')
+    if layout['radial_ratio'] <= 1e-8:
+        raise ValueError('The released Pole layout has no radial distance.')
+
+
+def _capture_pole_layout(rig, key, data):
+    """Separate controller layout from the native Rest bend and source roll.
+
+    Legs use their stored configured direction: an earlier pose-matching
+    compensation must not silently place the right knee Pole behind the body.
+    Arms retain their actual layout. Both keep the authored distance and height.
+    """
+    start, joint, end = (rig.pose.bones[n].matrix.translation.copy() for n in data['chain'])
+    axis = end - start
+    total = (joint - start).length + (end - joint).length
+    if axis.length <= limb_ik.EPSILON or total <= limb_ik.EPSILON:
+        raise ValueError('The released limb has no usable Pole layout axis.')
+    axis.normalize()
+    offset = rig.pose.bones[data['pole'].name].matrix.translation - start
+    radial = limb_ik._project_perpendicular(offset, axis)
+    direction = radial.copy()
+    if key[0] == 'LEG':
+        configured = data['configured_pole_direction'] or data['pole_direction']
+        front = limb_ik_fk._leg_front_direction(axis)
+        direction = limb_ik._project_perpendicular(configured, axis) if configured is not None else front
+        if direction.length <= limb_ik.EPSILON or direction.normalized().dot(front) < 0.8:
+            direction = front
+    if radial.length <= limb_ik.EPSILON or direction.length <= limb_ik.EPSILON:
+        raise ValueError('The released Pole has no stable layout direction.')
+    layout = {'version': 1, 'axis': list(axis), 'direction': list(direction.normalized()),
+              'axial_ratio': offset.dot(axis) / total, 'radial_ratio': radial.length / total}
+    _validate_pole_layout(layout)
+    return layout
+
+
+def layout_poles(rig, plans, desired_pose):
+    """Refit generated Rest frames after the native calibration admission."""
+    authorize_build(rig, plans)
+    entries = _BIND_AUTH['entries']
+    fixed = set()
+    for plan in plans:
+        entry = entries[_key((plan.chain.kind, plan.chain.side))]
+        layout = entry.get('pole_layout')
+        if layout is None and plan.chain.kind != 'LEG':
+            # Receipts saved by older versions contain no authored layout.
+            # Their new controls retain the old placement/matching behavior.
+            continue
+        start, joint, end = (desired_pose[n].translation for n in plan.chain.names)
+        axis = end - start
+        total = (joint - start).length + (end - joint).length
+        if axis.length <= limb_ik.EPSILON or total <= limb_ik.EPSILON:
+            raise ValueError('The rebuilt limb has no usable Pole layout axis.')
+        axis.normalize()
+        if layout is None:
+            # Older receipts must not revive the old roll-compensation path.
+            # Their native geometry and saved distance still define a usable
+            # front layout without deleting or re-calibrating original bones.
+            offset = plan.pole_head - start
+            radial = limb_ik._project_perpendicular(offset, axis)
+            layout = {'version': 1, 'axis': list(axis),
+                      'direction': list(limb_ik_fk._leg_front_direction(axis)),
+                      'axial_ratio': offset.dot(axis) / total,
+                      'radial_ratio': max(radial.length / total, entry['pole_distance'])}
+        _validate_pole_layout(layout)
+        direction = Vector(layout['axis']).rotation_difference(axis) @ Vector(layout['direction'])
+        direction = limb_ik._project_perpendicular(direction, axis)
+        if direction.length <= limb_ik.EPSILON:
+            raise ValueError('The rebuilt Pole layout is parallel to its limb.')
+        direction.normalize()
+        if plan.chain.kind == 'LEG':
+            front = limb_ik_fk._leg_front_direction(axis)
+            if direction.dot(front) < 0.8:
+                direction = front
+        position = start + axis * (layout['axial_ratio'] * total) + direction * (layout['radial_ratio'] * total)
+        if any(not math.isfinite(value) for value in position):
+            raise ValueError('The rebuilt Pole layout is outside the supported coordinate range.')
+        size = (plan.pole_tail - plan.pole_head).length
+        plan.pole_head = position
+        plan.pole_tail = position + direction * size
+        plan.pole_joint = joint.copy()
+        plan.pole_direction = direction
+        plan.configured_pole_direction = direction.copy()
+        fixed.add((plan.chain.kind, plan.chain.side))
+    return fixed
+
+
+def position_poles(context, rig, plans, fixed):
+    """Retain the accepted Armature-local point even under a posed Root."""
+    authorize_build(rig, plans)
+    for plan in plans:
+        if (plan.chain.kind, plan.chain.side) not in fixed:
+            continue
+        pole = rig.pose.bones[plan.pole_name]
+        matrix = pole.matrix.copy()
+        matrix.translation = plan.pole_head
+        limb_ik_fk._set_matrix(context, rig, pole, matrix)
 
 
 def state(rig, region):
@@ -386,6 +503,10 @@ def _require(context, rig):
         raise ValueError('Restore Main Rig in Animation > Advanced before changing native bone proportions.')
     if context.screen and context.screen.is_animation_playing:
         raise ValueError('Pause playback before changing regional controls.')
+    # Resolve pending authored inputs before reading native pose matrices and
+    # evaluated surfaces, so both baselines describe the same current pose.
+    context.view_layer.update()
+    context.evaluated_depsgraph_get().update()
 
 
 def _native_scope(rig, chain):
@@ -732,7 +853,8 @@ def _build_selected_source_shapes(context, rig, keys):
                                         transaction, schema=inventory['schema'])
 
 
-def release(context, rig, region):
+def release(context, rig, region, *, _style_checkpoints=None):
+    from . import region_styles
     _require(context, rig)
     keys = set(_keys(region))
     if state(rig, region)['status'] != 'BOUND':
@@ -764,6 +886,7 @@ def release(context, rig, region):
     _check_widget_dependencies(_widget_candidates(rig, inventory, keys, names))
     display_names = {n for n, e in (inventory['source_widgets'] or {}).get('bones', {}).items()
                      if ('ARM', e['side']) in keys}
+    _style_dependency_preflight(rig, inventory, keys, affected | display_names)
     calibration = rig.get(body_calibration.KEY)
     from . import forearm_twist
     correctives = {o.name: o.get(forearm_twist.RECORD_KEY) for o in bpy.data.objects if forearm_twist.RECORD_KEY in o}
@@ -780,13 +903,23 @@ def release(context, rig, region):
             'rings': bool(rings and any((e['kind'], e['side']) == key for e in rings['bindings'].values())),
             'source_shapes': bool(inventory['source_widgets'] and any(('ARM', e['side']) == key for e in inventory['source_widgets']['bones'].values())),
             'source_names': sorted(n for n in display_names if (inventory['source_widgets']['bones'][n]['side'] == key[1])),
-            'pole_distance': float(limb_ik._settings(context).pole_distance_ratio)}
+            'pole_distance': float(limb_ik._settings(context).pole_distance_ratio),
+            'pole_layout': _capture_pole_layout(rig, key, data)}
+
+    captured_styles = []
 
     def commit():
         protected = _guard(rig, names | allowed | display_names)
         skin = body_setup._native_skin(rig)
         surfaces = body_setup_removal._bound_surfaces(context, rig)
+        for key in sorted(keys):
+            styles = region_styles.capture(context, rig, {key}, inventory)
+            captured_styles.append(styles)
+            if _style_checkpoints is not None:
+                _style_checkpoints.append(styles)
+            entries[_key(key)]['styles'] = styles
         _release_graph(context, rig, inventory, keys, entries)
+        body_setup.preserve_object_inputs(context, rig)
         body_setup_removal._preserve_skin(context, rig, {n: skin[n] for n in allowed}, prefer_existing_basis=True)
         body_calibration.verify_rest(rig, all_rest)
         body_setup._verify_skin(rig, skin, tolerance=body_setup_removal.SKIN_MATRIX_TOLERANCE)
@@ -802,8 +935,21 @@ def release(context, rig, region):
         _save(rig, entries)
         _finish_owner_revision(rig, owner_proof)
         return {'released': sorted(_key(k) for k in keys), 'bones_removed': len(names), 'surface_error': error}
-    with _ownership_operation(rig, owner_proof):
-        return body_setup._atomic(context, rig, commit)
+    try:
+        with _ownership_operation(rig, owner_proof):
+            return body_setup._atomic(context, rig, commit)
+    except Exception as error:
+        # A same-rig rebuild joins the outer checkpoint. Its owner must decide
+        # cleanup versus recovery retention AFTER that outer rollback finishes.
+        # Keep complete style packets even when release never saves its receipt.
+        if _style_checkpoints is not None:
+            raise
+        for styles in captured_styles:
+            if 'In-place recovery also failed:' in str(error):
+                region_styles.retain_for_recovery(rig, styles)
+            else:
+                region_styles.cleanup(rig, styles)
+        raise
 
 
 @contextmanager
@@ -812,6 +958,7 @@ def _admission(rig, entries, keys):
     if _BIND_AUTH is not None:
         raise ValueError('Another regional rebind is in progress.')
     _BIND_AUTH = {'rig': rig, 'data': rig.data,
+                  'entries': entries,
                   'chains': {tuple(entries[_key(k)]['chain']): k for k in keys}}
     try:
         yield
@@ -856,7 +1003,8 @@ def attach_new_root_inputs(context, rig, plans):
     context.view_layer.update()
 
 
-def bind(context, rig, region):
+def bind(context, rig, region, *, _defer_style_cleanup=False):
+    from . import region_styles
     _require(context, rig)
     keys = set(_keys(region))
     if state(rig, region)['status'] != 'RELEASED':
@@ -865,6 +1013,14 @@ def bind(context, rig, region):
     current_rest = body_calibration.native_rest(rig)
     all_allowed = _validate_receipts(rig, entries)
     owner_proof = _ownership_seed(rig)
+    saved_styles = [entries[_key(key)]['styles'] for key in sorted(keys)
+                    if 'styles' in entries[_key(key)]]
+    for key in keys:
+        styles = entries[_key(key)].get('styles')
+        if styles is not None and (not isinstance(styles, dict) or styles.get('keys') != [_key(key)]):
+            raise ValueError('A regional display checkpoint belongs to another selected part.')
+    for styles in saved_styles:
+        region_styles.validate(rig, styles)
     for key in keys:
         entry = entries[_key(key)]
         if set(current_rest) != set(entry['protected_rest']) | set(entry['allowed']):
@@ -909,6 +1065,7 @@ def bind(context, rig, region):
                                 decorate_source_widgets=False,
                                 target_rotation_version=entries[_key(next(iter(keys)))]['feature'],
                                 region_rebind=True)
+        body_setup.preserve_object_inputs(context, rig)
         for key in sorted(keys):
             entry = entries[_key(key)]
             if entry['foot']:
@@ -920,8 +1077,14 @@ def bind(context, rig, region):
         if any(entries[_key(k)]['source_shapes'] for k in keys):
             _build_selected_source_shapes(context, rig, {k for k in keys if entries[_key(k)]['source_shapes']})
         inventory = limb_ik._validate_inventory(rig)
+        style_bones = {name for styles in saved_styles for name in styles['bones']}
+        for styles in saved_styles:
+            region_styles.restore(context, rig, styles, inventory, allowed_bones=style_bones)
+        inventory = limb_ik._validate_inventory(rig)
+        limb_ik._removal_resources(context, rig, inventory)
         body_calibration.verify_rest(rig, current_rest)
         body_setup._verify_skin(rig, skin, tolerance=body_setup_removal.SKIN_MATRIX_TOLERANCE)
+        body_setup.preserve_object_inputs(context, rig)
         error = body_setup_removal._check_surfaces(context, rig, surfaces)
         new_names = {b.name for b in inventory['bones'] if (b.get(limb_ik.KIND_KEY), b.get(limb_ik.SIDE_KEY)) in keys}
         for key in keys:
@@ -943,4 +1106,70 @@ def bind(context, rig, region):
         _finish_owner_revision(rig, owner_proof)
         return {'bound': sorted(_key(k) for k in keys), 'surface_error': error}
     with _ownership_operation(rig, owner_proof):
-        return body_setup._atomic(context, rig, commit)
+        result = body_setup._atomic(context, rig, commit)
+    if not _defer_style_cleanup:
+        for styles in saved_styles:
+            region_styles.cleanup(rig, styles)
+    return result
+
+
+def rebuild(context, rig, region):
+    """Rebuild one bound part in a single undoable operation, keeping its styles."""
+    from . import region_styles
+    _require(context, rig)
+    if state(rig, region)['status'] != 'BOUND':
+        raise ValueError('Choose a part whose controls are ready before rebuilding it.')
+    selected = set(_keys(region))
+    inventory = limb_ik._validate_inventory(rig)
+    affected = {name for key in selected for name in _native_scope(rig, inventory['rigs'][key]['chain'])}
+    affected.update(b.name for b in inventory['bones']
+                    if (b.get(limb_ik.KIND_KEY), b.get(limb_ik.SIDE_KEY)) in selected)
+    for key in selected:
+        foot = inventory['rigs'][key].get('foot_controls')
+        if foot:
+            affected.update(foot['bones'].values())
+    _style_dependency_preflight(rig, inventory, selected, affected)
+    rest = body_calibration.native_rest(rig)
+    styles_created = []
+    previous_style_tokens = region_styles.backup_tokens(rig)
+
+    def commit():
+        release(context, rig, region, _style_checkpoints=styles_created)
+        result = bind(context, rig, region, _defer_style_cleanup=True)
+        body_calibration.verify_rest(rig, rest)
+        return dict(result, rebuilt=result['bound'], custom_styles_preserved=True)
+
+    try:
+        result = body_setup._atomic(context, rig, commit)
+    except Exception as error:
+        styles_created.extend(region_styles.created_backups(rig, previous_style_tokens))
+        for styles in styles_created:
+            if 'In-place recovery also failed:' in str(error):
+                region_styles.retain_for_recovery(rig, styles)
+            else:
+                region_styles.cleanup(rig, styles)
+        raise
+    else:
+        styles_created.extend(region_styles.created_backups(rig, previous_style_tokens))
+        for styles in styles_created:
+            region_styles.cleanup(rig, styles)
+        return result
+
+
+def _style_dependency_preflight(rig, inventory, selected, affected):
+    # Keep the same external-reference protection as intentional Rest resync,
+    # including Hook/Warp bones and authored readers of matched input channels.
+    from . import body_rest_resync
+    body_rest_resync._refuse_dependencies(rig, inventory, selected)
+    own_constraints = body_rest_resync._owned_constraint_pointers(rig, inventory)
+    for obj in bpy.data.objects:
+        owners = [obj]
+        if obj.type == 'ARMATURE' and obj.pose:
+            owners.extend(obj.pose.bones)
+        for owner in owners:
+            for con in owner.constraints:
+                if (obj.as_pointer(), owner.as_pointer(), con.as_pointer()) in own_constraints:
+                    continue
+                if (getattr(con, 'space_object', None) is rig
+                        and getattr(con, 'space_subtarget', '') in affected):
+                    raise ValueError('An external constraint uses this part as its custom space; keep that dependency intact.')

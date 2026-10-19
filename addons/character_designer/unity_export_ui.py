@@ -4,8 +4,11 @@ import json
 import os
 import re
 import textwrap
+import time
 import uuid
 from functools import lru_cache
+from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
@@ -14,6 +17,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from . import character_setup
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
 from . import unity_material_match_ui as material_match_ui
+from . import unity_update_selection_ui as update_selection
 from .unity_material_match_ui import CharacterDesignerUnityMaterialMatch, CHARACTERDESIGNER_OT_unity_match_material
 
 _MODAL_EXPORTS = []
@@ -57,6 +61,151 @@ def _config(context):
     if rig.name not in context.scene.objects:
         raise ValueError('The character Main Rig is not in this scene.')
     return rig, rig.character_designer_unity_export
+
+
+class _FullUpdateConfig:
+    """Temporary full-model scope with writes forwarded to saved settings."""
+    __slots__ = ('_saved_config', '_extras')
+
+    def __init__(self, config, extras):
+        object.__setattr__(self, '_saved_config', config)
+        object.__setattr__(self, '_extras', extras)
+
+    @property
+    def extras(self):
+        return self._extras
+
+    def __getattr__(self, name):
+        return getattr(self._saved_config, name)
+
+    def __setattr__(self, name, value):
+        if name == 'extras':
+            raise AttributeError('The full-update scope is read-only.')
+        setattr(self._saved_config, name, value)
+
+
+def _full_update_config(context, rig, config, _scope=None):
+    """Ignore valid legacy exclusions without changing their saved records.
+
+    An All update includes every currently eligible bound mesh. Invalid,
+    missing, foreign and unbound references retain their saved validation
+    values; this adapter cannot turn them into authorized export objects.
+    Draw callers may pass only the scope inspected during that same draw.
+    """
+    if _scope is None:
+        exporter = _exporter()
+        setup = character_setup.settings(context)
+        _scope = exporter._collection_scope(
+            context, rig, references=exporter._scope_references(config, setup))
+    eligible = set(_scope['eligible'])
+    extras = tuple(SimpleNamespace(object=entry.object,
+                                   enabled=True if entry.object in eligible else entry.enabled)
+                   for entry in config.extras)
+    return _FullUpdateConfig(config, extras)
+
+
+def _require_full_update(context, rig):
+    """Inspect choices afresh before any preview stop, worker or file write."""
+    selection = update_selection.get_selection(context, rig)
+    if not selection['meshes'] and not selection['update_rig']:
+        return False
+    if (not selection['update_rig']
+            or len(selection['meshes']) != len(selection['eligible'])):
+        raise ValueError('Partial updates are not enabled yet. Select all Mesh and Rig items for a full update.')
+    return True
+
+
+def _candidate_helpers():
+    from . import unity_update_candidate
+    return unity_update_candidate
+
+
+def _model_target(context, rig, config):
+    directory, filename = _exporter()._target(config, rig, context)
+    return Path(directory) / filename
+
+
+def _existing_unity_project(model_file):
+    """Keep legacy full exports outside an actual Unity project available."""
+    helper = _candidate_helpers()
+    for assets in model_file.parents:
+        if assets.name.casefold() != 'assets':
+            continue
+        project = assets.parent
+        if (helper._io(project / 'Assets').is_dir()
+                and helper._io(project / 'ProjectSettings').is_dir()):
+            return project
+    return None
+
+
+def _full_update_ledger_guard(context, rig, config):
+    model = _model_target(context, rig, config)
+    project = _existing_unity_project(model)
+    if project is None:
+        return
+    helper = _candidate_helpers()
+    if not config.asset_id:
+        # A brand-new full export has no accepted identity or ledger yet. An
+        # existing formal bundle cannot use a cleared config to evade review.
+        if (helper._io(model).exists()
+                or helper._io(model.with_suffix('.cdesigner.json')).exists()):
+            raise ValueError('The existing Unity model needs its saved character identity before a full update.')
+        return
+    helper.require_full_update_allowed(model, asset_id=config.asset_id, unity_project=project)
+
+
+def _candidate_capabilities(context, rig, config):
+    return _candidate_helpers().receiver_capabilities(_model_target(context, rig, config))
+
+
+def _selection_mode(selection):
+    if not selection['meshes'] and not selection['update_rig']:
+        return 'NONE'
+    if selection['update_rig']:
+        return ('FULL' if selection['eligible']
+                and len(selection['meshes']) == len(selection['eligible']) else 'RIG_UNSUPPORTED')
+    return 'CANDIDATE'
+
+
+def _prepare_update_route(context, rig, config):
+    """Validate fresh intent and receiver/ledger admission before any worker."""
+    selection = update_selection.get_selection(context, rig)
+    mode = _selection_mode(selection)
+    capabilities = None
+    if mode == 'FULL':
+        _full_update_ledger_guard(context, rig, config)
+    elif mode == 'RIG_UNSUPPORTED':
+        raise ValueError('Partial Rig updates are not supported. Uncheck Rig for a mesh update.')
+    elif mode == 'CANDIDATE':
+        capabilities = _candidate_capabilities(context, rig, config)
+        if capabilities is None:
+            raise ValueError('A verified Unity update receiver is required for mesh updates. Open the Unity project and check its receiver status.')
+    return mode, selection, capabilities
+
+
+def _poll_update_job(job):
+    exporter = _exporter()
+    return exporter.poll_candidate_export(job) if job.get('candidate') else exporter.poll_export(job)
+
+
+def _run_candidate_sync(context, rig, config, selection):
+    """Bounded synchronous counterpart to the UI's normal modal polling."""
+    exporter = _exporter()
+    job = exporter.begin_candidate_export(context, rig, config, selection=selection)
+    if job is None:
+        return None
+    deadline = time.monotonic() + 600
+    try:
+        while True:
+            result = exporter.poll_candidate_export(job)
+            if result is not None:
+                return result
+            if time.monotonic() >= deadline:
+                raise ValueError('Unity update preparation timed out; the accepted model is unchanged.')
+            time.sleep(.1)
+    except BaseException:
+        exporter.cancel_export(job)
+        raise
 
 
 def _object_mode_required(context):
@@ -204,8 +353,9 @@ class CharacterDesignerUnityExport(PropertyGroup):
         options={'PATH_SUPPORTS_BLEND_RELATIVE'} if bpy.app.version >= (5, 2, 0) else set(),
     )
     filename: StringProperty(
-        name='File Name',
-        description='FBX name; leave empty to use the character name',
+        name='Legacy File Name',
+        description='Saved legacy value; model exports use the Character Setup Body object name',
+        options={'HIDDEN'},
     )
     asset_id: StringProperty(options={'HIDDEN'})
     extras: CollectionProperty(type=CharacterDesignerUnityExtra)
@@ -230,11 +380,17 @@ class CharacterDesignerUnityExport(PropertyGroup):
 class CHARACTERDESIGNER_OT_unity_export(Operator):
     bl_idname = 'character_designer.unity_export'
     bl_label = 'Export / Update to Unity'
-    bl_description = 'Export this character to its saved folder; update the same asset on later exports'
+    bl_description = 'Export a full model or send selected mesh changes for review in Unity'
     # Files written to Unity cannot be undone by Blender's scene Undo.
     bl_options = {'REGISTER'}
 
     def _result(self, config, result):
+        candidate = result.get('candidate_path')
+        if isinstance(candidate, str) and candidate:
+            config.last_report = candidate
+            config.last_status = 'Pending Unity review'
+            self.report({'INFO'}, 'Mesh update exported; review it in Unity before applying. The accepted model is unchanged.')
+            return
         report = result.get('report_path') or result.get('report')
         if isinstance(report, str):
             config.last_report = report
@@ -260,17 +416,30 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
         self._job = None
         self._config = None
         try:
+            rig, config = _config(context)
+            mode, selection, _capabilities = _prepare_update_route(context, rig, config)
+            if mode == 'NONE':
+                self.report({'INFO'}, 'Nothing selected; Unity is unchanged.')
+                return {'FINISHED'}
             _object_mode_required(context)
-            rig, self._config = _config(context)
-            self._job = _exporter().begin_export(context, rig, self._config)
-            self._config.last_status = 'Preparing Unity export...'
+            self._config = config
+            if mode == 'CANDIDATE':
+                self._job = _exporter().begin_candidate_export(context, rig, config, selection=selection)
+            else:
+                self._job = _exporter().begin_export(
+                    context, rig, _full_update_config(context, rig, config))
+            if self._job is None:
+                self.report({'INFO'}, 'Nothing selected; Unity is unchanged.')
+                return {'FINISHED'}
+            self._config.last_status = ('Preparing mesh update for Unity review...'
+                                        if mode == 'CANDIDATE' else 'Preparing Unity export...')
             self._window_manager = context.window_manager
             self._timer = context.window_manager.event_timer_add(0.2, window=context.window)
             context.window_manager.modal_handler_add(self)
             _MODAL_EXPORTS.append(self)
             _redraw(context)
             return {'RUNNING_MODAL'}
-        except (ValueError, RuntimeError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
             if self._job is not None:
                 _exporter().cancel_export(self._job)
             self._finish_timer()
@@ -291,7 +460,7 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
         try:
-            result = _exporter().poll_export(self._job)
+            result = _poll_update_job(self._job)
             if result is None:
                 return {'PASS_THROUGH'}
             self._result(self._config, result)
@@ -323,12 +492,24 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
     def execute(self, context):
         config = None
         try:
+            rig, saved_config = _config(context)
+            mode, selection, _capabilities = _prepare_update_route(context, rig, saved_config)
+            if mode == 'NONE':
+                self.report({'INFO'}, 'Nothing selected; Unity is unchanged.')
+                return {'FINISHED'}
+            config = saved_config
             _object_mode_required(context)
-            rig, config = _config(context)
-            result = _exporter().export_character(context, rig, config)
+            if mode == 'CANDIDATE':
+                result = _run_candidate_sync(context, rig, config, selection)
+                if result is None:
+                    self.report({'INFO'}, 'Nothing selected; Unity is unchanged.')
+                    return {'FINISHED'}
+            else:
+                result = _exporter().export_character(
+                    context, rig, _full_update_config(context, rig, config))
             self._result(config, result)
             return {'FINISHED'}
-        except (ValueError, RuntimeError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
             if config is not None:
                 config.last_status = 'Export failed: ' + str(exc)
             self.report({'ERROR'}, str(exc))
@@ -449,7 +630,8 @@ class CHARACTERDESIGNER_OT_unity_choose_simple_material(Operator):
             if exporter.export_running():
                 raise ValueError('Wait for the current export to finish.')
             rig, config = _config(context)
-            collected = exporter.collect_character(context, rig, config)
+            collected = exporter.collect_character(
+                context, rig, _full_update_config(context, rig, config))
             materials, chosen = _material_choices(collected['objects'], config)
             self._material_items = tuple((material.name, material.name, '')
                                          for material in materials if material not in chosen)
@@ -508,7 +690,8 @@ class CHARACTERDESIGNER_OT_unity_simple_material(Operator):
             if material is None:
                 raise ValueError('This material no longer exists.')
             if self.enabled:
-                collected = _exporter().collect_character(context, rig, config)
+                collected = _exporter().collect_character(
+                    context, rig, _full_update_config(context, rig, config))
                 used = {slot.material for obj in collected['objects'] if obj.type == 'MESH' for slot in obj.material_slots}
                 if material not in used:
                     raise ValueError('This material is not used by an included character mesh.')
@@ -668,24 +851,72 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
         config = rig.character_designer_unity_export
         # DIR_PATH supplies the single directory picker.
         layout.prop(config, 'directory', text='Folder')
-        layout.prop(config, 'filename', text='Name')
 
         objects, eligible, warnings, error, scope = [], [], [], '', None
+        full_config = config
         try:
             exporter = _exporter()
             scope = exporter._collection_scope(
                 context, rig, references=exporter._scope_references(config, setup))
             eligible = scope['eligible']
-            collected = _exporter().collect_character(context, rig, config, _scope=scope)
+            full_config = _full_update_config(context, rig, config, _scope=scope)
+            collected = _exporter().collect_character(context, rig, full_config, _scope=scope)
             objects = collected['objects']
             warnings = collected.get('warnings', [])
         except (ValueError, RuntimeError) as exc:
             error = str(exc)
 
+        selection = layout.box()
+        capabilities, capability_error, full_error = None, '', ''
+        try:
+            selected, total, _partial = update_selection.selection_counts(rig, eligible)
+            choices = update_selection._read_settings(rig)
+            update_rig = bool(choices.update_rig)
+            selected_meshes = tuple(obj for obj in eligible if update_selection._selected(choices, obj))
+            mode = _selection_mode({'meshes': selected_meshes, 'eligible': eligible, 'update_rig': update_rig})
+            try:
+                capabilities = _candidate_capabilities(context, rig, config)
+            except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
+                capability_error = str(exc)
+            if mode == 'FULL':
+                try:
+                    _full_update_ledger_guard(context, rig, config)
+                except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
+                    full_error = str(exc)
+            update_selection.draw_selection(selection, context, rig, eligible, scope=scope,
+                                             pipeline_ready=capabilities is not None)
+        except (ValueError, RuntimeError, ReferenceError) as exc:
+            selected, total, update_rig = 0, 0, False
+            mode, selected_meshes = 'NONE', ()
+            error = error or str(exc)
+        if error:
+            selection.label(text='Resolve the export error first.', icon='ERROR')
+        elif mode == 'FULL' and full_error:
+            selection.label(text=_short(full_error), icon='ERROR')
+        elif mode == 'FULL':
+            selection.label(text='Full Mesh + Rig update available.', icon='INFO')
+            selection.label(text='Existing partial updates must be reconciled first.', icon='INFO')
+        elif mode == 'RIG_UNSUPPORTED':
+            selection.label(text='Partial Rig updates are not supported.', icon='INFO')
+        elif mode == 'CANDIDATE':
+            if capability_error:
+                selection.label(text=_short(capability_error), icon='ERROR')
+            elif capabilities is None:
+                selection.label(text='A verified Unity receiver is required.', icon='INFO')
+            else:
+                selection.label(text='Mesh update will wait for Unity review.', icon='INFO')
+                if setup.body in selected_meshes and not capabilities['supports_forearm_mesh']:
+                    selection.label(text='Body changes require correction review in Unity.', icon='ERROR')
+        else:
+            selection.label(text='Nothing selected; Unity is unchanged.', icon='INFO')
+        CHARACTERDESIGNER_PT_unity_export._draw_invalid_overrides(
+            layout, context, rig, full_config, scope)
+
         row = layout.row()
         row.scale_y = 1.35
         running = _exporter().export_running()
-        row.enabled = not running
+        ready = mode == 'FULL' and not full_error or mode == 'CANDIDATE' and capabilities is not None
+        row.enabled = not running and ready and not error and context.mode in {'OBJECT', 'POSE'}
         row.operator_context = 'INVOKE_DEFAULT'
         row.operator('character_designer.unity_export', icon='EXPORT',
                      text='Exporting...' if running else 'Export / Update to Unity')
@@ -699,17 +930,7 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             layout.label(text=_short(config.last_status),
                          icon='ERROR' if config.last_status.startswith('Export failed') else 'INFO')
 
-        row = layout.row()
-        meshes = sum(obj.type == 'MESH' for obj in objects)
-        rigs = sum(obj.type == 'ARMATURE' for obj in objects)
-        row.operator('character_designer.unity_export_section',
-                     text='Objects' if error else f'Objects · {meshes} Meshes · {rigs} Armatures', emboss=False,
-                     icon='TRIA_DOWN' if config.show_objects else 'TRIA_RIGHT').section = 'OBJECTS'
-        if config.show_objects:
-            CHARACTERDESIGNER_PT_unity_export._draw_objects(
-                layout, context, rig, config, setup, objects, eligible, error, scope)
-
-        material_match_ui.draw_matches(layout, context, rig, config, running)
+        material_match_ui.draw_matches(layout, context, rig, full_config, running)
         chosen = {entry.material for entry in _simple_material_entries(config)}
         row = layout.row()
         row.operator('character_designer.unity_export_section', text=f'Use Simplified Materials · {len(chosen)}', emboss=False,
@@ -732,7 +953,7 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
 
         report = _last_report(config)
         reported_warnings = [message for message in _panel_warnings(report or {'warnings': warnings})
-                             if not material_match_ui.warning_matched(rig, config, message)]
+                             if not material_match_ui.warning_matched(rig, full_config, message, context=context)]
         if reported_warnings:
             row = layout.row()
             row.operator('character_designer.unity_export_section', text=f'Warnings · {len(reported_warnings)}', emboss=False,
@@ -747,35 +968,13 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
                 _warning_actions(box, context, config, warning)
 
     @staticmethod
-    def _draw_objects(layout, context, rig, config, setup, objects, eligible, error, scope=None):
-        box = layout.box()
-        for obj in sorted(objects, key=lambda obj: (obj.type != 'ARMATURE', obj != setup.body)):
-            row = box.row(align=True)
-            if obj.type == 'MESH' and obj != setup.body:
-                action = row.operator('character_designer.unity_set_included', text='',
-                                      icon='CHECKBOX_HLT', emboss=False)
-                action.object_name = obj.name
-                action.include = False
-            row.label(text=obj.name, icon='ARMATURE_DATA' if obj.type == 'ARMATURE' else 'MESH_DATA')
-        excluded = [obj for obj in eligible if obj not in objects
-                    and (not error or any(entry.object == obj and not entry.enabled
-                                          for entry in config.extras))]
-        if excluded:
-            box.separator()
-            box.label(text='Excluded')
-            for obj in excluded:
-                row = box.row(align=True)
-                action = row.operator('character_designer.unity_set_included', text='',
-                                      icon='CHECKBOX_DEHLT', emboss=False)
-                action.object_name = obj.name
-                action.include = True
-                row.label(text=obj.name, icon='MESH_DATA')
+    def _draw_invalid_overrides(layout, context, rig, config, scope=None):
         try:
             invalid = _invalid_overrides(context, rig, config, _scope=scope)
         except (ValueError, RuntimeError):
             invalid = []
         if invalid:
-            box.separator()
+            box = layout.box()
             box.label(text='Invalid saved references', icon='ERROR')
             for index, reason in invalid:
                 box.label(text=_short(reason))

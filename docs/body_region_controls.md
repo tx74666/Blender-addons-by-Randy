@@ -1,8 +1,9 @@
 # Edit one part and place the character
 
-The Body panel keeps regional editing separate from character placement.
-Changing the character's height above the ground does not require rebuilding
-its skeleton or remembering the hands' positions.
+The Rig navigation contains **Body**, **Hair** and **Skirt**. There is no separate
+Fix tab. Open **Rig > Body** for the shared body-part workflow, control visibility
+and character placement. Changing the character's height above the ground does
+not require rebuilding its skeleton or remembering the hands' positions.
 
 ## Already edited bones while Original is active
 
@@ -15,37 +16,65 @@ old animation rig or delete the edited native bones to finish this step.
 
 This is a pose-preserving return, not regeneration of reverse-foot pivot spacing.
 It keeps existing generated helper Rest geometry. Check Foot Roll and Toe Bend
-after changing foot proportions; a deliberately different heel/ball/tip layout
-requires rebuilding that leg through the regional workflow. Existing animation
-recovery records retain their old Rest baseline and are not silently retargeted.
+after changing foot proportions. Use the foot-only selection when only the
+heel/ball/tip helpers need rebuilding; choose the leg when its IK and Pole also
+need rebuilding around the current native positions. Existing animation recovery
+records retain their old Rest baseline and are not silently retargeted.
 Structural edits, unowned dependencies and unverifiable recovery owners are
 refused while the edited Original state remains available.
 
 ## Regional controls
 
-Under **Edit One Part**, choose a left/right leg or arm, or both legs/arms.
-**Release Controls** removes the selected generated limb controls and related
-foot controls while retaining native deformation bones, weights and the current
-native Rest. Shared Root, spine, eyes and the other limbs stay installed.
-The released native bones appear in a temporary **Edit Left/Right Leg/Arm**
-bone collection and can be adjusted directly in Edit Mode.
+The regional **Edit One Part** workflow uses one **Body Part** selector. The
+original six choices are **Both Legs**, **Left Leg**, **Right Leg**, **Both Arms**,
+**Left Arm** and **Right Arm**. The same selector also offers **Both Feet**,
+**Left Foot** and **Right Foot** for foot controls only.
 
-After editing the native bones and the corresponding model proportions,
-leave Edit Mode and use **Rebuild Controls**. This accepts the edited Rest
-without automatically applying whole-body calibration or re-planing the bones.
-Release receipts and part selection persist when the file is saved and reopened.
-The status reports bound, released, missing, mixed sides or an error. A missing
-part has no release operation; initial generation remains in the existing setup
-workflow. Complete a released part before using whole-body Update/Remove or the
-legacy all-limb maintenance commands.
+When the selected part says **Controls Ready**, use **Rebuild Controls** directly.
+It rebuilds only that existing part around the current native bone positions,
+preserving the current deformation and supported custom control styles. There
+is no preliminary Release step. A leg selection includes its leg IK, Pole and
+foot controls; an arm selection includes its wrist controls. Shared Root, spine,
+eyes and the other limbs stay installed.
+
+Use the secondary **Release to Edit** action only when you still need to change
+the selected leg or arm's native Rest geometry. It removes that part's generated
+controls while retaining native deformation bones, weights and current Rest.
+The native bones appear in a temporary **Edit Left/Right Leg/Arm** bone collection
+and can be adjusted in Edit Mode. After editing the bones and corresponding model
+proportions, leave Edit Mode and choose **Rebuild Controls**. For a **Released**
+part this button completes the saved rebind, without applying whole-body
+calibration or re-planing the bones.
+
+The selected part's supported custom-shape mesh geometry, display offsets,
+scales, colors and flags are checkpointed when it is released. These display
+backups, release receipts and part selection persist through saving and reopening
+the file. Rebuilding restores the saved style onto the new controls; it does not
+restore old solver frames or freeze the old Pole and foot-pivot positions.
+Missing or edited display backups receive a refusal rather than an unverified
+replacement. Shared display resources used by other body parts remain protected.
+
+The status reports ready, released, not built, different side states or a review
+error. A missing part cannot be rebuilt or released by this workflow; initial
+generation remains in the existing setup tools. When the two sides have different
+states, select a single side. Complete a released part before using whole-body
+Update/Remove or the legacy all-limb maintenance commands.
+
+The foot-only choices rebuild heel, ball and toe helpers at the current foot
+pose while preserving the native bones, skin weights and supported custom shapes.
+They keep the existing leg IK and **do not rebuild or repair the Pole**. Switch
+the selected feet to IK first and display the intended foot pose. Foot-only
+choices offer direct rebuilding, not the leg/arm Release to Edit operation.
 
 The current regional solver supports Direct schema 5. Arms include their wrist
 control and native hand descendants; legs include feet and native toe descendants.
-Head/neck and torso/spine do not yet have an independent regional teardown in
-this version. Native names, bone inventory, parents and connection/deformation
-flags must remain intact. Hips and unrelated auxiliary branches are protected.
-An edited knee/elbow needs a stable small Rest bend. Mesh weights are retained,
-not rebound automatically.
+Head/neck, torso/spine and fingers do not have an independent regional teardown
+in this workflow. Their existing tools remain separate. Including native hand
+descendants in an arm's protected scope does not provide a finger-control
+delete-and-rebuild function. Native names, bone inventory, parents and
+connection/deformation flags must remain intact. Hips and unrelated auxiliary
+branches are protected. An edited knee/elbow needs a stable small Rest bend.
+Mesh weights are retained, not rebound automatically.
 
 Selected authored animation or external dependencies are reported before
 deletion. Independent animation on other limbs is retained. An edited arm with
@@ -54,6 +83,11 @@ rebuild the arm, then capture its correction again. Old animation recovery
 records are preserved rather than silently retargeted to new proportions.
 
 ## Character placement
+
+Open **Rig > Body**. **Show Body Controls** restores existing
+control visibility without toggling it off on a second click. It preserves
+custom shapes and does not rebuild the skeleton. Finish Original editing by
+choosing Controls before using this display action.
 
 **Vertical Distance** is a signed distance along world Z. Positive moves up;
 negative moves down. **Move Character** applies that distance to the recognized

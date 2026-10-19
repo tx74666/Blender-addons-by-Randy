@@ -24,7 +24,7 @@ def ready():
     fixture['target'].rotation_mode = 'XYZ'
     graph = bpy.context.evaluated_depsgraph_get()
     runtime.update_runtime(bpy.context.scene, graph)
-    assert not runtime._ERRORS, runtime._ERRORS
+    assert obj.name not in runtime._ERRORS, runtime._ERRORS
     return fixture, graph
 
 

@@ -1,5 +1,9 @@
 # RR Helper
 
+0.2.64 在 **Miscellaneous → Sidebar Tabs** 加入明确的 **Enable Tab Reordering** 入口：工作区插件过滤阻止排序时，点击此按钮显示当前工作区的全部插件标签并启用排序；然后选中列表项，用 **Up / Down** 调整顺序。顺序自动记住。见 [0.2.64 更新记录](releases/RRHelper_0.2.64_sidebar_sorting_enable_20261019.md)。
+
+0.2.63 将 **Layout** 页面改名为 **Miscellaneous**，保留原来的布局快照和 Save Layout／Restore。新增 **Sidebar Tabs** 列表；新启用插件后可按刷新重新收集。排序仅管理 RR Helper 自己的空白定位面板，不重新注册其他插件或覆盖 Blender 的 `userpref.blend`；原生固定或优先显示的标签不进入可移动列表。见 [0.2.63 更新记录](releases/RRHelper_0.2.63_sidebar_tabs_20261019.md)。
+
 0.2.60 将导入的 Unity 设备屏幕改为不发光的空白灰屏，保留尺寸、姿态和设备身份。旧板子可用 **Unity Layout → Blank Imported Screens** 直接清空画面，无需重导；设备外壳纹理及用户共享材质保留。见 [设备布局流程](unity_device_layout.md) 和 [0.2.60 更新记录](releases/RRHelper_0.2.60_blank_device_screens_20261008.md)。
 
 Ring 的固定图案烘焙与 Unity Standard 导入已通过原生 Blender/Unity 验证；Unity 材质顶部提供联动线条与发光的 **Ring Color** 和独立 **Emission Strength**，地板底色独立。0.2.59 发布时已打包、部署到 Blender 5.2，并核实 Builder6 加载该版本。操作见 [Ring 烘焙与导入流程](standard_ring_bake.md)，验证、实际 addons_core 加载路径及场景保护记录见 [0.2.59 更新记录](releases/RRHelper_0.2.59_ring_pbr_bake_20261008.md)。

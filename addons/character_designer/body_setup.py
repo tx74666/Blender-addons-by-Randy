@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from . import (body_calibration, body_setup_plan, body_setup_transaction, character_setup,
                control_colors, bone_collections, limb_ik)
 
+_ATOMIC_STACK = []
+
 
 def plan(context, rig):
     return body_setup_plan.plan(context, rig)
@@ -111,30 +113,77 @@ def _add(context, rig, entry):
     return module.build(context, rig, **kwargs)
 
 
+def preserve_object_inputs(context, rig):
+    """Keep current character placement through native graph reconstruction.
+
+    Adding/removing drivers may resample Object Actions without moving the
+    timeline. Reapply the transaction's authored channels, never compensate
+    through mesh coordinates, original bones, or derived world matrices.
+    """
+    active = next((entry for entry in reversed(_ATOMIC_STACK)
+                   if entry['rig'] is rig and entry['data'] is rig.data), None)
+    if active is None:
+        return False
+    return body_setup_transaction.restore_object_inputs(
+        context, active['checkpoint']['object_inputs'])
+
+
 def _atomic(context, rig, operation):
     from . import bone_display, bone_display_sync
+    # A regional rebuild calls release and bind, each of which also uses this
+    # boundary. One rig must retain one original checkpoint: replaying an inner
+    # rollback and then the outer rollback deletes/recreates the same widget IDs
+    # twice. Join only this exact live Object/Armature pair, never another rig.
+    active = next((entry for entry in reversed(_ATOMIC_STACK)
+                   if entry['rig'] is rig and entry['data'] is rig.data), None)
+    if active is not None:
+        try:
+            return operation()
+        except Exception as error:
+            # Even if a nested caller catches its exception, it may not commit
+            # a partly written outer operation as a successful transaction.
+            if active['failure'] is None:
+                active['failure'] = error
+            raise
     with _runtime_paused():
         display_checkpoint = bone_display._checkpoint(bone_display._affected(context, rig))
         checkpoint = body_setup_transaction.capture(context, rig)
+        entry = {'rig': rig, 'data': rig.data, 'failure': None, 'checkpoint': checkpoint}
+        _ATOMIC_STACK.append(entry)
         previous_busy = bone_display_sync._BUSY
         bone_display_sync._BUSY = True
         try:
             bone_display.restore_view(rig)
             result = operation()
+            if entry['failure'] is not None:
+                raise RuntimeError('A nested Body operation failed; the outer operation was rolled back.') from entry['failure']
             body_setup_transaction.assert_original_ids(checkpoint)
             limb_ik._restore_context(context, rig, checkpoint['context'])
+            preserve_object_inputs(context, rig)
             return result
         except Exception as original:
             try:
                 body_setup_transaction.restore(context, rig, checkpoint)
                 bone_display._rollback(display_checkpoint)
+                preserve_object_inputs(context, rig)
             except Exception as recovery:
                 raise RuntimeError(f'Body Setup failed: {original}. In-place recovery also failed: {recovery}.') from original
+            # Recovery can recreate deleted native widget IDs. Even though the
+            # requested change was rejected, its public UNDO operator must record
+            # this recovered state instead of leaving those writes untracked.
+            # Preserve the original error; only completed recovery earns this
+            # marker, and preflight failures outside this boundary never do.
+            setattr(original, '_character_designer_body_rollback_restored', True)
             raise
         finally:
-            body_setup_transaction.discard(checkpoint)
-            bone_display_sync._BUSY = previous_busy
-            bone_display_sync.completed(rig)
+            try:
+                body_setup_transaction.discard(checkpoint)
+            finally:
+                # Native cleanup errors must not leave a false active admission
+                # which lets a later unrelated click bypass its checkpoint.
+                _ATOMIC_STACK.remove(entry)
+                bone_display_sync._BUSY = previous_busy
+                bone_display_sync.completed(rig)
 
 
 def generate(context, rig):
@@ -159,6 +208,7 @@ def generate(context, rig):
             result['updated'] = limb_ik.sync_wrist_local_axes(rig)
             body_calibration.verify_rest(rig,protected_rest)
             context.view_layer.update()
+            preserve_object_inputs(context, rig)
             _verify_skin(rig,protected_skin)
             body_setup_removal._check_surfaces(context,rig,surfaces)
             from . import control_pose_assets
@@ -180,11 +230,13 @@ def generate(context, rig):
             body_calibration.save(rig,value)
         for entry in pending:
             _add(context, rig, entry)
+            preserve_object_inputs(context, rig)
             result['created'].append(entry['key'])
         result['updated'] = limb_ik.sync_wrist_local_axes(rig)
         bone_collections.finish_rig_edit(rig, layout)
         control_colors.sync(rig)
         context.view_layer.update()
+        preserve_object_inputs(context, rig)
         _verify_skin(rig, before)
         body_calibration.verify_rest(rig,protected_rest)
         body_setup_removal._check_surfaces(context,rig,surfaces)

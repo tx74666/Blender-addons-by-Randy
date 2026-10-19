@@ -53,8 +53,153 @@ Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
 
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
-| RR Helper | 0.2.55 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.55.zip](dist/rr_helper-0.2.55.zip) |
-| Character Designer | 0.77.47 | [character_designer](addons/character_designer) | [character_designer-0.77.47.zip](dist/character_designer-0.77.47.zip) |
+| RR Helper | 0.2.63 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.63.zip](dist/rr_helper-0.2.63.zip) |
+| Character Designer | 0.77.79 | [character_designer](addons/character_designer) | [character_designer-0.77.79.zip](dist/character_designer-0.77.79.zip) |
+
+Character Designer 0.77.79 makes **Clear Bone Influences** show Keep/Clear counts
+and the bones about to be cleared. Rejected repairs report a short failure
+summary with examples; weight planning and protection rules are unchanged.
+[Release and validation](docs/releases/CharacterDesigner_0.77.79_weight_cleanup_feedback_20261019.md).
+
+Character Designer 0.77.78 keeps **Custom Vertex** and **Parts** names aligned
+left and action icons aligned right, with no inset name-button border. Shift
+ranges, Ctrl toggles and double-click rename remain available on the names.
+[Release and validation](docs/releases/CharacterDesigner_0.77.78_left_mesh_rows_20261019.md).
+
+Character Designer 0.77.76 provides two **Weight Cleanup** actions: fill truly
+unweighted vertices, or clear unwanted bones through an editable **Keep** table.
+Only the selected Mesh is repaired, with optional selected-vertex scope and
+graph-local filling of newly empty vertices. Retained paint and locked groups
+are preserved; the complete repair supports Undo/Redo.
+[Workflow, validation and limits](docs/releases/CharacterDesigner_0.77.76_weight_cleanup_20261019.md).
+
+Character Designer 0.77.74 simplifies Unity Export's object tree: **Rig** appears
+before **Mesh**, title buttons expand the groups without arrows, child rows are
+more deeply indented, and headings show only total counts in parentheses.
+[Release and validation](docs/releases/CharacterDesigner_0.77.74_compact_export_tree_20261019.md).
+
+Character Designer 0.77.72 supports **Shift-click ranges** and **Ctrl-click
+individual toggles** across row names and icons in Custom Vertex and Parts.
+Chosen rows highlight together; double-click opens their rename field.
+[Release and validation](docs/releases/CharacterDesigner_0.77.72_range_selection_20261019.md).
+
+Character Designer 0.77.71 draws **Custom Vertex** and **Parts** selection icons
+without a button background. Parts uses its selection-arrow icon again; Shift
+multi-selection and inline renaming remain available.
+[Release and validation](docs/releases/CharacterDesigner_0.77.71_flat_selection_icons_20261019.md).
+
+Character Designer 0.77.70 removes Unity Export's separate **Name** field. Model
+exports and Unity Material matching use the **Character Setup > Body** object
+name directly, while retaining the saved asset identity and update protections.
+[Release and validation](docs/releases/CharacterDesigner_0.77.70_body_export_name_20261019.md).
+
+Character Designer 0.77.69 adds Shift multi-selection through the existing row
+icons in **Custom Vertex** and **Parts**. **Select / Deselect** operate on the
+chosen rows' vertex union; names still support double-click renaming.
+[Release and validation](docs/releases/CharacterDesigner_0.77.69_shift_row_selection_20261019.md).
+
+Character Designer 0.77.68 separates **Custom Vertex** and **Parts** into independent
+lists. Existing Strap selections stay in Custom Vertex; Parts **+** captures its
+own selection. Membership, rename, locks and menu actions stay within each list,
+while authored weights and Shape Keys are preserved.
+[Workflow](docs/custom_vertex_parts.md) · [Release details](docs/releases/CharacterDesigner_0.77.68_independent_parts_20261019.md).
+
+Character Designer 0.77.60 keeps Forearm Correction independent of unrelated
+Original leg Rest geometry edits while protecting its actual arm, ancestor and
+weighted deform dependencies. Global return, ownership and topology guards
+remain strict. Seven new native cases passed; two older failures also reproduce
+on accepted .59 and remain recorded. The .60 package is locally deployed and
+the artist refresh passed 65 preservation checks. A separate, exact 191-vertex
+right-sleeve metadata repair preserves current paint and model data; Ctrl+S and
+independent saved readback passed, including 35 explicit authored-state checks
+and both-side export capture. Full FBX publication and Unity import were not run.
+No Git operation or FPS result is claimed.
+[Scope, evidence and delivery status](docs/releases/CharacterDesigner_0.77.60_forearm_local_rest_20261018.md).
+
+Character Designer 0.77.59 keeps Direct leg Poles in front while matching the
+native IK angle, including regional rebuild and Original return. Healthy
+controls retain their authored channels; keyed switches preserve the incoming
+Bezier segment and key the IK angle. Eighty-four native tests and the isolated
+real-model repair/repeat/save/reopen checks passed. Blender 5.2 and X each match
+all 204 frozen files. The authorized artist repair passed and Ctrl+S saved
+X.blend successfully. Independent readback with the matching 27-module profile
+passed all 24 strict checks; 184 native bone matrices match the saved repaired
+pose with zero error, and protected authored hashes and all 13 Action
+fingerprints match.
+Preference restoration and validation CONFIG
+isolation are separate from the add-on payload. This is a local delivery with
+no commit or push.
+[Scope, evidence and delivery status](docs/releases/CharacterDesigner_0.77.59_front_leg_poles_20261018.md).
+
+Character Designer 0.77.58 provides one **Rig > Body > Move to Floor** button,
+independent of Rebuild. It moves the scoped rig, meshes and controls together
+and fits planar Foot/Master displays to Z=0. A declared constant-Action shoe
+offset is stored persistently without changing animation keys or geometry,
+fixing the preserved .57 saved-readback failure. Fifty-four native checks and
+live-like placement/save/reopen passed; 17 UI checks are reused from the
+unchanged .57 draw function. Both local deployments have zero differences.
+The artist applied the button once and saved successfully; independent
+readback of that saved copy confirms the character, shoes and three planar
+displays remain on the floor. Validation protects authored inputs and bounded
+placement; exact evaluated IK output and FPS gains are not claimed.
+This is a local delivery, with no commit or push.
+[Scope, evidence and delivery status](docs/releases/CharacterDesigner_0.77.58_persistent_floor_20261018.md).
+
+Character Designer 0.77.55 preserves current bound-mesh Object placement through
+**Body Setup Generate**, regional **Rebuild**, and their transaction recovery.
+Graph reconstruction must retain an unkeyed shoe adjustment even when the shoe
+has an Object Action. The update preserves authored Object channels without
+changing mesh coordinates, native Rest or animation keys. Fifteen native fixture
+checks and 11 pure transaction checks passed. Fixed saved-X integration and
+both local installation checks also passed.
+[Scope, evidence and delivery status](docs/releases/CharacterDesigner_0.77.55_shoe_object_placement_20261018.md).
+
+Character Designer 0.77.54 repairs Undo after a rejected regional Rebuild.
+Nested release/bind shares one checkpoint, exact native bone rolls are recovered,
+and a fully restored failure reports a warning while retaining a native history
+boundary. Leg Poles keep their configured front direction, side and authored
+distance when rebuilding edited proportions; IK angle matching preserves the
+native pose and authored meshes. The normal Body Part panel keeps Part, status
+and Rebuild, with Release to Edit inside Advanced. The approved package is locally
+deployed to Blender 5.2 and X. Trusted script execution and saved normal-startup
+loading were verified; preserve current work and load the update in a fresh
+Blender process. [Validation and limits](docs/releases/CharacterDesigner_0.77.54_rebuild_rejection_20261018.md).
+
+Character Designer 0.77.53 removes automatic Dress scene recovery after
+Undo/Redo, including already queued resume callbacks. A second artist crash
+reached .52's deferred scan, so delaying that scan was insufficient. Select
+Automatic or Manual again to reconnect an affected Dress. Saved native Wiggle
+motion may remain enabled until that action; history callbacks do not rewrite
+it. Native lifecycle checks and isolated GUI rebuild/history and refresh/history
+checks passed, and both local installations match the approved release. The
+original unsaved crash state is not fully reproduced, and the underlying native
+type fault remains unestablished. Load this update in a fresh Blender process
+after preserving the current work. The artist scene was not operated on or saved.
+[Incident, validation and limits](docs/releases/CharacterDesigner_0.77.53_history_recovery_20261018.md).
+
+The .52 regional entry evaluation sync and fractional-frame preservation remain
+included; authored mesh coordinates are not shifted to compensate for controls.
+[Previous validation and follow-up correction](docs/releases/CharacterDesigner_0.77.52_rebuild_history_20261018.md).
+
+Character Designer 0.77.51 integrates regional work into **Rig > Body > Body
+Part**. Choose legs, arms or foot controls, then rebuild existing controls
+directly; release only when the original bones still need editing. Selected
+custom styles survive release, save/reopen and rebuild. Placement and control
+visibility are also in Body; the top-level sections are Body, Hair and Skirt.
+[Workflow, validation and approved release scope](docs/releases/CharacterDesigner_0.77.51_body_parts_20261018.md).
+
+Character Designer 0.77.50 adds **Rig > Fix > Rebuild Foot Controls** for both
+feet or one selected side. It rebuilds the foot-control pivots from the current
+native foot bones while preserving custom widget geometry and display settings,
+native Rest, skin weights and finished hands. Knee Pole placement and native
+bone roll stay unchanged.
+[Workflow, validation and approved release scope](docs/releases/CharacterDesigner_0.77.50_foot_rebuild_20261018.md).
+
+Character Designer 0.77.49 adds **Rig > Fix** for whole-character grounding,
+signed vertical placement, and showing existing Body controls with their custom
+shapes. Regional rebuilding stays in Body. This partial release excludes the
+paused playback/source-watch optimization candidate.
+[Validation and approved release scope](docs/releases/CharacterDesigner_0.77.49_rig_fix_20261018.md).
 
 Character Designer 0.77.47 lets edited native leg, foot and toe geometry return
 from **Original** to existing **Controls**, preserving the new Rest and artist

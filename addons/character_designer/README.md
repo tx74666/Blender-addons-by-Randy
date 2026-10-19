@@ -2216,6 +2216,49 @@ Limb IK improves posing and joint aim; it does not by itself preserve shoulder
 volume. Shoulder thinning at high arm elevation still calls for weight work and
 later clavicle/scapular or corrective deformation helpers.
 
+## Weight Cleanup (0.77.79)
+
+Select one bound Mesh, then open **Weight > Weight Cleanup**. The panel has two
+repair actions and needs no bone preselection:
+
+- **Fill Unweighted** fills vertices with exactly zero total weight on this
+  Rig's Deform bones. It uses the nearest original weighted neighbour along
+  this Mesh's world-length edges. Tiny positive weights are existing paint.
+- **Clear Bone Influences** opens a native table of every Deform bone currently
+  influencing this Mesh. All **Keep** boxes start checked. Uncheck the unwanted
+  bones, then press **Clear** to remove their memberships. **Selected Vertices
+  Only** limits the changes to the current vertex selection; the default covers
+  the current Mesh. Existing Vertex Group definitions are retained.
+
+The dialog explicitly shows **Keep / Clear bone counts** and the names about
+to be cleared. Checked means **KEEP**; unchecked means **CLEAR**. **Total Weight**
+is the sum over affected vertices, not a single vertex's weight or a reason to
+delete a bone. With a single-side source Mesh and Vertex Group mirroring, keep
+the intended source-side bones; Mirror generates the opposite side. The dialog
+does not infer which side or bone is anatomically correct.
+
+If a connected part would lose all allowed weights, the repair refuses before
+writing. The error now shows the total number of failures with at most two
+examples, instead of repeating a message for every vertex. Review the Keep
+choices; the tool still refuses to borrow weights from disconnected parts.
+
+Clearing fills only vertices made truly unweighted by that operation, using
+only the allowed bones and the same connected Mesh surface. Already empty
+vertices are handled by **Fill Unweighted**. Existing retained paint is not
+renormalized, and helper memberships and locked groups remain exact. No donor
+is taken across an air gap or between disconnected parts. A part without a
+suitable allowed donor, a required locked change, or a stale dialog cancels the
+complete repair. Opening or canceling the bone table changes no weights. Each
+completed repair supports Blender Undo/Redo.
+
+Apply repairs from Object, Pose or Weight Paint Mode. Mirror-generated vertices
+are not editable source indices. These actions do not run Automatic Weights,
+rebind the Mesh, edit Rest, restore historical paint or export to Unity.
+**Find Unweighted**, **Inspect Bone Influences** and selected-bone **Clean
+Weight Islands** remain available in Blender's **F3** operator search for
+diagnosis and advanced use. Distance warnings never choose which bones to
+remove; the artist's Keep choices control the clear operation.
+
 ## Weight Tools
 
 **Auto Weight Selected Bones** repairs the currently selected, visible Deform

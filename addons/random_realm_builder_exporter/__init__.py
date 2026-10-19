@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RR Helper",
     "author": "RandomRealm",
-    "version": (0, 2, 62),
+    "version": (0, 2, 65),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > RandomRealm",
     "description": "RandomRealm helper tools for Unity handoff and builder assets.",
@@ -29,6 +29,7 @@ from mathutils import Matrix, Vector
 
 try:
     from . import rr_icon_lighting
+    from . import rr_sidebar_tabs
     from . import rr_image_io
     from . import rr_material_shader
     from . import rr_ring_stack
@@ -76,6 +77,7 @@ try:
     )
 except ImportError:
     import rr_icon_lighting
+    import rr_sidebar_tabs
     import rr_image_io
     import rr_material_shader
     import rr_ring_stack
@@ -11022,7 +11024,7 @@ class RRBuilderExportSettings(bpy.types.PropertyGroup):
             ("BAKE", "Texture", "PBR texture preparation, baking, image saving, and texture packages"),
             ("MODELING", "Modeling", "Modeling helpers for origins and edit selections"),
             ("ICON", "Icon", "Thumbnail framing and reference images"),
-            ("LAYOUT", "Layout", "Layout snapshot tools"),
+            ("LAYOUT", "Miscellaneous", "Layout snapshots and sidebar tab order"),
             ("ANIMATION", "Animation", "Character animation sync with Unity"),
             ("TEXTURES", "Textures", "Texture package tools"),
             ("OBJECTS", "Objects", "Legacy export-group page"),
@@ -14474,7 +14476,7 @@ class RR_OT_set_ui_page(bpy.types.Operator):
             ("BAKE", "Texture", "PBR texture preparation, baking, image saving, and texture packages"),
             ("MODELING", "Modeling", "Modeling helpers for origins and edit selections"),
             ("ICON", "Icon", "Thumbnail framing and reference images"),
-            ("LAYOUT", "Layout", "Layout snapshot tools"),
+            ("LAYOUT", "Miscellaneous", "Layout snapshots and sidebar tab order"),
             ("ANIMATION", "Animation", "Character animation sync with Unity"),
             ("TEXTURES", "Textures", "Texture package tools"),
             ("OBJECTS", "Objects", "Legacy export-group page"),
@@ -14617,6 +14619,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
                 self.draw_modeling_page(layout, context, settings)
             elif active_page == "LAYOUT":
                 self.draw_layout_page(layout, settings)
+                rr_sidebar_tabs.draw_sidebar_tabs(layout, context)
         finally:
             _EXPORT_IDENTITY_LOOKUP_CACHE = previous_lookup_cache
             OBJECT_MANAGER_REPAIR_ALLOWED = previous_repair_state
@@ -14628,7 +14631,7 @@ class RR_PT_builder_exporter(bpy.types.Panel):
         self.draw_page_tab(first_row, active_page, "BAKE", "Texture", "TEXTURE")
         self.draw_page_tab(first_row, active_page, "MODELING", "Modeling", "MESH_DATA")
         second_row = tab_box.row(align=True)
-        self.draw_page_tab(second_row, active_page, "LAYOUT", "Layout", "FILE_TICK")
+        self.draw_page_tab(second_row, active_page, "LAYOUT", "Miscellaneous", "TOOL_SETTINGS")
         if RR_ADDON_REFRESH_PENDING or RR_ADDON_REFRESH_LAST_STATE:
             refresh_row = tab_box.row(align=True)
             refresh_row.alert = bool(RR_ADDON_REFRESH_LAST_ERROR)
@@ -16043,8 +16046,10 @@ def register():
         if sync_object_manager_names_after_history not in handlers:
             handlers.append(sync_object_manager_names_after_history)
     register_rr_startup_deferred_timers()
+    rr_sidebar_tabs.register()
 
 def unregister():
+    rr_sidebar_tabs.unregister()
     unregister_unity_device_layout()
     import_handlers = getattr(bpy.app.handlers, "blend_import_post", None)
     if import_handlers is not None and remember_object_manager_imported_objects in import_handlers:

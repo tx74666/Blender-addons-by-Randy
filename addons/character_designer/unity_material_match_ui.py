@@ -12,10 +12,11 @@ from . import unity_material_match as exchange
 _ACTIVE = []
 
 
-def _profile(rig, config):
+def _profile(rig, config, context=None):
     from . import unity_export
+    context = bpy.context if context is None else context
     return (os.path.normcase(str(Path(bpy.path.abspath(config.directory)).resolve())),
-            unity_export._filename(config.filename, rig), config.asset_id)
+            unity_export.model_filename(context, rig), config.asset_id)
 
 
 class CharacterDesignerUnityMaterialMatch(PropertyGroup):
@@ -50,7 +51,7 @@ def saved_entry(config, material):
     return next((entry for entry in config.unity_material_matches if entry.material == material), None)
 
 
-def status(rig, config, entry):
+def status(rig, config, entry, context=None):
     from . import unity_export
     if entry.material is None:
         return 'Review Match', 'Source Material is missing.'
@@ -59,20 +60,21 @@ def status(rig, config, entry):
     if unity_export.export_running():
         return 'Awaiting Unity', 'Export is running.'
     try:
+        context = bpy.context if context is None else context
         return exchange.binding_status(bpy.path.abspath(config.directory),
-            unity_export._filename(config.filename, rig), config.asset_id, entry.material.name, _entry(entry))
+            unity_export.model_filename(context, rig), config.asset_id, entry.material.name, _entry(entry))
     except (ValueError, TypeError):
         return 'Review Match', 'Check the saved material reference.'
 
 
-def warning_matched(rig, config, message):
+def warning_matched(rig, config, message, context=None):
     import re
     match = re.match(r'Material "(.+)" uses a custom shader;', message)
     if not match:
         return False
     material = bpy.data.materials.get(match[1])
     entry = saved_entry(config, material) if material is not None else None
-    return entry is not None and status(rig, config, entry)[0] == 'Matched'
+    return entry is not None and status(rig, config, entry, context=context)[0] == 'Matched'
 
 
 def draw_matches(layout, context, rig, config, running):
@@ -83,7 +85,7 @@ def draw_matches(layout, context, rig, config, running):
     layout.label(text='Unity Materials', icon='MATERIAL')
     box = layout.box()
     for entry in config.unity_material_matches:
-        state, detail = status(rig, config, entry)
+        state, detail = status(rig, config, entry, context=context)
         name = entry.material.name if entry.material is not None else entry.source_material
         row = box.row(align=True)
         row.label(text=ui._short(name, 28), icon='MATERIAL')
@@ -116,7 +118,8 @@ class CHARACTERDESIGNER_OT_unity_match_material(Operator):
             if ui._exporter().export_running():
                 raise ValueError('Wait for the current export to finish.')
             material = bpy.data.materials.get(self.material_name)
-            objects = ui._exporter().collect_character(context, rig, config)['objects']
+            objects = ui._exporter().collect_character(
+                context, rig, ui._full_update_config(context, rig, config))['objects']
             if material is None or not any(slot.material == material for obj in objects
                                           if obj.type == 'MESH' for slot in obj.material_slots):
                 raise ValueError('This source material is no longer used by the exported character.')
@@ -125,9 +128,9 @@ class CHARACTERDESIGNER_OT_unity_match_material(Operator):
             if any(op._rig == rig and op.material_name == self.material_name for op in _ACTIVE):
                 raise ValueError('This Material is already waiting for Unity.')
             self._rig, self._material = rig, material
-            self._profile = _profile(rig, config)
+            self._profile = _profile(rig, config, context=context)
             self._request = exchange.create_request(bpy.path.abspath(config.directory),
-                ui._exporter()._filename(config.filename, rig), config.asset_id, material.name)
+                self._profile[1], config.asset_id, material.name)
             self._started = time.monotonic()
             self._last_poll = 0.0
             self._timer = context.window_manager.event_timer_add(0.25, window=context.window)
@@ -175,7 +178,7 @@ class CHARACTERDESIGNER_OT_unity_match_material(Operator):
             if time.monotonic() - self._started > exchange.TIMEOUT:
                 raise ValueError('Unity did not complete the match. Open the project and its companion importer, then retry.')
             rig, config = ui._config(context)
-            if _profile(rig, config) != self._profile:
+            if _profile(rig, config, context=context) != self._profile:
                 raise ValueError('The export destination changed; match the material again.')
             if rig != self._rig or self._material.name != self.material_name:
                 raise ValueError('The character or source material changed; match it again.')

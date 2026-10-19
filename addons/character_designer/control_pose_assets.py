@@ -195,6 +195,9 @@ def _transaction(context, rig):
     before = {p.name: (p.rotation_mode, p.matrix_basis.copy(), p.get('ik_fk')) for p in rig.pose.bones}
     channels_before = {p.name: {key: list(getattr(p,key)) for key in _TRANSFORMS} for p in rig.pose.bones}
     mutes = [(con, con.mute) for pb in rig.pose.bones for con in pb.constraints]
+    pole_angles = [(con, float(con.pole_angle)) for pb in rig.pose.bones
+                   for con in pb.constraints if con.type == 'IK']
+    pole_metadata = match._leg_pole_metadata(rig)
     bends = {p.name: {k: list(getattr(p,k)) if size>1 else getattr(p,k) for k,size in _BBONE.items()}
              for p in rig.pose.bones}
     layout = bone_collections.snapshot_layout(rig)
@@ -209,6 +212,9 @@ def _transaction(context, rig):
             rig[original.SESSION] = session
         for con, mute in mutes:
             con.mute = mute
+        for con, angle in pole_angles:
+            con.pole_angle = angle
+        match._restore_leg_pole_metadata(rig, pole_metadata)
         if rig.animation_data:
             failed = rig.animation_data.action
             rig.animation_data.action = old_action

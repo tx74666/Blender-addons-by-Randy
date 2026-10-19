@@ -66,13 +66,13 @@ class MaterialMatchUITests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.material = Material(self.fixture.source)
         self.skin = Material('Skin')
-        self.config = SimpleNamespace(directory=str(self.fixture.directory), filename='Cosha',
+        self.config = SimpleNamespace(directory=str(self.fixture.directory), filename='IgnoredLegacyName',
                                       asset_id=self.fixture.asset_id, simple_materials=Entries(),
                                       unity_material_matches=Entries())
         self.rig = SimpleNamespace(name='CoshaRig', library=None)
         self.current_rig = self.rig
         self.wm = WindowManager()
-        self.context = SimpleNamespace(window_manager=self.wm, window=object())
+        self.context = SimpleNamespace(window_manager=self.wm, window=object(), body_name='Cosha')
         self.now, self.redraws = 1000.0, 0
         self.exporting = False
         self.objects = [SimpleNamespace(type='MESH', material_slots=[
@@ -94,7 +94,7 @@ class MaterialMatchUITests(unittest.TestCase):
         bpy.data = SimpleNamespace(materials={self.material.name: self.material, self.skin.name: self.skin})
         bpy.path = SimpleNamespace(abspath=lambda path: str(path))
         self.exporter = ModuleType(name + '.unity_export')
-        self.exporter._filename = lambda value, rig: (value.strip() or rig.name).removesuffix('.fbx') + '.fbx'
+        self.exporter.model_filename = lambda context, _rig: context.body_name + '.fbx'
         self.exporter.export_running = lambda: self.exporting
         self.exporter.collect_character = lambda *_args: {'objects': self.objects}
         export_ui = ModuleType(name + '.unity_export_ui')
@@ -174,22 +174,61 @@ class MaterialMatchUITests(unittest.TestCase):
         self.assertEqual(self.ui.status(self.rig, self.config, entry)[0], 'Matched')
         self.assert_finished(op)
 
-    def test_destination_filename_and_profile_changes_cancel_without_replacing_saved_pair(self):
+    def test_destination_body_name_and_profile_changes_cancel_without_replacing_saved_pair(self):
         entry = self.seed_entry()
         original = vars(entry).copy()
-        initial = (self.config.directory, self.config.filename, self.config.asset_id)
-        for field, value in (('directory', str(self.fixture.foreign_root / 'Assets')),
-                             ('filename', 'ChangedProfile'), ('asset_id', 'f' * 32)):
+        initial = (self.config.directory, self.context.body_name, self.config.asset_id)
+        for owner, field, value in ((self.config, 'directory', str(self.fixture.foreign_root / 'Assets')),
+                                   (self.context, 'body_name', 'RenamedBody'),
+                                   (self.config, 'asset_id', 'f' * 32)):
             with self.subTest(field=field):
-                self.config.directory, self.config.filename, self.config.asset_id = initial
+                self.config.directory, self.context.body_name, self.config.asset_id = initial
                 op = self.start()
                 self.publish(op)
-                setattr(self.config, field, value)
+                setattr(owner, field, value)
                 self.assertEqual(self.tick(op), {'CANCELLED'})
                 self.assertEqual(vars(entry), original)
                 cancel = self.fixture.result_path(op._request).with_name(op._request['request_id'] + '.cancel')
                 self.assertTrue(cancel.exists())
                 self.assert_finished(op)
+
+    def test_ignored_legacy_filename_changes_do_not_cancel_the_current_body_match(self):
+        op = self.start()
+        self.assertEqual(op._request['model_path'], 'Assets/Characters/Cosha/Cosha.fbx')
+        self.assertEqual(op._request['export_asset_id'], self.fixture.asset_id)
+        self.config.filename = 'Legacy name must not choose another model'
+        self.publish(op)
+        self.assertEqual(self.tick(op), {'FINISHED'})
+        self.fixture.receipt()
+        entry = self.config.unity_material_matches[0]
+        self.assertEqual(self.ui.status(self.rig, self.config, entry)[0], 'Matched')
+        self.assert_finished(op)
+
+    def test_explicit_context_is_used_by_profile_invoke_modal_status_and_draw(self):
+        entry = self.seed_entry()
+        self.fixture.receipt()
+        warning = 'Material "Crystal_Blue" uses a custom shader; set it up in Unity.'
+
+        class Layout:
+            def separator(self): pass
+            def label(self, **_kwargs): pass
+            def box(self): return self
+            def row(self, **_kwargs): return self
+            def operator(self, *_args, **_kwargs): return SimpleNamespace()
+
+        unrelated = SimpleNamespace(body_name='Another scene body')
+        with patch.object(self.ui.bpy, 'context', unrelated):
+            self.assertEqual(self.ui._profile(self.rig, self.config, self.context)[1], 'Cosha.fbx')
+            self.assertNotEqual(self.ui.status(self.rig, self.config, entry)[0], 'Matched')
+            self.assertEqual(self.ui.status(self.rig, self.config, entry, context=self.context)[0], 'Matched')
+            self.assertTrue(self.ui.warning_matched(self.rig, self.config, warning, context=self.context))
+            with patch.object(self.ui, 'status', wraps=self.ui.status) as status:
+                self.ui.draw_matches(Layout(), self.context, self.rig, self.config, False)
+                status.assert_called_once_with(self.rig, self.config, entry, context=self.context)
+            op = self.start()
+            self.publish(op)
+            self.assertEqual(self.tick(op), {'FINISHED'})
+            self.assert_finished(op)
 
     def test_equivalent_normalized_destination_does_not_cancel(self):
         op = self.start()

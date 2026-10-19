@@ -52,15 +52,14 @@ class CharacterPlacementUITests(unittest.TestCase):
     def setUpClass(cls):
         cls.ui = load_subject()
 
-    def test_draw_exposes_signed_distance_and_separate_ground_button_without_evaluation(self):
+    def test_draw_only_exposes_automatic_move_to_floor_without_evaluation(self):
         layout = Layout()
         with patch.object(self.ui, '_prepare', side_effect=AssertionError('draw evaluated geometry')):
             self.ui.draw(layout, context())
-        self.assertEqual(layout.props, [('distance', -.15)])
-        self.assertEqual(layout.buttons, [('character_designer.move_character', 'Move Character'),
-                                         ('character_designer.ground_character', 'Ground Character')])
-        self.assertIn('Positive: up. Negative: down.', layout.labels)
-        self.assertIn('Ground uses the displayed mesh pose.', layout.labels)
+        self.assertEqual(layout.props, [])
+        self.assertEqual(layout.buttons, [('character_designer.ground_character', 'Move to Floor')])
+        self.assertEqual(layout.labels, [])
+        self.assertEqual(self.ui.CHARACTERDESIGNER_OT_ground_character.bl_label, 'Move to Floor')
 
     def test_poll_rejects_edit_mode_linked_and_overridden_objects_without_evaluation(self):
         with patch.object(self.ui, '_prepare', side_effect=AssertionError('poll evaluated geometry')):

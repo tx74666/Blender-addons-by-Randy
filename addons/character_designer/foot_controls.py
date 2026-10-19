@@ -181,6 +181,10 @@ def _update(context, armature):
     armature.update_tag(refresh={'OBJECT'})
     context.view_layer.update()
     context.evaluated_depsgraph_get().update()
+    # New Foot drivers rebuild animation relations. Keep bound Object inputs
+    # before further shoe fitting and before the next foot is constructed.
+    from . import body_setup
+    body_setup.preserve_object_inputs(context, armature)
 
 
 def _active(context, armature):

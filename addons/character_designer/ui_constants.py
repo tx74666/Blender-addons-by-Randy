@@ -26,6 +26,10 @@ UI_RIG_SECTION_ITEMS = (
     ('HAIR', 'Hair', 'Hair strand bones and attachment to the character'),
     ('SKIRT', 'Skirt', 'Skirt controls, attachment, and physics'),
 )
+UI_RIG_SECTION_RNA_ITEMS = UI_RIG_SECTION_ITEMS + (
+    # Keep the old fourth enum value callable without showing an anatomy tab.
+    ('FIX', 'Fix', 'Legacy shortcut to Rig / Body adjustments'),
+)
 
 
 def active_ui_page(context):

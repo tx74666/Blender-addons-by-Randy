@@ -248,7 +248,14 @@ def switch_all(context, armature, mode, *, keys=None, keyframe=None):
         inventory = limb_ik._validate_inventory(armature)
     selected = _keys(inventory, keys)
     old_modes = {key: match.mode_for_rig(armature, inventory['rigs'][key]) for key in selected}
-    if saved_original is None and all(value == mode for value in old_modes.values()):
+    stale_leg = False
+    if saved_original is None and any(match._leg_front_policy(inventory, inventory['rigs'][key]) for key in selected):
+        match._update(context, armature)
+        stale_leg = any(match._leg_front_policy(inventory, inventory['rigs'][key])
+                        and match._leg_front_layout(armature, inventory['rigs'][key],
+                            match._matrices(armature, inventory['rigs'][key]['chain']))[1]
+                        for key in selected)
+    if saved_original is None and not stale_leg and all(value == mode for value in old_modes.values()):
         # A repeated mode click also repairs the managed display, without pose
         # matching or inserting animation keys. Keep display writes reversible.
         from . import bone_display
@@ -282,6 +289,8 @@ def switch_all(context, armature, mode, *, keys=None, keyframe=None):
         match._update(context, armature)
         native_before = original._pose(armature)
         before = _checkpoint(context, armature, saved_original)
+        angles_before = {con.as_pointer(): float(angle) for state in before['rigs']
+                         for con, _mute, _influence, angle in state['constraints'] if angle is not None}
         pose_before = {name: (entry['mode'], entry['basis']) for name, entry in before['rigs'][0]['channels'].items()}
         installed = set()
         changed, errors, affected = [], {}, {}
@@ -302,11 +311,21 @@ def switch_all(context, armature, mode, *, keys=None, keyframe=None):
             for key in selected:
                 rig = inventory['rigs'][key]
                 desired = {name: native_before[name] for name in match.pose_names(rig)}
-                if match.mode_for_rig(armature, rig) == mode:
+                direct_leg = match._leg_front_policy(inventory, rig)
+                leg_angles = [(con, angles_before.get(con.as_pointer(), float(con.pole_angle)))
+                              for _pb, con, record in rig['entries'] if direct_leg and record['role'] == 'IK']
+                front_stale = direct_leg and match._leg_front_layout(armature, rig, desired)[1]
+                angle_changed = any(abs(float(con.pole_angle) - old) > 1e-8 for con, old in leg_angles)
+                if match.mode_for_rig(armature, rig) == mode and not front_stale and not angle_changed:
                     errors[key] = match._verify(armature, desired)
                     continue
-                affected[key] = (match._match_fk(context, armature, rig, desired) if mode == 'FK' else
-                                 match._match_ik(context, armature, inventory, rig, desired))
+                if direct_leg:
+                    match.switch_limb(context, armature, key, mode, keyframe=False,
+                                      desired_pose=desired, sync_display=False)
+                    affected[key] = {rig['target'].name, rig['pole'].name, *rig['chain']}
+                else:
+                    affected[key] = (match._match_fk(context, armature, rig, desired) if mode == 'FK' else
+                                     match._match_ik(context, armature, inventory, rig, desired))
                 affected[key].update(match._match_toe(context, armature, rig, desired))
                 errors[key] = match._verify(armature, desired)
                 changed.append(key)
@@ -318,8 +337,12 @@ def switch_all(context, armature, mode, *, keys=None, keyframe=None):
             if keyed:
                 for key in changed:
                     target = armature.pose.bones[inventory['rigs'][key]['target'].name]
+                    data = inventory['rigs'][key]
+                    leg_angles = [(con, angles_before.get(con.as_pointer(), float(con.pole_angle)))
+                                  for _pb, con, record in data['entries']
+                                  if match._leg_front_policy(inventory, data) and record['role'] == 'IK']
                     match._key_switch(context, armature, target, affected[key], value_before[key], pose_before,
-                                      keep_previous=True)
+                                      keep_previous=True, pole_angles=leg_angles)
                     before['staged_actions'].append(armature.animation_data.action)
             refresh()
             for state in before['correctives']:

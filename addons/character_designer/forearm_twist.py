@@ -284,9 +284,31 @@ def _check_mesh(obj):
     return mod.object
 
 
+def _forearm_inventory(obj, armature, sides):
+    """Read the actual calibrated support before scoping Original Rest proof."""
+    from . import body_original_mode
+    try:
+        return forearm_original_inventory.validate(armature)
+    except ValueError:
+        if not body_original_mode.active(armature):
+            raise
+    records = _records(obj)
+    required = set(sides) | set(records)
+    if any(record.get('paired', True) for record in records.values()):
+        required.update(('L', 'R'))
+    indices = set()
+    for side, record in records.items():
+        if side in required:
+            current = _current_topology_record(obj.data, record)
+            indices.update(current['vertices'])
+    dependencies = {name for values in _weights(obj, armature, indices).values() for name in values}
+    return forearm_original_inventory._validate_forearm_rest_fallback(
+        armature, sides=required, dependencies=dependencies)
+
+
 def _resolve_rig(obj, side, *, _inventory=None):
     armature = _check_mesh(obj)
-    inventory = forearm_original_inventory.validate(armature) if _inventory is None else _inventory
+    inventory = _forearm_inventory(obj, armature, {side}) if _inventory is None else _inventory
     rig = inventory["rigs"].get(("ARM", side))
     if rig is None:
         detected = limb_ik.analyze_armature(armature)["limbs"]["ARM"][side]
@@ -1124,7 +1146,7 @@ def _prepare_runtime_records(obj):
     # All calls below are read-only until the resulting records are committed.
     # Validate the same rig once, retaining the complete safety check on every
     # update (including direct constraint edits without a depsgraph notification).
-    inventory = forearm_original_inventory.validate(arm)
+    inventory = _forearm_inventory(obj, arm, set(records))
     resolved = {}
     for side in tuple(records):
         _arm, rig = _resolve_rig(obj, side, _inventory=inventory)

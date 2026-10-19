@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 48),
+    "version": (0, 77, 79),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -39,6 +39,7 @@ from .delta_symmetry import (
     stop_delta_symmetry_runtime,
 )
 from .shape_key_tools import SHAPE_KEY_CLASSES
+from . import custom_vertex_groups, custom_vertex_parts
 from .reference_views import (
     REFERENCE_VIEW_CLASSES,
     CharacterDesignerReferenceState,
@@ -62,12 +63,15 @@ from .spline_ik_setup import (
     CharacterDesignerSplineIKState,
 )
 from .selected_bone_weights import SELECTED_BONE_WEIGHT_CLASSES
+from .weight_cleanup import CLASSES as WEIGHT_CLEANUP_CLASSES
 from .bone_collections import (
     BONE_COLLECTION_CLASSES,
     register_handlers as register_bone_collection_handlers,
     unregister_handlers as unregister_bone_collection_handlers,
 )
 from .character_setup import CHARACTER_SETUP_CLASSES, CharacterDesignerSetup
+# Unity update-selection lifecycle integration.
+from . import unity_update_selection_ui
 from .unity_export_ui import UNITY_EXPORT_CLASSES, CharacterDesignerUnityExport, stop_export_ui
 from .bone_display import BONE_DISPLAY_CLASSES
 from .widget_collections import WIDGET_COLLECTION_CLASSES
@@ -77,6 +81,7 @@ from .eye_ui import EYE_UI_CLASSES
 from .body_controls_ui import BODY_CONTROL_UI_CLASSES
 from .body_region_ui import BODY_REGION_UI_CLASSES, CharacterDesignerBodyRegionState
 from .character_ground import CHARACTER_GROUND_CLASSES, CharacterDesignerGroundState
+from .rig_fix_ui import RIG_FIX_UI_CLASSES
 from .control_colors import CONTROL_COLOR_CLASSES
 from .bone_color_palette import BONE_COLOR_PALETTE_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
@@ -117,6 +122,7 @@ from .ui_constants import (
     UI_PAGE_WEIGHT,
     UI_PAGES,
     UI_RIG_SECTION_ITEMS,
+    UI_RIG_SECTION_RNA_ITEMS,
     active_rig_section,
     active_ui_page,
 )
@@ -779,7 +785,7 @@ def _centerline_blend_factor_updated(settings, context):
 
 class CharacterDesignerState(PropertyGroup):
     rig_section: EnumProperty(
-        name="Rig Section", items=UI_RIG_SECTION_ITEMS, default="BODY",
+        name="Rig Section", items=UI_RIG_SECTION_RNA_ITEMS, default="BODY",
         options={"SKIP_SAVE"},
     )
     ui_page: EnumProperty(
@@ -8458,9 +8464,9 @@ class CHARACTERDESIGNER_OT_set_ui_page(Operator):
 class CHARACTERDESIGNER_OT_set_rig_section(Operator):
     bl_idname = "character_designer.set_rig_section"
     bl_label = "Show Rig Section"
-    bl_description = "Show body, hair, or skirt rig tools"
+    bl_description = "Show body, hair or skirt rig tools"
     bl_options = {"INTERNAL"}
-    section: EnumProperty(items=UI_RIG_SECTION_ITEMS, default='BODY')
+    section: EnumProperty(items=UI_RIG_SECTION_RNA_ITEMS, default='BODY')
 
     def execute(self, context):
         settings = _settings(context)
@@ -8649,6 +8655,23 @@ def _draw_curve_tools(layout, context):
 
 
 
+class CHARACTERDESIGNER_PT_custom_vertex_groups(Panel):
+    bl_label = "Mesh Selections"
+    bl_idname = "CHARACTERDESIGNER_PT_custom_vertex_groups"
+    bl_parent_id = "CHARACTERDESIGNER_PT_main"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = SIDEBAR_CATEGORY
+    bl_order = 0
+
+    @classmethod
+    def poll(cls, context):
+        return active_ui_page(context) == UI_PAGE_MODELING
+
+    def draw(self, context):
+        custom_vertex_groups.draw(self.layout, context)
+
+
 class CHARACTERDESIGNER_PT_curve_tools(Panel):
     bl_label = "Curve Tools"
     bl_idname = "CHARACTERDESIGNER_PT_curve_tools"
@@ -8707,11 +8730,15 @@ CLASSES = (
     CHARACTERDESIGNER_OT_set_ui_page,
     CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
+    *custom_vertex_groups.CLASSES,
+    *custom_vertex_parts.CLASSES,
+    CHARACTERDESIGNER_PT_custom_vertex_groups,
     CHARACTERDESIGNER_PT_curve_tools,
     *curve_tools.CLASSES,
     *FINGER_ROOT_CLASSES,
     *FINGER_BONES_CLASSES,
     *CHARACTER_SETUP_CLASSES,
+    *unity_update_selection_ui.CLASSES,
     *UNITY_EXPORT_CLASSES,
     *HAIR_BONES_CLASSES,
     *HAIR_MOTION_CLASSES,
@@ -8720,6 +8747,7 @@ CLASSES = (
     *COMPOSITION_CLASSES,
     *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
+    *WEIGHT_CLEANUP_CLASSES,
     *BONE_COLLECTION_CLASSES,
     *BONE_DISPLAY_CLASSES,
     CHARACTERDESIGNER_PT_rig_sections,
@@ -8736,6 +8764,7 @@ CLASSES = (
     *BODY_CONTROL_UI_CLASSES,
     *BODY_REGION_UI_CLASSES,
     *CHARACTER_GROUND_CLASSES,
+    *RIG_FIX_UI_CLASSES,
     *CONTROL_COLOR_CLASSES,
     *BONE_COLOR_PALETTE_CLASSES,
     *FOREARM_TWIST_CLASSES,
@@ -8771,6 +8800,8 @@ def _expected_rna_identifier(cls):
         return cls.bl_idname or cls.__name__
     if issubclass(cls, bpy.types.UIList):
         return cls.__name__
+    if issubclass(cls, bpy.types.Menu):
+        return getattr(cls, "bl_idname", "") or cls.__name__
     if issubclass(cls, bpy.types.PropertyGroup):
         return cls.__name__
     raise RuntimeError(f"Unsupported Character Designer RNA class: {cls.__name__}.")
@@ -8780,7 +8811,7 @@ def _registered_rna_class(cls):
     """Resolve the live Python class behind an expected Blender RNA identifier."""
 
     identifier = _expected_rna_identifier(cls)
-    for base in (bpy.types.Operator, bpy.types.Panel, bpy.types.PropertyGroup, bpy.types.UIList):
+    for base in (bpy.types.Operator, bpy.types.Panel, bpy.types.PropertyGroup, bpy.types.UIList, bpy.types.Menu):
         if issubclass(cls, base):
             return base.bl_rna_get_subclass_py(identifier)
     return None
@@ -8836,6 +8867,18 @@ def _validate_registration_integrity():
             or export_property.fixed_type != CharacterDesignerUnityExport.bl_rna):
         errors.append("missing or stale Object Unity export settings")
 
+    update_selection_property = bpy.types.Object.bl_rna.properties.get(
+        unity_update_selection_ui.SETTINGS_PROPERTY)
+    if (update_selection_property is None or update_selection_property.type != "POINTER"
+            or update_selection_property.fixed_type != unity_update_selection_ui.CharacterDesignerUnityUpdateSelection.bl_rna):
+        errors.append("missing or stale Object Unity update selection")
+
+    update_views_property = bpy.types.WindowManager.bl_rna.properties.get(
+        unity_update_selection_ui.VIEW_PROPERTY)
+    if (update_views_property is None or update_views_property.type != "COLLECTION"
+            or update_views_property.fixed_type != unity_update_selection_ui.CharacterDesignerUnityUpdateView.bl_rna):
+        errors.append("missing or stale WindowManager Unity update selection view")
+
     if errors:
         details = "; ".join(errors)
         raise RuntimeError(f"Character Designer registration is inconsistent: {details}.")
@@ -8871,6 +8914,8 @@ def register():
     ground_registered = hasattr(bpy.types.Scene, "character_designer_ground")
     worklist_registered = hasattr(bpy.types.Scene, "character_designer_animation_worklist")
     unity_export_registered = hasattr(bpy.types.Object, "character_designer_unity_export")
+    unity_update_selection_registered = hasattr(bpy.types.Object, unity_update_selection_ui.SETTINGS_PROPERTY)
+    unity_update_views_registered = hasattr(bpy.types.WindowManager, unity_update_selection_ui.VIEW_PROPERTY)
     registration_state = (
         centerline_registered,
         delta_registered,
@@ -8888,9 +8933,14 @@ def register():
         ground_registered,
         worklist_registered,
         unity_export_registered,
+        unity_update_selection_registered,
+        unity_update_views_registered,
     )
     if all(registration_state):
         _validate_registration_integrity()
+        custom_vertex_groups.register_properties()
+        custom_vertex_parts.register_properties()
+        unity_update_selection_ui.register_properties()
         register_mesh_mirror_runtime()
         register_refine_symmetry_runtime()
         register_finger_bones_runtime()
@@ -8924,10 +8974,19 @@ def register():
     added_ground = False
     added_worklist = False
     added_export = False
+    added_custom_groups = False
+    added_vertex_parts = False
+    added_unity_update_selection = False
     try:
         for cls in CLASSES:
             bpy.utils.register_class(cls)
             registered.append(cls)
+        custom_vertex_groups.register_properties()
+        added_custom_groups = True
+        custom_vertex_parts.register_properties()
+        added_vertex_parts = True
+        added_unity_update_selection = True
+        unity_update_selection_ui.register_properties()
         bpy.types.Scene.character_designer_setup = PointerProperty(type=CharacterDesignerSetup)
         added_setup = True
         bpy.types.Scene.character_designer_body_region = PointerProperty(type=CharacterDesignerBodyRegionState)
@@ -9016,6 +9075,8 @@ def register():
         skirt_wiggle_ui.register()
         skirt_wiggle.register()
     except Exception:
+        if added_unity_update_selection:
+            unity_update_selection_ui.unregister_properties()
         skirt_wiggle.unregister()
         skirt_wiggle_ui.unregister()
         unregister_hair_motion_guards()
@@ -9053,6 +9114,10 @@ def register():
         for property_name in reversed(added_properties):
             if hasattr(bpy.types.WindowManager, property_name):
                 delattr(bpy.types.WindowManager, property_name)
+        if added_vertex_parts:
+            custom_vertex_parts.unregister_properties()
+        if added_custom_groups:
+            custom_vertex_groups.unregister_properties()
         for cls in reversed(registered):
             try:
                 bpy.utils.unregister_class(cls)
@@ -9063,6 +9128,9 @@ def register():
 
 def unregister():
     from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint, generated_names
+    unity_update_selection_ui.unregister_properties()
+    custom_vertex_parts.unregister_properties()
+    custom_vertex_groups.unregister_properties()
     skirt_wiggle.unregister()
     skirt_wiggle_ui.unregister()
     unregister_hair_motion_guards()

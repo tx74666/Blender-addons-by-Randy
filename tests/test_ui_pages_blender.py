@@ -24,6 +24,7 @@ from character_designer import (
     hair_bones,
     limb_ik,
     reference_views,
+    rig_fix_ui,
     selected_bone_weights,
     shape_key_tools,
     skirt,
@@ -90,6 +91,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         ),
         "clothing": skirt.CHARACTERDESIGNER_PT_skirt_setup.poll(bpy.context),
         "hair_rig": hair_bones.CHARACTERDESIGNER_PT_hair_bones.poll(bpy.context),
+        "rig_fix": rig_fix_ui.CHARACTERDESIGNER_PT_rig_fix.poll(bpy.context),
     }
     expected = {
         "curve_tools": modeling,
@@ -109,6 +111,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "reference": reference,
         "clothing": clothing,
         "hair_rig": hair_rig,
+        "rig_fix": False,
     }
     if actual != expected:
         raise AssertionError(f"Page {page}/{section} routed panels incorrectly: {actual}")
@@ -120,8 +123,10 @@ def assert_rig_subroutes():
     if section_property.default != "BODY" or not section_property.is_skip_save:
         raise AssertionError("Rig section must default to Body and remain session-only")
     identifiers = tuple(item.identifier for item in section_property.enum_items)
-    if identifiers != ("BODY", "HAIR", "SKIRT"):
+    if identifiers != ("BODY", "HAIR", "SKIRT", "FIX"):
         raise AssertionError(f"Unexpected Rig sections: {identifiers}")
+    if tuple(item[0] for item in character_designer.UI_RIG_SECTION_ITEMS) != ('BODY', 'HAIR', 'SKIRT'):
+        raise AssertionError('Visible Rig tabs must group body parts; legacy Fix must stay hidden')
 
     dirty_before_toggle = bpy.data.is_dirty
     for section in identifiers:
@@ -134,10 +139,11 @@ def assert_rig_subroutes():
             settings.rig_section = section
             bpy.ops.character_designer.set_ui_page(page=page)
             expected_page = UI_PAGE_MODELING if page == UI_PAGE_HAIR else page
-            if active_ui_page(bpy.context) != expected_page or active_rig_section(bpy.context) != section:
+            expected_section = 'BODY' if section == 'FIX' else section
+            if active_ui_page(bpy.context) != expected_page or active_rig_section(bpy.context) != expected_section:
                 raise AssertionError("Switching pages lost the selected Rig section")
             for candidate in identifiers:
-                if rig_page_active(bpy.context, candidate) != (page == UI_PAGE_RIG and section == candidate):
+                if rig_page_active(bpy.context, candidate) != (page == UI_PAGE_RIG and expected_section == candidate):
                     raise AssertionError(f"Rig section leaked into {page}/{section}: {candidate}")
     if bpy.data.is_dirty != dirty_before_toggle:
         raise AssertionError("Changing Rig sections or pages dirtied the .blend")
@@ -145,6 +151,7 @@ def assert_rig_subroutes():
     assert_only_page(UI_PAGE_RIG, section="BODY", rig=True)
     assert_only_page(UI_PAGE_RIG, section="HAIR", hair_rig=True)
     assert_only_page(UI_PAGE_RIG, section="SKIRT", clothing=True)
+    assert_only_page(UI_PAGE_RIG, section="FIX", rig=True)
     assert_only_page(UI_PAGE_CLOTHING, clothing=True)
     settings.rig_section = "BODY"
 
