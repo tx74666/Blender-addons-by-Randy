@@ -1,4 +1,74 @@
-# Character Designer 0.77.2
+# Character Designer 0.77.85
+
+## Stable Move to Floor (0.77.85)
+
+Move to Floor keeps the model, skeleton and existing controls together.
+For a registered Dress with native Spline IK, a shape-check refusal can try
+up to eight neighboring float32 root-Z values in each direction, within
+1e-6 world units. Each attempt retains the original baseline and every
+existing shape, world-transform, Rest and pose check. Recovery must pass
+before retrying; the accepted result also passes a full native rebuild and
+the tighter floor bound. Unsupported hierarchies and real shape changes
+remain refused. Models already within 1e-6 of the floor keep their position
+on repeated clicks; existing Foot/Master outlines still align to Z=0.
+No controller rebuild, weight changes or mesh edits are required.
+
+## Reuse unchanged forearm output (0.77.84)
+
+When one arm changes, the other arm can keep its exact accepted corrective
+output after checking its current inputs and complete managed-key contents.
+Weight order and exact input bits remain part of the proof; manual edits,
+changed key identities and changed dependencies trigger recalculation.
+Both sides still pass their ordered Rest, angle and profile checks before
+any output is written.
+
+Within one read-only validation call, repeated ownership and strict constraint
+discovery share current native reads. Basis bytes are shared only within that
+call, and the mirror fingerprint reads its six actual chain bones. Every new
+call still checks current topology, geometry, weights, Rest and native controls.
+
+## Lower playback validation overhead (0.77.83)
+
+Original-mode Rest checks reuse an immutable plan for the exact saved JSON;
+the current native bones, ownership and Rest still receive fresh validation.
+Audited read-only ownership checks share JSON data within one call. Larger
+finite records can use a bounded, process-local binary cache, with fresh
+mutable containers for each new call and ordinary fresh JSON reads elsewhere.
+
+Forearm weight and Shape Key input reads retain local RNA references during
+the current calculation. Foot Controls constructs its bone-path patterns once
+per validation instead of rebuilding them for every driver. Finite checks batch
+native vectors and matrix rows, retaining the original component checks for
+overflow and non-finite values. Correction math, failure handling, current
+weights, Shape Keys, Rest and Actions are unchanged.
+No preview-quality reduction or scene simplification is enabled.
+
+## Native weight painting (0.77.82)
+
+The Edit Weights shortcut and its dedicated workspace have been removed.
+Choose Original, select the Mesh and enter Blender's native Weight Paint mode.
+Finish painting in Object or Pose Mode before choosing Controls. Existing
+weights and the Original / Controls workflow remain unchanged. Old saved
+workspace records have recovery-only compatibility; no new sessions are created.
+
+## Faster inspection and controller display (0.77.81)
+
+Bone influence inspection reuses a positive-weight index for larger bone sets;
+small sets retain their existing scan. Both report the same islands, distances
+and warnings from current validated snapshots.
+Show Controls and native bone isolation avoid duplicate validation in the same
+read-only operation; each new operation still validates current data.
+Fill, Clear, authored weights and model geometry keep their existing behavior.
+
+## Flat Mesh Selections with consistent row clicks (0.77.80)
+
+**Modeling > Mesh Selections > Custom Vertex / Parts** accepts Shift ranges and
+Ctrl toggles on the name, the space after it and the selected-row checkmark.
+Names remain left aligned and controls on the right remain independent. The
+active row uses Blender's native blue background; every chosen row also has a
+small checkmark. No separate menu-colored button is drawn inside the row.
+Double-click a name or its row space to rename. **Select / Deselect** applies to
+the union of chosen groups without changing authored weights.
 
 ## Applying a hand Pose while a controller is selected (0.77.2)
 
@@ -112,8 +182,8 @@ Coordinates, topology, Shape Keys, group indices/weights, pose and colors stay
 unchanged. Artist labels and unrelated characters are preserved.
 
 Cleanup runs once after Refresh or file load. A destination bone/group collision,
-linked/shared animation or active Edit Weights/Bake Preview prevents unsafe
-renaming and is reported. Newly generated Dress resources reserve readable
+linked/shared animation, pending legacy workspace recovery or Bake Preview
+prevents unsafe renaming and is reported. Newly generated Dress resources reserve readable
 namespaces; a collision uses `_02`, `_03` rather than random text.
 
 ## Bone Display Color Palette (0.73.3)
@@ -210,9 +280,9 @@ Hair and Dress bones together; choose **Controls** to keep the pose and restore
 the saved control modes and display. The three text-only group buttons share
 one row; blue indicates that the group's bones are visible. Body Controls is
 now named **Bone Setup**, with the switch centralized in Bone Display.
-Inside Original, **Edit Weights** opens Weight Paint; **Back to Original**
-finishes painting before choosing Controls. The session survives saving and
-reopening the scene. Native Bone Collection eyes and solo stars only control
+Inside Original, select the Mesh and use Blender's native **Weight Paint** mode.
+Return to Object or Pose Mode before choosing Controls. No separate weight
+workspace or automatic Mesh selection is involved. Native Bone Collection eyes and solo stars only control
 visibility; they no longer trigger add-on display presets.
 
 Only validated Body source constraints and temporary rotation locks are

@@ -1,6 +1,7 @@
 """Persistent native Body/Hair/Dress display with direct native body posing."""
 import json
 import math
+from dataclasses import dataclass
 from functools import lru_cache
 
 import bpy
@@ -25,6 +26,65 @@ def active(rig):
     return bool(rig and rig.type == 'ARMATURE' and SESSION in rig)
 
 
+@dataclass(frozen=True)
+class _SessionRestPlan:
+    """Pure saved JSON fields only; no current/native identity or passed proof."""
+    bones: tuple
+    rest: tuple
+
+
+def _valid_rest_entry(entry):
+    def numeric(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    if not isinstance(entry, dict) or set(entry) != _REST_FIELDS:
+        return False
+    matrix = entry['matrix']
+    return (numeric(entry['length']) and entry['length'] >= 0
+            and (entry['parent'] is None or isinstance(entry['parent'], str))
+            and isinstance(entry['inherit_scale'], str) and bool(entry['inherit_scale'])
+            and all(type(entry[key]) is bool for key in ('connected', 'inherit_rotation', 'local_location'))
+            and isinstance(matrix, (list, tuple)) and len(matrix) == 4
+            and all(isinstance(row, (list, tuple)) and len(row) == 4
+                    and all(numeric(value) for value in row) for row in matrix))
+
+
+@lru_cache(maxsize=1)
+def _compile_session_rest_plan(raw):
+    """Compile only fully valid saved text, with immutable detached contents.
+
+    Malformed/unusual text returns to the ordinary validator so its live-bone
+    checks and exception order remain authoritative. This does not authenticate
+    the current rig or permit reusing any previous successful native check.
+    """
+    try:
+        saved = json.loads(raw)
+        if (type(saved) is not dict or type(saved.get('version')) is not int
+                or saved['version'] != 1):
+            return None
+        bones, rest = saved.get('bones'), saved.get('rest')
+        if (type(bones) is not list
+                or any(type(name) is not str or not name for name in bones)
+                or len(bones) != len(set(bones)) or type(rest) is not dict or not rest
+                or any(type(name) is not str or not name for name in rest)
+                or any(not _valid_rest_entry(entry) for entry in rest.values())):
+            return None
+        rows = tuple((name, tuple((field, tuple(tuple(row) for row in value)
+                                      if field == 'matrix' else value)
+                                 for field, value in entry.items()))
+                     for name, entry in rest.items())
+        return _SessionRestPlan(tuple(bones), rows)
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return None
+
+
+def _materialize_session_rest_plan(plan):
+    """Return fresh caller-owned containers; never expose shared mutable JSON."""
+    return {'version': 1, 'bones': list(plan.bones),
+            'rest': {name: {field: [list(row) for row in value] if field == 'matrix' else value
+                            for field, value in fields} for name, fields in plan.rest}}
+
+
 def _validate_session_rest(rig, saved=None, current=None):
     """Read-only proof of this session's native Rest, allowing float roundtrips.
 
@@ -32,11 +92,18 @@ def _validate_session_rest(rig, saved=None, current=None):
     by replacing the saved baseline, restoring bones, or removing the session.
     ``saved`` and ``current`` may be reused within one synchronous operation.
     """
+    plan = None
     if saved is None:
         if not active(rig):
             raise ValueError('Choose Original before checking its saved skeleton.')
         try:
-            saved = json.loads(rig[SESSION])
+            raw = rig[SESSION]
+            # Explicit caller-supplied current/saved records keep the complete
+            # ordinary schema path. Only fresh live reads consume this plan.
+            if current is None and type(raw) is str:
+                plan = _compile_session_rest_plan(raw)
+            saved = (_materialize_session_rest_plan(plan) if plan is not None
+                     else json.loads(raw))
         except (ValueError, TypeError) as exc:
             raise ValueError('The saved Original session is invalid; recover its saved file.') from exc
     if (not isinstance(saved, dict) or type(saved.get('version')) is not int
@@ -67,24 +134,9 @@ def _validate_session_rest(rig, saved=None, current=None):
                          + (': ' + ', '.join(changed[:3]) if changed else '')
                          + '. Keep Original and restore the intended ownership before returning.')
 
-    def numeric(value):
-        return type(value) in (int, float) and math.isfinite(value)
-
-    def valid(entry):
-        if not isinstance(entry, dict) or set(entry) != _REST_FIELDS:
-            return False
-        matrix = entry['matrix']
-        return (numeric(entry['length']) and entry['length'] >= 0
-                and (entry['parent'] is None or isinstance(entry['parent'], str))
-                and isinstance(entry['inherit_scale'], str) and bool(entry['inherit_scale'])
-                and all(type(entry[key]) is bool for key in ('connected', 'inherit_rotation', 'local_location'))
-                and isinstance(matrix, (list, tuple)) and len(matrix) == 4
-                and all(isinstance(row, (list, tuple)) and len(row) == 4
-                        and all(numeric(value) for value in row) for row in matrix))
-
     for name, previous in old.items():
         now = current[name]
-        if not valid(previous):
+        if plan is None and not _valid_rest_entry(previous):
             raise ValueError(f'Original Rest record is invalid or non-finite at {name}; keep Original and inspect that bone.')
         # Native RNA supplies the current field types. Equal records already
         # prove its finite coordinates against the validated saved values;
@@ -92,7 +144,7 @@ def _validate_session_rest(rig, saved=None, current=None):
         # supplied records retain their complete schema and finite checks.
         if live_record and previous == now:
             continue
-        if not valid(now):
+        if not _valid_rest_entry(now):
             raise ValueError(f'Original Rest record is invalid or non-finite at {name}; keep Original and inspect that bone.')
         relations = [key for key in _REST_RELATIONS if previous[key] != now[key]]
         length_error = abs(previous['length'] - now['length'])
@@ -386,7 +438,7 @@ def _require(context, rig):
     if rig.override_library or rig.name not in context.view_layer.objects:
         raise ValueError('Choose a local character rig in this view layer.')
     if context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
-        raise ValueError('Finish Edit Weights before choosing Controls in Bone Display.')
+        raise ValueError('Legacy weight workspace recovery is pending; reopen the file in its original view layer before continuing.')
     if active(rig):
         saved = json.loads(rig[SESSION])
         display._check_object_restore(rig, saved['display'])

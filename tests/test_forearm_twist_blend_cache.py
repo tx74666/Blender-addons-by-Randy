@@ -43,11 +43,14 @@ def namespace():
     path = (Path(__file__).resolve().parents[1]
             / "addons/character_designer/forearm_twist_math.py")
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    names = {"TwistMathError", "_finite", "_weights", "blended_matrix"}
+    names = {"TwistMathError", "_finite", "_finite_matrix", "_weights", "blended_matrix"}
     subset = ast.Module(body=[node for node in tree.body
                              if isinstance(node, (ast.FunctionDef, ast.ClassDef))
                              and node.name in names], type_ignores=[])
-    result = {"math": math, "Matrix": MatrixStub}
+    # Stub rows use ordinary lists; native Vector batch checks have separate
+    # factory-Blender coverage, including every non-finite component.
+    result = {"math": math, "Matrix": MatrixStub,
+              "Vector": type("UnavailableNativeVector", (), {})}
     exec(compile(subset, str(path), "exec"), result)
     return result
 
@@ -67,8 +70,8 @@ class BlendCacheTests(unittest.TestCase):
 
     def test_repeated_blend_retains_checks_but_constructs_once(self):
         checked = Mock(wraps=self.check)
-        finite = Mock(wraps=self.scope["_finite"])
-        self.scope["_weights"], self.scope["_finite"] = checked, finite
+        finite = Mock(wraps=self.scope["_finite_matrix"])
+        self.scope["_weights"], self.scope["_finite_matrix"] = checked, finite
         cache = {}
         for _ in range(6):
             self.blend(self.transforms, {"lower": 0.4, "hand": 0.6},
@@ -111,6 +114,15 @@ class BlendCacheTests(unittest.TestCase):
             with self.assertRaises(self.scope["TwistMathError"]):
                 self.blend(self.transforms, weights, _blend_cache=cache)
         self.assertEqual(len(cache), 1)
+
+    def test_injected_nonfinite_cached_matrix_is_still_rejected(self):
+        weights, cache = {"lower": 0.4, "hand": 0.6}, {}
+        self.blend(self.transforms, weights, _blend_cache=cache)
+        cached = next(iter(cache.values()))
+        for value in (math.nan, math.inf, -math.inf):
+            cached[3][3] = value
+            with self.assertRaisesRegex(self.scope["TwistMathError"], "Blended deformation"):
+                self.blend(self.transforms, weights, _blend_cache=cache)
 
     def test_nonfinite_blend_rejected_without_caching_and_weight_error_wins(self):
         transforms = {"lower": tuple(tuple(math.inf if row == column == 0 else value

@@ -150,8 +150,8 @@ class UnifiedWorkflowTests(unittest.TestCase):
              patch.object(c, 'generation_ready', side_effect=AssertionError('Legacy first-build gate')):
             layout = Layout(); actions.draw_actions(layout, bpy.context)
             self.assertEqual([text for _, text in layout.buttons],
-                ['Update', 'Edit Weights', 'Remove Generated Controls', 'Release Controls',
-                 'Move Character', 'Ground Character'])
+                ['Update', 'Remove Generated Controls', 'Rebuild Controls',
+                 'Show Body Controls', 'Move to Floor'])
             for action, function in (('GENERATE', 'generate'), ('REMOVE', 'remove')):
                 with patch.object(actions._service(), function, return_value={}) as call:
                     operator = SimpleNamespace(action=action, report=lambda *args: None)

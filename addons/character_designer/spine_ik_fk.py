@@ -12,7 +12,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import generated_names, torso_controls as torso
+from . import generated_names, torso_controls as torso, validation_json, validation_native
 from .eye_controls import _controller_snapshot
 
 OWNER_KEY = 'character_designer_owner'
@@ -54,7 +54,7 @@ def get_record(armature):
     if raw is None:
         return None
     try:
-        record = json.loads(raw)
+        record = validation_json.decode(raw)
         count = len(record['sources'])
         roles = {'CHEST', 'SHAPE', *(f'IK_{i}' for i in range(count))}
         if (record['version'] != VERSION or count not in {3, 4} or len(set(record['sources'])) != count
@@ -179,7 +179,7 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
     if original_mutes is None:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
-    actual = {bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE}
+    actual = {bone.name for bone in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)}
     if record is None:
         if actual:
             raise _error('Spine IK/FK bones have lost their recovery data.')

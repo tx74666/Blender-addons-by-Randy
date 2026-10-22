@@ -27,7 +27,7 @@ def _require(context, rig):
     if rig.name not in context.view_layer.objects:
         raise ValueError('The character must be in this view layer.')
     if context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
-        raise ValueError('Finish Edit Weights before saving a Pose.')
+        raise ValueError('Legacy weight workspace recovery is pending; reopen the file in its original view layer before continuing.')
     preview = forearm_twist._SESSION
     if preview is not None and preview.get('armature') == rig:
         raise ValueError('Confirm or cancel the Forearm preview before saving a Pose.')

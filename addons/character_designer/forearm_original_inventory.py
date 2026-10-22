@@ -6,6 +6,7 @@ ordinary inventory callers retain their strict live constraint checks.
 """
 import json
 from functools import lru_cache
+from . import validation_json, validation_native
 
 
 @lru_cache(maxsize=1)
@@ -47,6 +48,8 @@ class _MuteView:
             raise ValueError('Original contains an unrecognized source constraint; its ownership cannot be verified.')
 
 
+@validation_json.read_scope()
+@validation_native.read_scope()
 def validate(armature, *, original_rest=None):
     from . import body_original_mode as original, limb_ik
     if not original.active(armature):
@@ -57,7 +60,10 @@ def validate(armature, *, original_rest=None):
     try:
         names, entries, saved = _session_entries(raw)
         if original_rest is None:
-            native = original._validate_session_rest(armature, saved)
+            # Re-read the current exact session text through the raw-only
+            # immutable schema plan. A cached mutable decoded dictionary is
+            # never used as evidence that today's saved Rest is valid.
+            native = original._validate_session_rest(armature)
         else:
             original_rest.validate(armature, saved)
             native = saved['rest']

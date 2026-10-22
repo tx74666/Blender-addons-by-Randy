@@ -12,7 +12,7 @@ from mathutils import Vector
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'addons'), str(ROOT / 'tests')]
 import character_designer
-from character_designer import control_pose_assets as poses, control_weight_paint as weights
+from character_designer import control_pose_assets as poses
 from character_designer import body_setup, limb_ik, limb_ik_fk, bone_display, bone_display_sync
 import test_body_calibration_blender as setup
 
@@ -77,8 +77,6 @@ class Workflows(unittest.TestCase):
 
     def setUp(self):
         bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
-        if weights.active(bpy.context):
-            weights.leave(bpy.context)
         self.rig, self.mesh = setup.fixture()
         setup.prepare(self.rig)
 
@@ -250,62 +248,9 @@ class Workflows(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'driver controls'):
             poses.apply_channels(bpy.context,self.rig,{'hand.L':{'bbone_curveinx':{0:.03}}})
 
-    def _weight_setup(self):
-        body_setup.generate(bpy.context, self.rig)
-        bpy.context.scene.character_designer_setup.body = self.mesh
-        bpy.context.scene.character_designer_setup.rig = self.rig
-        bpy.ops.object.mode_set(mode='POSE')
-        entry = limb_ik._validate_inventory(self.rig)['rigs'][('ARM', 'L')]
-        target = self.rig.pose.bones[entry['target'].name]
-        target.location += Vector((.0, -.03, .02))
-        for pb in self.rig.pose.bones:
-            pb.select = pb == target
-        self.rig.data.bones.active = target.bone
-        update(self.rig)
-        return target
 
-    def test_weight_workspace_preserves_pose_binding_and_new_weights(self):
-        target = self._weight_setup()
-        before, display = matrices(self.rig), bone_display._snapshot(self.rig)
-        structure = poses.native_rest(self.rig)
-        controls = [(pb.name, [(c.name, c.type, c.mute, c.influence) for c in pb.constraints]) for pb in self.rig.pose.bones]
-        weights.enter(bpy.context)
-        self.assertEqual(bpy.context.mode, 'PAINT_WEIGHT')
-        self.assertEqual(bpy.context.object, self.mesh)
-        self.assertEqual(self.rig.data.bones.active.name, 'hand.L')
-        self.assertTrue(all(pb.hide for pb in self.rig.pose.bones if pb.bone.get(limb_ik.OWNER_KEY) in limb_ik.GENERATED_CONTROL_OWNERS))
-        bone_display_sync.sync_pending()
-        self.assertFalse(self.rig.pose.bones['hand.L'].hide)
-        self.assertPose(before)
-        self.mesh.vertex_groups['hand.L'].add([2], .37, 'REPLACE')
-        weights.leave(bpy.context)
-        self.assertEqual(bpy.context.mode, 'POSE')
-        self.assertEqual(self.rig.data.bones.active.name, target.name)
-        self.assertEqual(display, bone_display._snapshot(self.rig))
-        self.assertAlmostEqual(self.mesh.vertex_groups['hand.L'].weight(2), .37, places=6)
-        self.assertEqual(structure, poses.native_rest(self.rig))
-        self.assertEqual(controls, [(pb.name, [(c.name,c.type,c.mute,c.influence) for c in pb.constraints]) for pb in self.rig.pose.bones])
-        self.assertPose(before)
 
-    def test_weight_enter_failure_restores_workspace(self):
-        self._weight_setup()
-        display = bone_display._snapshot(self.rig)
-        with patch.object(weights.paint, '_enter_pose_mode', side_effect=ValueError('injected mode failure')):
-            with self.assertRaisesRegex(ValueError, 'injected'):
-                weights.enter(bpy.context)
-        self.assertFalse(weights.active(bpy.context))
-        self.assertEqual(display, bone_display._snapshot(self.rig))
-        self.assertEqual(bpy.context.mode, 'POSE')
 
-    def test_weight_unmapped_control_and_object_mode(self):
-        self._weight_setup()
-        bpy.ops.object.mode_set(mode='OBJECT')
-        self.rig.data.bones.active = None
-        weights.enter(bpy.context)
-        self.assertEqual(bpy.context.mode, 'PAINT_WEIGHT')
-        self.assertIsNone(self.rig.data.bones.active)
-        weights.leave(bpy.context)
-        self.assertEqual(bpy.context.mode, 'OBJECT')
 
 
 if __name__ == '__main__':

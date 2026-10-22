@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 79),
+    "version": (0, 77, 85),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -8885,7 +8885,7 @@ def _validate_registration_integrity():
 
 
 def register():
-    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint, generated_names
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names
     centerline_registered = hasattr(bpy.types.WindowManager, "character_designer")
     delta_registered = hasattr(
         bpy.types.WindowManager,
@@ -8952,7 +8952,7 @@ def register():
         body_calibration_ui.register()
         control_pose_assets.register()
         control_pose_capture.register()
-        control_weight_paint.register()
+        legacy_weights.register()
         register_limb_ik_viewport_handler()
         register_bone_collection_handlers()
         register_bone_display_sync()
@@ -9063,7 +9063,7 @@ def register():
         body_calibration_ui.register()
         control_pose_assets.register()
         control_pose_capture.register()
-        control_weight_paint.register()
+        legacy_weights.register()
         register_limb_ik_viewport_handler()
         register_bone_collection_handlers()
         register_bone_display_sync()
@@ -9093,7 +9093,7 @@ def register():
         unregister_forearm_twist_runtime()
         control_pose_capture.unregister()
         control_pose_assets.unregister()
-        control_weight_paint.unregister()
+        legacy_weights.unregister()
         body_calibration_ui.unregister()
         unregister_limb_ik_viewport_handler()
         unregister_bone_collection_handlers()
@@ -9127,7 +9127,7 @@ def register():
 
 
 def unregister():
-    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint, generated_names
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names
     unity_update_selection_ui.unregister_properties()
     custom_vertex_parts.unregister_properties()
     custom_vertex_groups.unregister_properties()
@@ -9137,7 +9137,7 @@ def unregister():
     generated_names.unregister_handlers()
     control_pose_capture.unregister()
     control_pose_assets.unregister()
-    control_weight_paint.unregister()
+    legacy_weights.unregister()
     body_calibration_ui.unregister()
     stop_export_ui()
     stop_worklist_ui()

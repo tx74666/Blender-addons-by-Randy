@@ -4,6 +4,14 @@
 
 RR Helper 和 Character Designer 的源码、安装包及插件测试集中维护在这里。
 
+Character Designer 0.77.82 removes the Edit Weights shortcut and its dedicated
+workspace. Use Original and native Weight Paint directly.
+[Removal and compatibility](docs/releases/CharacterDesigner_0.77.82_remove_weight_workspace_20261020.md).
+
+Character Designer 0.77.81 reduces repeated work in bone influence inspection
+and control display. Validation and limitations are recorded in the
+[release note](docs/releases/CharacterDesigner_0.77.81_inspection_display_20261020.md).
+
 RR Helper 0.2.55 keeps ordinary Standard assets at their original Unity package
 path when Blender objects are renamed. Persistent ownership separates proven
 copies automatically and supports **Diagnose / Relink > Keep This Object's
@@ -54,7 +62,12 @@ Old cached three-control Ring Mask nodes are no longer selected by shortcuts.
 | 插件 | 当前版本 | 源码 | Blender 安装包 |
 | --- | --- | --- | --- |
 | RR Helper | 0.2.63 | [random_realm_builder_exporter](addons/random_realm_builder_exporter) | [rr_helper-0.2.63.zip](dist/rr_helper-0.2.63.zip) |
-| Character Designer | 0.77.79 | [character_designer](addons/character_designer) | [character_designer-0.77.79.zip](dist/character_designer-0.77.79.zip) |
+| Character Designer | 0.77.80 | [character_designer](addons/character_designer) | [character_designer-0.77.80.zip](dist/character_designer-0.77.80.zip) |
+
+Character Designer 0.77.80 fixes **Custom Vertex** and **Parts** Shift/Ctrl clicks
+in the blank space after a name. Row controls are flat, with left-aligned names,
+native active-row highlighting and a small check beside every selected row.
+[Release and validation](docs/releases/CharacterDesigner_0.77.80_full_row_hits_20261020.md).
 
 Character Designer 0.77.79 makes **Clear Bone Influences** show Keep/Clear counts
 and the bones about to be cleared. Rejected repairs report a short failure

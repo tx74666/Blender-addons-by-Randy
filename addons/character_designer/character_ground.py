@@ -1,5 +1,6 @@
 """World-space character placement without editing its skeleton or hierarchy."""
 import math
+import struct
 from array import array
 
 import bpy
@@ -24,6 +25,19 @@ _HIDDEN_LOCAL_MODIFIERS = frozenset({
     'ARMATURE', 'SUBSURF', 'MULTIRES', 'MIRROR', 'TRIANGULATE',
     'SOLIDIFY', 'BEVEL', 'WELD', 'EDGE_SPLIT', 'WEIGHTED_NORMAL',
 })
+
+_GROUND_PRECISION = 1e-6
+_GROUND_NEIGHBOR_STEPS = 8
+
+
+class _ShapeChangeError(ValueError):
+    def __init__(self, mesh, message):
+        super().__init__(message)
+        self.mesh = mesh
+
+
+class _FloorPrecisionError(ValueError):
+    pass
 
 
 def _mesh_numerical_limit(points):
@@ -350,7 +364,7 @@ def _verify(context, state, distance):
             error = abs(new - expected)
             max_error = max(max_error, error)
             if error > tolerance:
-                raise ValueError(f'{obj.name} changed its shape during character placement '
+                raise _ShapeChangeError(obj, f'{obj.name} changed its shape during character placement '
                                  f'(vertex {index // 3}, axis {"XYZ"[index % 3]}, '
                                  f'difference {new - expected:.9g}, native limit {tolerance:.9g}).')
         mesh_proof[obj.name] = {'bbox_diagonal': diagonal, 'tolerance': tolerance,
@@ -366,7 +380,8 @@ def _verify(context, state, distance):
     return lowest
 
 
-def _translate(context, state, distance, *, floor_state=None, offset_state=None):
+def _translate(context, state, distance, *, floor_state=None, offset_state=None,
+               stable_floor=False):
     if not math.isfinite(distance):
         raise ValueError('Enter a finite vertical distance.')
     delta = Vector((0., 0., distance))
@@ -398,6 +413,15 @@ def _translate(context, state, distance, *, floor_state=None, offset_state=None)
                 from . import floor_widgets
                 floor_widgets.apply(context, floor_state)
             lowest = _verify(context, verified, distance)
+            if stable_floor:
+                # A nearby representable floor position must survive another
+                # complete native graph rebuild against the original inputs.
+                if abs(lowest) > _GROUND_PRECISION:
+                    raise _FloorPrecisionError('The character bottom exceeds the stable floor precision.')
+                _tag_scope(state['objects'])
+                lowest = _verify(context, verified, distance)
+                if abs(lowest) > _GROUND_PRECISION:
+                    raise _FloorPrecisionError('The rebuilt character bottom exceeds the stable floor precision.')
             if floor_state is not None:
                 floor_proof = floor_widgets.verify(context, floor_state)
             offset_proof = placement_offsets.verify(context, offset_state) if offset_state is not None else None
@@ -452,13 +476,99 @@ def move(context, rig, distance):
     return _translate(context, _prepare(context, rig), distance)
 
 
+def _spline_shape_dependency(state, mesh):
+    """Only a registered dress skin with an active owned Spline IK chain."""
+    from . import skirt_rig
+    record = skirt_rig.read_record(mesh)
+    if record is None:
+        return False
+    rig = mesh.get(skirt_rig.RIG_KEY)
+    modifier = mesh.modifiers.get(record['modifier'])
+    if (rig not in state['rigs'] or modifier is None or modifier.type != 'ARMATURE'
+            or not modifier.show_viewport or modifier.object != rig):
+        return False
+    for chain in record['chains']:
+        curve = bpy.data.objects.get(chain['curve'])
+        indices = {mesh.vertex_groups[name].index for name in chain['def'] if name in mesh.vertex_groups}
+        if (curve not in state['objects'] or not indices
+                or not any(group.group in indices and group.weight > 0.
+                           for vertex in mesh.data.vertices for group in vertex.groups)):
+            continue
+        if any(con.type == 'SPLINE_IK' and not con.mute and con.influence > 0.
+               and con.target == curve
+               for name in chain['manual'] for con in rig.pose.bones[name].constraints):
+            return True
+    return False
+
+
+def _nearby_floor_distances(state, distance):
+    """Nearest float32 root-Z alternatives within a tighter floor precision.
+
+    Native Hook/Spline IK world-matrix cancellation can amplify one float ULP.
+    Only one unparented root with a world-vertical location input is supported;
+    all other hierarchies retain the ordinary placement refusal. Every yielded
+    alternative still needs every original shape/Rest/pose/world check.
+    """
+    if len(state['roots']) != 1:
+        return
+    root = state['roots'][0]
+    if root.parent is not None:
+        return
+    delta = root.matrix_basis.to_3x3() @ state['world'][root].to_3x3().inverted() @ Vector((0., 0., distance))
+    if abs(delta.x) > 1e-10 or abs(delta.y) > 1e-10 or not distance:
+        return
+    target = (Vector(state['channels'][root]['channels']['location']) + delta).z
+    if not math.isfinite(target):
+        return
+    # Ordered float keys handle negative numbers and both signed zeros.
+    bits = struct.unpack('!I', struct.pack('!f', target))[0]
+    key = (~bits & 0xffffffff) if bits & 0x80000000 else bits | 0x80000000
+    seen = {target}
+    for step in range(1, _GROUND_NEIGHBOR_STEPS + 1):
+        for signed_step in (step, -step):
+            neighbor_key = key + signed_step
+            if not 0 <= neighbor_key <= 0xffffffff:
+                continue
+            word = (neighbor_key & 0x7fffffff) if neighbor_key & 0x80000000 else (~neighbor_key & 0xffffffff)
+            neighbor = struct.unpack('!f', struct.pack('!I', word))[0]
+            adjustment = neighbor - target
+            if not math.isfinite(neighbor) or neighbor in seen or abs(adjustment) > _GROUND_PRECISION:
+                continue
+            seen.add(neighbor)
+            yield distance + adjustment, signed_step, adjustment
+
+
 def ground(context, rig):
     """Place the character and its sole/Master outlines on world Z=0."""
     from . import floor_widgets, placement_offsets
     state = _prepare(context, rig)
     offset_state = placement_offsets.prepare(context, state['objects'], state['roots'])
     floor_state = floor_widgets.prepare(context, rig, align_planes=True)
-    return _translate(context, state, -state['lowest'], floor_state=floor_state, offset_state=offset_state)
+    # An already grounded model must not oscillate between adjacent float32
+    # positions on repeated clicks. This is tighter than the display/mesh bounds.
+    distance = 0. if abs(state['lowest']) <= _GROUND_PRECISION else -state['lowest']
+    try:
+        return _translate(context, state, distance, floor_state=floor_state, offset_state=offset_state)
+    except _ShapeChangeError as original:
+        if not _spline_shape_dependency(state, original.mesh):
+            raise
+        for candidate, steps, adjustment in _nearby_floor_distances(state, distance):
+            # Never replace the baseline after a failed attempt. First prove
+            # the transaction's restored native outputs against that baseline.
+            _verify(context, state, 0.)
+            try:
+                result = _translate(context, state, candidate, floor_state=floor_state,
+                                    offset_state=offset_state, stable_floor=True)
+            except (_ShapeChangeError, _FloorPrecisionError):
+                continue
+            result['stable_floor'] = {'requested_distance': distance,
+                'adjustment': adjustment, 'planned_root_z_steps': steps,
+                'accepted_root_z': float(state['roots'][0].location.z),
+                'floor_precision': _GROUND_PRECISION,
+                'original_shape_limits_retained': True}
+            return result
+        _verify(context, state, 0.)
+        raise original
 
 
 class CharacterDesignerGroundState(PropertyGroup):

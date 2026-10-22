@@ -230,7 +230,7 @@ def preflight(context, source, armature=None, parent_bone=''):
                    for obj in (armature, old, source))):
         raise skirt.SkirtRigError('Use local, unshared character and skirt data for this migration.')
     if context.mode not in {'OBJECT', 'POSE'} or any(obj.mode == 'EDIT' for obj in (source, old, armature)):
-        raise skirt.SkirtRigError('Finish Edit Mode or Edit Weights before moving Dress bones.')
+        raise skirt.SkirtRigError('Finish Edit Mode or Weight Paint before moving Dress bones.')
     if any(context.view_layer.objects.get(obj.name) != obj for obj in (source, old, armature)):
         raise skirt.SkirtRigError('Include the Dress and both rigs in this view layer before migration.')
     if old.constraints or record.get('physics'):

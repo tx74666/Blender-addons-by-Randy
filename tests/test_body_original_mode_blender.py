@@ -620,8 +620,8 @@ class OriginalTests(unittest.TestCase):
             self.assertPose(before)
             limb_ik._validate_inventory(rig)
 
-    def test_mixed_modes_keep_hand_pose_and_actual_weight_workspace(self):
-        from character_designer import control_weight_paint as weights
+    def test_mixed_modes_keep_hand_pose_with_native_weight_paint(self):
+        from character_designer import selected_bone_weights as paint
         rig = self.rig
         limb_ik_fk.switch_limb(bpy.context, rig, ('ARM', 'R'), 'FK', keyframe=False)
         modes = {pb.name: pb.get('ik_fk') for pb in rig.pose.bones if 'ik_fk' in pb}
@@ -630,12 +630,15 @@ class OriginalTests(unittest.TestCase):
         rig.pose.bones['hand.L'].rotation_euler.y += .03
         wanted = matrices(rig)
         rig.data.bones.active = rig.data.bones['hand.L']
-        weights.enter(bpy.context)
+        paint._enter_weight_paint(bpy.context, self.mesh, rig, ('hand.L',))
         self.assertEqual(bpy.context.mode, 'PAINT_WEIGHT')
         self.mesh.vertex_groups['hand.L'].add([2], .31, 'REPLACE')
-        with self.assertRaisesRegex(ValueError, 'weight session|Edit Weights'):
+        with self.assertRaisesRegex(ValueError, 'weight session'):
             original.leave(bpy.context, rig)
-        weights.leave(bpy.context)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        self.mesh.select_set(False)
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
         self.assertTrue(original.active(rig))
         original.leave(bpy.context, rig)
         self.assertPose(wanted)

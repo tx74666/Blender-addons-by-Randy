@@ -49,7 +49,7 @@ def _structural_edit_guard(armature):
     if 'character_designer_body_original_mode_v1' in armature:
         raise ValueError('Choose Controls in Bone Display before changing Bone Collections or rebuilding controls.')
     if bpy.context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:
-        raise ValueError('Use Back to Controls before changing Bone Collections or rebuilding controls.')
+        raise ValueError('Legacy weight workspace recovery is pending; reopen the file in its original view layer before continuing.')
     if VIEW_KEY in armature.data:
         raise ValueError("Restore the temporary bone display view before changing Bone Collections or rebuilding controls.")
 

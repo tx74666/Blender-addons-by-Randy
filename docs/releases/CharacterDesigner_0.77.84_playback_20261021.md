@@ -1,0 +1,11 @@
+# Character Designer 0.77.84 — X playback
+
+Reduces repeated native owner/constraint discovery within one synchronous read-only validation, shares immutable Basis bytes within the existing read scope, narrows the mirror token to actual chain dependencies, and reuses the unchanged side's accepted correction only after exact current input/output validation. Current native structure, Rest, driver, mute, key lifetime, weight order and atomic refusal checks remain.
+
+On the same latest X capture, 20 warm-up / 60 measured native Hand Action frames: mean106.8684→88.4036ms, median105.7556→86.1006ms; idle native frame mean37.1078→29.5306ms, median32.0026→28.9992ms. Ordered shared-host tests; not guaranteed GUI gains. Current MATERIAL GUI sample 17.9671→17.3665 observed frame changes/s, evaluation median33.9304→33.4893ms, mean35.6910→36.7627ms: no GUI speedup established, and one sample cannot establish a reproducible regression or performance equivalence.
+
+42 scoped/cache/range pure tests, 35 side-reuse native cases, 9 cache native regressions, 4 local-validation native regressions, full authored/output equivalence, 182 Python syntax checks and independent reviews passed. Trusted scripts used --enable-autoexec with isolated CONFIG. Actual AI model/reasoning effort unrecorded.
+
+Frozen accepted .83 plus ten reviewed implementation files, then only version/README changes:214 files. Official ZIP SHA256 `ffc661c98f313258a1fdb7d0247c1db7e0284280f2638b3ff7c0e3ae6ca10bf8`; built/deployed/checked for active Blender5.2 and X. Current artist runtime .84 updated through guarded definitions, no full reload; GUI15-component protection passed. Native artist dirty content, weights/Keys/Rest/Actions preserved; no scene/preference save. Owned background processes and passive SDK/profiler services normally closed. Local changes only; no commit/push/release publication.
+
+Evidence and retained fixture/tool failures: [X round2 report](D:/Blender/Projects/Character/X/validation/performance_round2_20261021/README.md), [acceptance](D:/Blender/Projects/Character/X/validation/performance_round2_20261021/acceptance_summary.json). Further work should target a new reproducible symptom or a stated stable-FPS goal; no immediate low-risk high-return item remains proven for this round.

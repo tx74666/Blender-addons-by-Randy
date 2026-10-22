@@ -723,10 +723,25 @@ def _component_info(mesh, bone, component, segment):
     )
 
 
-def _bone_islands(mesh, bone, segment):
+def _positive_weight_indices(mesh, deform):
+    """Index actual bone uses once for a validated, immutable mesh snapshot."""
+    result = {}
+    if not deform:
+        return result
+    for index, weights in enumerate(mesh.weights):
+        for bone, weight in weights.items():
+            if bone in deform and weight > 0.0:
+                result.setdefault(bone, []).append(index)
+    return {bone: tuple(indices) for bone, indices in result.items()}
+
+
+def _bone_islands(mesh, bone, segment, *, positive_indices=None):
     # A tiny positive contribution is still a membership island.  The epsilon
     # used to decide whether a vertex is effectively unbound is separate.
-    remaining = {index for index, weights in enumerate(mesh.weights) if weights.get(bone, 0.0) > 0.0}
+    remaining = (
+        {index for index, weights in enumerate(mesh.weights) if weights.get(bone, 0.0) > 0.0}
+        if positive_indices is None else set(positive_indices)
+    )
     result = []
     for first in sorted(remaining):
         if first not in remaining:
@@ -939,16 +954,23 @@ def inspect_islands(
         deform = _per_mesh_names(deform_names, meshes, "Deform groups")
         if not isinstance(bone_segments, Mapping):
             raise _Invalid("Bone segments must map bone names to world-space head/tail segments.")
+        positive = {
+            name: _positive_weight_indices(by_name[name], deform[name])
+            for name in sorted(target_names)
+        }
         target_uses = {}
         for name in sorted(target_names):
-            mesh = by_name[name]
-            uses = {}
-            for index, weights in enumerate(mesh.weights):
-                for bone, weight in weights.items():
-                    if bone in deform[name] and weight > 0.0:
-                        uses.setdefault(bone, []).append(index)
-            for bone, indices in uses.items():
-                target_uses.setdefault(bone, {})[name] = tuple(indices)
+            for bone, indices in positive[name].items():
+                target_uses.setdefault(bone, {})[name] = indices
+        # A few target bones can cost less to scan than to index every
+        # reference membership. Keep the original scan path for small targets.
+        use_index = len(target_uses) > 4
+        if use_index:
+            for mesh in meshes:
+                if mesh.name not in positive:
+                    positive[mesh.name] = _positive_weight_indices(
+                        mesh, deform[mesh.name].intersection(target_uses),
+                    )
         records = []
         warnings = []
         island_count = 0
@@ -957,7 +979,10 @@ def inspect_islands(
                 (mesh.name, count)
                 for mesh in sorted(meshes, key=lambda item: item.name)
                 if bone in deform[mesh.name]
-                for count in (sum(weights.get(bone, 0.0) > 0.0 for weights in mesh.weights),)
+                for count in (
+                    len(positive[mesh.name].get(bone, ())) if use_index else
+                    sum(weights.get(bone, 0.0) > 0.0 for weights in mesh.weights),
+                )
                 if count
             )
             try:
@@ -974,7 +999,11 @@ def inspect_islands(
                 reference = {}
                 for mesh in meshes:
                     if bone in deform[mesh.name] and (scope == "CHARACTER" or mesh.name in uses):
-                        reference[mesh.name] = _bone_islands(mesh, bone, segment)
+                        reference[mesh.name] = (
+                            _bone_islands(mesh, bone, segment,
+                                          positive_indices=positive[mesh.name].get(bone, ()))
+                            if use_index else _bone_islands(mesh, bone, segment)
+                        )
                 island_count += sum(map(len, reference.values()))
             except (TypeError, ValueError, OverflowError) as exc:
                 for name, indices in sorted(uses.items()):

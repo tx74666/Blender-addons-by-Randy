@@ -8,7 +8,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import generated_names
+from . import generated_names, validation_json, validation_native
 
 from .torso_controls import _active, _same_rest, _same_value, _state, _update
 
@@ -45,7 +45,7 @@ def get_record(armature):
     if raw is None:
         return None
     try:
-        record = json.loads(raw)
+        record = validation_json.decode(raw)
         if (record['version'] != VERSION or record['master'] != ROOT_NAME
                 or record['bones'] != {'MASTER': ROOT_NAME}
                 or len(record['controls']) != len(set(record['controls']))
@@ -139,7 +139,7 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
     if original_mutes is None:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
-    actual = {b.name for b in armature.data.bones if b.get(OWNER_KEY) == OWNER_VALUE}
+    actual = {b.name for b in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)}
     if record is None:
         if actual:
             raise _error('Root Control has lost its recovery data.')

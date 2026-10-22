@@ -95,8 +95,6 @@ def draw_actions(layout, context, *, ready=None):
                         text='Update' if exists else 'Generate',
                         icon='ARMATURE_DATA').action = 'GENERATE'
         if not exists: return
-        from . import control_weight_paint
-        control_weight_paint.draw(layout, context)
         row = layout.row()
         row.alert = True
         row.enabled = exists

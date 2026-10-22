@@ -502,10 +502,16 @@ class MeshSelectionRowsTests(_RowsFixture, unittest.TestCase):
                     recorder = _LayoutRecorder()
                     list_class.draw_item(ui_list, bpy.context, recorder, bpy.context.window_manager,
                                          row, 0, bpy.context.window_manager, case.module.VIEW_INDEX_PROPERTY, 0)
-                    pick = next(op for op in recorder.operators if op.identifier == case.pick_id)
-                    self.assertEqual(pick.arguments.get('depress'), bool(row.selected))
-                    self.assertEqual(recorder.emboss, 'PULLDOWN_MENU')
-                    self.assertNotIn('emboss', pick.arguments)
+                    picks = [op for op in recorder.operators if op.identifier == case.pick_id]
+                    pick = next(op for op in picks if op.arguments.get('text'))
+                    self.assertEqual(len(picks), 3)  # Name, whitespace and selected-row mark.
+                    for hit in picks:
+                        self.assertFalse(hit.arguments.get('emboss', True))
+                        self.assertNotIn('depress', hit.arguments)
+                        self.assertEqual(getattr(hit, case.name_property), name)
+                        self.assertEqual(json.loads(hit.visible_names), self.native_names(case.module))
+                    self.assertEqual(picks[-1].arguments.get('icon'),
+                                     'CHECKMARK' if row.selected else 'BLANK1')
                     self.assertEqual(pick.arguments.get('icon'),
                                      'GROUP_VERTEX' if case.module is GROUPS else 'RESTRICT_SELECT_OFF')
                     self.assertEqual(pick.arguments.get('text'), getattr(row, case.module.LABEL_PROPERTY))

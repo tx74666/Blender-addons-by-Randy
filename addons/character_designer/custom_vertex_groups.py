@@ -527,16 +527,9 @@ class CHARACTERDESIGNER_UL_custom_vertex_groups(UIList):
         except (ValueError, ReferenceError):
             layout.label(text='')
             return
-        layout.alignment = 'EXPAND'
-        # A single expandable slot keeps the name left aligned and the lock at the edge.
-        name_area = layout.split(factor=1.0, align=True)
-        pick = name_area.row(align=True)
-        pick.alignment = 'LEFT'
-        pick.emboss = 'PULLDOWN_MENU'
-        op = pick.operator('character_designer.custom_vertex_group_pick', text=_get_label(attribute),
-                           icon='GROUP_VERTEX', depress=item.selected)
-        op.group_name = attribute.name
-        op.visible_names = row_selection.visible_names(self, context, data, VIEW_PROPERTY)
+        row_selection.draw_row_pick(layout, 'character_designer.custom_vertex_group_pick',
+            'group_name', attribute.name, _get_label(attribute), 'GROUP_VERTEX', item.selected,
+            row_selection.visible_names(self, context, data, VIEW_PROPERTY))
         try:
             locked = is_locked(attribute)
         except ValueError:

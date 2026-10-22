@@ -546,16 +546,9 @@ class CHARACTERDESIGNER_UL_vertex_parts(UIList):
         except (ValueError, ReferenceError):
             layout.label(text='')
             return
-        layout.alignment = 'EXPAND'
-        # A single expandable slot keeps names left aligned without crowding the actions.
-        name_area = layout.split(factor=1.0, align=True)
-        pick = name_area.row(align=True)
-        pick.alignment = 'LEFT'
-        pick.emboss = 'PULLDOWN_MENU'
-        op = pick.operator('character_designer.vertex_part_pick', text=_get_label(attribute),
-                           icon='RESTRICT_SELECT_OFF', depress=item.selected)
-        op.part_name = attribute.name
-        op.visible_names = selection_rows.visible_names(self, context, data, VIEW_PROPERTY)
+        selection_rows.draw_row_pick(layout, 'character_designer.vertex_part_pick',
+            'part_name', attribute.name, _get_label(attribute), 'RESTRICT_SELECT_OFF', item.selected,
+            selection_rows.visible_names(self, context, data, VIEW_PROPERTY))
         try:
             locked = is_locked(attribute)
         except ValueError:

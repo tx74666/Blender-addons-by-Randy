@@ -71,7 +71,6 @@ class RigFixUITests(unittest.TestCase):
         package.character_ground = self.ground
         package.foot_controls_rebuild = self.rebuild
         package.body_region_ui = SimpleNamespace(draw=Mock())
-        package.control_weight_paint = SimpleNamespace(draw=Mock())
 
     def load(self, name):
         spec = importlib.util.spec_from_file_location(

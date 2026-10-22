@@ -520,13 +520,9 @@ class CHARACTERDESIGNER_PT_bone_display(Panel):
                     visible = _controls_visible(members) and mode is None
                 row.operator('character_designer.bone_display', text=label,
                     depress=visible).action = role
-            if original:
-                from . import control_weight_paint
-                layout.operator('character_designer.control_weights',
-                                text='Back to Original' if control_weight_paint.active(context) else 'Edit Weights')
-            elif mode:
+            if not original and mode:
                 layout.operator('character_designer.bone_display', text='Restore Display').action = 'RESTORE'
-            elif main == context.object and main.mode != 'EDIT':
+            elif not original and main == context.object and main.mode != 'EDIT':
                 layout.operator('character_designer.simplify_bone_collections', text='Organize Bone Collections')
         except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
             layout.label(text=str(exc), icon='ERROR')

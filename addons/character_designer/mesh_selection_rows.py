@@ -52,6 +52,23 @@ def visible_names(ui_list, context, data, property_name):
     return json.dumps([rows[index].native_name for index in indices])
 
 
+def draw_row_pick(layout, identifier, name_property, name, label, icon, selected, order):
+    """One flat hit area across the name, remaining space and selection mark."""
+    layout.alignment = 'EXPAND'
+    body = layout.split(factor=1.0, align=True).row(align=True)
+    body.alignment = 'EXPAND'
+    title = body.row(align=True)
+    title.alignment = 'LEFT'
+    fill = body.split(factor=1.0, align=True)
+    mark = body.row(align=True)
+    mark.alignment = 'LEFT'
+    for target, text, button_icon in ((title, label, icon), (fill, '', 'NONE'),
+                                      (mark, '', 'CHECKMARK' if selected else 'BLANK1')):
+        op = target.operator(identifier, text=text, icon=button_icon, emboss=False)
+        setattr(op, name_property, name)
+        op.visible_names = order
+
+
 class RowRenameClick:
     """Listen only during this click's double-click interval, without owning input."""
 

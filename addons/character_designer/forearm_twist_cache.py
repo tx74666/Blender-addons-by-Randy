@@ -6,6 +6,7 @@ snapshots retain same-count topology and Basis edits without Python mesh walks.
 """
 from array import array
 from contextlib import contextmanager
+import math
 
 
 _TOPOLOGY = {}
@@ -49,6 +50,63 @@ def _bytes(items, name, width, kind):
     values = array(kind, [0]) * (len(items) * width)
     items.foreach_get(name, values)
     return values.tobytes()
+
+
+def basis_bytes(obj):
+    """Fresh Basis bytes, shared only inside one read-only runtime call.
+
+    The native Key lifetime and the actual reference block identify the source.
+    Neither the mirror proof nor the corrective-key commit writes this Basis.
+    Outside the scope every call reads native data again, including direct edits.
+    """
+    mesh = obj.data
+    keys = mesh.shape_keys
+    basis = keys.reference_key if keys is not None else None
+    coordinates = basis.data if basis is not None else mesh.vertices
+    key = ('basis', _identity(mesh), _identity(keys) if keys is not None else None,
+           basis.as_pointer() if basis is not None else None, len(coordinates))
+    if _READ_SCOPE is not None and key in _READ_SCOPE:
+        return _READ_SCOPE[key]
+    result = _bytes(coordinates, 'co', 3, 'f')
+    if _READ_SCOPE is not None:
+        _READ_SCOPE[key] = result
+    return result
+
+
+def basis_coordinates(obj):
+    """Return a fresh writable array; callers cannot alter the scope's proof."""
+    result = array('f')
+    result.frombytes(basis_bytes(obj))
+    return result
+
+
+def _mirror_chain_token(armature, source, target):
+    """Snapshot every native bone field read by mirror_ring_pairs.
+
+    Unrelated bone endpoints do not enter the symmetry calculation. Malformed
+    chains go through the original calculator so its validation order remains.
+    Full rig validation remains the caller's independent, fresh responsibility.
+    """
+    result = []
+    bones = armature.data.bones
+    for record in (source, target):
+        if not isinstance(record, dict):
+            return None
+        chain = record.get('chain')
+        if (not isinstance(chain, (list, tuple)) or len(chain) != 3
+                or any(not isinstance(name, str) for name in chain)
+                or len(set(chain)) != 3):
+            return None
+        for name in chain:
+            bone = bones.get(name)
+            if bone is None:
+                return None
+            head, tail = tuple(bone.head_local), tuple(bone.tail_local)
+            if not all(math.isfinite(value) for value in head + tail):
+                return None
+            result.append((name, bool(bone.use_deform),
+                           array('f', head).tobytes(), array('f', tail).tobytes()))
+    return tuple(result)
 
 
 def topology_token(mesh):
@@ -95,15 +153,15 @@ def mirror_pairs(obj, armature, source, target, calculate):
     if obj is None or obj.type != 'MESH' or armature is None or armature.type != 'ARMATURE':
         return calculate(obj, armature, source, target)
     mesh = obj.data
-    keys = mesh.shape_keys
-    coordinates = keys.reference_key.data if keys is not None else mesh.vertices
+    chain = _mirror_chain_token(armature, source, target)
+    if chain is None:
+        return calculate(obj, armature, source, target)
     # Correspondence reads only Basis, connectivity, object frames, chain Rest
     # endpoints/deform flags and saved records. Pose and weights are not inputs.
-    signature = (topology_token(mesh), _bytes(coordinates, 'co', 3, 'f'),
+    signature = (topology_token(mesh), basis_bytes(obj),
                  tuple(v for row in obj.matrix_world for v in row),
                  tuple(v for row in armature.matrix_world for v in row),
-                 tuple((bone.name, bone.use_deform, tuple(bone.head_local), tuple(bone.tail_local))
-                       for bone in armature.data.bones), repr(source), repr(target))
+                 chain, repr(source), repr(target))
     key = tuple(_identity(data) for data in (obj, mesh, armature, armature.data))
     cached = _MIRROR.get(key)
     if cached is not None and cached[0] == signature:

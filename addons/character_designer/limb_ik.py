@@ -29,6 +29,7 @@ from . import root_control
 from . import limb_fk_visuals
 from . import eye_controls
 from . import control_colors
+from . import validation_json, validation_native
 
 
 OWNER_KEY = "character_designer_owner"
@@ -1147,7 +1148,7 @@ def _load_direct_rest_registry(armature, *, strict=True):
     if not raw:
         return {"version": DIRECT_PREROLL_RESULT_VERSION, "limbs": {}}
     try:
-        payload = json.loads(raw)
+        payload = validation_json.decode(raw)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         if strict:
             raise LimbIKError("Direct Pre-Roll Rest registry is corrupt.") from exc
@@ -1521,7 +1522,7 @@ def _constraint_registry(pose_bone, *, strict=False):
     if not raw:
         return {}
     try:
-        payload = json.loads(raw)
+        payload = validation_json.decode(raw)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         if strict:
             raise LimbIKError(f"Limb IK registry on bone '{pose_bone.name}' is corrupt.") from exc
@@ -2389,7 +2390,7 @@ def _restore_pose_shape_state(armature, pose_bone, state, *, runtime=False):
 def _parse_source_widget_registry(armature, raw):
     if not isinstance(raw, str) or not raw:
         raise LimbIKError("The source-control Custom Shape registry is not valid JSON text.")
-    payload = json.loads(raw)
+    payload = validation_json.decode(raw)
     if not isinstance(payload, dict) or payload.get("version") not in {
         LEGACY_SOURCE_WIDGETS_VERSION,
         SOURCE_WIDGETS_VERSION,
@@ -3032,6 +3033,12 @@ def _ensure_control_collection(armature, armature_id, transaction):
 
 
 def _owned_constraint_records(armature, *, strict=True):
+    if strict is True:
+        return validation_native.strict_constraint_records(armature, _scan_owned_constraint_records)
+    return _scan_owned_constraint_records(armature, strict=strict)
+
+
+def _scan_owned_constraint_records(armature, *, strict=True):
     records = []
     pose = armature.pose
     if pose is None:
@@ -3177,7 +3184,7 @@ def _validate_inventory(armature, *, original_mutes=None, original_rest=None, so
         if source_rest is not None:
             original_rest = source_rest
     armature_id = armature.data.get(ARMATURE_ID_KEY, "")
-    generated = [bone for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE]
+    generated = list(validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE))
     records = _owned_constraint_records(armature, strict=True)
     if not armature_id:
         if (

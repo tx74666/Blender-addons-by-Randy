@@ -8,7 +8,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import generated_names
+from . import generated_names, validation_json, validation_native
 
 OWNER_KEY = 'character_designer_owner'
 OWNER_VALUE = 'foot_controls'
@@ -41,7 +41,7 @@ def _all_records(armature):
     if raw is None:
         return {}
     try:
-        payload = json.loads(raw)
+        payload = validation_json.decode(raw)
         if payload['version'] != VERSION or not isinstance(payload['legs'], dict):
             raise ValueError('unsupported version')
         return payload['legs']
@@ -137,9 +137,14 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
             _validate_driver(armature, entry)
         if armature.animation_data:
             owned_drivers = {(entry['path'], entry['index']) for entry in record['drivers']}
+            bone_paths = tuple(
+                f'pose.bones["{name.replace(chr(34), chr(92) + chr(34))}"]'
+                for name in set(record['bones'].values())
+            )
             for curve in armature.animation_data.drivers:
-                if (_limb()._path_mentions_bone(curve.data_path, set(record['bones'].values()))
-                        and (curve.data_path, curve.array_index) not in owned_drivers):
+                path = curve.data_path
+                if (any(bone_path in path for bone_path in bone_paths)
+                        and (path, curve.array_index) not in owned_drivers):
                     raise _error('Another driver writes to Foot Controls; keep that dependency intact.')
         collection = bpy.data.collections.get(record['widget_collection'])
         if collection is None or collection.get(ID_KEY) != record['id']:
@@ -150,8 +155,8 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
             if (obj is None or obj.get(ID_KEY) != record['id'] or obj.type != 'MESH'
                     or obj.data.name != entry['mesh'] or pb.custom_shape is not obj):
                 raise _error('Foot Controls custom shape was replaced or removed.')
-    actual = {bone.name for bone in armature.data.bones if bone.get(OWNER_KEY) == OWNER_VALUE
-              and (armature.as_pointer(), bone.get(SIDE_KEY)) not in _SUSPENDED}
+    actual = {bone.name for bone in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)
+              if (armature.as_pointer(), bone.get(SIDE_KEY)) not in _SUSPENDED}
     if actual != expected:
         raise _error('Foot Controls contains unregistered generated bones.')
     return values

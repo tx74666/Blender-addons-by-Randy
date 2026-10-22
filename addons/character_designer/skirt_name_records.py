@@ -178,7 +178,7 @@ def snapshots(source, rig, mapping):
     subset. Native RNA references are handled by the caller's bone transaction.
     """
     import bpy
-    from . import control_weight_paint
+    from . import control_weight_paint as legacy_weights
     if (not isinstance(mapping, dict)
             or any(not isinstance(old, str) or not isinstance(new, str) or not old or not new
                    for old, new in mapping.items())
@@ -189,9 +189,9 @@ def snapshots(source, rig, mapping):
         return []
     objects = tuple(bpy.data.objects)
     for scene in bpy.data.scenes:
-        session = scene.get(control_weight_paint.SESSION)
+        session = scene.get(legacy_weights.SESSION)
         if session and hasattr(session, 'get') and session.get('rig') == rig:
-            raise ValueError('Finish Edit Weights before cleaning Dress bone names.')
+            raise ValueError('Legacy weight workspace recovery is pending; reopen the file in its original view layer before continuing.')
     if 'character_designer_skirt_bake_preview' in source:
         raise ValueError('Finish the Dress Bake Preview before cleaning its bone names.')
     result = []

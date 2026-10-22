@@ -8,7 +8,7 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import generated_names
+from . import generated_names, validation_json, validation_native
 
 OWNER_KEY = "character_designer_owner"
 OWNER_VALUE = "torso_controls"
@@ -32,7 +32,7 @@ def get_record(armature):
     if raw is None:
         return None
     try:
-        record = json.loads(raw)
+        record = validation_json.decode(raw)
         if record["version"] != VERSION or not isinstance(record["sources"], list):
             raise ValueError("unsupported version")
         return record
@@ -56,12 +56,12 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     if record is None:
-        if any(b.get(OWNER_KEY) == OWNER_VALUE for b in armature.data.bones):
+        if any(True for _bone in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)):
             raise _error('Torso Controls bones have lost their recovery data.')
         return None
     try:
         names = set(record['bones'].values())
-        actual = {b.name for b in armature.data.bones if b.get(OWNER_KEY) == OWNER_VALUE}
+        actual = {b.name for b in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)}
         if actual != names or len(record['sources']) not in {3, 4}:
             raise _error('Torso Controls bones were added, removed, or renamed.')
         for role, name in record['bones'].items():

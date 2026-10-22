@@ -42,7 +42,7 @@ def _require_rig(context, rig):
     if 'character_designer_body_original_mode_v1' in rig:
         raise ValueError('Choose Controls in Bone Display before changing the generated rig.')
     if context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
-        raise ValueError('Use Back to Controls before changing the generated rig.')
+        raise ValueError('Legacy weight workspace recovery is pending; reopen the file in its original view layer before continuing.')
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ValueError('Finish the current edit and use Body Setup in Object or Pose Mode.')
     active = limb_ik._require_active_armature(context, limb_ik._settings(context), analyzed=False)

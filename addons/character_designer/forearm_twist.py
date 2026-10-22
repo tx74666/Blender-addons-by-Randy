@@ -351,16 +351,24 @@ def _preview_pose_locked(armature, target, rig):
 
 
 def _weights(obj, armature, indices):
-    names = {group.index: group.name for group in obj.vertex_groups
-             if group.name in armature.data.bones and armature.data.bones[group.name].use_deform}
+    groups = obj.vertex_groups
+    bones = armature.data.bones
+    names = {group.index: group.name for group in groups
+             if group.name in bones and bones[group.name].use_deform}
+    vertices = obj.data.vertices
     result = {}
     for index in indices:
-        values = {names[g.group]: float(g.weight) for g in obj.data.vertices[index].groups
-                  if g.group in names and g.weight > 0.0}
+        values = {}
+        for membership in vertices[index].groups:
+            group = membership.group
+            if group in names:
+                weight = membership.weight
+                if weight > 0.0:
+                    values[names[group]] = float(weight)
         total = sum(values.values())
         result[index] = {name: value / total for name, value in values.items()} if total else {}
     for name in {name for values in result.values() for name in values}:
-        if armature.data.bones[name].bbone_segments != 1:
+        if bones[name].bbone_segments != 1:
             raise ForearmTwistError("Bendy Bone segments are not supported by this prototype.")
     return result
 
@@ -397,22 +405,31 @@ def controller_status(armature, target_name):
 def _input_mix(obj, indices, owned_names, depsgraph):
     keys = obj.data.shape_keys
     basis = keys.reference_key
-    result = {i: basis.data[i].co.copy() for i in indices}
-    evaluated_keys = keys.evaluated_get(depsgraph)
+    basis_data = basis.data
+    result = {i: basis_data[i].co.copy() for i in indices}
+    evaluated_blocks = keys.evaluated_get(depsgraph).key_blocks
+    vertex_groups = obj.vertex_groups
+    vertices = obj.data.vertices
     for key in keys.key_blocks:
         if key == basis or key.name in owned_names or key.mute:
             continue
-        evaluated_key = evaluated_keys.key_blocks.get(key.name)
+        evaluated_key = evaluated_blocks.get(key.name)
         value = float(evaluated_key.value if evaluated_key is not None else key.value)
         if abs(value) < 1.0e-12:
             continue
-        mask = obj.vertex_groups.get(key.vertex_group) if key.vertex_group else None
+        mask_name = key.vertex_group
+        mask = vertex_groups.get(mask_name) if mask_name else None
+        if not result:
+            continue
+        mask_index = mask.index if mask is not None else None
+        key_data = key.data
+        relative_data = key.relative_key.data
         for i in indices:
             factor = value
-            if key.vertex_group:
-                factor *= next((g.weight for g in obj.data.vertices[i].groups
-                                if mask is not None and g.group == mask.index), 0.0)
-            result[i] += (key.data[i].co - key.relative_key.data[i].co) * factor
+            if mask_name:
+                factor *= next((g.weight for g in vertices[i].groups
+                                if mask_index is not None and g.group == mask_index), 0.0)
+            result[i] += (key_data[i].co - relative_data[i].co) * factor
     return result
 
 
@@ -523,6 +540,7 @@ def _calculate_records(obj, depsgraph):
     # inputs have not changed, and repair value/mute after manual UI changes.
     managed_state = []
     managed_coordinates = []
+    managed_keys = []
     for side, record in records.items():
         key = _managed_key(obj, side, record)
         if key is None or key.relative_key != keys.reference_key or key.vertex_group:
@@ -531,8 +549,9 @@ def _calculate_records(obj, depsgraph):
         coordinates = array("f", [0.0]) * (len(key.data) * 3)
         key.data.foreach_get("co", coordinates)
         managed_coordinates.append(coordinates.tobytes())
-    basis_coordinates = array("f", [0.0]) * (len(keys.reference_key.data) * 3)
-    keys.reference_key.data.foreach_get("co", basis_coordinates)
+        managed_keys.append(key)
+    basis_data = keys.reference_key.data
+    basis_coordinates = validation_cache.basis_coordinates(obj)
     all_indices = sorted({i for r in records.values() for i in r["vertices"]})
     base = _input_mix(obj, all_indices, owned_names, depsgraph)
     weights = _weights(obj, armature, all_indices)
@@ -542,14 +561,65 @@ def _calculate_records(obj, depsgraph):
     from_arm = to_arm.inverted()
     bone_names = {name for values in weights.values() for name in values}
     bone_names.update(name for r in records.values() for name in r["chain"])
-    transforms = {name: eval_arm.pose.bones[name].matrix @ armature.data.bones[name].matrix_local.inverted()
+    rest_matrices = {name: armature.data.bones[name].matrix_local for name in bone_names}
+    transforms = {name: eval_arm.pose.bones[name].matrix @ rest_matrices[name].inverted()
                   for name in bone_names}
-    signature = (obj[RECORD_KEY], topology, basis_coordinates.tobytes(), tuple(v for row in to_arm for v in row),
-                 tuple((n, tuple(v for row in mat for v in row)) for n, mat in sorted(transforms.items())),
-                 tuple((i, tuple(base[i]), tuple(sorted(weights[i].items()))) for i in all_indices))
+
+    def exact_bits(values):
+        # Native float32 values are exactly representable as doubles; weights
+        # retain their Python double precision and insertion/summation order.
+        # A finite sum proves every component finite. Overflow is conservative:
+        # it merely disables reuse and leaves all original math guards in place.
+        values = array("d", values)
+        total = sum(values)
+        return values.tobytes() if total - total == 0.0 else None
+
+    frame_bits = exact_bits(v for matrix in (to_arm, from_arm) for row in matrix for v in row)
+    basis_total = sum(basis_coordinates)
+    common_signature = ((obj[RECORD_KEY], topology, basis_coordinates.tobytes(), frame_bits)
+                        if frame_bits is not None and basis_total - basis_total == 0.0 else None)
+    transform_bits = {name: exact_bits(v for row in matrix for v in row)
+                      for name, matrix in transforms.items()}
+    rest_bits = {name: exact_bits(v for row in rest_matrices[name] for v in row)
+                 for record in records.values() for name in record["chain"]}
+    side_signatures = []
+    for (side, record), key in zip(records.items(), managed_keys):
+        chain = record["chain"]
+        token = _key_identity(obj, key)
+        # Malformed chains must reach the original ordered validation below,
+        # rather than failing early while preparing an optional reuse proof.
+        if len(chain) != 3 or token is None:
+            side_signatures.append((side, None))
+            continue
+        lower_bone = armature.data.bones[chain[1]]
+        hand_bone = armature.data.bones[chain[2]]
+        geometry = exact_bits(v for point in (lower_bone.head_local, lower_bone.tail_local,
+                                              hand_bone.head_local) for v in point)
+        dependencies = sorted(set(chain) | {name for i in record["vertices"] for name in weights[i]})
+        deformation = tuple((name, transform_bits[name]) for name in dependencies)
+        rest = tuple((name, rest_bits[name]) for name in chain)
+        support = tuple((i, tuple(weights[i])) for i in record["vertices"])
+        inputs = exact_bits(v for i in record["vertices"] for values in (base[i], weights[i].values())
+                            for v in values)
+        proof = ((token, geometry, deformation, rest, support, inputs)
+                 if geometry is not None and inputs is not None
+                 and all(bits is not None for _name, bits in deformation + rest) else None)
+        side_signatures.append((side, proof))
+    # Version the existing derived-output cache: older numeric/sorted-weight
+    # signatures cannot prove exact arithmetic inputs or native key lifetime.
+    signature = (2, common_signature, tuple(side_signatures))
+    cached = _CACHE.get(obj.as_pointer())
+    cached_outputs = _OUTPUT_CACHE.get(obj.as_pointer())
+    reusable = (common_signature is not None and type(cached) is tuple and len(cached) == 3
+                and cached[0] == 2 and cached[1] == common_signature
+                and type(cached[2]) is tuple and len(cached[2]) == len(side_signatures)
+                and type(cached_outputs) is list and len(cached_outputs) == len(side_signatures))
     expected_state = [(r["key"], 1.0, not r.get("enabled", True)) for r in records.values()]
-    if (_CACHE.get(obj.as_pointer()) == signature and managed_state == expected_state
-            and _OUTPUT_CACHE.get(obj.as_pointer()) == managed_coordinates):
+    unchanged_sides = [bool(reusable and proof is not None and cached[2][index] == (side, proof)
+                            and managed_state[index] == expected_state[index]
+                            and cached_outputs[index] == managed_coordinates[index])
+                       for index, (side, proof) in enumerate(side_signatures)]
+    if all(unchanged_sides):
         return
     # These are immutable values from this call's native deformation matrices,
     # not a cross-frame validation cache. Reuse their rows during scalar LBS
@@ -561,7 +631,7 @@ def _calculate_records(obj, depsgraph):
     blend_cache = {}
     outputs = []
     outside_pose_range = False
-    for side, record in records.items():
+    for side_index, (side, record) in enumerate(records.items()):
         key = _managed_key(obj, side, record)
         if key is None or key.relative_key != keys.reference_key or key.vertex_group:
             raise ForearmTwistError("The managed corrective key was renamed or changed; restore it or remove calibration.")
@@ -569,7 +639,7 @@ def _calculate_records(obj, depsgraph):
             raise ForearmTwistError("The rig is changing; Forearm Twist will resume when its arm chain is ready.")
         lower, hand = record["chain"][1:]
         if not record.get("enabled", True):
-            outputs.append((key, False, []))
+            outputs.append((key, False, None if unchanged_sides[side_index] else []))
             continue
         lower_bone = armature.data.bones[lower]
         axis = (lower_bone.tail_local - lower_bone.head_local).normalized()
@@ -592,6 +662,12 @@ def _calculate_records(obj, depsgraph):
         if abs(angle) > MAX_ANGLE + 1.0e-5:
             outside_pose_range = True
             continue
+        # A changed sibling still needs its original ordered validation and
+        # calculation. This side's accepted full output can survive that miss
+        # only after its own fresh Rest/angle/profile/range checks above.
+        if unchanged_sides[side_index]:
+            outputs.append((key, True, None))
+            continue
         output = []
         for i, position in zip(record["vertices"], record["positions"]):
             ratio, influence = sampler(position)
@@ -603,7 +679,7 @@ def _calculate_records(obj, depsgraph):
             corrected = corrected_vertex(point, transforms, weights[i], lower, hand, axis, pivot, ratio,
                                          angle=angle, _matrix_rows=matrix_rows,
                                          _blend_cache=blend_cache)
-            output.append((i, keys.reference_key.data[i].co + influence * (from_arm @ corrected - base[i])))
+            output.append((i, basis_data[i].co + influence * (from_arm @ corrected - base[i])))
         outputs.append((key, record.get("enabled", True), output))
     # Finish validating every active side before classifying this as only a
     # pose-range failure. A later invalid profile/rest/output must still roll
@@ -613,6 +689,8 @@ def _calculate_records(obj, depsgraph):
     # Commit only after every side has passed, so a failed inverse never leaves
     # a half-written mesh.  All unselected coordinates remain their Basis.
     for key, enabled, output in outputs:
+        if output is None:
+            continue
         key.value = 1.0
         key.mute = not enabled
         # Relative keys store full coordinate snapshots: copying Basis outside
@@ -628,7 +706,10 @@ def _calculate_records(obj, depsgraph):
     keys.update_tag(refresh={"TIME"})
     _CACHE[obj.as_pointer()] = signature
     _OUTPUT_CACHE[obj.as_pointer()] = []
-    for key, _enabled, _output in outputs:
+    for index, (key, _enabled, output) in enumerate(outputs):
+        if output is None:
+            _OUTPUT_CACHE[obj.as_pointer()].append(managed_coordinates[index])
+            continue
         coordinates = array("f", [0.0]) * (len(key.data) * 3)
         key.data.foreach_get("co", coordinates)
         _OUTPUT_CACHE[obj.as_pointer()].append(coordinates.tobytes())

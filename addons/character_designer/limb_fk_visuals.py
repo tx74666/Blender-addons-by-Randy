@@ -7,7 +7,7 @@ import uuid
 
 import bpy
 
-from . import generated_names
+from . import generated_names, validation_json
 
 OWNER_KEY = 'character_designer_owner'
 OWNER_VALUE = 'limb_fk_visuals'
@@ -61,7 +61,7 @@ def get_record(armature):
     if raw is None:
         return None
     try:
-        record = json.loads(raw)
+        record = validation_json.decode(raw)
         if (record['version'] != VERSION or not isinstance(record['bindings'], dict)
                 or not record['bindings'] or not isinstance(record['id'], str)
                 or record['armature_id'] != armature.data.get(_limb().ARMATURE_ID_KEY)):

@@ -23,6 +23,12 @@ def product():
     namespace = {'array': array, 'RECORD_KEY': RECORD_KEY, 'MAX_ANGLE': math.radians(120),
                  '_CACHE': {}, '_OUTPUT_CACHE': {}, '_KEY_REFERENCES': {}, '_ERRORS': {},
                  '_BUSY': False, '_HISTORY_RECOVERY_PENDING': False}
+    def basis_coordinates(obj):
+        points = obj.data.shape_keys.reference_key.data
+        values = array('f', [0.0]) * (3 * len(points))
+        points.foreach_get('co', values)
+        return values
+    namespace['validation_cache'] = NS(basis_coordinates=basis_coordinates)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), namespace)
     return namespace
 
