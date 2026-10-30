@@ -1821,7 +1821,9 @@ def _pole_display_visible(context, armature, pole_data, pole_pose):
     This bounded query uses the declared limb target, never a strict inventory
     or scene audit from a viewport draw callback.
     """
-    if (pole_data.hide or bool(getattr(pole_pose, 'hide', False))
+    # Blender 5 separates Edit Bone.hide from Object/Pose PoseBone.hide.
+    # Keep the legacy Bone flag only for versions without the Pose property.
+    if (bool(getattr(pole_pose, 'hide', pole_data.hide))
             or not armature.data.show_bone_custom_shapes or pole_pose.custom_shape is None
             or _control_shape_style(pole_data, strict=False) == 'SPHERE'
             or 'character_designer_body_original_mode_v1' in armature
@@ -3166,16 +3168,25 @@ def _validation_source_rest(armature, source_rest=None):
     """Resolve only an authenticated adopted motion-data copy, without mutation."""
     if source_rest is not None:
         return source_rest
+    if validation_native.source_rest_is_none(armature):
+        return None
     from . import animation_worklist_target
     if not animation_worklist_target.is_adopted(armature):
+        validation_native.remember_source_rest_none(armature)
         return None
     try:
-        return animation_worklist_target.control_rest_view(armature)
+        result = animation_worklist_target.control_rest_view(armature)
     except ValueError as exc:
         raise LimbIKError('Main Rig motion Rest proof failed: ' + str(exc)) from exc
+    if result is None:
+        validation_native.remember_source_rest_none(armature)
+    return result
 
 
 def _validate_inventory(armature, *, original_mutes=None, original_rest=None, source_rest=None):
+    if original_mutes is None and original_rest is None and source_rest is None:
+        from . import body_rest_adoption
+        original_rest = body_rest_adoption.checkpoint_rest_view(armature)
     # Explicit Original-mode views keep their own comparison/mute semantics.
     # Ordinary control/corrective callers need the same proven Worklist view as
     # the importer while a managed native translation data copy is attached.

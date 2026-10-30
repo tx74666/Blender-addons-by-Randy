@@ -126,10 +126,26 @@ def blended_matrix(transforms, weights, *, _matrix_rows=None, _blend_cache=None)
     # synchronous calculation. Keep the weight checks, scalar multiply/sum
     # order and final Matrix rounding identical to direct mathutils access.
     source = transforms if _matrix_rows is None else _matrix_rows
-    result = (cached.copy() if cached is not None else
-              Matrix(tuple(tuple(sum(weight * source[name][row][column]
-                                     for name, weight in weights.items())
-                               for column in range(4)) for row in range(4))))
+    if cached is not None:
+        result = cached.copy()
+    elif _matrix_rows is not None and len(weights) <= 4:
+        # Runtime rows are native 4x4 float tuples. Fetch them once per bone,
+        # then let the same built-in sum consume each ordered product column.
+        # Scalar += would lose Python 3.12+'s compensated summation semantics.
+        products = []
+        for name, weight in weights.items():
+            rows = source[name]
+            r0, r1, r2, r3 = rows[0], rows[1], rows[2], rows[3]
+            products.append((weight * r0[0], weight * r0[1], weight * r0[2], weight * r0[3],
+                             weight * r1[0], weight * r1[1], weight * r1[2], weight * r1[3],
+                             weight * r2[0], weight * r2[1], weight * r2[2], weight * r2[3],
+                             weight * r3[0], weight * r3[1], weight * r3[2], weight * r3[3]))
+        values = tuple(map(sum, zip(*products)))
+        result = Matrix((values[:4], values[4:8], values[8:12], values[12:]))
+    else:
+        result = Matrix(tuple(tuple(sum(weight * source[name][row][column]
+                                        for name, weight in weights.items())
+                                  for column in range(4)) for row in range(4)))
     if not _finite_matrix(result):
         raise TwistMathError("Blended deformation contains non-finite values")
     if _blend_cache is not None and cached is None:

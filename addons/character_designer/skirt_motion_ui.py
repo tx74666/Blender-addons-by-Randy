@@ -259,13 +259,15 @@ def draw_motion(layout, context, source, record):
     box.label(text="Dress Motion")
     try:
         profile = _profiles().read(source, record)
+        applied_mode = _metadata_mode(source, record, profile)
+        choices = importlib.import_module(__package__ + ".animation_physics")
+        mode = choices._skirt_choice(source, record, applied_mode)["mode"]
     except (ValueError, RuntimeError, ReferenceError):
         box.label(text="Saved motion settings need review.", icon="ERROR")
         return
     has_physics = bool(record.get("physics"))
     direct = (record.get("physics") or {}).get("backend") == "DIRECT_MAIN_CLOTH_V1"
     capability = profile["capability"] if profile else ("BOTH" if has_physics else "MANUAL")
-    mode = _metadata_mode(source, record, profile)
     idle = _skirt()._idle(context)
     controls = _metadata_controls(source)
     state = None
@@ -298,7 +300,7 @@ def draw_motion(layout, context, source, record):
         tune.operator("character_designer.dress_motion_tuning", text="Tuning", icon="PREFERENCES")
         row.operator("character_designer.dress_motion_reset", text="Reset", icon="LOOP_BACK")
         bake = row.row(align=True)
-        bake.enabled = (not direct or (mode == "AUTOMATIC" and isinstance(state, dict)
+        bake.enabled = (not direct or (applied_mode == "AUTOMATIC" and isinstance(state, dict)
                         and state.get("mode") == "AUTOMATIC" and state.get("editing") is False
                         and state.get("pending") is False))
         bake.operator("character_designer.skirt_bake_physics", text="Bake", icon="REC")

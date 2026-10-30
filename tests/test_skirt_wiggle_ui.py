@@ -62,18 +62,20 @@ class Layout:
 
 class DressWiggleUITests(unittest.TestCase):
     def setUp(self):
-        self.source = object()
+        self.source = SimpleNamespace(name="Dress")
         self.context = SimpleNamespace(mode="POSE", window_manager=SimpleNamespace())
-        self.record = {"chains": []}
+        self.record = {"chains": [], "owner": "owned Dress"}
         self.workflow = SimpleNamespace(_idle=lambda context: True,
                                         _has_setup=lambda context: True)
 
     def draw(self, *, available=True, original=False, mode="MANUAL",
-             original_supported=True, controls_visible=True):
+             original_supported=True, controls_visible=True, desired=None):
         layout = Layout()
         state = {"available": available, "mode": mode, "message": "Current Dress mode.",
                  "running": mode == "AUTOMATIC"}
         with patch.object(ui, "_motion", return_value=SimpleNamespace(status=lambda *args: state)), \
+             patch.object(ui, "_physics_choices", return_value=SimpleNamespace(
+                 _skirt_choice=lambda *args: {'mode': mode if desired is None else desired})), \
              patch.object(ui, "_workflow", return_value=self.workflow), \
              patch.object(ui, "_original", return_value=original), \
              patch.object(ui, "_original_supported", return_value=original_supported), \
@@ -144,13 +146,34 @@ class DressWiggleUITests(unittest.TestCase):
         workflow = SimpleNamespace(_source=lambda context: self.source,
                                    _report=lambda *args, **kwargs: None)
         calls = []
-        motion = SimpleNamespace(set_mode=lambda *args: calls.append(args) or "Manual ready.")
+        choices = SimpleNamespace(set_skirt_mode=lambda *args, **kwargs: calls.append((args, kwargs)))
         with patch.object(ui, "_workflow", return_value=workflow), \
-             patch.object(ui, "_motion", return_value=motion), \
+             patch.object(ui, "_physics_choices", return_value=choices), \
+             patch.object(ui.skirt_rig, "read_record", return_value=self.record, create=True), \
              patch.object(ui, "_show_layer", side_effect=ValueError("Display unavailable")):
             self.assertEqual(operator.execute(self.context), {"FINISHED"})
-        self.assertEqual(calls, [(self.context, self.source, "MANUAL")])
+        self.assertEqual(calls, [((self.context, "Dress", "MANUAL"), {"expected_owner": "owned Dress"})])
         self.assertEqual(reports[0][0], {"WARNING"})
+
+    def test_desired_choice_is_displayed_even_when_native_mode_is_suspended(self):
+        events = self.draw(mode="MANUAL", desired="AUTOMATIC")
+        self.assertTrue(next(event for event in events if event[1] == "Automatic · Wiggle Bones")[3]["depress"])
+        self.assertFalse(next(event for event in events if event[1] == "Manual")[3]["depress"])
+
+    def test_rejected_service_mode_does_not_change_optional_display(self):
+        operator = ui.CHARACTERDESIGNER_OT_dress_wiggle_mode()
+        operator.mode = "MANUAL"
+        reports = []
+        workflow = SimpleNamespace(_source=lambda context: self.source,
+            _report=lambda *args, **kwargs: reports.append((args, kwargs)))
+        choices = SimpleNamespace(set_skirt_mode=lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("owner changed")))
+        with patch.object(ui, "_workflow", return_value=workflow), \
+             patch.object(ui, "_physics_choices", return_value=choices), \
+             patch.object(ui.skirt_rig, "read_record", return_value=self.record, create=True), \
+             patch.object(ui, "_show_layer") as display:
+            self.assertEqual(operator.execute(self.context), {"CANCELLED"})
+        display.assert_not_called()
+        self.assertIn("owner changed", reports[0][0][2])
 
 
 if __name__ == "__main__":

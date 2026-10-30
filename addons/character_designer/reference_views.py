@@ -809,6 +809,8 @@ def _scene_set_choice_updated(settings, context):
 
 def _resolved_scene_set_summary(settings, scene):
     summaries = _scene_managed_set_summaries(scene)
+    if not summaries:
+        return None
     by_id = {summary["set_id"]: summary for summary in summaries}
     if settings is None:
         return summaries[0] if len(summaries) == 1 else None

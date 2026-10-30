@@ -1,9 +1,10 @@
 """Native read reuse only inside one audited, synchronous validation call.
 
 The caller must not mutate or evaluate Blender data while this scope is active.
-Only ownership tags and the strict constraint-discovery pass are reused; every
-structure, Rest, mute, driver and widget check still runs at its original site.
-Nothing survives scope exit, and ordinary callers always read current RNA.
+Only ownership tags, strict constraint discovery and a successful resolution
+that no Worklist Rest view is needed are reused. Every structure, Rest, mute,
+driver and widget check still runs at its original site. Nothing survives scope
+exit, and ordinary callers always read current RNA.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,6 +24,23 @@ def read_scope():
         # Release borrowed RNA references even if the validation is rejected.
         cache.clear()
         _ACTIVE.reset(token)
+
+
+def source_rest_is_none(armature):
+    """Distinguish this scope's resolved no-view result from an unread rig."""
+    cache = _ACTIVE.get()
+    if cache is None:
+        return False
+    entry = cache.get(('source_rest_none', id(armature)))
+    return entry is not None and entry[0] is armature
+
+
+def remember_source_rest_none(armature):
+    """Remember only a successful no-view result until this read scope exits."""
+    cache = _ACTIVE.get()
+    if cache is not None:
+        # Borrow the rig strongly, so its identity cannot be reused in scope.
+        cache[('source_rest_none', id(armature))] = (armature,)
 
 
 def iter_owned_bones(armature, owner_key, owner_value):

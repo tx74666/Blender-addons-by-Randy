@@ -133,7 +133,7 @@ class Fixture(selection.SelectionFixture):
     def author(self):
         state = self.state()
         return {key: value for key, value in state.items() if key not in {
-            "record", "profile", "direct", "endpoint", "cache"}} | {
+            "record", "profile", "choice", "direct", "endpoint", "cache"}} | {
                 "artist_mesh_keys_weights_uv_action": copy.deepcopy(vars(self.source.data))}
 
     def parameters(self):

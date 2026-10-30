@@ -230,13 +230,14 @@ def _remember_object_visibility(rig, targets):
         rig[SESSION] = json.dumps(saved, separators=(',', ':'))
 
 
-def _set_native_view(context, rig, native_groups, role='ALL', *, toggle=False, complete=True):
+def _set_native_view(context, rig, native_groups, role='ALL', *, toggle=False, complete=True,
+                     _original_pose=None):
     targets = {}
     for part in native_groups.values() if role == 'ALL' else (native_groups[role],):
         for target, names in part.items():
             targets.setdefault(target, set()).update(names)
     for target, names in targets.items():
-        display._editable(target)
+        display._editable(target, _original_pose=_original_pose)
         if set(names) - set(target.data.bones.keys()):
             raise ValueError('Original display bones were removed; undo that edit before switching views.')
     visible = not _targets_visible(targets) if toggle else True
@@ -291,12 +292,15 @@ def _set_native_view(context, rig, native_groups, role='ALL', *, toggle=False, c
 def show_group(context, rig, role):
     if not active(rig):
         raise ValueError('Choose Original in Bone Display first.')
-    saved = _require(context, rig)
-    _ensure_dress_editable(context, rig, saved)
+    from . import body_original_owner as owner
+    capability = owner.pose_capability(context, rig)
+    saved = _require(context, rig, _original_pose=capability)
+    _ensure_dress_editable(context, rig, saved, _original_pose=capability)
     native_groups = _native_groups(context, rig)
     if not any(native_groups[role].values()):
         raise ValueError('This character has no original bones in that group.')
-    _set_native_view(context, rig, native_groups, role, toggle=True)
+    _set_native_view(context, rig, native_groups, role, toggle=True,
+                     _original_pose=capability)
 
 
 def _extra_views(rig, saved):
@@ -321,6 +325,20 @@ def _pose(rig, names=None):
     if names is None:
         names = poses.native_rest(rig)
     return {name: rig.pose.bones[name].matrix.copy() for name in names}
+
+
+def _session_pose_edits(saved, desired):
+    """Compare with the settled Original pose, including inherited dependencies."""
+    entered = saved['entered_pose']
+    if (type(entered) is not dict or set(entered) != set(desired)
+            or any(not isinstance(rows, list) or len(rows) != 4
+                   or any(not isinstance(row, list) or len(row) != 4
+                          or any(type(value) not in (int, float) or not math.isfinite(value)
+                                 for value in row) for row in rows)
+                   for rows in entered.values())
+            or any(not limb_ik._matrix_is_finite(matrix) for matrix in desired.values())):
+        raise ValueError('The saved Original entry pose is invalid; keep the current Original edit.')
+    return {name for name in desired if poses._difference(desired[name], entered[name]) > 1e-7}
 
 
 def _channels(rig):
@@ -427,9 +445,9 @@ def _bake_sources(context, rig, desired, entries):
             break
 
 
-def _require(context, rig):
+def _require(context, rig, *, _original_pose=None):
     from . import forearm_twist
-    display._editable(rig)
+    display._editable(rig, _original_pose=_original_pose)
     preview = forearm_twist._SESSION
     if preview is not None and preview.get('armature') == rig:
         raise ValueError('Confirm or cancel the Forearm preview before switching Original or Controls.')
@@ -449,13 +467,27 @@ def _require(context, rig):
 
 
 def enter(context, rig):
-    from . import forearm_twist
+    from . import forearm_twist, body_original_owner as owner
+    capability = owner.pose_capability(context, rig, entering=True)
     with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
-        return _enter(context, rig, refresh)
+        entered = _enter(context, rig, refresh, _original_pose=capability)
+    if entered:
+        # The Original transaction has fully published and verified its native
+        # editing state. Only now may an explicit saved Automatic choice resume
+        # its separate owned PHYS layer; refusal keeps the completed mode.
+        display._apply_pending_physics(context, rig)
+    return entered
 
 
-def _enter(context, rig, refresh):
-    _require(context, rig)
+def _enter(context, rig, refresh, *, _original_pose=None):
+    from . import animation_pose_test
+    if animation_pose_test.natural_active(rig):
+        raise ValueError('Choose Pose to finish the static Rest test before changing Original/Controls mode.')
+    from . import body_original_owner as owner
+    _require(context, rig, _original_pose=_original_pose)
+    if _original_pose is not None:
+        # Every matcher must remain verification-only for its existing drivers.
+        match._require_existing_switches(rig)
     if active(rig):
         raise ValueError('This rig is already in Original mode.')
     original = rig.data.collections_all.get('Original')
@@ -468,9 +500,9 @@ def _enter(context, rig, refresh):
     native_groups = _native_groups(context, rig)
     rigs = list(dict.fromkeys([rig] + [target for part in native_groups.values() for target in part]))
     for target in rigs:
-        display._editable(target)
-        owner = target.get(DISPLAY_OWNER)
-        if owner and active(owner):
+        display._editable(target, _original_pose=_original_pose)
+        display_owner = target.get(DISPLAY_OWNER)
+        if display_owner and active(display_owner):
             raise ValueError('An attached dress is already in another Original display session.')
     if rig.animation_data:
         prefixes = tuple(rig.pose.bones[name].path_from_id() + '.' + prop for name in names for prop in _CHANNELS)
@@ -479,7 +511,7 @@ def _enter(context, rig, refresh):
     from . import skirt_wiggle
     skirt_wiggle.suspend_for_rig(context, rig, reason='Original editing paused automatic Dress motion.')
     _update(context, rig)
-    dress_entries = dress_pose.prepare(context, rig)
+    dress_entries = dress_pose.prepare(context, rig, _original_pose=_original_pose)
     dress_checkpoint = dress_pose.checkpoint(context, rig, dress_entries)
     rest = poses.native_rest(rig)
     desired = _pose(rig, rest)
@@ -489,8 +521,9 @@ def _enter(context, rig, refresh):
     locks = _locks(rig, names)
     saved = None
     try:
+        owner.install_pose_session(_original_pose)
         # Recover a legacy display-only isolation before starting this explicit session.
-        display.restore_view(rig)
+        display.restore_view(rig, _original_pose=_original_pose)
         saved = {'version': 1, 'rest': rest, 'bones': sorted(rig.data.bones.keys()),
                  'names': sorted(names), 'constraints': entries, 'channels': before, 'locks': locks,
                  'dress_edit': dress_entries,
@@ -501,6 +534,8 @@ def _enter(context, rig, refresh):
                  'extra_display': {str(i): display._snapshot(target) for i, target in enumerate(rigs) if i},
                  'extra_bones': {str(i): sorted(target.data.bones.keys()) for i, target in enumerate(rigs) if i},
                  'pose': {name: [list(row) for row in matrix] for name, matrix in desired.items()}}
+        if _original_pose is not None:
+            saved['pose_only_owner'] = owner.pose_session_fields(_original_pose)
         rig[SESSION] = json.dumps(saved, separators=(',', ':'))
         rig[DISPLAY_REFS] = {str(i): target for i, target in enumerate(rigs) if i}
         for target in rigs[1:]:
@@ -515,7 +550,8 @@ def _enter(context, rig, refresh):
         dress_pose.enter(context, rig, dress_entries)
         saved['entered_channels'] = _channels(rig)
         rig[SESSION] = json.dumps(saved, separators=(',', ':'))
-        _set_native_view(context, rig, native_groups, complete=False)
+        _set_native_view(context, rig, native_groups, complete=False,
+                         _original_pose=_original_pose)
         for bone in rig.data.bones:
             if bone.name in names:
                 if bone.hide_select:
@@ -531,6 +567,14 @@ def _enter(context, rig, refresh):
         display._completed(rig, update=False)
         refresh()
         dress_pose.verify(context, rig, dress_entries)
+        if _original_pose is not None:
+            owner._check_pose_capability(_original_pose, rig)
+        # The bake can round untouched matrices by ~1e-6. Keep its settled pose
+        # separately from the pre-bake target so that later edits do not rematch
+        # unrelated limbs just to remove that existing float32 difference.
+        saved['entered_pose'] = {name: [list(row) for row in matrix]
+                                 for name, matrix in _pose(rig, rest).items()}
+        rig[SESSION] = json.dumps(saved, separators=(',', ':'))
     except Exception:
         for con, entry in _resolve(rig, entries):
             con.mute = entry['mute']
@@ -542,6 +586,7 @@ def _enter(context, rig, refresh):
             target.pop(DISPLAY_OWNER, None)
         rig.pop(DISPLAY_REFS, None)
         rig.pop(SESSION, None)
+        owner.restore_pose_session(_original_pose)
         limb_ik._restore_context(context, rig, ctx)
         _update(context, rig)
         refresh()
@@ -551,11 +596,13 @@ def _enter(context, rig, refresh):
 
 def ensure_dress_editable(context, rig):
     """Explicitly upgrade a saved display-only Original session, never on draw."""
-    saved = _require(context, rig)
-    return _ensure_dress_editable(context, rig, saved)
+    from . import body_original_owner as owner
+    capability = owner.pose_capability(context, rig)
+    saved = _require(context, rig, _original_pose=capability)
+    return _ensure_dress_editable(context, rig, saved, _original_pose=capability)
 
 
-def _ensure_dress_editable(context, rig, saved):
+def _ensure_dress_editable(context, rig, saved, *, _original_pose=None):
     """Reuse the preflight's parsed state only within its synchronous operation."""
     if saved is None:
         return False
@@ -564,7 +611,7 @@ def _ensure_dress_editable(context, rig, saved):
         dress_pose.validate_active(context, rig, saved['dress_edit'])
         return False
     _update(context, rig)
-    entries = dress_pose.prepare(context, rig)
+    entries = dress_pose.prepare(context, rig, _original_pose=_original_pose)
     checkpoint = dress_pose.checkpoint(context, rig, entries)
     try:
         dress_pose.enter(context, rig, entries)
@@ -580,21 +627,40 @@ def _ensure_dress_editable(context, rig, saved):
 
 def leave(context, rig):
     from . import forearm_twist, body_original_owner
-    def transfer(finalize=None):
+    def transfer(finalize=None, *, _original_pose=None):
         with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
-            return _leave(context, rig, refresh, finalize=finalize)
-    return body_original_owner.run_return(context, rig, transfer)
+            return _leave(context, rig, refresh, finalize=finalize,
+                          _original_pose=_original_pose)
+    returned = body_original_owner.run_return(context, rig, transfer)
+    if returned:
+        # run_return has now finalized its complete Body/Dress transaction.
+        # Deferred physics choices are separate operations and cannot roll
+        # back, or run inside, that authenticated Original return.
+        display._apply_pending_physics(context, rig)
+    return returned
 
 
-def _leave(context, rig, refresh, *, finalize=None):
-    from . import body_rest_resync as resync
-    saved = _require(context, rig)
+def _leave(context, rig, refresh, *, finalize=None, _original_pose=None):
+    from . import animation_pose_test
+    if animation_pose_test.natural_active(rig):
+        raise ValueError('Choose Pose to finish the static Rest test before changing Original/Controls mode.')
+    from . import body_rest_resync as resync, body_original_owner as owner
+    saved = _require(context, rig, _original_pose=_original_pose)
     if not active(rig):
         return False
+    if _original_pose is not None:
+        # This path never adapts historical or freshly edited native Rest.
+        owner._check_pose_capability(_original_pose, rig)
+        from . import forearm_original_inventory
+        # Original deliberately pauses its authenticated source constraints.
+        # Validate that exact saved mute view without toggling native RNA.
+        match._require_existing_switches(rig, inventory=forearm_original_inventory.validate(rig))
     plan = None
     try:
         rest = _validate_session_rest(rig, saved)
     except ValueError:
+        if _original_pose is not None:
+            raise
         # Prove the complete old graph before accepting only supported native
         # Direct geometry edits. The plan never restores or re-planes Rest.
         plan = resync.prepare(context, rig, saved)
@@ -603,88 +669,106 @@ def _leave(context, rig, refresh, *, finalize=None):
         rest = plan['rest']
         if 'dress_edit' not in saved:
             raise ValueError('Update the saved Original Dress session before adapting edited Rest.')
-    _ensure_dress_editable(context, rig, saved)
+    _ensure_dress_editable(context, rig, saved, _original_pose=_original_pose)
     session_raw = rig[SESSION]
     relations = _resolve(rig, saved['constraints'])
     extra_views = _extra_views(rig, saved)
     _update(context, rig)
     desired = _pose(rig, rest)
     current_channels = _channels(rig)
+    pose_edits = (_session_pose_edits(saved, desired)
+                  if plan is None and 'entered_pose' in saved else None)
     # These consecutive reads share one exact proof. It must not cross the
     # native update below or any Body/Dress mutation in the transfer.
     dress_targets = dress_pose._resolve(context, rig, saved['dress_edit'])
     dress_desired = dress_pose.capture(context, rig, saved['dress_edit'], targets=dress_targets)
     dress_checkpoint = dress_pose.checkpoint(context, rig, saved['dress_edit'], targets=dress_targets)
-    edited = plan is not None or any(current_channels[name] != saved['entered_channels'][name] for name in desired)
+    edited = (plan is not None or bool(pose_edits)
+              or any(current_channels[name] != saved['entered_channels'][name] for name in desired))
     checkpoint = (current_channels, display._snapshot(rig), _locks(rig, saved['names']),
                   [(con, con.mute) for con, _entry in relations],
                   [(con, float(con.pole_angle)) for pb in rig.pose.bones
                    for con in pb.constraints if con.type == 'IK'],
                   match._leg_pole_metadata(rig))
     extra_checkpoint = [(target, display._snapshot(target)) for target, _view in extra_views]
-    try:
-        _restore_channels(rig, saved['channels'])
-        _restore_locks(rig, saved['locks'])
-        for con, entry in relations:
-            con.mute = entry['mute']
-        _update(context, rig)
-        forced = resync.apply(context, rig, saved, plan)
-        limb_ik._validate_inventory(rig)
-        changed = {name for name in desired if poses._difference(desired[name], rig.pose.bones[name].matrix) > 1e-7}
-        changed.update(forced)
-        if plan is not None and all(current_channels[name] == saved['entered_channels'][name]
-                                    for name in desired if name not in forced):
-            # Geometry edits in one limb must not rematch untouched limbs just
-            # because the Original bake rounded a native matrix by ~1e-6.
-            # In particular, matching an unchanged arm repositions its Pole
-            # along the same bend ray, changing an artist's controller layout.
-            # Authored poses outside this region retain the full match route;
-            # all native poses and bound surfaces still undergo final checks.
-            changed = set(forced)
-        if changed and edited:
-            poses._match(context, rig, desired, changed, preserve_modes=True,
-                         precise_limbs=plan['keys'] if plan else ())
+    with owner.pose_return_checkpoint(_original_pose, checkpoint):
+        try:
+            _restore_channels(rig, saved['channels'])
+            _restore_locks(rig, saved['locks'])
+            for con, entry in relations:
+                con.mute = entry['mute']
             _update(context, rig)
-        # Returning without native edits may still restore a historical Pole
-        # offset behind the body. Repair the existing leg controls, not Rest.
-        match.repair_leg_poles(context, rig, desired_pose=desired)
-        _verify(rig, desired)
-        dress_pose.leave(context, rig, saved['dress_edit'], desired=dress_desired)
-        display._restore(rig, saved['display'])
-        for target, view in extra_views:
-            display._restore(target, view)
-        rig.pop(SESSION)
-        groups._FRAME_CACHE.pop(rig.as_pointer(), None)
-        groups._frame_visibility(context.scene, objects=(rig,))
-        display._completed(rig, update=False)
-        refresh()
-        dress_pose.verify(context, rig, saved['dress_edit'], desired=dress_desired)
-        resync.verify(context, rig, plan)
-        resync.commit(rig, plan)
-        if finalize is not None:
-            finalize()
-        for target, _view in extra_views:
-            target.pop(DISPLAY_OWNER, None)
-        rig.pop(DISPLAY_REFS, None)
-    except Exception:
-        channels, view, locks, mutes, pole_angles, pole_metadata = checkpoint
-        _restore_channels(rig, channels)
-        _restore_locks(rig, locks)
-        for con, muted in mutes:
-            con.mute = muted
-        for con, angle in pole_angles:
-            con.pole_angle = angle
-        match._restore_leg_pole_metadata(rig, pole_metadata)
-        dress_pose.rollback(context, dress_checkpoint)
-        display._restore(rig, view)
-        for target, extra_view in extra_checkpoint:
-            display._restore(target, extra_view)
-        rig[SESSION] = session_raw
-        resync.rollback(context, rig, plan)
-        _update(context, rig)
-        refresh()
-        resync.restore_correctives(plan)
-        raise
+            forced = resync.apply(context, rig, saved, plan)
+            limb_ik._validate_inventory(rig)
+            changed = {name for name in desired if poses._difference(desired[name], rig.pose.bones[name].matrix) > 1e-7}
+            if pose_edits is not None:
+                changed.intersection_update(pose_edits)
+            changed.update(forced)
+            if plan is not None and all(current_channels[name] == saved['entered_channels'][name]
+                                        for name in desired if name not in forced):
+                # Geometry edits in one limb must not rematch untouched limbs just
+                # because the Original bake rounded a native matrix by ~1e-6.
+                # In particular, matching an unchanged arm repositions its Pole
+                # along the same bend ray, changing an artist's controller layout.
+                # Authored poses outside this region retain the full match route;
+                # all native poses and bound surfaces still undergo final checks.
+                changed = set(forced)
+            if changed and edited:
+                poses._match(context, rig, desired, changed, preserve_modes=True,
+                             precise_limbs=plan['keys'] if plan else (),
+                             _pose_only_owner=_original_pose is not None)
+                _update(context, rig)
+            # Returning without native edits may still restore a historical Pole
+            # offset behind the body. Repair the existing leg controls, not Rest.
+            if _original_pose is None:
+                match.repair_leg_poles(context, rig, desired_pose=desired)
+            else:
+                match._repair_original_leg_poles(context, rig, desired_pose=desired,
+                                                 _original_pose=_original_pose)
+            _verify(rig, desired)
+            dress_pose.leave(context, rig, saved['dress_edit'], desired=dress_desired)
+            display._restore(rig, saved['display'])
+            for target, view in extra_views:
+                display._restore(target, view)
+            rig.pop(SESSION)
+            groups._FRAME_CACHE.pop(rig.as_pointer(), None)
+            # Pose-only return restores the artist's exact saved display. Mode
+            # matching preserves the saved IK/FK modes; normalizing membership
+            # here would replace that layout and create new FK display records.
+            if _original_pose is None:
+                groups._frame_visibility(context.scene, objects=(rig,),
+                                          _original_pose=_original_pose)
+            display._completed(rig, update=False)
+            refresh()
+            dress_pose.verify(context, rig, saved['dress_edit'], desired=dress_desired)
+            resync.verify(context, rig, plan)
+            resync.commit(rig, plan)
+            owner.finish_pose_session(_original_pose)
+            if finalize is not None:
+                finalize()
+            for target, _view in extra_views:
+                target.pop(DISPLAY_OWNER, None)
+            rig.pop(DISPLAY_REFS, None)
+        except Exception:
+            channels, view, locks, mutes, pole_angles, pole_metadata = checkpoint
+            _restore_channels(rig, channels)
+            _restore_locks(rig, locks)
+            for con, muted in mutes:
+                con.mute = muted
+            for con, angle in pole_angles:
+                con.pole_angle = angle
+            match._restore_leg_pole_metadata(rig, pole_metadata)
+            dress_pose.rollback(context, dress_checkpoint)
+            display._restore(rig, view)
+            for target, extra_view in extra_checkpoint:
+                display._restore(target, extra_view)
+            rig[SESSION] = session_raw
+            owner.restore_pose_session(_original_pose)
+            resync.rollback(context, rig, plan)
+            _update(context, rig)
+            refresh()
+            resync.restore_correctives(plan)
+            raise
     return True
 
 

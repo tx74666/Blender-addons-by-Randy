@@ -78,6 +78,9 @@ def _bone_ownership_hashes(bones):
 
 
 def _recovery_owners(rig):
+    from . import body_rest_adoption
+    if body_rest_adoption.has_revision(rig):
+        return body_rest_adoption.recovery_owners(rig)
     from . import animation_worklist_target as target, unity_animation as ua
     data = rig.data
     bound = [obj for obj in bpy.data.objects if obj.type == 'ARMATURE' and obj.data is data]
@@ -133,6 +136,9 @@ def verified_single_armature_user(rig):
     Known Action references remain untouched.  Pending edits may vary only the
     released native geometry; completed revisions pin the entire new Rest.
     """
+    from . import body_rest_adoption
+    if body_rest_adoption.active_owner(rig):
+        return True
     try:
         active = _OWNER_OPERATION
         if active is not None and active['rig'] is rig and active['data'] is rig.data:
@@ -499,7 +505,10 @@ def _require(context, rig):
     body_setup._require_rig(context, rig)
     if body_original_mode.SESSION in rig:
         raise ValueError('Choose Controls before releasing a region; Original is a temporary display session.')
-    if animation_worklist_target.is_adopted(rig):
+    from . import body_rest_adoption
+    current_controls = (body_rest_adoption.has_revision(rig)
+                        and verified_single_armature_user(rig))
+    if animation_worklist_target.is_adopted(rig) and not current_controls:
         raise ValueError('Restore Main Rig in Animation > Advanced before changing native bone proportions.')
     if context.screen and context.screen.is_animation_playing:
         raise ValueError('Pause playback before changing regional controls.')

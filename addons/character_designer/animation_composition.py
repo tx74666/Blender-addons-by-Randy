@@ -1773,7 +1773,21 @@ def begin_sync(context, item=None, *, collection=False, collection_proof=None):
     job['_worklist_composition_export'] = job['composition_export']
     job['_worklist_composition_metadata'] = proof['composition_metadata']
     job['_composition_window_manager'] = window_manager
-    bpy.app.timers.register(_poll_sync, first_interval=.25)
+    timers, registered_before = bpy.app.timers, None
+    try:
+        registered_before = timers.is_registered(_poll_sync)
+        if registered_before:
+            raise RuntimeError('Another Composition export poll is still registered; retry after it finishes.')
+        timers.register(_poll_sync, first_interval=.25)
+    except Exception:
+        try:
+            if registered_before is False and timers.is_registered(_poll_sync):
+                timers.unregister(_poll_sync)
+        finally:
+            # Reuse export disposal, including this job's Link-lock callback.
+            # An existing/unknown poll belongs to its earlier owner.
+            _service('animation_composition_export').cancel_isolated_export(job)
+        raise
     saved.status, saved.has_error = 'Syncing overlay · ' + item.name + '. The result remains a preview.', False
     return job
 

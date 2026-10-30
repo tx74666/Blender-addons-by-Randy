@@ -204,6 +204,8 @@ def _make_colliders(context, source, rig, record, collection):
 
 def add_physics(context, source, *, backend=None, body=None, capability=None):
     """Keep legacy callers unchanged; surface installation is an explicit transaction."""
+    from .animation_physics import require_enabled
+    require_enabled(source, context=context, component="SKIRT")
     if backend is not None and (type(backend) is not str or backend not in SURFACE_BACKENDS | {LEGACY_BACKEND}):
         raise SkirtPhysicsError("Unknown requested Dress physics backend.")
     skirt_rig._require_controls_for_setup(source)

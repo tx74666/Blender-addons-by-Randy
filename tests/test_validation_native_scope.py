@@ -220,7 +220,12 @@ class NativeValidatorIntegrationTests(unittest.TestCase):
         old.name = '_owned_constraint_records'
         actual = hashlib.sha256(ast.dump(old, include_attributes=False).encode()).hexdigest()
         # Authenticated original .83 scanner, not a second hand-rewritten scan.
-        self.assertEqual(actual, '9ee553064f6b7a11654763794a651d3990b2f8b68240fb525449b16b634a6a3b')
+        # Both hashes come from frozen .92's scanner renamed as above: 3.12
+        # includes empty AST fields by default; 3.13 omits those same fields.
+        self.assertIn(actual, {
+            '9ee553064f6b7a11654763794a651d3990b2f8b68240fb525449b16b634a6a3b',
+            '1d28fce570f989614db783fde03c849bef781caab954b6f812c2765cb28467c1',
+        })
 
     def scanner(self):
         namespace = {'validation_native': self.scope, 'OWNER_VALUE': 'limb_ik', 'RIG_VERSION': 1,

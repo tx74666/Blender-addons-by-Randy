@@ -181,7 +181,17 @@ class LimbDisplayTests(unittest.TestCase):
         visible = lambda: limb_ik._pole_display_visible(context, rig, pole, pb)
         self.assertTrue(visible())
         before = display_state(rig)
-        for owner, prop in ((pole, 'hide'), (pb, 'hide'),
+        if hasattr(pb, 'hide'):
+            # Blender 5 keeps the Edit-mode flag independent of Pose display.
+            old_edit_hidden = pole.hide
+            pole.hide = True
+            try:
+                self.assertFalse(pb.hide)
+                self.assertTrue(visible(), 'Edit-hidden must not hide the visible Pose cone ray')
+            finally:
+                pole.hide = old_edit_hidden
+        pose_visibility_owner = pb if hasattr(pb, 'hide') else pole
+        for owner, prop in ((pose_visibility_owner, 'hide'),
                             (rig.data, 'show_bone_custom_shapes'),
                             (context.space_data.overlay, 'show_overlays'),
                             (context.space_data.overlay, 'show_bones')):

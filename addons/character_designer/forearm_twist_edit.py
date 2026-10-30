@@ -261,10 +261,12 @@ def draw_session(layout, context, record):
     continuous = record.get("distribution") == "WRIST_CONTINUOUS"
     ring = record["rings"][current]
     row = layout.row()
-    row.enabled = not rt._SESSION.get("pose_locked")
     row.prop(settings, "test_angle", slider=True)
-    if rt._SESSION.get("pose_locked"):
-        layout.label(text="Editing at the animated pose", icon="KEY_HLT")
+    from . import animation_pose_test
+    if animation_pose_test.natural_active(rt._SESSION['armature']):
+        layout.label(text="Static Rest Pose; temporary wrist test", icon="ARMATURE_DATA")
+    elif rt._SESSION.get("pose_locked"):
+        layout.label(text="Temporary angle preview; pose inputs are retained", icon="KEY_HLT")
     row = layout.row(align=True)
     row.prop(settings, "range_start")
     row.prop(settings, "range_end")

@@ -111,6 +111,11 @@ def _use_cloth(state):
     return state["mode"] == "AUTOMATIC" and not state["editing"] and not state["pending"]
 
 
+def _physics_enabled(source):
+    from .animation_physics import is_enabled
+    return is_enabled(source, component="SKIRT")
+
+
 def _mode_input(modifier, identifier):
     """Use the actual Blender 5.2 typed modifier input, never old ID props."""
     _require(type(identifier) is str and identifier, "Restore the exact Direct output socket identifier.")
@@ -127,7 +132,7 @@ def _sync(source, record, state):
     surface = _installation(record)
     output = _overlay(source, record)
     cloth = _object(source, record, "CLOTH_PROXY").modifiers[-1]
-    use_cloth = _use_cloth(state)
+    use_cloth = _use_cloth(state) and _physics_enabled(source)
     socket = _mode_input(output, surface["mode_socket"])
     socket.value = use_cloth
     _require(type(socket.value) is bool and socket.value == use_cloth, "Blender did not retain the requested Direct output input.")
@@ -817,7 +822,7 @@ def validate(source, rig, record):
         _require(old is not None and old.type == "CLOTH" and not old.show_viewport and not old.show_render
                  and _cache_contract(old.point_cache) == backup["old_cache_contract"], "Restore the paused old physical endpoint and cache configuration.")
     state = _state(source, record)
-    enabled = _use_cloth(state)
+    enabled = _use_cloth(state) and _physics_enabled(source)
     _require(_mode_input(output, surface["mode_socket"]).value == enabled
              and output.show_viewport and output.show_render and cloth.show_viewport == cloth.show_render == enabled,
              "The Direct editing preview and Cloth output states differ.")

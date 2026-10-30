@@ -12,6 +12,7 @@ import sys
 from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
+import test_animation_physics as choices_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1] / "addons/character_designer"
@@ -100,15 +101,16 @@ class SelectionFixture:
         self.objects.active = self.other
         self.other.selected, self.other.mode = True, "POSE"
         self.context = NS(scene=NoTouch(), view_layer=NS(objects=self.objects, update=self.update))
-        collection = NS(is_visible=False)
-        waist = NS(name="Waist", hide=True, collections=[collection])
-        hem = NS(name="Hem", hide=False, collections=[])
-        self.rig.data = NS(bones=Bones(Waist=waist, Hem=hem), library=None, override_library=None)
+        collection = NS(is_visible=False, is_solo=False)
+        waist = NS(name="Waist", hide=True, hide_select=True, collections=[collection])
+        hem = NS(name="Hem", hide=True, hide_select=False, collections=[])
+        self.rig.data = NS(bones=Bones(Waist=waist, Hem=hem), library=None, override_library=None,
+                           collections_all=[collection], show_bone_custom_shapes=False)
         self.rig.data.bones.active = hem
         self.rig.pose = NS(bones=Bones(Waist=NS(name="Waist", select=False, hide=True),
-                                      Hem=NS(name="Hem", select=True, hide=False)))
+                                      Hem=NS(name="Hem", select=True, hide=True)))
         self.record = {"version": 1, "owner": "owned", "chain_count": 8, "segment_count": 4,
-                       "controls": {"waist": "Waist"}, "physics": {"backend": backend,
+                       "controls": {"waist": "Waist", "mid": "Hem", "hem": "Hem", "chains": []}, "chains": [], "physics": {"backend": backend,
                        "baked_range": [1, 60], "surface": {"version": 1, "mode_socket": "use_cloth"}}}
         self.source["rig"] = self.rig
         self.source["record"] = json.dumps(self.record, indent=1)
@@ -124,8 +126,8 @@ class SelectionFixture:
         self.proxy = NS(modifiers=[self.cloth], vertex_groups=NoTouch(), data=NoTouch())
         self.direct = load("skirt_surface_direct.py", {
             "SkirtDirectError", "_require", "_installation", "_state", "_write_state", "_use_cloth",
-            "_mode_input", "_sync", "capture_mode", "restore_mode", "set_mode", "require_bake_ready"},
-            dict(json=json, shared=NS(_json=shared["_json"]), profiles=PROFILES, skirt=NS(RIG_KEY="rig"),
+            "_physics_enabled", "_mode_input", "_sync", "capture_mode", "restore_mode", "set_mode", "require_bake_ready"},
+            dict(json=json, __package__="selection_test", shared=NS(_json=shared["_json"]), profiles=PROFILES, skirt=NS(RIG_KEY="rig"),
                  validate=self.validate, _overlay=lambda *_args: self.output,
                  _object=lambda *_args: self.proxy), {"STATE_KEY", "VERSION", "BACKEND"})
         self.source[self.direct["STATE_KEY"]] = json.dumps(dict(version=1, owner="owned",
@@ -133,9 +135,9 @@ class SelectionFixture:
         self.service = NS(BACKEND=backend, capture_mode=self.direct["capture_mode"],
                           restore_mode=self.direct["restore_mode"], set_mode=self.direct["set_mode"])
         bpy = NS(ops=NS(object=NS(mode_set=lambda *, mode: setattr(self.objects.active, "mode", mode))))
-        self.skirt = load("skirt_rig.py", {"SkirtRigError", "_activate", "_context_state",
+        self.skirt = load("skirt_rig.py", {"SkirtRigError", "_activate", "_context_state", "_bone_collection_layout",
             "_restore_context", "select_controls"},
-            dict(bpy=bpy, read_record=lambda source: json.loads(source["record"]),
+            dict(bpy=bpy, __package__="selection_test", read_record=lambda source: json.loads(source["record"]),
                  _require_controls_for_setup=lambda *_args: None), {"RIG_KEY"})
         self.skirt["RIG_KEY"] = "rig"
         self.skirt.update(RECORD_KEY="record", physics_control=lambda *_args: (self.rig, self.rig, "influence"))
@@ -162,9 +164,10 @@ class SelectionFixture:
             backend=lambda record: record.get("physics", {}).get("backend", "LEGACY_CAGE"),
             _surface_module=lambda _record: self.service, validate_physics=self.physics_validate,
             clear_cache=lambda *_args: (_ for _ in ()).throw(AssertionError("Cache freed")))
-        self.tuning = load("skirt_motion_tuning.py", {"_local", "_weights", "_snapshot", "_restore",
+        self.tuning = load("skirt_motion_tuning.py", {"_local", "_weights", "_snapshot", "_restore", "_clear_choice_errors",
             "apply", "select_manual_controls"},
-            dict(copy=copy, profiles=PROFILES, _modules=lambda: (self.physics, NS(**self.skirt)),
+            dict(copy=copy, profiles=PROFILES, __package__="selection_test", _modules=lambda: (self.physics, NS(**self.skirt)),
+                 _choice_service=lambda: choices_fixture.physics,
                  _profile=lambda source, record, *_args: PROFILES.read(source, record),
                  _influence_editable=lambda *_args: None), {"_SETTINGS", "_COLLISION"})
         real_snapshot, real_restore, real_apply = (self.tuning[key] for key in ("_snapshot", "_restore", "apply"))
@@ -180,14 +183,20 @@ class SelectionFixture:
 
         def apply(*args, **kwargs):
             self.calls.append(("apply",))
-            return real_apply(*args, **kwargs)
+            with patch.dict(sys.modules, {self.package.__name__: self.package,
+                                         self.package.__name__+'.animation_physics': choices_fixture.physics}):
+                return real_apply(*args, **kwargs)
 
         self.tuning.update(_snapshot=snapshot, _restore=restore, apply=apply)
         self.package = ModuleType("selection_test")
         self.package.__path__ = []
+        self.package.animation_physics = choices_fixture.physics
         self.module = ModuleType("selection_test.skirt_motion_tuning")
         self.module.select_manual_controls = self.tuning["select_manual_controls"]
         self.package.skirt_motion_tuning = self.module
+        self.display_module = ModuleType("selection_test.bone_display")
+        self.display_module._set_hidden = load("bone_display.py", {"_set_hidden"}, {})["_set_hidden"]
+        self.package.bone_display = self.display_module
         public = load("skirt.py", {"_restore_preview", "CHARACTERDESIGNER_OT_skirt_select_controls"},
             dict(Operator=object, json=json, __package__="selection_test", _rig=lambda: NS(**self.skirt),
                  _physics=lambda: self.physics, _source=lambda _context: self.source,
@@ -212,11 +221,14 @@ class SelectionFixture:
         return record, self.rig, self.proxy, self.cloth
 
     def run(self):
-        with patch.dict(sys.modules, {self.package.__name__: self.package, self.module.__name__: self.module}):
+        with patch.dict(sys.modules, {self.package.__name__: self.package, self.module.__name__: self.module,
+                                     self.display_module.__name__: self.display_module,
+                                     self.package.__name__+'.animation_physics': choices_fixture.physics}):
             return self.operator.execute(self.context)
 
     def state(self):
         return dict(record=self.source["record"], profile=self.source[PROFILES.PROFILE_KEY],
+                    choice=self.source.get(choices_fixture.physics.SKIRT_CHOICE),
                     direct=self.source[self.direct["STATE_KEY"]], influence=dict(self.rig),
                     endpoint=(self.socket.value, self.output.show_viewport, self.output.show_render,
                               self.cloth.show_viewport, self.cloth.show_render),
@@ -224,13 +236,26 @@ class SelectionFixture:
                     active=id(self.objects.active), bone_active=id(self.rig.data.bones.active),
                     selected=[bone.select for bone in self.rig.pose.bones],
                     bone_hidden=[bone.hide for bone in self.rig.data.bones],
+                    bone_hide_select=[bone.hide_select for bone in self.rig.data.bones],
                     pose_hidden=[bone.hide for bone in self.rig.pose.bones],
-                    collections=[group.is_visible for group in self.rig.data.bones["Waist"].collections],
+                    collections=[(group.is_visible, group.is_solo) for group in self.rig.data.collections_all],
+                    custom_shapes=self.rig.data.show_bone_custom_shapes,
                     settings_source=id(self.settings.source), cache=(id(self.cloth.point_cache),
                     self.cloth.point_cache.is_baked, self.cloth.point_cache.payload))
 
 
 class DirectSelectionTests(unittest.TestCase):
+    def display_fixture(self):
+        f = SelectionFixture()
+        extra_collection = NS(is_visible=True, is_solo=True)
+        f.rig.data.collections_all.append(extra_collection)
+        for name, hidden, unselectable in [('MCH', False, True), ('PHYS', False, False), ('DEF', True, True)]:
+            f.rig.data.bones[name] = NS(name=name, hide=hidden, hide_select=unselectable, collections=[extra_collection])
+            f.rig.pose.bones[name] = NS(name=name, select=name=='DEF', hide=hidden)
+        f.record['chains'] = [{'manual': ['MCH'], 'phys': ['PHYS'], 'def': ['DEF']}]
+        f.source['record'] = json.dumps(f.record, indent=1)
+        return f
+
     def test_public_selector_enters_manual_pending_and_withdraws_output_before_selection(self):
         f = SelectionFixture()
         before, parameters = f.state(), PROFILES.read(f.source, f.record)["settings"]
@@ -253,6 +278,66 @@ class DirectSelectionTests(unittest.TestCase):
         self.assertEqual(f.state(), before)
         self.assertEqual(f.calls.count(("restore-mode",)), 1)
         self.assertEqual(f.calls.count(("restore-context",)), 1)
+
+    def test_late_failure_restores_all_generated_bone_display_shapes_and_collections(self):
+        f = self.display_fixture()
+        before = f.state()
+        f.fail_selection = True
+        self.assertEqual(f.run(), {'CANCELLED'})
+        self.assertEqual(f.state(), before)
+        self.assertFalse(f.rig.data.show_bone_custom_shapes)
+        self.assertTrue(f.rig.data.bones['Hem'].hide)
+        self.assertFalse(f.rig.data.bones['MCH'].hide)
+        self.assertFalse(f.rig.pose.bones['PHYS'].hide)
+
+    def test_failure_restores_generated_hide_select_and_every_collection_after_optional_handoff(self):
+        f = self.display_fixture()
+        before = f.state()
+        selected = f.skirt['select_controls']
+        def late_display_failure(context, source):
+            selected(context, source)
+            for bone in f.rig.data.bones:
+                bone.hide_select = not bone.hide_select
+            for collection in f.rig.data.collections_all:
+                collection.is_visible = not collection.is_visible
+                collection.is_solo = not collection.is_solo
+            raise RuntimeError('late optional display handoff failed')
+        f.skirt['select_controls'] = late_display_failure
+        self.assertEqual(f.run(), {'CANCELLED'})
+        self.assertEqual(f.state(), before)
+
+    def test_successful_selection_exposes_owned_controls_without_restoring_old_display(self):
+        f = self.display_fixture()
+        self.assertEqual(f.run(), {'FINISHED'})
+        self.assertTrue(f.rig.data.show_bone_custom_shapes)
+        self.assertFalse(f.rig.data.bones['Hem'].hide)
+        self.assertFalse(f.rig.pose.bones['Hem'].hide)
+        self.assertTrue(f.rig.data.bones['MCH'].hide)
+        self.assertTrue(f.rig.pose.bones['PHYS'].hide)
+
+    def test_late_failure_restores_unselected_rig_pose_with_an_object_active(self):
+        f = self.display_fixture()
+        f.rig.mode, f.rig.selected, f.other.mode = 'POSE', False, 'OBJECT'
+        before = f.state()
+        f.fail_selection = True
+        self.assertEqual(f.run(), {'CANCELLED'})
+        self.assertEqual(f.state(), before)
+        self.assertEqual(f.rig.mode, 'POSE')
+        self.assertIs(f.objects.active, f.other)
+        self.assertFalse(f.rig.selected)
+
+    def test_unsupported_prior_mode_is_refused_before_native_or_intent_mutation(self):
+        for target in ('rig', 'active'):
+            with self.subTest(target=target):
+                f = self.display_fixture()
+                if target == 'rig':
+                    f.rig.mode = 'EDIT'
+                else:
+                    f.other.mode = 'EDIT'
+                before = f.state()
+                self.assertEqual(f.run(), {'CANCELLED'})
+                self.assertEqual(f.state(), before)
+                self.assertFalse(any(call[0] in {'apply', 'select', 'restore-mode'} for call in f.calls))
 
     def test_apply_failure_has_one_owned_rollback_and_never_selects_or_restores_selection(self):
         f = SelectionFixture()

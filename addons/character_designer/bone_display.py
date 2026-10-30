@@ -21,6 +21,12 @@ def _completed(main, *, update=True):
     bone_display_sync.completed(main)
 
 
+def _apply_pending_physics(context, main):
+    """Apply queued choices only after a completed, ordinary Controls return."""
+    from . import animation_physics
+    return animation_physics.apply_pending_skirt_modes(context, main, reconcile=True)
+
+
 def _skirt_source(rig):
     source = rig.get(skirt_rig.SOURCE_KEY)
     if source is None or source.get(skirt_rig.RIG_KEY) != rig:
@@ -46,7 +52,11 @@ def character_rig(context):
     return rig or character_setup.preferred_rig(context)
 
 
-def _editable(rig):
+def _editable(rig, *, _original_pose=None):
+    if _original_pose is not None:
+        from . import body_original_owner
+        if body_original_owner._display_pose_capability(_original_pose, rig):
+            return
     if (rig is None or rig.type != 'ARMATURE' or rig.mode == 'EDIT'
             or rig.library or rig.data.library or not rig.is_editable
             or not _single_data_user(rig)):
@@ -226,9 +236,12 @@ def view_mode(main):
         raise ValueError('The saved bone display view is invalid; recover its saved file.') from exc
 
 
-def restore_view(main):
+def restore_view(main, *, _original_pose=None):
     """Restore display only; artist weight and pose edits made in this view survive."""
-    _editable(main)
+    if _original_pose is None:
+        _editable(main)
+    else:
+        _editable(main, _original_pose=_original_pose)
     if VIEW_KEY not in main.data:
         return False
     saved = json.loads(main.data[VIEW_KEY])
@@ -238,7 +251,10 @@ def restore_view(main):
         rig = references.get(key)
         if rig is None:
             raise ValueError('A rig used by the saved display view was removed; restore it first.')
-        _editable(rig)
+        if _original_pose is None:
+            _editable(rig)
+        else:
+            _editable(rig, _original_pose=_original_pose)
         _check_object_restore(rig, state)
         targets.append((rig, state))
     before = [(rig, _snapshot(rig)) for rig, _state in targets]
@@ -253,10 +269,23 @@ def restore_view(main):
         rig.data.pop(VIEW_KEY, None)
         rig.data.pop(REFS_KEY, None)
     # Refresh Body membership to the current keyed IK/FK mode after leaving isolation.
-    groups._FRAME_CACHE.clear()
-    groups._frame_visibility(bpy.context.scene)
+    pose_display = False
+    if _original_pose is not None:
+        from . import body_original_owner
+        pose_display = body_original_owner._display_pose_capability(_original_pose, main)
+    if pose_display:
+        # This synchronous display permission must not publish an ordinary
+        # playback ownership cache entry or alter another rig's cache.
+        groups._frame_visibility(bpy.context.scene, objects=(main,), _original_pose=_original_pose)
+    else:
+        groups._FRAME_CACHE.clear()
+        groups._frame_visibility(bpy.context.scene)
     for rig, _state in targets:
         _completed(rig)
+    if _original_pose is None:
+        # An authenticated Original transfer must finish all ownership and
+        # pose checks before a pending physics choice can touch native state.
+        _apply_pending_physics(bpy.context, main)
     return True
 
 

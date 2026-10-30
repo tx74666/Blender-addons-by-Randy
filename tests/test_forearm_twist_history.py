@@ -15,6 +15,12 @@ SOURCE = Path(__file__).resolve().parents[1] / 'addons/character_designer/forear
 RECORD_KEY = 'character_designer_forearm_twist_v1'
 PREVIEW_KEY = 'character_designer_forearm_twist_preview_v1'
 LOCK_KEY = 'character_designer_twist_render_lock'
+EXPECTED_HANDLERS = (
+    ('depsgraph_update_post', '_graph_post'), ('frame_change_post', '_frame_post'),
+    ('animation_playback_pre', '_playback_pre'), ('animation_playback_post', '_playback_post'),
+    ('load_pre', '_restore_preview'), ('save_pre', '_restore_preview'),
+    ('undo_pre', '_restore_preview'), ('redo_pre', '_redo_pre'), ('load_post', '_load_post'),
+    ('undo_post', '_undo_post'), ('redo_post', '_undo_post'))
 
 
 class ID(dict):
@@ -40,7 +46,8 @@ class Timers:
 
 def product():
     names = {'update_runtime', '_graph_post', '_frame_post', '_load_post',
-             '_undo_post', '_complete_history_recovery', '_recover_previews',
+             '_playback_token', '_playback_pre', '_playback_post',
+             '_redo_pre', '_undo_post', '_complete_history_recovery', '_recover_previews',
              'finish_test', '_cleanup_runtime_scene', '_scene_data_available',
              '_complete_runtime_lifecycle', '_request_runtime_lifecycle',
              'register_forearm_twist_runtime', 'unregister_forearm_twist_runtime'}
@@ -52,8 +59,7 @@ def product():
                      for target in node.targets)]
     scene = ID('Scene', 'SCENE', objects=[], render=NS(use_lock_interface=False))
     graph_get = Mock(side_effect=AssertionError('Native graph requested inside history callback'))
-    handlers = NS(**{name: [] for name in ('depsgraph_update_post', 'frame_change_post',
-                     'load_pre', 'save_pre', 'undo_pre', 'load_post', 'undo_post', 'redo_post')})
+    handlers = NS(**{name: [] for name, _callback in EXPECTED_HANDLERS})
     context = NS(scene=scene, evaluated_depsgraph_get=graph_get,
                  view_layer=NS(update=Mock(side_effect=AssertionError('Native view update requested'))))
     bpy = NS(context=context, data=NS(objects=[], scenes=[scene]),
@@ -64,7 +70,8 @@ def product():
                  '_KEY_REFERENCES': {}, '_ERRORS': {}, '_DRAW_HANDLE': None,
                  '_RUNTIME_REGISTERED': False, '_INITIALIZE_PENDING': False,
                  '_SCENE_CLEANUP_PENDING': False, '_SCENE_STATE_ACTIVE': False,
-                 '_HISTORY_RECOVERY_PENDING': False, 'validation_cache': NS(clear=Mock()),
+                 '_HISTORY_RECOVERY_PENDING': False, '_PLAYBACK_PREPARED': {},
+                 'validation_cache': NS(clear=Mock()),
                  '_remember_named_keys': Mock(), '_set_render_lock': Mock(),
                  '_calculate_object': Mock(), '_restore_preview': Mock(),
                  '_finish_test_restore': Mock(), 'traceback': NS(print_exc=Mock())}
@@ -84,7 +91,7 @@ class HistorySafetyTests(unittest.TestCase):
         ns, bpy, scene, graph_get = product()
         self.owner(bpy, scene)
         ns['_SESSION'] = {'stale': object()}
-        for name in ('_CACHE', '_OUTPUT_CACHE', '_KEY_REFERENCES', '_ERRORS'):
+        for name in ('_CACHE', '_OUTPUT_CACHE', '_KEY_REFERENCES', '_ERRORS', '_PLAYBACK_PREPARED'):
             ns[name]['old'] = object()
         ns['_recover_previews'] = Mock(side_effect=AssertionError('Rollback ran during native Undo'))
         ns['_INITIALIZE_PENDING'] = True
@@ -92,11 +99,36 @@ class HistorySafetyTests(unittest.TestCase):
         self.assertTrue(ns['_HISTORY_RECOVERY_PENDING'])
         self.assertIsNone(ns['_SESSION'])
         self.assertTrue(ns['_INITIALIZE_PENDING'])
-        for name in ('_CACHE', '_OUTPUT_CACHE', '_KEY_REFERENCES', '_ERRORS'):
+        for name in ('_CACHE', '_OUTPUT_CACHE', '_KEY_REFERENCES', '_ERRORS', '_PLAYBACK_PREPARED'):
             self.assertEqual(ns[name], {})
         ns['_remember_named_keys'].assert_not_called()
         ns['_calculate_object'].assert_not_called()
         graph_get.assert_not_called()
+
+    def test_redo_pre_only_clears_play_admission_without_scene_or_history_mutation(self):
+        ns, bpy, scene, graph_get = product()
+        self.owner(bpy, scene)
+        session = {'live': object()}
+        ns['_SESSION'] = session
+        ns['_PLAYBACK_PREPARED']['old'] = object()
+        old = {}
+        for name in ('_CACHE', '_OUTPUT_CACHE', '_KEY_REFERENCES', '_ERRORS'):
+            ns[name]['old'] = object()
+            old[name] = dict(ns[name])
+        ns['_recover_previews'] = Mock(side_effect=AssertionError('Preview rollback ran before native Redo'))
+        ns['finish_test'] = Mock(side_effect=AssertionError('Preview finish ran before native Redo'))
+        ns['_redo_pre'](None)
+        self.assertEqual(ns['_PLAYBACK_PREPARED'], {})
+        self.assertIs(ns['_SESSION'], session)
+        self.assertFalse(ns['_HISTORY_RECOVERY_PENDING'])
+        for name, values in old.items():
+            self.assertEqual(ns[name], values)
+        ns['_recover_previews'].assert_not_called()
+        ns['finish_test'].assert_not_called()
+        ns['_remember_named_keys'].assert_not_called()
+        ns['_calculate_object'].assert_not_called()
+        graph_get.assert_not_called()
+        bpy.context.view_layer.update.assert_not_called()
 
     def test_no_graph_keeps_recovery_pending_without_requesting_one(self):
         ns, bpy, scene, graph_get = product()
@@ -155,7 +187,7 @@ class HistorySafetyTests(unittest.TestCase):
         ns['_calculate_object'].assert_not_called()
         self.assertNotIn(PREVIEW_KEY, owner)
         ns['_graph_post'](scene, fresh)
-        ns['_calculate_object'].assert_called_once_with(owner, fresh)
+        ns['_calculate_object'].assert_called_once_with(owner, fresh, _playback_scene=scene)
         graph_get.assert_not_called()
         bpy.context.view_layer.update.assert_not_called()
 
@@ -174,6 +206,7 @@ class HistorySafetyTests(unittest.TestCase):
         ns['register_forearm_twist_runtime']()
         self.assertTrue(ns['_RUNTIME_REGISTERED'])
         self.assertTrue(ns['_SCENE_STATE_ACTIVE'])
+        self.assertEqual(ns['_HANDLERS'], tuple((name, ns[callback]) for name, callback in EXPECTED_HANDLERS))
         for name, callback in ns['_HANDLERS']:
             self.assertEqual(getattr(bpy.app.handlers, name).count(callback), 1)
         ns['_undo_post'](None)

@@ -16,6 +16,10 @@ BACKUP_REFS_KEY = "character_designer_bone_collections_backup_refs"
 AUTO_KEY = "character_designer_auto_bone_collections"
 NATIVE_ONLY_KEY = "character_designer_native_after_body_removal"
 _FRAME_CACHE = {}
+_FRAME_OWNER_REJECTIONS = {}
+_FRAME_OWNER_RETRY_SECONDS = 1.0
+_FRAME_PLAYBACK_SCENES = set()
+_FRAME_PLAYBACK_DEFERRED = set()
 _MIGRATION_TIMER = globals().get("_MIGRATION_TIMER")
 _MIGRATION_REGISTERED = False
 
@@ -447,6 +451,7 @@ def sync_limb_display(armature, inventory=None, *, keys=None, force_flags=False)
             # stable so primitive display checkpoints can restore its JSON.
             if _copy_property(armature.data.get(BACKUP_REFS_KEY, {})) != backup_refs:
                 raise ValueError('Updating Body display unexpectedly changed saved ID references; no display changes were kept.')
+        _FRAME_OWNER_REJECTIONS.pop(armature.as_pointer(), None)
         if set(selected) == set(inventory['rigs']) and managed:
             _FRAME_CACHE[armature.as_pointer()] = _display_frame_state(armature, managed[0])
         else:
@@ -471,6 +476,7 @@ def sync_limb_display(armature, inventory=None, *, keys=None, force_flags=False)
         else:
             armature.data.pop(BACKUP_REFS_KEY, None)
         _FRAME_CACHE.pop(armature.as_pointer(), None)
+        _FRAME_OWNER_REJECTIONS.pop(armature.as_pointer(), None)
         raise
 
 
@@ -548,6 +554,7 @@ def show_original_after_removal(armature):
         data[NATIVE_ONLY_KEY] = 1
         _save_backup(armature, before)
         _FRAME_CACHE.pop(armature.as_pointer(), None)
+        _FRAME_OWNER_REJECTIONS.pop(armature.as_pointer(), None)
         return {"changed": snapshot_layout(armature) != before,
                 "removed_collections": removed, "original_bones": len(native)}
     except Exception:
@@ -720,6 +727,7 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
         data[AUTO_KEY] = 1
         _save_backup(armature, original_layout or before)
         _FRAME_CACHE.pop(armature.as_pointer(), None)
+        _FRAME_OWNER_REJECTIONS.pop(armature.as_pointer(), None)
         return {name: len(names) for name, names in desired.items()}
     except Exception:
         restore_layout(armature, before)
@@ -772,8 +780,22 @@ def _display_frame_state(armature, collection):
 
 
 @bpy.app.handlers.persistent
-def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventory=None):
+def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventory=None,
+                      _after_playback=False, _original_pose=None):
     """Follow keyed modes without changing the artist's visible/solo switches."""
+    pose_rig = None
+    if _original_pose is not None:
+        from . import body_original_owner
+        if (not isinstance(objects, (tuple, list)) or len(objects) != 1
+                or not body_original_owner._display_pose_capability(_original_pose, objects[0])):
+            raise ValueError('Original display permission requires its single explicit character rig.')
+        pose_rig = objects[0]
+    if objects is None and not _after_playback:
+        key = _playback_scene_key(scene)
+        if key in _FRAME_PLAYBACK_SCENES:
+            _FRAME_PLAYBACK_DEFERRED.add(key)
+            return
+    from time import monotonic
     from . import limb_fk_visuals, limb_ik, spine_ik_fk
     for armature in scene.objects if objects is None else objects:
         if 'character_designer_body_original_mode_v1' in armature:
@@ -793,12 +815,32 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
         state = _display_frame_state(armature, collection)
         modes = state[0]
         previous = _FRAME_CACHE.get(key)
-        if previous == state:
+        if armature is pose_rig:
+            # Original owns this synchronous display handoff and its rollback.
+            # Never turn its pose-only permission into a playback owner proof:
+            # both ordinary success and refusal caches remain untouched.
+            inventory = (verified_inventory if verified_inventory is not None else
+                         limb_ik._validate_inventory(armature))
+            if not body_original_owner._display_pose_capability(_original_pose, armature):
+                raise ValueError('Original display permission changed before synchronization.')
+            sync_limb_display(armature, inventory, force_flags=bool(previous and previous[0] != modes))
+            if not body_original_owner._display_pose_capability(_original_pose, armature):
+                raise ValueError('Original display permission changed during synchronization.')
             continue
-        # An unchanged display performs no writes. Authenticate data ownership
-        # only when a display update is needed, before publishing cache state or
-        # changing any collection/bone flags. Recovery references stay live.
+        if previous == state and not _after_playback:
+            continue
+        # Ownership refusal never publishes a successful display state. Briefly
+        # throttle only the same refused request/data/users; owner-reference
+        # removal retries immediately, other repairs retry within one second.
+        data = armature.data
+        token = (getattr(data, 'session_uid', None), data.as_pointer(), data.users)
+        rejected = _FRAME_OWNER_REJECTIONS.get(key)
+        if (not _after_playback and rejected is not None and rejected[:2] == (state, token)
+                and monotonic() < rejected[2]):
+            continue
+        _FRAME_OWNER_REJECTIONS.pop(key, None)
         if not _single_data_user(armature):
+            _FRAME_OWNER_REJECTIONS[key] = (state, token, monotonic() + _FRAME_OWNER_RETRY_SECONDS)
             continue
         # Cache unsuccessful cases too: no repeated errors or retries per frame.
         _FRAME_CACHE[key] = state
@@ -814,6 +856,32 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
             # The explicit rig tools report validation errors. Playback stays uninterrupted.
             _FRAME_CACHE[key] = state
             continue
+
+
+def _playback_scene_key(scene):
+    """Keep no RNA references across playback or file/undo transitions."""
+    return getattr(scene, 'session_uid', None), scene.as_pointer()
+
+
+@bpy.app.handlers.persistent
+def _playback_visibility_pre(scene, _depsgraph=None):
+    _FRAME_PLAYBACK_SCENES.add(_playback_scene_key(scene))
+
+
+@bpy.app.handlers.persistent
+def _playback_visibility_post(scene, _depsgraph=None):
+    key = _playback_scene_key(scene)
+    _FRAME_PLAYBACK_SCENES.discard(key)
+    if key in _FRAME_PLAYBACK_DEFERRED:
+        # Consume before syncing: re-entrant frame callbacks must not repeat it.
+        _FRAME_PLAYBACK_DEFERRED.discard(key)
+        _frame_visibility(scene, _depsgraph, _after_playback=True)
+
+
+@bpy.app.handlers.persistent
+def _clear_playback_visibility(*_unused):
+    _FRAME_PLAYBACK_SCENES.clear()
+    _FRAME_PLAYBACK_DEFERRED.clear()
 
 
 def _native_migration_once():
@@ -848,6 +916,7 @@ def _schedule_native_migration():
 
 @bpy.app.handlers.persistent
 def _load_native_migration(_unused):
+    _clear_playback_visibility()
     _schedule_native_migration()
 
 
@@ -857,6 +926,10 @@ def register_handlers():
     _MIGRATION_REGISTERED = True
     bpy.app.handlers.frame_change_post.append(_frame_visibility)
     bpy.app.handlers.load_post.append(_load_native_migration)
+    bpy.app.handlers.animation_playback_pre.append(_playback_visibility_pre)
+    bpy.app.handlers.animation_playback_post.append(_playback_visibility_post)
+    for event in ('load_pre', 'undo_pre', 'redo_pre'):
+        getattr(bpy.app.handlers, event).append(_clear_playback_visibility)
     # Blender restricts data access while an add-on is being registered. Run
     # once after registration, never in playback or undo/redo callbacks.
     _schedule_native_migration()
@@ -868,15 +941,22 @@ def unregister_handlers():
     if _MIGRATION_TIMER is not None and bpy.app.timers.is_registered(_MIGRATION_TIMER):
         bpy.app.timers.unregister(_MIGRATION_TIMER)
     _MIGRATION_TIMER = None
-    for handler in tuple(bpy.app.handlers.frame_change_post):
-        if (getattr(handler, "__module__", "") == __name__
-                and getattr(handler, "__name__", "") == "_frame_visibility"):
-            bpy.app.handlers.frame_change_post.remove(handler)
-    for handler in tuple(bpy.app.handlers.load_post):
-        if (getattr(handler, "__module__", "") == __name__
-                and getattr(handler, "__name__", "") == "_load_native_migration"):
-            bpy.app.handlers.load_post.remove(handler)
+    for event, name in (
+            ('frame_change_post', '_frame_visibility'),
+            ('load_post', '_load_native_migration'),
+            ('animation_playback_pre', '_playback_visibility_pre'),
+            ('animation_playback_post', '_playback_visibility_post'),
+            ('load_pre', '_clear_playback_visibility'),
+            ('undo_pre', '_clear_playback_visibility'),
+            ('redo_pre', '_clear_playback_visibility')):
+        handlers = getattr(bpy.app.handlers, event, ())
+        for handler in tuple(handlers):
+            if (getattr(handler, "__module__", "") == __name__
+                    and getattr(handler, "__name__", "") == name):
+                handlers.remove(handler)
     _FRAME_CACHE.clear()
+    _FRAME_OWNER_REJECTIONS.clear()
+    _clear_playback_visibility()
 
 
 class CHARACTERDESIGNER_OT_simplify_bone_collections(Operator):

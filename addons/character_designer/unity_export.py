@@ -678,6 +678,75 @@ def _candidate_full_config(config, eligible):
     return FullContext()
 
 
+def _inert_update_part_identity_carrier(obj, rig, source, rig_id, part_id):
+    """Recognize an unlinked copy held only by its stored finger-guide refs.
+
+    This is an export-scope proof, not recovery ownership. Keep the copy and
+    its IDs intact, and never reuse a successful result at publication time.
+    """
+    try:
+        if (obj == source or obj.type != 'MESH' or source.type != 'MESH'
+                or obj.library or obj.override_library or not obj.is_editable
+                or obj.data is None or obj.data.library or obj.data.override_library
+                or not obj.data.is_editable or obj.use_fake_user or obj.use_extra_user
+                or obj.users_scene or obj.users_collection or obj.children
+                or obj.instance_type != 'NONE' or obj.instance_collection is not None
+                or obj.parent != rig or obj.get(UPDATE_PART_ID) != part_id
+                or source.get(UPDATE_PART_ID) != part_id
+                or obj.get(UPDATE_PART_OWNER) != rig_id
+                or source.get(UPDATE_PART_OWNER) != rig_id):
+            return False
+        if any(other != obj and other.type == 'MESH' and other.data == obj.data
+               for other in bpy.data.objects):
+            return False
+        # user_map includes non-refcounting driver/constraint links as well.
+        # Any foreign holder is a conflict even if ID.users did not increase.
+        if bpy.data.user_map(subset={obj}).get(obj, set()) != {obj}:
+            return False
+
+        def schema(owner, name, kind, identifier):
+            prop = owner.bl_rna.properties.get(name)
+            return (prop is not None and prop.type == kind
+                    and prop.fixed_type.identifier == identifier)
+
+        key = 'character_designer_finger_bank'
+        if (not schema(obj, key, 'POINTER', 'CharacterDesignerFingerBank')
+                or not obj.is_property_set(key)):
+            return False
+        bank = getattr(obj, key)
+        if (bank.id_data != obj
+                or not schema(bank, 'slots', 'COLLECTION', 'CharacterDesignerFingerSlot')
+                or not bank.is_property_set('slots') or len(bank.slots) > 32):
+            return False
+        self_users = 0
+        for slot in bank.slots:
+            if (slot.id_data != obj
+                    or not schema(slot, 'guide', 'POINTER', 'CharacterDesignerFingerDefinition')):
+                return False
+            if not slot.is_property_set('guide'):
+                continue
+            guide = slot.guide
+            if guide.id_data != obj:
+                return False
+            for field in ('source', 'bend_source', 'pending_source'):
+                if not schema(guide, field, 'POINTER', 'Object'):
+                    return False
+                if not guide.is_property_set(field):
+                    continue
+                target = getattr(guide, field)
+                if target is None:
+                    continue
+                if target != obj:
+                    return False
+                self_users += 1
+        # These stored PropertyGroup pointers are USER links, unlike driver
+        # targets. Require all native users to be accounted for; an unknown
+        # counted link, fake user or real external owner must keep refusing.
+        return self_users > 0 and self_users == obj.users
+    except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _candidate_identity_plan(rig, meshes, inventory):
     """Plan canonical IDs read-only; no path/name is migration authority."""
     def identity(obj, key):
@@ -717,11 +786,14 @@ def _candidate_identity_plan(rig, meshes, inventory):
         plan(obj, UPDATE_PART_ID, part_id)
         plan(obj, UPDATE_PART_OWNER, rig_id)
         parts.append({**item, 'part_id': part_id})
+    source_by_part = {item['part_id']: by_name[item['object_name']] for item in parts}
     for obj in bpy.data.objects:
         if obj != rig and obj.get(UPDATE_RIG_ID) == rig_id:
             raise ExportError('Duplicate Unity update rig identities must be resolved before exporting.')
         other_part = obj.get(UPDATE_PART_ID)
-        if obj not in meshes and isinstance(other_part, str) and other_part in part_ids:
+        if (obj not in meshes and isinstance(other_part, str) and other_part in part_ids
+                and not _inert_update_part_identity_carrier(
+                    obj, rig, source_by_part[other_part], rig_id, other_part)):
             raise ExportError('A Unity update part identity is duplicated outside this character.')
     return {'rig': rig, 'rig_id': rig_id, 'parts': parts, 'writes': writes,
             'objects': [(by_name[item['object_name']], item['object_name'], item['part_id'])
@@ -765,10 +837,13 @@ def _validate_candidate_ids(plan):
             raise ExportError('A registered Unity update part changed during candidate export.')
     meshes = {item[0] for item in plan['objects']}
     part_ids = {item[2] for item in plan['objects']}
+    source_by_part = {item[2]: item[0] for item in plan['objects']}
     for obj in bpy.data.objects:
         other_part = obj.get(UPDATE_PART_ID)
         if (obj != rig and obj.get(UPDATE_RIG_ID) == plan['rig_id']
-                or obj not in meshes and isinstance(other_part, str) and other_part in part_ids):
+                or (obj not in meshes and isinstance(other_part, str) and other_part in part_ids
+                    and not _inert_update_part_identity_carrier(
+                        obj, rig, source_by_part[other_part], plan['rig_id'], other_part))):
             raise ExportError('A Unity update identity was duplicated during candidate export.')
 
 

@@ -730,7 +730,6 @@ def sync(context, item, *, collection=False, collection_proof=None):
     job['_publish_callback'], job['_dispose_callback'] = completed, lock.release
     job['_worklist_scene'], job['_worklist_item_id'] = context.scene, item.item_id
     job['_worklist_fingerprint'], job['_worklist_export_implementation'] = proof, implementation
-    animation._export_window_manager = context.window_manager
-    bpy.app.timers.register(animation._poll_action_export, first_interval=.25)
+    animation._track_action_export(context, job)
     saved.status, saved.has_error = 'Syncing new Action ' + item.name + '. Collect Updates in Unity to preview.', False
     return job

@@ -223,7 +223,8 @@ def display_state(rig):
     session = _CACHE.get(rig.as_pointer())
     if not session or session.get('rig') is not rig:
         return None
-    return {**{key: session[key] for key in ('rig', 'scene', 'base_action', 'input_action', 'edit_role',
+    return {**{key: session[key] for key in ('rig', 'scene', 'base_action', 'base_slot',
+            'input_action', 'input_slot', 'edit_role',
             'source_read_only', 'enabled', 'tweak_enabled')},
             'original_controls_only': 'original_inputs' in session}
 

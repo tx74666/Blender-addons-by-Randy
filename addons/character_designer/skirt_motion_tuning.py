@@ -10,6 +10,24 @@ import math
 
 from . import skirt_motion_profiles as profiles
 
+
+def _choice_service():
+    from . import animation_physics
+    return animation_physics
+
+
+def _clear_choice_errors(sources, choices):
+    """Clear only each successful source's proved owner, never UI selection."""
+    for source in sources:
+        try:
+            owner = choices._owner(source, 'SKIRT')
+            if owner is not None:
+                choices._LAST_ERRORS.pop(choices._error_key(owner, 'SKIRT', source), None)
+        except (ValueError, RuntimeError, ReferenceError, AttributeError, TypeError):
+            # If error ownership cannot be proved after a successful native
+            # action, retain that error rather than clearing another owner's.
+            pass
+
 _SETTINGS = {
     "quality": "quality", "mass": "mass", "stretch": "tension_stiffness",
     "shear": "shear_stiffness", "bend": "bending_stiffness",
@@ -238,6 +256,11 @@ def _restore(item):
     if "surface_mode" in item:
         item["surface"].restore_mode(source, item["record"], item["surface_mode"])
         item["rig"].update_tag(refresh={"OBJECT"})
+    if "choice_key" in item:
+        if item["choice_raw"] is None:
+            source.pop(item["choice_key"], None)
+        else:
+            source[item["choice_key"]] = item["choice_raw"]
 
 
 def _assignments(item, values, changes):
@@ -291,7 +314,7 @@ def _apply_native(item, values, changes):
     physics["baked_range"] = None
 
 
-def apply(context, sources, changes=None, *, mode=None):
+def apply(context, sources, changes=None, *, mode=None, _clear_errors=True):
     """Validate the entire batch first, then edit only owned native settings.
 
     A failed write restores parameters, goals, influence and saved records.
@@ -299,12 +322,16 @@ def apply(context, sources, changes=None, *, mode=None):
     sealed caches are never discarded by this transaction.
     """
     physics, skirt = _modules()
+    choices = _choice_service() if mode is not None else None
     changes = profiles.settings(changes or {}, partial=True)
     sources = tuple(sources)
     if not sources or len({source.as_pointer() for source in sources}) != len(sources):
         raise profiles.DressMotionError("Choose distinct Dress sources for tuning.")
     staged = []
     for source in sources:
+        if mode == "AUTOMATIC":
+            from .animation_physics import require_enabled
+            require_enabled(source, context=context, component="SKIRT")
         skirt._require_controls_for_setup(source)
         record = skirt.read_record(source)
         if record is None:
@@ -327,6 +354,8 @@ def apply(context, sources, changes=None, *, mode=None):
             raise profiles.DressMotionError("Reset the baked Dress simulation before tuning its material.")
         if mode is not None:
             _influence_editable(rig, item["path"])
+            choices._skirt_choice(source, record, before["mode"])
+            item.update(choice_key=choices.SKIRT_CHOICE, choice_raw=source.get(choices.SKIRT_CHOICE))
         if changes:
             item["assignments"] = _assignments(item, profile["settings"], changes)
         staged.append(item)
@@ -348,6 +377,9 @@ def apply(context, sources, changes=None, *, mode=None):
                 if "surface_mode" in item:
                     item["surface"].set_mode(item["source"], item["record"], mode)
             profiles.write(item["source"], item["after"], item["record"])
+            if mode is not None:
+                choices._write_skirt_choice(item["source"], {
+                    "version": 1, "owner": item["record"]["owner"], "mode": mode, "pending": False})
         for item in staged:
             if item["change_native"]:
                 # Native settings assignments invalidate the unsealed cache;
@@ -385,6 +417,8 @@ def apply(context, sources, changes=None, *, mode=None):
             raise profiles.DressMotionError("Dress tuning failed; rollback also needs recovery: "
                                            + "; ".join(failures)) from error
         raise
+    if mode is not None and _clear_errors:
+        _clear_choice_errors(sources, choices)
     return tuple(copy.deepcopy(item["after"]) for item in staged)
 
 
@@ -400,22 +434,32 @@ def select_manual_controls(context, source):
     if physics.backend(record) != physics.DIRECT_SURFACE_BACKEND:
         raise profiles.DressMotionError("Manual input selection requires a Direct Dress setup.")
     rig = source[skirt.RIG_KEY]
-    control = rig.data.bones[record["controls"]["waist"]]
-    pose = rig.pose.bones[control.name]
+    original_context = skirt._context_state(context)
+    if rig.mode not in {"OBJECT", "POSE"} or original_context[1] not in {"OBJECT", "POSE"}:
+        raise profiles.DressMotionError("Choose Object or Pose Mode before selecting Dress controls.")
     # Mode-only rollback has no material/goal writes. Avoid capturing all
     # Cloth parameters and vertex weights for this selection operation.
     saved = _snapshot(source, copy.deepcopy(record), rig, None, None)
     saved["change_native"] = False
+    choices = _choice_service()
+    saved.update(choice_key=choices.SKIRT_CHOICE, choice_raw=source.get(choices.SKIRT_CHOICE))
+    visibility = []
+    for name in sorted(set.union(*skirt._bone_collection_layout(record))):
+        bone, pose = rig.data.bones[name], rig.pose.bones.get(name)
+        visibility.append((bone, bone.hide, bone.hide_select, pose,
+                           pose.hide if pose is not None and hasattr(pose, "hide") else None))
     selection = {
-        "context": skirt._context_state(context), "selected": [(bone, bone.select) for bone in rig.pose.bones],
-        "active": rig.data.bones.active, "hidden": rig.hide_get(), "control_hidden": control.hide,
-        "pose_hidden": pose.hide if hasattr(pose, "hide") else None,
-        "collections": [(collection, collection.is_visible) for collection in control.collections],
+        "context": original_context, "rig_mode": rig.mode,
+        "selected": [(bone, bone.select) for bone in rig.pose.bones],
+        "active": rig.data.bones.active, "hidden": rig.hide_get(), "visibility": visibility,
+        "shapes": rig.data.show_bone_custom_shapes,
+        "collections": [(collection, collection.is_visible, collection.is_solo)
+                        for collection in rig.data.collections_all],
     }
     # apply owns its own failure rollback; selection has not begun if it fails.
-    apply(context, (source,), mode="MANUAL")
+    apply(context, (source,), mode="MANUAL", _clear_errors=False)
     try:
-        return skirt.select_controls(context, source)
+        result = skirt.select_controls(context, source)
     except Exception as error:
         failures = []
         try:
@@ -423,18 +467,42 @@ def select_manual_controls(context, source):
         except Exception as rollback_error:
             failures.append("motion mode: " + str(rollback_error))
         try:
-            skirt._restore_context(context, selection["context"])
+            active, mode, selected = selection["context"]
+            if selection["rig_mode"] == "POSE" and active is not rig:
+                # An unselected Armature may already be in Pose Mode while
+                # another Object is active. The generic context restore first
+                # exits the current Rig's Pose Mode, losing that valid state.
+                if rig.mode != selection["rig_mode"]:
+                    context.view_layer.objects.active = rig
+                    skirt._activate(context, rig, selection["rig_mode"])
+                if active is not None and active.mode != mode:
+                    context.view_layer.objects.active = active
+                    skirt._activate(context, active, mode)
+                for candidate in context.view_layer.objects:
+                    candidate.select_set(candidate in selected)
+                context.view_layer.objects.active = active
+            else:
+                skirt._restore_context(context, selection["context"])
         except Exception as rollback_error:
             failures.append("object context: " + str(rollback_error))
         try:
             for bone, selected in selection["selected"]:
                 bone.select = selected
             rig.data.bones.active = selection["active"]
-            for collection, visible in selection["collections"]:
-                collection.is_visible = visible
-            control.hide = selection["control_hidden"]
-            if selection["pose_hidden"] is not None:
-                pose.hide = selection["pose_hidden"]
+            for collection, visible, solo in selection["collections"]:
+                if collection.is_visible != visible:
+                    collection.is_visible = visible
+                if collection.is_solo != solo:
+                    collection.is_solo = solo
+            for bone, hidden, unselectable, pose, pose_hidden in selection["visibility"]:
+                if bone.hide != hidden:
+                    bone.hide = hidden
+                if bone.hide_select != unselectable:
+                    bone.hide_select = unselectable
+                if pose_hidden is not None and pose.hide != pose_hidden:
+                    pose.hide = pose_hidden
+            if rig.data.show_bone_custom_shapes != selection["shapes"]:
+                rig.data.show_bone_custom_shapes = selection["shapes"]
             rig.hide_set(selection["hidden"])
             context.view_layer.update()
         except Exception as rollback_error:
@@ -443,3 +511,5 @@ def select_manual_controls(context, source):
             raise profiles.DressMotionError("Dress control selection failed; rollback also needs recovery: "
                                            + "; ".join(failures)) from error
         raise
+    _clear_choice_errors((source,), choices)
+    return result

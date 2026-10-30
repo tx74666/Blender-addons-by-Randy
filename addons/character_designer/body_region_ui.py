@@ -156,6 +156,32 @@ class CHARACTERDESIGNER_OT_body_region(Operator):
             return {'CANCELLED'}
 
 
+class CHARACTERDESIGNER_OT_accept_edited_leg_rest(Operator):
+    bl_idname = 'character_designer.accept_edited_leg_rest'
+    bl_label = 'Fit Controls to Edited Legs'
+    bl_description = 'Keep the edited leg bones and fit both leg controls; earlier animations retain their original compatibility checks'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _editable_rig(context)
+
+    def execute(self, context):
+        if not self.poll(context):
+            self.report({'WARNING'}, 'Make the local Main Rig active in Object or Pose Mode.')
+            return {'CANCELLED'}
+        from . import body_rest_adoption
+        try:
+            body_rest_adoption.accept_current_legs(context, context.object)
+        except _ERRORS as exc:
+            self.report({'WARNING'}, f'Edited leg fitting was not applied. {exc}')
+            if getattr(exc, '_character_designer_body_rollback_restored', False) is True:
+                return {'FINISHED'}
+            return {'CANCELLED'}
+        self.report({'INFO'}, 'Leg controls fitted; current bones, paint and earlier animations kept.')
+        return {'FINISHED'}
+
+
 def draw(layout, context):
     """Only read the small region record here; backend admission runs on click."""
     settings = _settings(context)
@@ -206,9 +232,18 @@ def draw_advanced(layout, context):
     operator = row.operator('character_designer.body_region',
                             text='Release to Edit', icon='UNLINKED')
     operator.region, operator.action = settings.region, 'RELEASE'
+    # Draw only a cheap saved-state hint. The click authenticates the complete
+    # same-ID history and existing graph; this hint grants no editing authority.
+    if (settings.region == 'LEGS'
+            and rig.get('character_designer_worklist_main_session_v1') is not None
+            and 'character_designer_current_leg_rest_acceptance_v1' not in rig.data):
+        row = layout.row()
+        row.enabled = _editable_rig(context)
+        row.operator('character_designer.accept_edited_leg_rest', icon='ARMATURE_DATA')
 
 
 BODY_REGION_UI_CLASSES = (
     CharacterDesignerBodyRegionState,
     CHARACTERDESIGNER_OT_body_region,
+    CHARACTERDESIGNER_OT_accept_edited_leg_rest,
 )

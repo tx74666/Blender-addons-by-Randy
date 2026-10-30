@@ -84,13 +84,18 @@ def _backend():
         prop = owner.bl_rna.properties.get(name)
         if prop is None or prop.type != 'BOOLEAN':
             _fail('The registered Wiggle 2 schema is incomplete; enable the add-on again.')
-    for owner, typename in ((bpy.types.Scene, 'WiggleScene'), (bpy.types.Object, 'WiggleObject'),
-                            (bpy.types.PoseBone, 'WiggleBone')):
+    schema = ((bpy.types.Scene, 'WiggleScene'), (bpy.types.Object, 'WiggleObject'),
+              (bpy.types.PoseBone, 'WiggleBone'))
+    # Official disable leaves PG PointerRNA behind. Its fixed_type target can
+    # already be freed, so authenticate all classes before reading any target.
+    if any(not getattr(getattr(module, name, None), 'is_registered', False)
+           for _owner, name in schema):
+        _fail('Wiggle 2 is disabled or its RNA classes are not registered.')
+    for owner, typename in schema:
         prop = owner.bl_rna.properties.get('wiggle')
-        expected = getattr(module, typename, None)
-        if (prop is None or prop.type != 'POINTER' or expected is None
-                or prop.fixed_type.identifier != expected.bl_rna.identifier
-                or not getattr(expected, 'is_registered', False)):
+        expected = getattr(module, typename)
+        if (prop is None or prop.type != 'POINTER'
+                or prop.fixed_type.identifier != expected.bl_rna.identifier):
             _fail('The registered Wiggle data schema differs from the verified backend.')
     if (bpy.app.handlers.frame_change_pre.count(module.wiggle_pre) != 1
             or bpy.app.handlers.frame_change_post.count(module.wiggle_post) != 1):
@@ -141,7 +146,7 @@ def status(context=None, source=None):
     try:
         saved = _state(source)
         key = source.as_pointer() if source is not None else None
-        running = key in _SESSIONS
+        running = key in _SESSIONS and not _SESSIONS[key].get('paused', False)
         selected = saved['mode'] if saved else 'MANUAL'
         reason = saved.get('reason', '') if saved else ''
         if running:
@@ -153,7 +158,9 @@ def status(context=None, source=None):
                 message = reason or (info['reason'] if not info['available'] else 'Automatic is paused. Choose Automatic to resume.')
         else:
             message = reason or 'Manual keeps the current shape; pose the rings and handles.'
-        return dict(info, mode=selected, running=running, message=message)
+        return dict(info, mode=selected, active=key in _SESSIONS,
+                    paused=bool(key in _SESSIONS and _SESSIONS[key].get('paused', False)),
+                    running=running, message=message)
     except (ValueError, ReferenceError) as error:
         return dict(info, mode='MANUAL', running=False, message=str(error), reason=str(error))
 
@@ -166,6 +173,14 @@ def _write(source, record, selected, *, reason='', original=None, lease=None, se
              'reason': reason, 'original': previous.get('original', {}) if original is None else original,
              'lease': previous.get('lease', {}) if lease is None else lease,
              'settings': previous.get('settings', {}) if settings is None else settings}
+    session = _SESSIONS.get(source.as_pointer())
+    state['runtime_v2'] = (dict(version=1, component='SKIRT', source=source.name,
+        rig=session['rig'].name, owner=record['owner'], names=list(session['names']),
+        scene_token=source.get(STATE_SCENE_KEY),
+        paused=bool(session['lease'].get('paused', False)),
+        flags={name: {field: bool(getattr(session['bone_refs'][name], field)) for field in _FLAGS}
+               for name in session['names']})
+        if session and session.get('lease', {}).get('active') else None)
     source[STATE_KEY] = json.dumps(state, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
 
@@ -329,17 +344,24 @@ def _graph(source, record, rig, names):
 def _preflight(context, source, backend):
     if context.scene != bpy.context.scene or context.mode not in {'OBJECT', 'POSE'}:
         _fail('Choose Dress motion in the active scene in Object or Pose Mode.')
-    skirt._require_controls_for_setup(source)
     record = skirt.read_record(source)
     if record is None:
         _fail('Create the Dress controls before choosing Automatic.')
     rig = source[skirt.RIG_KEY]
+    names = tuple(name for chain in record['chains'] for name in chain['phys'])
+    from . import skirt_original_mode as original
+    original_context = original.wiggle_original_context(source, record)
+    if original_context is None:
+        skirt._require_controls_for_setup(source)
+    else:
+        original.require_wiggle_original(context, source, record, names)
+    from . import limb_ik
     if (source.library or source.override_library or not source.is_editable
             or rig.library or rig.override_library or not rig.is_editable
-            or rig.data.library or rig.data.users != 1 or rig.data.pose_position != 'POSE'
+            or rig.data.library or (not limb_ik._single_armature_user(rig) and original_context is None)
+            or rig.data.pose_position != 'POSE'
             or context.scene.objects.get(rig.name) != rig):
         _fail('Automatic needs this local Dress and a single-user Main Rig in the active scene.')
-    names = tuple(name for chain in record['chains'] for name in chain['phys'])
     holder = _graph(source, record, rig, names)
     scene = context.scene
     if scene.render.fps_base != 1.0 or scene.render.fps < 1:
@@ -353,10 +375,8 @@ def _preflight(context, source, backend):
         _fail('Finish the current Wiggle render, reset or preroll operation first.')
     if rig.wiggle_freeze or rig.wiggle_mute:
         _fail('The Main Rig Wiggle settings are frozen or muted. Finish that operation before starting Dress motion.')
-    from . import hair_wiggle_adapter
-    if hair_wiggle_adapter.status(context).get('active'):
-        _fail('Stop the active Hair preview before starting Automatic Dress motion.')
-    owned = {(item['rig'], name) for item in _SESSIONS.values() for name in item['names']}
+    from . import wiggle2_runtime
+    owned = wiggle2_runtime.owned_bones(scene)
     for obj in scene.objects:
         if obj.type != 'ARMATURE':
             continue
@@ -398,15 +418,27 @@ def _list_remove(scene, rig_name, names):
 
 
 def _start(context, source):
+    from .animation_physics import require_enabled
+    require_enabled(source, context=context, component='SKIRT')
     if _TEARDOWN_REASON is not None and _finish_deferred_stop() is not None:
         _fail('Finish the pending Dress motion cleanup in the active scene before starting Automatic.')
-    backend = _backend()
+    try:
+        backend = _backend()
+    except (SkirtWiggleError, AttributeError, ReferenceError) as error:
+        from .physics_dependencies import describe_failure
+        _fail(describe_failure('SKIRT', error))
+    from .physics_dependencies import note_verified
+    note_verified('SKIRT', backend)
     if source.as_pointer() not in _SESSIONS:
         _recover_source(source)
-    record, rig, names, holder = _preflight(context, source, backend)
     key = source.as_pointer()
     if key in _SESSIONS:
+        if _SESSIONS[key].get('paused', False):
+            set_paused(context, source, False)
         return 'Automatic Dress motion is already active.'
+    record, rig, names, holder = _preflight(context, source, backend)
+    from . import skirt_original_mode as original
+    from . import wiggle2_runtime as runtime
     scene = context.scene
     saved = {'source': source, 'rig': rig, 'rig_name': rig.name, 'scene': scene, 'record': record,
              'names': names, 'backend': backend, 'frame': scene.frame_current,
@@ -415,51 +447,42 @@ def _start(context, source):
              'influence': holder.get('physics_influence'), 'holder': holder,
              'state_raw': source.get(STATE_KEY), 'scene_enable': _raw(scene, 'wiggle_enable'),
              'rig_enable': _raw(rig, 'wiggle_enable'), 'pose': _pose(context, rig, record),
-             'bone_refs': {name: rig.pose.bones[name] for name in names}, 'scene_ref': source.get(STATE_SCENE_KEY)}
-    saved['scene_live'] = copy.deepcopy(saved['scene_enable'])
-    saved['rig_live'] = copy.deepcopy(saved['rig_enable'])
-    # All scene sessions share the first lease's original global enable value.
-    other = next((item for item in _SESSIONS.values() if item['scene'] == scene), None)
-    if other is not None:
-        saved['scene_enable'] = copy.deepcopy(other['scene_enable'])
-    same_rig = next((item for item in _SESSIONS.values() if item['rig'] == rig), None)
-    if same_rig is not None:
-        saved['rig_enable'] = copy.deepcopy(same_rig['rig_enable'])
+             'bone_refs': {name: rig.pose.bones[name] for name in names}, 'scene_ref': source.get(STATE_SCENE_KEY),
+             'scene_id_raw': scene.get(SCENE_ID_KEY), 'paused': False,
+             'original_context': original.wiggle_original_context(source, record)}
+    lease = runtime.acquire(context, 'SKIRT', source, rig, names, backend)
+    saved['lease'] = lease
+    saved['scene_enable'] = copy.deepcopy(lease['scene_original'])
+    saved['rig_enable'] = copy.deepcopy(lease['rig_original'])
     _SESSIONS[key] = saved
     try:
         persisted_settings = (_state(source) or {}).get('settings', {})
-        with _native_writes(backend):
-            for name in names:
-                bone = rig.pose.bones[name]
-                # A disabled PHYS layer's neutral rotation is the exact visual
-                # result of influence 0. Do not reveal dormant solver rotations.
-                if saved['influence'] == 0.0:
-                    bone.matrix_basis = Matrix.Identity(4)
-                for field, value in _DEFAULTS.items():
-                    if not bone.is_property_set(field):
-                        parameters = persisted_settings.get(name, {})
-                        if not isinstance(parameters, dict):
-                            _fail('Saved Dress Wiggle parameters are unreadable; preserve this file.')
-                        candidate = parameters.get(field, value)
-                        if type(candidate) not in (bool, int, float) or not math.isfinite(candidate):
-                            _fail('Saved Dress Wiggle parameters are unreadable; preserve this file.')
-                        _native_set(bone, field, candidate)
-                for field, value in {'wiggle_enable': True, 'wiggle_head': False, 'wiggle_tail': True,
-                                     'wiggle_mute': False, 'wiggle_head_mute': False, 'wiggle_tail_mute': False}.items():
-                    _native_set(bone, field, value)
-            _native_set(rig, 'wiggle_enable', True)
-            _native_set(scene, 'wiggle_enable', True)
+        settings = {}
+        for name in names:
+            bone = rig.pose.bones[name]
+            # The disabled PHYS layer's neutral rotation preserves influence0.
+            if saved['influence'] == 0.0:
+                bone.matrix_basis = Matrix.Identity(4)
+            settings[name] = {}
+            for field, value in _DEFAULTS.items():
+                if not bone.is_property_set(field):
+                    parameters = persisted_settings.get(name, {})
+                    if not isinstance(parameters, dict):
+                        _fail('Saved Dress Wiggle parameters are unreadable; preserve this file.')
+                    candidate = parameters.get(field, value)
+                    if type(candidate) not in (bool, int, float) or not math.isfinite(candidate):
+                        _fail('Saved Dress Wiggle parameters are unreadable; preserve this file.')
+                    settings[name][field] = candidate
         holder['physics_influence'] = 1.0
-        _list_add(scene, rig, names)
+        runtime.configure(lease, settings)
         rig.update_tag(refresh={'OBJECT'})
         context.view_layer.update()
         _pose_same(context, rig, record, saved['pose'])
-        for name in names:
-            backend.reset_bone(rig.pose.bones[name])
-        scene.wiggle.lastframe = scene.frame_current
+        if original.wiggle_original_context(source, record) != saved['original_context']:
+            _fail('The Original skirt session changed while enabling physics; its inputs were restored.')
+        source[STATE_SCENE_KEY] = _scene_token(scene)
         _write(source, record, 'AUTOMATIC', original=saved['raw'],
                lease={'scene_enable': saved['scene_enable'], 'rig_enable': saved['rig_enable']})
-        source[STATE_SCENE_KEY] = _scene_token(scene)
         register()
         if _frame_pre not in bpy.app.handlers.frame_change_pre:
             bpy.app.handlers.frame_change_pre.insert(0, _frame_pre)
@@ -467,17 +490,10 @@ def _start(context, source):
             bpy.app.timers.register(_timer, first_interval=0.25)
         return 'Automatic Dress motion uses Wiggle 2. Play the timeline; Manual preserves the current shape.'
     except Exception as error:
+        runtime.release(lease)
         _SESSIONS.pop(key, None)
-        _list_remove(scene, saved['rig_name'], names)
-        with _native_writes(backend):
-            for name in names:
-                bone = rig.pose.bones.get(name)
-                if bone is not None:
-                    for field, value in saved['raw'][name].items():
-                        _restore_raw(bone, field, value)
-                    _restore_channels(bone, saved['channels'][name])
-            _restore_raw(rig, 'wiggle_enable', saved['rig_live'])
-            _restore_raw(scene, 'wiggle_enable', saved['scene_live'])
+        for name in names:
+            _restore_channels(saved['bone_refs'][name], saved['channels'][name])
         holder['physics_influence'] = saved['influence']
         if saved['state_raw'] is None:
             source.pop(STATE_KEY, None)
@@ -487,6 +503,10 @@ def _start(context, source):
             source.pop(STATE_SCENE_KEY, None)
         else:
             source[STATE_SCENE_KEY] = saved['scene_ref']
+        if saved['scene_id_raw'] is None:
+            scene.pop(SCENE_ID_KEY, None)
+        else:
+            scene[SCENE_ID_KEY] = saved['scene_id_raw']
         context.view_layer.update()
         if isinstance(error, SkirtWiggleError):
             raise
@@ -494,7 +514,7 @@ def _start(context, source):
 
 
 def _stop(key, *, reason, preserve_preference=False):
-    saved = _SESSIONS.pop(key, None)
+    saved = _SESSIONS.get(key)
     if saved is None:
         return False
     source, rig, scene = saved['source'], saved['rig'], saved['scene']
@@ -505,38 +525,11 @@ def _stop(key, *, reason, preserve_preference=False):
             settings[name] = {field: getattr(saved['bone_refs'][name], field) for field in _DEFAULTS}
         except (ReferenceError, AttributeError):
             pass
-    with _native_writes(saved['backend']):
-        for name in saved['names']:
-            try:
-                bone = saved['bone_refs'][name]
-                # Cached references cannot modify a replacement same-name bone.
-                for field in _FLAGS:
-                    value = saved['raw'][name][field]
-                    _restore_raw(bone, field, value)
-            except ReferenceError:
-                pass  # A deleted native bone has no remaining solver channels.
-            except (RuntimeError, TypeError, ValueError) as error:
-                errors.append(name + ': ' + str(error))
-    try:
-        if hasattr(bpy.types.Scene, 'wiggle'):
-            _list_remove(scene, saved['rig_name'], saved['names'])
-    except (ReferenceError, AttributeError):
-        pass
-    except (RuntimeError, TypeError, ValueError) as error:
-        errors.append('native list: ' + str(error))
-    for owner, field, original, kind in ((rig, 'wiggle_enable', saved['rig_enable'], 'rig'),
-                                         (scene, 'wiggle_enable', saved['scene_enable'], 'scene')):
-        try:
-            armatures = (rig,) if kind == 'rig' else tuple(obj for obj in scene.objects if obj.type == 'ARMATURE')
-            native_other = any((getattr(bone, 'wiggle_head', False) or getattr(bone, 'wiggle_tail', False))
-                               for obj in armatures for bone in obj.pose.bones)
-            if not native_other and not any(item[kind] == owner for item in _SESSIONS.values()):
-                with _native_writes(saved['backend']):
-                    _restore_raw(owner, field, original)
-        except ReferenceError:
-            pass
-        except (RuntimeError, TypeError, ValueError) as error:
-            errors.append(kind + ': ' + str(error))
+    from . import wiggle2_runtime
+    if saved.get('lease') is None:
+        _fail('This Dress motion predates shared physics; preserve it and reconnect explicitly.')
+    wiggle2_runtime.release(saved['lease'], restore_fields=_FLAGS)
+    _SESSIONS.pop(key, None)
     try:
         # PHYS channels and influence remain exactly as currently evaluated.
         _write(source, saved['record'], 'AUTOMATIC' if preserve_preference else 'MANUAL', reason=reason, settings=settings)
@@ -574,6 +567,37 @@ def set_mode(context, source, selected):
         _write(source, record, 'MANUAL', reason='Manual keeps the current skirt shape.')
     context.view_layer.update()
     return 'Manual keeps the current skirt shape. Use the rings and handles to refine it.'
+
+
+def set_paused(context, source, paused):
+    """Pause only this Dress's owned bones; retain its mode and peer motion."""
+    saved = _SESSIONS.get(source.as_pointer())
+    if (type(paused) is not bool or saved is None or saved['source'] != source
+            or saved['scene'] != context.scene):
+        _fail('The Dress physics session changed. Choose Automatic to reconnect it.')
+    if _backend() is not saved['backend']:
+        _fail('The Dress physics backend changed. Preserve the current preview before continuing.')
+    reason = _changed(saved)
+    if reason:
+        _fail(reason)
+    from . import wiggle2_runtime
+    previous = saved.get('paused', False)
+    state_raw = source.get(STATE_KEY)
+    wiggle2_runtime.set_paused(saved['lease'], paused)
+    try:
+        saved['paused'] = paused
+        _write(source, saved['record'], 'AUTOMATIC',
+               reason='Dress physics is paused.' if paused else '')
+    except Exception:
+        wiggle2_runtime.set_paused(saved['lease'], previous)
+        saved['paused'] = previous
+        if state_raw is None:
+            source.pop(STATE_KEY, None)
+        else:
+            source[STATE_KEY] = state_raw
+        raise
+    return dict(preview_state(source), mode='AUTOMATIC', available=True,
+                backend=BACKEND_NAME, version=BACKEND_VERSION)
 
 
 def suspend(context=None, source=None, *, reason='Automatic Dress motion paused; the current shape is kept.'):
@@ -630,75 +654,177 @@ def forget(context, source):
         context.view_layer.update()
 
 
-def _recover_source(source):
-    """Clear only saved owned native flags after undo/reload loses Python state.
+def preview_state(source):
+    """Metadata/flat flags only: never hash files or dereference an idle PG."""
+    session = _SESSIONS.get(source.as_pointer()) if source is not None else None
+    if session:
+        paused = bool(session.get('paused', False))
+        return dict(active=True, paused=paused, running=not paused,
+                    stopped_confirmed=paused, pending_recovery=False,
+                    message='Dress physics is paused.' if paused else '')
+    state = _state(source) if source is not None else None
+    rig = source.get(skirt.RIG_KEY) if source is not None else None
+    names = state.get('names', ()) if state else ()
+    if not state and source is not None and source.get(skirt.RECORD_KEY):
+        try:
+            record = json.loads(source[skirt.RECORD_KEY])
+            names = tuple(name for chain in record.get('chains', ()) for name in chain.get('phys', ()))
+        except (ValueError, TypeError, AttributeError):
+            _fail('Dress physics metadata needs review before its state can be confirmed.')
+    native = bool(rig and any(bool(getattr(rig.pose.bones[name], field,
+        rig.pose.bones[name].get(field, False))) for name in names if name in rig.pose.bones
+        for field in ('wiggle_head', 'wiggle_tail')))
+    return dict(active=False, paused=False, running=False,
+                stopped_confirmed=not native, pending_recovery=native,
+                message=('Saved Dress physics needs an explicit reconnect or stop.' if native else
+                         'Automatic is paused. Choose Automatic to resume.' if state and state['mode'] == 'AUTOMATIC' else ''))
 
-    The saved PHYS pose is retained. Exact record ownership is rechecked before
-    using persisted scalar snapshots; no solver or global rebuild is invoked.
-    """
+
+def prepare_recovery(context, source):
+    """Prove a persisted produced state without performing any native write."""
     if source.as_pointer() in _SESSIONS:
-        return
+        _fail('Use the active Dress physics controls rather than saved-state recovery.')
+    info = preview_state(source)
+    if info['stopped_confirmed']:
+        return dict(source=source, changed=False, stopped_confirmed=True, reason='Dress physics is stopped.')
     state = _state(source)
-    if not state or not state.get('original'):
-        return
     record = skirt.read_record(source)
     if record is None:
-        return
+        _fail('Saved Dress physics has no complete generated ownership record.')
     names = tuple(name for chain in record['chains'] for name in chain['phys'])
-    if state['owner'] != record['owner'] or set(state['names']) != set(names):
-        _fail('Saved Dress motion ownership changed; preserve this file before recovering it.')
     rig = source[skirt.RIG_KEY]
+    if (context.scene != bpy.context.scene or context.scene.objects.get(source.name) != source
+            or context.scene.objects.get(rig.name) != rig or context.mode not in {'OBJECT', 'POSE'}):
+        _fail('Recover saved Dress physics in its active Scene in Object or Pose Mode.')
+    if (not skirt.is_shared(record) and (rig.get(skirt.SOURCE_KEY) is not source
+            or rig.data.get(skirt.OWNER_KEY) != record['owner'])):
+        _fail('Saved Dress physics source and rig ownership no longer agree.')
+    _graph(source, record, rig, names)
+    marker = state.get('runtime_v2')
     origin = _origin_scene(source, rig)
-    native = any(bool(getattr(rig.pose.bones[name], field, rig.pose.bones[name].get(field, False)))
-                 for name in names for field in ('wiggle_head', 'wiggle_tail', 'wiggle_enable'))
-    if hasattr(bpy.types.Scene, 'wiggle') and isinstance(origin, bpy.types.Scene):
-        row = origin.wiggle.list.get(rig.name)
-        native |= row is not None and any(item.name in names for item in row.list)
-    if not native:
-        return  # Clean Manual parameters, including new artist edits, are retained.
-    original = state['original']
-    if set(original) != set(names):
-        _fail('Saved Dress native flags are incomplete; preserve this file.')
-    # Validate the complete saved scalar topology before changing anything.
+    if (not isinstance(marker, dict) or marker.get('version') != 1 or marker.get('component') != 'SKIRT'
+            or marker.get('source') != source.name or marker.get('rig') != rig.name
+            or marker.get('owner') != record['owner'] or marker.get('names') != list(names)
+            or state['owner'] != record['owner'] or set(state['names']) != set(names)
+            or origin != context.scene or marker.get('scene_token') != source.get(STATE_SCENE_KEY)):
+        _fail('Saved Dress physics lacks an exact shared-runtime ownership marker; preserve it before recovery.')
+    original, flags = state.get('original'), marker.get('flags')
+    if not isinstance(original, dict) or set(original) != set(names) or not isinstance(flags, dict) or set(flags) != set(names):
+        _fail('Saved Dress physics recovery data is incomplete.')
     for name in names:
-        if not isinstance(original[name], dict):
-            _fail('Saved Dress native property ownership is incomplete.')
-        if set(original[name]) != set((*_FLAGS, *_DEFAULTS)):
-            _fail('Saved Dress native property ownership is incomplete.')
+        if (not isinstance(original[name], dict) or set(original[name]) != set((*_FLAGS, *_DEFAULTS))
+                or not isinstance(flags[name], dict) or set(flags[name]) != set(_FLAGS)
+                or any(type(value) is not bool for value in flags[name].values())
+                or flags[name] != dict(wiggle_enable=True, wiggle_head=False, wiggle_tail=True,
+                    wiggle_mute=flags[name].get('wiggle_mute'), wiggle_head_mute=False, wiggle_tail_mute=False)):
+            _fail('Saved Dress physics produced flags are not the supported state.')
         for field, saved in original[name].items():
             if (not isinstance(saved, dict) or type(saved.get('exists')) is not bool
                     or (saved['exists'] and (type(saved.get('value')) not in (bool, int, float)
                                              or not math.isfinite(saved['value'])))
                     or (field in {'wiggle_head', 'wiggle_tail'} and saved.get('value'))):
-                _fail('Saved Dress native flags contain an unsupported pre-existing simulation.')
+                _fail('Saved Dress physics original flags have foreign or unreadable values.')
+        if any(getattr(rig.pose.bones[name], field) != value for field, value in flags[name].items()):
+            _fail('Saved Dress physics flags changed externally; nothing was overwritten.')
+    backend = _backend()  # Must prove live classes before any PG dereference.
+    from . import wiggle2_runtime as runtime
+    if any(runtime.owns(rig, name) for name in names):
+        _fail('Another live shared-runtime owner already holds these Dress bones.')
+    expected_members = {(rig.name, name) for name in names}
+    members = runtime._members(origin)
+    paused = marker.get('paused', False)
+    if (type(paused) is not bool
+            or (paused and (expected_members & members or not all(flags[name]['wiggle_mute'] for name in names)))
+            or (not paused and not expected_members <= members)):
+        _fail('Saved Dress physics list membership no longer matches its ownership marker.')
     lease = state.get('lease', {})
     for field in ('scene_enable', 'rig_enable'):
         saved = lease.get(field)
         if (not isinstance(saved, dict) or type(saved.get('exists')) is not bool
                 or (saved['exists'] and type(saved.get('value')) is not bool)):
-            _fail('Saved Dress global-enable ownership is incomplete; preserve this file.')
-    backend = _backend()
-    with _native_writes(backend):
-        for name in names:
+            _fail('Saved Dress physics enable recovery data is incomplete.')
+    return dict(source=source, rig=rig, scene=origin, rig_name=rig.name, names=names,
+        backend=backend, record=record, state_raw=source.get(STATE_KEY),
+        before={name: {field: _raw(rig.pose.bones[name], field) for field in _FLAGS} for name in names},
+        original=original, original_enable=lease,
+        scene_before=_raw(origin, 'wiggle_enable'), rig_before=_raw(rig, 'wiggle_enable'),
+        layout=[(row.name, tuple(item.name for item in row.list)) for row in origin.wiggle.list],
+        changed=True, stopped_confirmed=False, reason='Saved Dress physics can be stopped safely.')
+
+
+def recover_saved(context, source, token=None):
+    """Explicitly stop only a fully proved persisted owner; never reconnect it."""
+    fresh = prepare_recovery(context, source)
+    if token is not None:
+        if (token.get('source') != source or token.get('changed') != fresh['changed']
+                or (fresh['changed'] and any(token.get(key) != fresh.get(key)
+                    for key in ('state_raw', 'rig', 'scene', 'names', 'before')))):
+            _fail('Saved Dress physics changed after its stop was prepared.')
+    # Other proved owners may already have stopped in this same transaction.
+    # Rollback must capture shared globals/list at the action's actual boundary.
+    token = fresh
+    if not token['changed']:
+        return token
+    rig, scene, names = token['rig'], token['scene'], token['names']
+    from . import wiggle2_runtime as runtime
+    try:
+        with _native_writes(token['backend']):
+            for name in names:
+                for field in _FLAGS:
+                    _restore_raw(rig.pose.bones[name], field, token['original'][name][field])
+        runtime._list_remove(scene, rig.name, names)
+        with _native_writes(token['backend']):
+            if not any(b.wiggle_head or b.wiggle_tail for b in rig.pose.bones):
+                _restore_raw(rig, 'wiggle_enable', token['original_enable']['rig_enable'])
+            if not any(b.wiggle_head or b.wiggle_tail for ob in scene.objects if ob.type == 'ARMATURE' for b in ob.pose.bones):
+                _restore_raw(scene, 'wiggle_enable', token['original_enable']['scene_enable'])
+        _write(source, token['record'], 'AUTOMATIC', reason='Saved Dress physics is stopped. Choose Automatic to reconnect.')
+        token['after'] = {name: {field: _raw(rig.pose.bones[name], field) for field in _FLAGS} for name in names}
+        token['scene_after'], token['rig_after'] = _raw(scene, 'wiggle_enable'), _raw(rig, 'wiggle_enable')
+        token['state_after'] = source.get(STATE_KEY)
+        token['stopped_confirmed'] = True
+        return token
+    except Exception:
+        _restore_recovery(token)
+        raise
+
+
+def _restore_recovery(token):
+    from . import wiggle2_runtime as runtime
+    rig, scene = token['rig'], token['scene']
+    with _native_writes(token['backend']):
+        for name in token['names']:
             for field in _FLAGS:
-                _restore_raw(rig.pose.bones[name], field, original[name][field])
-    if hasattr(bpy.types.Scene, 'wiggle'):
-        # An ambiguous/deleted originating Scene never licenses restoring its
-        # global switch elsewhere. Exact owned PHYS list rows can still be
-        # removed from the rig's scenes so no orphan solver keeps running.
-        for scene in (origin,) if origin is not None else rig.users_scene:
-            _list_remove(scene, rig.name, names)
-    other = any(getattr(bone, 'wiggle_head', False) or getattr(bone, 'wiggle_tail', False)
-                for bone in rig.pose.bones)
-    if not other and lease.get('rig_enable'):
-        with _native_writes(backend):
-            _restore_raw(rig, 'wiggle_enable', lease['rig_enable'])
-    if origin is not None:
-        active = any((getattr(bone, 'wiggle_head', False) or getattr(bone, 'wiggle_tail', False))
-                     for obj in origin.objects if obj.type == 'ARMATURE' for bone in obj.pose.bones)
-        if not active:
-            with _native_writes(backend):
-                _restore_raw(origin, 'wiggle_enable', lease['scene_enable'])
+                _restore_raw(rig.pose.bones[name], field, token['before'][name][field])
+        _restore_raw(scene, 'wiggle_enable', token['scene_before'])
+        _restore_raw(rig, 'wiggle_enable', token['rig_before'])
+    runtime._restore_members(token, dict(active=True,
+        paused=not any(name == rig.name and set(items) & set(token['names'])
+                       for name, items in token['layout']), layout=token['layout']))
+    token['source'][STATE_KEY] = token['state_raw']
+    token['stopped_confirmed'] = False
+
+
+def rollback_recovery(context, token):
+    if not token.get('changed'):
+        return
+    source, rig, scene = token['source'], token['rig'], token['scene']
+    record = skirt.read_record(source)
+    if (record is None or context.scene != scene or source.get(STATE_KEY) != token.get('state_after')
+            or source.get(skirt.RIG_KEY) != rig or record['owner'] != token['record']['owner']):
+        _fail('Recovered Dress ownership changed before rollback.')
+    _graph(source, record, rig, token['names'])
+    _backend()
+    if (any(_raw(rig.pose.bones[name], field) != saved
+            for name, fields in token['after'].items() for field, saved in fields.items())
+            or _raw(scene, 'wiggle_enable') != token['scene_after']
+            or _raw(rig, 'wiggle_enable') != token['rig_after']):
+        _fail('Recovered Dress flags changed before rollback; external changes were retained.')
+    _restore_recovery(token)
+
+
+def _recover_source(source):
+    return recover_saved(bpy.context, source)
 
 
 def _changed(saved):
@@ -711,20 +837,27 @@ def _changed(saved):
             or bpy.app.handlers.frame_change_pre.count(saved['backend'].wiggle_pre) != 1
             or bpy.app.handlers.frame_change_post.count(saved['backend'].wiggle_post) != 1):
         return 'The Wiggle backend was disabled; Dress motion is paused.'
-    if not scene.wiggle_enable or rig.wiggle_mute or rig.wiggle_freeze:
+    if (not saved.get('paused', False) and not scene.wiggle_enable) or rig.wiggle_mute or rig.wiggle_freeze:
         return 'Wiggle was muted or frozen; Dress motion is paused.'
-    if skirt._ORIGINAL_SESSION_KEY in rig:
-        return 'Original editing paused automatic Dress motion.'
     record = skirt.read_record(source)
     if record is None or record['owner'] != saved['record']['owner']:
         return 'Dress ownership changed; motion is paused.'
+    from . import skirt_original_mode as original
+    original_context = original.wiggle_original_context(source, record)
+    has_original = (skirt._ORIGINAL_SESSION_KEY in rig
+                    or isinstance(rig.get(skirt.ORIGINAL_DISPLAY_OWNER_KEY), bpy.types.Object)
+                    and skirt._ORIGINAL_SESSION_KEY in rig[skirt.ORIGINAL_DISPLAY_OWNER_KEY])
+    if has_original and (original_context is None or original_context != saved.get('original_context')):
+        return 'The verified Original skirt session changed; its physics was paused.'
     holder = _graph(source, record, rig, saved['names'])
     if holder.get('physics_influence') != 1.0 or any(not rig.pose.bones[name].wiggle_tail for name in saved['names']):
         return 'The Dress physics switch was changed; automatic motion is paused.'
-    owned = {(item['rig'], name) for item in _SESSIONS.values() for name in item['names']}
-    if any((bone.wiggle_head or bone.wiggle_tail) and (obj, bone.name) not in owned
-           for obj in scene.objects if obj.type == 'ARMATURE' for bone in obj.pose.bones):
-        return 'Another Wiggle simulation was enabled; Dress motion is paused and that simulation is retained.'
+    from . import wiggle2_runtime
+    if saved.get('lease') is None:
+        return 'This Dress session predates shared physics. Reconnect it explicitly.'
+    wiggle2_runtime.validate(saved['lease'])
+    if bool(saved.get('paused', False)) != saved['lease']['paused']:
+        return 'The Dress physics pause state changed outside these controls.'
     return ''
 
 
@@ -732,6 +865,9 @@ def _changed(saved):
 def _frame_pre(scene, *args):
     for key, saved in list(_SESSIONS.items()):
         if saved['scene'] != scene:
+            continue
+        if saved.get('paused', False):
+            saved['frame'] = scene.frame_current
             continue
         try:
             reason = _changed(saved)
@@ -743,10 +879,9 @@ def _frame_pre(scene, *args):
                     # Timeline wraps and seeks are discontinuities, not elapsed
                     # physics time. Keep the current local pose and seed each
                     # endpoint there; skip the native reset/solve on this frame.
+                    from . import wiggle2_runtime
                     bpy.context.view_layer.update()
-                    for name in saved['names']:
-                        saved['backend'].reset_bone(saved['rig'].pose.bones[name])
-                    scene.wiggle.lastframe = scene.frame_current
+                    wiggle2_runtime.reseed(saved['lease'], skip_frame=True)
                 saved['frame'] = scene.frame_current
         except (ReferenceError, ValueError, RuntimeError) as error:
             try:
@@ -760,6 +895,8 @@ def _timer():
     _IN_TIMER = True
     try:
         for key, saved in list(_SESSIONS.items()):
+            if saved.get('paused', False):
+                continue
             try:
                 reason = _changed(saved)
                 if reason:
@@ -785,22 +922,18 @@ def _save_pre(*args):
 @persistent
 def _save_post(*args):
     global _SAVE_RESUME
-    sources, _SAVE_RESUME = _SAVE_RESUME, []
-    for source in sources:
-        try:
-            if mode(source) == 'AUTOMATIC':
-                _start(bpy.context, source)
-        except (ReferenceError, ValueError, RuntimeError) as error:
-            try:
-                record = skirt.read_record(source)
-                _write(source, record, 'AUTOMATIC', reason='Automatic is paused after saving: ' + str(error))
-            except (ReferenceError, ValueError, RuntimeError):
-                pass
+    # Saving persists clean flags and the Automatic preference. Reconnecting
+    # physics is an explicit action and never restarts a peer component.
+    _SAVE_RESUME = []
 
 
 @persistent
 def _lifecycle_pre(*args):
-    suspend(reason='Scene editing paused automatic Dress motion; the current shape is kept.')
+    # Pre-load/render ends only live leases. Never recover an inactive source
+    # or choose a new mode while a different native lifecycle is in progress.
+    for key in list(_SESSIONS):
+        _stop(key, reason='Scene editing paused automatic Dress motion; the current shape is kept.',
+              preserve_preference=True)
 
 
 @persistent
@@ -813,38 +946,8 @@ def _history_pre(*args):
 
 
 def _resume_saved():
-    global _HISTORY_RECOVERY_PENDING
-    if not _REGISTERED:
-        _HISTORY_RECOVERY_PENDING = False
-        return None
-    # Native Undo has also crashed from a deferred scene.objects traversal.
-    # History therefore has no automatic recovery at all. This gate also
-    # neutralizes an already dispatched load callback without touching RNA.
-    # Explicit Automatic/Manual already authenticate and recover their selected
-    # source using the current user action's context, without reconnecting others.
-    if _HISTORY_RECOVERY_PENDING:
-        return None
-    # Ordinary file-load recovery retains its existing separate lifecycle.
-    if not _scene_context_available():
-        return 0.05
-    manager = getattr(bpy.context, 'window_manager', None)
-    if manager is not None and getattr(manager, 'is_interface_locked', False):
-        return 0.05
-    for source in tuple(bpy.context.scene.objects):
-        if source.type != 'MESH' or STATE_KEY not in source:
-            continue
-        try:
-            _recover_source(source)
-            if mode(source) != 'AUTOMATIC':
-                continue
-            _start(bpy.context, source)
-        except (ReferenceError, ValueError, RuntimeError) as error:
-            try:
-                record = skirt.read_record(source)
-                if record is not None:
-                    _write(source, record, 'AUTOMATIC', reason='Saved Automatic is paused: ' + str(error))
-            except (ReferenceError, ValueError, RuntimeError):
-                pass
+    # Retained callable identity for a previously queued timer. Shared physics
+    # never reconnects from a timer or history/load callback.
     return None
 
 
@@ -860,8 +963,12 @@ def _queue_resume_saved(first_interval):
 def _load_post(*args):
     global _BACKEND_CACHE, _HISTORY_RECOVERY_PENDING
     _BACKEND_CACHE = None
-    _HISTORY_RECOVERY_PENDING = False
-    _queue_resume_saved(0.1)
+    _HISTORY_RECOVERY_PENDING = True
+    from . import wiggle2_runtime
+    wiggle2_runtime.forget('SKIRT')
+    _SESSIONS.clear()
+    if bpy.app.timers.is_registered(_resume_saved):
+        bpy.app.timers.unregister(_resume_saved)
 
 
 @persistent
@@ -872,6 +979,8 @@ def _undo_post(*args):
     # Drop stale Python references only. Neither this callback nor a timer may
     # recover the scene after history; the artist explicitly reconnects a Dress.
     _SESSIONS.clear()
+    from . import wiggle2_runtime
+    wiggle2_runtime.forget('SKIRT')
     _SAVE_RESUME = []
     _BACKEND_CACHE = None
     _BACKEND_CACHE_TIME = 0.0

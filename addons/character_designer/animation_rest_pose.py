@@ -1,8 +1,8 @@
-"""Native Rest/Pose display without replacing artist Actions or rest data.
+"""Editable neutral Rest posing and the retained animation display.
 
-The persistent marker contains a data name, never an extra ID reference in the
-authenticated Main Rig recovery graph. Only this module's matching Rest preview
-is resumed automatically by an ordinary worklist operation.
+Public Rest uses the persistent Natural Pose scratch session. The private native
+REST marker remains supported for legacy display rollback and operation scopes.
+The original animation and true bone Rest data are retained.
 """
 
 from contextlib import contextmanager
@@ -90,17 +90,22 @@ def _show(context, position):
 
 
 def show_rest(context):
-    """Display native Rest without clearing pose channels or authored keys."""
-    return _show(context, 'REST')
+    """Start an editable neutral pose isolated from the previous animation."""
+    from . import animation_pose_test
+    return animation_pose_test.start_natural(context)['rig']
 
 
 def show_pose(context):
-    """Display the retained native pose/animation, preserving mesh Edit Mode."""
+    """Return from an editable Rest test to the retained animation."""
+    from . import animation_pose_test
+    rig = get_rig(context)
+    if animation_pose_test.active(rig):
+        animation_pose_test.finish(context)
     return _show(context, 'POSE')
 
 
 @contextmanager
-def resume_for_operation(context, rig):
+def _resume_rest_for_operation(context, rig):
     """Resume an owned Rest display; a failed worklist operation stays in Rest.
 
     Native Rest chosen elsewhere remains under the existing worklist admission
@@ -129,3 +134,12 @@ def resume_for_operation(context, rig):
         raise
     else:
         rig.pop(PREVIEW_KEY, None)
+
+
+@contextmanager
+def resume_for_operation(context, rig):
+    """Leave a Base Pose test transactionally before an ordinary animation action."""
+    from . import animation_pose_test
+    with animation_pose_test.suspended_for_operation(context, rig):
+        with _resume_rest_for_operation(context, rig):
+            yield

@@ -1039,6 +1039,53 @@ def repair_leg_poles(context, armature, *, desired_pose=None):
     previously twisted pose must supply its explicitly selected native matrices;
     controller placement cannot infer a lost artist pose from source Rest.
     """
+    from . import body_setup
+    return _repair_leg_poles_with_transaction(context, armature, desired_pose,
+                                              body_setup._atomic)
+
+
+def _require_existing_switches(armature, inventory=None):
+    """Read-only proof that pose matching cannot install missing IK/FK drivers."""
+    inventory = inventory if inventory is not None else _limb()._validate_inventory(armature)
+    for rig in inventory['rigs'].values():
+        target = armature.pose.bones[rig['target'].name]
+        installed = target.bone.get(VERSION_KEY)
+        if type(installed) is not int or installed != VERSION:
+            raise _error('Original pose return requires existing, validated IK/FK switching.')
+        entries = [entry for entry in rig['entries'] if is_switch_constraint(armature, *entry)]
+        if not entries or any(not validate_constraint_influence(armature, *entry) for entry in entries):
+            raise _error('Original pose return cannot install or replace an IK/FK driver.')
+    return inventory
+
+
+def _repair_original_leg_poles(context, armature, *, desired_pose, _original_pose):
+    """Join only Original's active, verified pose-return checkpoint.
+
+    The ordinary repair still owns a complete Body transaction. This private
+    route does the same repair under Original's already captured channels,
+    Pole angles/metadata and Body/Dress/display rollback, without admitting
+    retained Actions to any structural or Rest recovery operation.
+    """
+    from . import body_original_owner
+    body_original_owner._check_pose_capability(_original_pose, armature, repair=True)
+    _require_existing_switches(armature)
+
+    def transaction(_context, candidate, operation):
+        body_original_owner._check_pose_capability(_original_pose, candidate, repair=True)
+        _require_existing_switches(candidate)
+        result = operation()
+        body_original_owner._check_pose_capability(_original_pose, candidate, repair=True)
+        _require_existing_switches(candidate)
+        return result
+
+    result = _repair_leg_poles_with_transaction(context, armature, desired_pose, transaction)
+    body_original_owner._check_pose_capability(_original_pose, armature, repair=True)
+    _require_existing_switches(armature)
+    return result
+
+
+def _repair_leg_poles_with_transaction(context, armature, desired_pose, transaction):
+    """Run the existing repair with the caller's explicit rollback boundary."""
     from . import body_setup, body_region, body_setup_removal, control_pose_assets
     inventory = _limb()._validate_inventory(armature)
     keys = sorted(key for key, data in inventory['rigs'].items()
@@ -1056,7 +1103,7 @@ def repair_leg_poles(context, armature, *, desired_pose=None):
     modes = {key: mode_for_rig(armature, inventory['rigs'][key]) for key in keys}
     if any(mode not in {'IK', 'FK'} for mode in modes.values()):
         raise _error('Choose IK or FK before repairing existing leg Poles.')
-    needs_repair = False
+    repair_keys = []
     for key in keys:
         data = inventory['rigs'][key]
         point, stale = _leg_front_layout(armature, data, wanted)
@@ -1075,13 +1122,14 @@ def repair_leg_poles(context, armature, *, desired_pose=None):
                                for name in pose_names(data)
                                for actual_row, expected_row in zip(armature.pose.bones[name].matrix, wanted[name])
                                for actual, expected in zip(actual_row, expected_row)), default=0.0)
-        needs_repair |= stale or metadata_stale or matrix_mismatch > 2e-4
-    if not needs_repair:
+        if stale or metadata_stale or matrix_mismatch > 2e-4:
+            repair_keys.append(key)
+    if not repair_keys:
         return {'repaired': [], 'changed': False}
 
     def commit():
         excluded = set()
-        for key in keys:
+        for key in repair_keys:
             data = inventory['rigs'][key]
             excluded.update(body_region._native_scope(armature, data['chain']))
             excluded.update(b.name for b in inventory['bones']
@@ -1092,7 +1140,7 @@ def repair_leg_poles(context, armature, *, desired_pose=None):
         skin = {name: wanted[name] @ armature.data.bones[name].matrix_local.inverted()
                 for name in body_setup._native_skin(armature)}
         result = {}
-        for key in keys:
+        for key in repair_keys:
             data = _limb()._validate_inventory(armature)['rigs'][key]
             result[key] = switch_limb(context, armature, key, modes[key], keyframe=False,
                                      desired_pose={name: wanted[name] for name in pose_names(data)},
@@ -1103,6 +1151,8 @@ def repair_leg_poles(context, armature, *, desired_pose=None):
             point, stale = _leg_front_layout(armature, data, wanted)
             if stale:
                 raise _error('Leg Pole repair did not retain its anatomical front layout.')
+            if key not in repair_keys:
+                continue
             start, _joint, end = (wanted[name].translation for name in data['chain'])
             direction = _limb()._project_perpendicular(point - start, end - start).normalized()
             for tag in (_limb().POLE_DIRECTION_KEY, _limb().POLE_CONFIGURED_DIRECTION_KEY):
@@ -1116,10 +1166,10 @@ def repair_leg_poles(context, armature, *, desired_pose=None):
         _verify(armature, wanted)
         body_setup._verify_skin(armature, skin, tolerance=body_setup_removal.SKIN_MATRIX_TOLERANCE)
         body_region._verify_guard(armature, protected, excluded)
-        return {'repaired': [':'.join(key) for key in keys], 'changed': True,
+        return {'repaired': [':'.join(key) for key in repair_keys], 'changed': True,
                 'errors': {':'.join(key): value['errors'] for key, value in result.items()}}
 
-    return body_setup._atomic(context, armature, commit)
+    return transaction(context, armature, commit)
 
 
 def _curve_bookend(curve, frame):

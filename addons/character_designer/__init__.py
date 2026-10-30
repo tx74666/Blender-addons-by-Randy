@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 85),
+    "version": (0, 77, 137),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -95,6 +95,7 @@ from .animation import (
     register_animation_runtime,
     unregister_animation_runtime,
 )
+from .animation_physics_ui import PHYSICS_CLASSES
 from .animation_worklist_ui import (
     WORKLIST_CLASSES,
     CharacterDesignerAnimationWorklistState,
@@ -8745,6 +8746,7 @@ CLASSES = (
     *SKIRT_CLASSES,
     *WORKLIST_CLASSES,
     *COMPOSITION_CLASSES,
+    *PHYSICS_CLASSES,
     *ANIMATION_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
     *WEIGHT_CLEANUP_CLASSES,
@@ -8885,7 +8887,7 @@ def _validate_registration_integrity():
 
 
 def register():
-    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge
     centerline_registered = hasattr(bpy.types.WindowManager, "character_designer")
     delta_registered = hasattr(
         bpy.types.WindowManager,
@@ -8957,6 +8959,7 @@ def register():
         register_bone_collection_handlers()
         register_bone_display_sync()
         register_forearm_twist_runtime()
+        playback_normal_bridge.register()
         _register_workspace_filter_guard()
         _register_source_watch()
         generated_names.register_handlers()
@@ -9068,6 +9071,7 @@ def register():
         register_bone_collection_handlers()
         register_bone_display_sync()
         register_forearm_twist_runtime()
+        playback_normal_bridge.register()
         _register_workspace_filter_guard()
         _register_source_watch()
         generated_names.register_handlers()
@@ -9075,6 +9079,7 @@ def register():
         skirt_wiggle_ui.register()
         skirt_wiggle.register()
     except Exception:
+        playback_normal_bridge.unregister()
         if added_unity_update_selection:
             unity_update_selection_ui.unregister_properties()
         skirt_wiggle.unregister()
@@ -9127,7 +9132,8 @@ def register():
 
 
 def unregister():
-    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge
+    playback_normal_bridge.unregister()
     unity_update_selection_ui.unregister_properties()
     custom_vertex_parts.unregister_properties()
     custom_vertex_groups.unregister_properties()

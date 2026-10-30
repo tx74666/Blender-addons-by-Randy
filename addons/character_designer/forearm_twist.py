@@ -26,6 +26,7 @@ from .forearm_twist_topology import (detect_rings, selected_loop, expand_rings, 
                                     support_topology_digest)
 from . import forearm_twist_profile as profile
 from . import forearm_twist_edit as editor
+from . import forearm_twist_angle_preview as angle_preview
 from . import forearm_twist_cache as validation_cache
 from .forearm_twist_symmetry import mirror_ring_pairs
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
@@ -48,6 +49,7 @@ _INITIALIZE_PENDING = False
 _SCENE_CLEANUP_PENDING = False
 _SCENE_STATE_ACTIVE = False
 _HISTORY_RECOVERY_PENDING = False
+_PLAYBACK_PREPARED = {}
 
 
 class ForearmTwistError(ValueError):
@@ -74,6 +76,7 @@ def _records(obj):
 
 
 def _write_records(obj, records):
+    _PLAYBACK_PREPARED.pop(obj.as_pointer(), None)
     if records:
         obj[RECORD_KEY] = json.dumps(records, separators=(",", ":"), sort_keys=True)
     elif RECORD_KEY in obj:
@@ -265,7 +268,9 @@ def _rest_signature(armature, names):
 def _check_mesh(obj):
     if obj is None or obj.type != "MESH":
         raise ForearmTwistError("Select the character's bound body Mesh in Object Mode.")
-    if obj.library or obj.data.library or obj.override_library or obj.data.users != 1:
+    if (obj.library or obj.data.library or obj.override_library
+            or (obj.data.users != 1
+                and not angle_preview.owned_mesh_data_reference(editor.runtime(), obj))):
         raise ForearmTwistError("Use a local Mesh with single-user data.")
     if not obj.modifiers or obj.modifiers[0].type != "ARMATURE":
         raise ForearmTwistError("This prototype needs Armature first in the modifier stack (no preceding Mirror).")
@@ -451,9 +456,59 @@ def _set_render_lock(scene):
         del scene[LOCK_KEY]
 
 
-def _calculate_object(obj, depsgraph):
+def _playback_token(scene, obj, depsgraph, *, require_playing=False):
+    """A stable Play boundary, not a cached controller-health validation.
+
+    The numeric path still reads its actual mesh/weights/Rest/pose every call.
+    Watching a prepared Play defers controller-definition health to Stop;
+    explicit tools retain full preparation. Same-ID constraint/driver authoring
+    is outside this stable watching boundary, not an automatic invalidation.
+    """
+    if (_SESSION is not None or _HISTORY_RECOVERY_PENDING
+            or _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING):
+        return None
+    try:
+        graph_scene = depsgraph.scene
+        graph_scene = getattr(graph_scene, "original", graph_scene)
+        if (depsgraph.mode != "VIEWPORT"
+                or graph_scene.as_pointer() != scene.as_pointer()):
+            return None
+        if obj.mode != "OBJECT" or PREVIEW_KEY in obj:
+            return None
+        modifier = obj.modifiers[0]
+        arm = modifier.object
+        if (modifier.type != "ARMATURE" or arm is None
+                or arm.type != "ARMATURE" or arm.mode not in {"OBJECT", "POSE"}):
+            return None
+        if require_playing and not any(
+                window.scene == scene and window.screen is not None
+                and window.screen.is_animation_playing
+                for manager in bpy.data.window_managers for window in manager.windows):
+            return None
+        record = obj.get(RECORD_KEY)
+        if not isinstance(record, str) or not record:
+            return None
+        identities = tuple(getattr(data, "session_uid", None)
+                           for data in (scene, obj, obj.data, obj.data.shape_keys, arm, arm.data))
+        if any(type(value) is not int or value <= 0 for value in identities):
+            return None
+        return (identities, modifier.as_pointer(), obj.mode, arm.mode,
+                arm.data.pose_position, record)
+    except (AttributeError, IndexError, ReferenceError, TypeError):
+        return None
+
+
+def _calculate_object(obj, depsgraph, *, _playback_scene=None):
     # Preparation and correction write only our keys/records, never topology.
     with validation_cache.read_scope():
+        prepared = _PLAYBACK_PREPARED.get(obj.as_pointer())
+        if (_playback_scene is not None and prepared is not None
+                and prepared == _playback_token(_playback_scene, obj, depsgraph, require_playing=True)):
+            _calculate_records(obj, depsgraph)
+            return
+        # A miss or an explicit tool call retires this object's Play admission.
+        # Only the next playback_pre may grant it again, after full success.
+        _PLAYBACK_PREPARED.pop(obj.as_pointer(), None)
         records = _prepare_runtime_records(obj)
         if records != _records(obj):
             _apply_runtime_records(obj, records, depsgraph)
@@ -547,7 +602,7 @@ def _calculate_records(obj, depsgraph):
             raise ForearmTwistError("The managed corrective key was renamed or changed; restore it or remove calibration.")
         managed_state.append((key.name, float(key.value), bool(key.mute)))
         coordinates = array("f", [0.0]) * (len(key.data) * 3)
-        key.data.foreach_get("co", coordinates)
+        getattr(key, "points", key.data).foreach_get("co", coordinates)
         managed_coordinates.append(coordinates.tobytes())
         managed_keys.append(key)
     basis_data = keys.reference_key.data
@@ -695,7 +750,7 @@ def _calculate_records(obj, depsgraph):
         key.mute = not enabled
         # Relative keys store full coordinate snapshots: copying Basis outside
         # the sleeve is essential when the artist edits unrelated Basis points.
-        key.data.foreach_set("co", basis_coordinates)
+        getattr(key, "points", key.data).foreach_set("co", basis_coordinates)
         for index, coordinate in output:
             key.data[index].co = coordinate
     keys.update_tag()
@@ -711,7 +766,7 @@ def _calculate_records(obj, depsgraph):
             _OUTPUT_CACHE[obj.as_pointer()].append(managed_coordinates[index])
             continue
         coordinates = array("f", [0.0]) * (len(key.data) * 3)
-        key.data.foreach_get("co", coordinates)
+        getattr(key, "points", key.data).foreach_get("co", coordinates)
         _OUTPUT_CACHE[obj.as_pointer()].append(coordinates.tobytes())
     _ERRORS.pop(obj.name, None)
 
@@ -727,6 +782,7 @@ def defer_runtime(context, *, flush_on_exit=True):
     otherwise the outermost scope refreshes its final pose on exit.
     """
     global _BUSY
+    _PLAYBACK_PREPARED.clear()
     previous_busy = _BUSY
     _BUSY = True
     def refresh():
@@ -746,7 +802,7 @@ def defer_runtime(context, *, flush_on_exit=True):
             update_runtime(context.scene)
 
 
-def update_runtime(scene, depsgraph=None):
+def update_runtime(scene, depsgraph=None, *, _playback=False, _playback_prepared=None):
     global _BUSY
     if _BUSY:
         return
@@ -765,8 +821,18 @@ def update_runtime(scene, depsgraph=None):
         depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
         for obj in owners:
             try:
-                _calculate_object(obj, depsgraph)
+                if _playback:
+                    _calculate_object(obj, depsgraph, _playback_scene=scene)
+                else:
+                    _calculate_object(obj, depsgraph)
+                # Entry collects only objects whose full original path actually
+                # returned. Busy/history early exits and failures grant nothing.
+                if _playback_prepared is not None:
+                    token = _playback_token(scene, obj, depsgraph)
+                    if token is not None:
+                        _playback_prepared[obj.as_pointer()] = token
             except Exception as exc:
+                _PLAYBACK_PREPARED.pop(obj.as_pointer(), None)
                 _ERRORS[obj.name] = str(exc)
                 _CACHE.pop(obj.as_pointer(), None)
                 # Invalid inputs fall back to the original skinning, never a
@@ -793,7 +859,7 @@ def _graph_post(scene, depsgraph):
         return
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
-    update_runtime(scene, depsgraph)
+    update_runtime(scene, depsgraph, _playback=True)
 
 
 @persistent
@@ -805,12 +871,33 @@ def _frame_post(scene, depsgraph=None):
         return
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
         _complete_runtime_lifecycle()
-    update_runtime(scene, depsgraph)
+    update_runtime(scene, depsgraph, _playback=True)
+
+
+@persistent
+def _playback_pre(scene, depsgraph=None):
+    _PLAYBACK_PREPARED.clear()
+    if (not _RUNTIME_REGISTERED or _BUSY or _SESSION is not None
+            or _HISTORY_RECOVERY_PENDING or _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING):
+        return
+    prepared = {}
+    # PRE runs before Blender creates its playback timer; it is not playing yet.
+    update_runtime(scene, depsgraph, _playback_prepared=prepared)
+    _PLAYBACK_PREPARED.update(prepared)
+
+
+@persistent
+def _playback_post(scene, depsgraph=None):
+    # Retire before a stopped refresh can tag any dependency-graph callbacks.
+    _PLAYBACK_PREPARED.clear()
+    if _RUNTIME_REGISTERED:
+        update_runtime(scene, depsgraph)
 
 
 @persistent
 def _load_post(_dummy):
     global _SESSION, _HISTORY_RECOVERY_PENDING
+    _PLAYBACK_PREPARED.clear()
     _SESSION = None
     _HISTORY_RECOVERY_PENDING = False
     if _INITIALIZE_PENDING or _SCENE_CLEANUP_PENDING:
@@ -828,8 +915,15 @@ def _load_post(_dummy):
 
 
 @persistent
+def _redo_pre(_dummy):
+    """Retire Play admission before native Redo without touching scene state."""
+    _PLAYBACK_PREPARED.clear()
+
+
+@persistent
 def _undo_post(_dummy):
     global _SESSION, _HISTORY_RECOVERY_PENDING
+    _PLAYBACK_PREPARED.clear()
     # Only discard Python state here. Preview recovery can remove Shape Keys
     # and restore Object/Pose/Edit Mode, so it belongs after native Undo too.
     _SESSION = None
@@ -864,6 +958,7 @@ def _complete_history_recovery():
 
 @persistent
 def _restore_preview(_dummy):
+    _PLAYBACK_PREPARED.clear()
     if _SESSION is not None:
         finish_test(bpy.context, False)
     _recover_previews()
@@ -1084,12 +1179,18 @@ def _angle_changed(self, context):
     if _UI_BUSY or _SESSION is None:
         return
     try:
-        if not _SESSION.get("pose_locked"):
+        if _SESSION.get("pose_locked"):
+            angle_preview.set_angle(context, editor.runtime(), _SESSION, self.test_angle)
+        else:
             _test_pose(context, self.test_angle)
     except Exception as exc:
         obj_name = _SESSION["mesh"].name
-        finish_test(context, False)
-        _ERRORS[obj_name] = str(exc)
+        try:
+            finish_test(context, False)
+        except Exception as recovery_error:
+            _ERRORS[obj_name] = str(exc) + " Recovery needs attention: " + str(recovery_error)
+        else:
+            _ERRORS[obj_name] = str(exc)
 
 
 class CharacterDesignerForearmTwistState(PropertyGroup):
@@ -1225,8 +1326,8 @@ def _prepare_runtime_records(obj):
     if arm.mode == "EDIT":
         raise ForearmTwistError("Forearm Twist resumes after leaving bone Edit Mode.")
     # All calls below are read-only until the resulting records are committed.
-    # Validate the same rig once, retaining the complete safety check on every
-    # update (including direct constraint edits without a depsgraph notification).
+    # Every call to this preparation retains the complete safety check, including
+    # direct constraint edits. Prepared Play callbacks deliberately bypass it.
     inventory = _forearm_inventory(obj, arm, set(records))
     resolved = {}
     for side in tuple(records):
@@ -1567,7 +1668,58 @@ def remove_paired_calibration(context, obj):
     _set_render_lock(context.scene)
 
 
+def _start_editable_rest_preview(context, obj):
+    """Keep a Rest-origin trial neutral and editable, never reveal animation."""
+    from . import animation_pose_test, animation_rest_pose
+    arm = _check_mesh(obj)
+    if arm.data.pose_position != 'REST':
+        return None
+    if animation_rest_pose.get_rig(context) is not arm:
+        raise ForearmTwistError('Choose this body Main Rig before entering editable Rest Pose.')
+    snapshot = limb_ik._capture_context(context, arm)
+    existing = animation_pose_test.natural_active(arm)
+    try:
+        if existing:
+            animation_pose_test._record(context, arm)
+            arm.data.pose_position = 'POSE'
+            context.view_layer.update()
+        else:
+            animation_pose_test.start_natural(context)
+    finally:
+        limb_ik._restore_context(context, arm, snapshot)
+    return {'armature': arm, 'created': not existing, 'previous_display': 'REST'}
+
+
 def start_test(context, obj, side="L", *, symmetry=False, recapture=False, rings_override=None,
+               initial_angle=None, start_vertices=None, continuous=False):
+    """Own automatic Natural entry until the Forearm transaction succeeds."""
+    if _SESSION is not None:
+        raise ForearmTwistError("Confirm or cancel the current twist test first.")
+    if context.mode != "OBJECT":
+        raise ForearmTwistError("Use Object Mode and select the bound body Mesh.")
+    if context.screen and context.screen.is_animation_playing:
+        raise ForearmTwistError("Stop playback before calibrating.")
+    natural = _start_editable_rest_preview(context, obj)
+    try:
+        return _start_test_current_pose(context, obj, side, symmetry=symmetry,
+            recapture=recapture, rings_override=rings_override, initial_angle=initial_angle,
+            start_vertices=start_vertices, continuous=continuous)
+    except Exception as error:
+        if natural is not None and _SESSION is None:
+            try:
+                if natural['created']:
+                    from . import animation_pose_test
+                    animation_pose_test.finish(context)
+                else:
+                    natural['armature'].data.pose_position = natural['previous_display']
+                    context.view_layer.update()
+            except Exception as recovery_error:
+                raise ForearmTwistError(str(error) + ' Natural Pose recovery needs attention: '
+                                        + str(recovery_error)) from error
+        raise
+
+
+def _start_test_current_pose(context, obj, side="L", *, symmetry=False, recapture=False, rings_override=None,
                initial_angle=None, start_vertices=None, continuous=False):
     global _SESSION, _UI_BUSY, _BUSY
     if _SESSION is not None:
@@ -1578,10 +1730,11 @@ def start_test(context, obj, side="L", *, symmetry=False, recapture=False, rings
         raise ForearmTwistError("Stop playback before calibrating.")
     arm, rig = _resolve_rig(obj, side)
     target = arm.pose.bones[rig["target"].name]
-    if ((target.rotation_mode != "XYZ" and not rig.get("fk_source"))
+    from . import animation_pose_test
+    pose_locked = _preview_pose_locked(arm, target, rig) or animation_pose_test.natural_active(arm)
+    if not pose_locked and ((target.rotation_mode != "XYZ" and not rig.get("fk_source"))
             or any(target.lock_rotation) or target.lock_rotation_w):
         raise ForearmTwistError("Unlock hand rotation before calibrating; generated Targets need XYZ mode.")
-    pose_locked = _preview_pose_locked(arm, target, rig)
     # Resolve a completed bind/rebuild before taking the preview snapshot.
     # This is normal persistent evaluation, independent of the temporary test.
     if RECORD_KEY in obj and not recapture:
@@ -1706,12 +1859,15 @@ def start_test(context, obj, side="L", *, symmetry=False, recapture=False, rings
         settings.test_angle = current_twist_angle(context) if initial_angle is None else initial_angle
         settings.ring_index = record.get("current_ring", 0) + 1
         _UI_BUSY = False
-        if not pose_locked and initial_angle is not None:
-            if target.rotation_mode != 'XYZ':
+        if initial_angle is not None:
+            if pose_locked:
+                angle_preview.set_angle(context, editor.runtime(), _SESSION, settings.test_angle)
+            elif target.rotation_mode != 'XYZ':
                 rotation = target.matrix_basis.to_quaternion()
                 target.rotation_mode = 'XYZ'
                 target.rotation_euler = rotation.to_euler('XYZ')
-            _test_pose(context, settings.test_angle)
+            if not pose_locked:
+                _test_pose(context, settings.test_angle)
         else:
             update_runtime(context.scene, context.evaluated_depsgraph_get())
         _update_ui(context)
@@ -1778,6 +1934,9 @@ def _preview_rollback_keys(obj, session):
 def _finish_test_restore(context, session, confirm):
     """Keep both preview guards until all data is restored successfully."""
     global _SESSION
+    # Animated inputs stay authored. Remove only this session's evaluated-pose
+    # overlay before the ordinary rig/mirror inventory is consulted again.
+    angle_preview.release(context, editor.runtime(), session)
     if confirm and session.get("symmetry"):
         # Until this transaction succeeds, keep the original preview rollback
         # available. A refusal must never silently accept only half the pair.
@@ -2138,8 +2297,9 @@ FOREARM_TWIST_CLASSES = (
 )
 
 _HANDLERS = (("depsgraph_update_post", _graph_post), ("frame_change_post", _frame_post),
+             ("animation_playback_pre", _playback_pre), ("animation_playback_post", _playback_post),
              ("load_pre", _restore_preview), ("save_pre", _restore_preview),
-             ("undo_pre", _restore_preview), ("load_post", _load_post),
+             ("undo_pre", _restore_preview), ("redo_pre", _redo_pre), ("load_post", _load_post),
              ("undo_post", _undo_post), ("redo_post", _undo_post))
 
 
@@ -2153,6 +2313,7 @@ def _scene_data_available():
 def _cleanup_runtime_scene():
     """Finish scene-side teardown only when Blender exposes live datablocks."""
     global _SESSION, _SCENE_STATE_ACTIVE, _HISTORY_RECOVERY_PENDING
+    _PLAYBACK_PREPARED.clear()
     try:
         if _SESSION is not None:
             try:
@@ -2162,6 +2323,11 @@ def _cleanup_runtime_scene():
                 # were removed. Its serialized rollback marker remains usable.
                 traceback.print_exc()
                 _SESSION = None
+        # Native Undo/load may restore the owned angle resources after Python's
+        # session is gone. Teardown still authenticates and releases those
+        # resources through their existing serialized preview marker.
+        if _SESSION is None:
+            _recover_previews()
         # Unloading cannot leave a stale pose correction without its code.
         for obj in bpy.data.objects:
             if obj.type != "MESH" or RECORD_KEY not in obj or not obj.data.shape_keys:
@@ -2219,6 +2385,7 @@ def _request_runtime_lifecycle():
 
 def register_forearm_twist_runtime():
     global _DRAW_HANDLE, _RUNTIME_REGISTERED, _INITIALIZE_PENDING
+    _PLAYBACK_PREPARED.clear()
     _RUNTIME_REGISTERED = True
     _INITIALIZE_PENDING = True
     for name, handler in _HANDLERS:
@@ -2236,6 +2403,7 @@ def register_forearm_twist_runtime():
 def unregister_forearm_twist_runtime():
     global _DRAW_HANDLE, _RUNTIME_REGISTERED, _INITIALIZE_PENDING, _SCENE_CLEANUP_PENDING
     global _HISTORY_RECOVERY_PENDING
+    _PLAYBACK_PREPARED.clear()
     _RUNTIME_REGISTERED = False
     _INITIALIZE_PENDING = False
     _HISTORY_RECOVERY_PENDING = False

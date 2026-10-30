@@ -1,6 +1,7 @@
 """Explicit workspace/worklist controls, without disk reads during drawing."""
 
 from pathlib import Path
+import json
 import math
 import textwrap
 
@@ -15,6 +16,8 @@ from .animation_original_inputs_ui import (
 
 _DRAGS = []
 _SCAN_PENDING = None
+_LIST_SYNC_PENDING = None
+_LIST_SYNC_REVIEW = None
 _SIDES = (
     ('SOURCE', 'Source', 'View the linked source Action'),
     ('CUSTOM', 'Custom', 'Edit the local custom Action'),
@@ -39,6 +42,11 @@ def _collection():
     return collection
 
 
+def _reconcile():
+    from . import animation_worklist_reconcile
+    return animation_worklist_reconcile
+
+
 def _state(context):
     scene = getattr(context, 'scene', None)
     return getattr(scene, 'character_designer_animation_worklist', None)
@@ -51,13 +59,136 @@ def _idle(_context):
 
 def scan_pending():
     """A pending UI scan also blocks native Link/Export entry points."""
-    global _SCAN_PENDING
+    global _SCAN_PENDING, _LIST_SYNC_PENDING
     if (_SCAN_PENDING is not None and _SCAN_PENDING['armed']
             and not bpy.app.timers.is_registered(_SCAN_PENDING['callback'])):
         # Nonpersistent timers disappear on file load. Release the Python lock
         # without touching either the removed scene or the newly loaded scene.
         _SCAN_PENDING = None
-    return _SCAN_PENDING is not None
+    if (_LIST_SYNC_PENDING is not None and _LIST_SYNC_PENDING['armed']
+            and not bpy.app.timers.is_registered(_LIST_SYNC_PENDING['callback'])):
+        _LIST_SYNC_PENDING = None
+    return _SCAN_PENDING is not None or _LIST_SYNC_PENDING is not None
+
+
+def _clear_list_sync(*, unregister=True):
+    global _LIST_SYNC_PENDING
+    pending, _LIST_SYNC_PENDING = _LIST_SYNC_PENDING, None
+    if pending is not None and unregister and pending['armed']:
+        if bpy.app.timers.is_registered(pending['callback']):
+            bpy.app.timers.unregister(pending['callback'])
+    return pending
+
+
+def _clear_list_sync_review():
+    global _LIST_SYNC_REVIEW
+    review, _LIST_SYNC_REVIEW = _LIST_SYNC_REVIEW, None
+    return review
+
+
+def _list_sync_review(context, *, token=None, workspace_path=None, clear=False):
+    """Identify only a currently displayed review, never a cached input proof."""
+    review = _LIST_SYNC_REVIEW
+    if review is None:
+        return None
+    try:
+        window, scene = review['window'], review['scene']
+        settings = _state(context)
+        if (getattr(context, 'window', None) != window or context.scene != scene
+                or window not in tuple(context.window_manager.windows) or window.scene != scene
+                or scene not in tuple(bpy.data.scenes) or settings is None
+                or settings.status != review['feedback']
+                or settings.collection_status != review['feedback'] or settings.has_error
+                or token is not None and token != review['token']
+                or workspace_path is not None and workspace_path != review['workspace_path']
+                or not _idle(context)):
+            return None
+    except (ReferenceError, AttributeError):
+        return None
+    if clear:
+        _clear_list_sync_review()
+    return review
+
+
+def _poll_list_sync():
+    global _LIST_SYNC_REVIEW
+    pending = _clear_list_sync(unregister=False)
+    if pending is None:
+        return None
+    try:
+        window, scene = pending['window'], pending['scene']
+        if (window not in tuple(bpy.context.window_manager.windows) or window.scene != scene
+                or scene not in tuple(bpy.data.scenes)):
+            _scan_feedback(pending, 'List sync cancelled: its owning scene changed.')
+            return None
+        with bpy.context.temp_override(window=window, scene=scene):
+            if not _idle(bpy.context):
+                raise RuntimeError('Finish the current animation operation before syncing the list.')
+            if pending.get('discard_extras', False):
+                _reconcile().begin(bpy.context, pending['plan_token'],
+                    workspace_path=pending['workspace_path'], discard_extras=True)
+            elif pending.get('deprecate_extras', False):
+                # begin rechecks the original token against current files/data.
+                _reconcile().begin(bpy.context, pending['plan_token'],
+                    workspace_path=pending['workspace_path'], deprecate_extras=True)
+            else:
+                plan = _reconcile().plan(bpy.context, pending['workspace_path'] or None)
+                if plan['blocked']:
+                    raise ValueError('List sync stopped. ' + ' '.join(
+                        entry['name'] + ': ' + entry['reason'] for entry in plan['blocked']))
+                if plan['extras']:
+                    feedback = 'Review extra animations before syncing. Existing edits are kept.'
+                    _scan_feedback(pending, feedback)
+                    _LIST_SYNC_REVIEW = dict(window=window, scene=scene, token=plan['token'],
+                        workspace_path=plan['workspace_path'], feedback=feedback)
+                    bpy.ops.character_designer.worklist_sync_review('INVOKE_DEFAULT',
+                        plan_token=plan['token'], workspace_path=plan['workspace_path'],
+                        extras_json=json.dumps(plan['extras'], ensure_ascii=False))
+                else:
+                    _reconcile().begin(bpy.context, plan['token'], workspace_path=plan['workspace_path'])
+            _redraw(bpy.context)
+    except Exception as exc:
+        _scan_feedback(pending, str(exc), error=True)
+    return None
+
+
+def _defer_list_sync(operator, context, workspace_path='', *, plan_token='', deprecate_extras=False,
+                     discard_extras=False):
+    """Paint truthful feedback before file validation or native Action creation."""
+    global _LIST_SYNC_PENDING
+    if scan_pending() or not _idle(context):
+        operator.report({'WARNING'}, 'Finish the current animation operation first.')
+        return {'CANCELLED'}
+    if deprecate_extras and discard_extras:
+        operator.report({'ERROR'}, 'Choose either Retire or Discard.')
+        return {'CANCELLED'}
+    if (deprecate_extras or discard_extras) and (not plan_token or _list_sync_review(context,
+            token=plan_token, workspace_path=workspace_path) is None):
+        operator.report({'WARNING'}, 'This review is no longer current. Click Sync List again.')
+        return {'CANCELLED'}
+    pending = dict(window=getattr(context, 'window', None), scene=context.scene,
+                   callback=_poll_list_sync, armed=False, workspace_path=workspace_path,
+                   plan_token=plan_token, deprecate_extras=deprecate_extras)
+    if discard_extras:
+        pending['discard_extras'] = True
+    try:
+        if pending['window'] is None or _state(context) is None:
+            raise ValueError('Sync the animation list in its owning Blender window.')
+        _LIST_SYNC_PENDING = pending
+        _clear_list_sync_review()
+        feedback = ('Discarding old entries and syncing... Shared, edited or recovery data are kept.'
+                    if discard_extras else
+                    'Retiring and syncing... Cancel before this step starts; running checks must finish.'
+                    if deprecate_extras else 'Checking Unity list... Existing edits are kept.')
+        _scan_feedback(pending, feedback)
+        bpy.app.timers.register(pending['callback'], first_interval=.05)
+        pending['armed'] = True
+    except Exception as exc:
+        _clear_list_sync()
+        _scan_feedback(pending, str(exc), error=True)
+        operator.report({'ERROR'}, str(exc))
+        return {'CANCELLED'}
+    return {'FINISHED'}
 
 
 def _scan_feedback(pending, message, error=False):
@@ -83,9 +214,12 @@ def _clear_pending_scan(*, unregister=True):
 
 def _cancel_pending_scan(message='Scan cancelled before it started.'):
     pending = _clear_pending_scan()
+    pending_list = _clear_list_sync()
+    if pending_list is not None:
+        _scan_feedback(pending_list, 'List sync cancelled before it started.')
     if pending is not None:
         _scan_feedback(pending, message)
-    return pending is not None
+    return pending is not None or pending_list is not None
 
 
 def _poll_scan():
@@ -160,6 +294,10 @@ def _workspace_connection_display(settings):
     if not getattr(settings, 'workspace_path', ''):
         return 'Connect', 'FILE_FOLDER'
     if getattr(settings, 'connection_check_failed', False):
+        status = getattr(settings, 'status', '')
+        if ('another workspace or model revision' in status
+                or status.startswith('Review extra animations before syncing.')):
+            return 'Sync Required', 'FILE_REFRESH'
         return 'Check Failed', 'ERROR'
     if getattr(settings, 'workspace_identity', ''):
         return 'Connected', 'CHECKMARK'
@@ -200,13 +338,27 @@ def _active_side(item, side):
         return False
     if action is None or rig is None or rig.animation_data is None or item.side != side:
         return False
+    slot = item.source_slot if side == 'SOURCE' else item.custom_slot
     if rig.animation_data.action == action:
-        return True
+        return rig.animation_data.action_slot_handle == slot
     display = _rigging_display(rig)
     return bool(display and display['rig'] is rig and display['base_action'] is action
+                and display['base_slot'] == slot
                 and display['source_read_only'] == (side == 'SOURCE')
                 and rig.animation_data.use_nla
-                and rig.animation_data.action in (None, display['input_action']))
+                and (rig.animation_data.action is None
+                     or (rig.animation_data.action == display['input_action']
+                         and rig.animation_data.action_slot_handle == display['input_slot'])))
+
+
+def _worklist_cursor(_settings):
+    """Keep UIList scrolling/filtering without a separate active row highlight."""
+    return -1
+
+
+def _ignore_worklist_cursor(_settings, _value):
+    # Passive row/keyboard selection never binds an Action or changes its owner.
+    pass
 
 
 def _editable_rigging(context):
@@ -323,6 +475,8 @@ class CharacterDesignerAnimationWorklistCatalog(PropertyGroup):
 
 
 class CharacterDesignerAnimationWorklistItem(PropertyGroup):
+    current_rig_revision: StringProperty(options={'HIDDEN'})
+    retirement_reason: StringProperty(options={'HIDDEN'})
     workspace_path: StringProperty(subtype='FILE_PATH', options={'HIDDEN'})
     workspace_identity: StringProperty(options={'HIDDEN'})
     composition_json: StringProperty(options={'HIDDEN'})
@@ -371,8 +525,11 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     composition_base_item_id: StringProperty(name='A Work Copy', options={'HIDDEN'})
     catalog: CollectionProperty(type=CharacterDesignerAnimationWorklistCatalog)
     items: CollectionProperty(type=CharacterDesignerAnimationWorklistItem)
+    retired_items: CollectionProperty(type=CharacterDesignerAnimationWorklistItem)
     # Source/Custom cells activate entries; passive list selection/file load never swaps Actions.
     active_index: IntProperty(default=-1, min=-1)
+    list_cursor: IntProperty(default=-1, min=-1, options={'HIDDEN', 'SKIP_SAVE'},
+                             get=_worklist_cursor, set=_ignore_worklist_cursor)
     catalog_index: IntProperty(default=-1, min=-1)
     search: StringProperty(name='Search Clips', options={'TEXTEDIT_UPDATE'})
     workspace_path: StringProperty(name='Workspace', subtype='FILE_PATH')
@@ -449,6 +606,8 @@ class CHARACTERDESIGNER_OT_worklist_connect(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        if _state(context).items or _state(context).rig:
+            return _defer_list_sync(self, context, self.filepath)
         return _run_workspace(self, context, 'connect', self.filepath)
 
 
@@ -493,7 +652,138 @@ class CHARACTERDESIGNER_OT_worklist_refresh(Operator):
         return settings is not None and bool(settings.workspace_path) and _idle(context)
 
     def execute(self, context):
-        return _run_workspace(self, context, 'refresh')
+        return _defer_list_sync(self, context)
+
+
+class CHARACTERDESIGNER_OT_worklist_sync_list(Operator):
+    bl_idname = 'character_designer.worklist_sync_list'
+    bl_label = 'Sync List'
+    bl_description = ('Sync the Unity animation list to this Main Rig; '
+                      'review extra entries before retiring them, keeping all Actions and drafts')
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and bool(settings.workspace_path) and _idle(context)
+
+    def execute(self, context):
+        return _defer_list_sync(self, context)
+
+
+class CHARACTERDESIGNER_OT_worklist_sync_review(Operator):
+    bl_idname = 'character_designer.worklist_sync_review'
+    bl_label = 'Review Extra Animations'
+    bl_description = 'Retire extra worklist entries, or go back without changing animations'
+    plan_token: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    workspace_path: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    extras_json: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, _event):
+        if not self.plan_token or _list_sync_review(context,
+                token=self.plan_token, workspace_path=self.workspace_path) is None:
+            return {'CANCELLED'}
+        return context.window_manager.invoke_popup(self, width=480)
+
+    def draw(self, _context):
+        layout = self.layout
+        extras = json.loads(self.extras_json)
+        layout.label(text=str(len(extras)) + ' local entries are outside the current Unity list.', icon='INFO')
+        for entry in extras:
+            layout.label(text=entry['name'], icon='ACTION')
+            for line in textwrap.wrap(entry['reason'], width=62):
+                layout.label(text=line)
+        layout.separator()
+        layout.label(text='Retire keeps Source, Custom and their work records.')
+        layout.label(text='Discard removes the old entries and unused, unchanged data.')
+        layout.label(text='Edited drafts, shared Actions and recovery data are kept.')
+        row = layout.row(align=True)
+        confirm = row.operator('character_designer.worklist_sync_confirm', text='Retire and Sync', icon='FILE_BACKUP')
+        confirm.plan_token, confirm.workspace_path = self.plan_token, self.workspace_path
+        discard = row.operator('character_designer.worklist_sync_discard_confirm', text='Discard and Sync', icon='TRASH')
+        discard.plan_token, discard.workspace_path = self.plan_token, self.workspace_path
+        row.operator('character_designer.worklist_sync_back', text='Back', icon='LOOP_BACK')
+
+    def execute(self, _context):
+        return {'CANCELLED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_sync_confirm(Operator):
+    bl_idname = 'character_designer.worklist_sync_confirm'
+    bl_label = 'Retire and Sync'
+    bl_description = 'Keep extra entries in Retired Animations, then sync the Unity list'
+    plan_token: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    workspace_path: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        return _defer_list_sync(self, context, self.workspace_path,
+                                plan_token=self.plan_token, deprecate_extras=True)
+
+
+class CHARACTERDESIGNER_OT_worklist_sync_discard_confirm(Operator):
+    bl_idname = 'character_designer.worklist_sync_discard_confirm'
+    bl_label = 'Discard and Sync'
+    bl_description = ('Discard the reviewed old entries and their unused, unchanged Actions, '
+                      'then import the new list; keep edited or shared data and recovery records')
+    plan_token: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    workspace_path: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        return _defer_list_sync(self, context, self.workspace_path,
+                                plan_token=self.plan_token, discard_extras=True)
+
+
+class CHARACTERDESIGNER_OT_worklist_sync_back(Operator):
+    bl_idname = 'character_designer.worklist_sync_back'
+    bl_label = 'Back'
+    bl_description = 'Return without changing the worklist or any Action'
+
+    def execute(self, context):
+        review = _list_sync_review(context, clear=True)
+        if review is None:
+            return {'CANCELLED'}
+        _scan_feedback(review, 'List sync cancelled. Existing animations were kept.')
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_restore_retired(Operator):
+    bl_idname = 'character_designer.worklist_restore_retired'
+    bl_label = 'Restore Retired Animation'
+    bl_description = 'Restore this complete local work record without rebinding it to a new source'
+    item_id: StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            _reconcile().restore_retired(context, self.item_id)
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        _redraw(context)
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_discard_retired(Operator):
+    bl_idname = 'character_designer.worklist_discard_retired'
+    bl_label = 'Discard Retired Animation'
+    bl_description = ('Remove this retired entry and its unused, unchanged Actions; '
+                      'keep edited drafts and data required by other work or recovery')
+    bl_options = {'REGISTER', 'UNDO'}
+    item_id: StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        return _state(context) is not None and _idle(context)
+
+    def execute(self, context):
+        try:
+            result = _reconcile().discard_retired(context, self.item_id)
+        except Exception as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, _state(context).status)
+        for detail in result['kept_actions']:
+            self.report({'INFO'}, detail['name'] + ': ' + detail['reason'])
+        _redraw(context)
+        return {'FINISHED'}
 
 
 class CHARACTERDESIGNER_OT_worklist_use_main_rig(Operator):
@@ -537,11 +827,11 @@ class CHARACTERDESIGNER_OT_worklist_restore_main_rig(Operator):
 class CHARACTERDESIGNER_OT_worklist_pose_position(Operator):
     bl_idname = 'character_designer.worklist_pose_position'
     bl_label = 'Show Rest Pose or Animation Pose'
-    bl_description = ('Switch the Main Rig display without changing animations or bone rest data; '
-                      'choose Pose or an animation to resume')
+    bl_description = ('Use Rest Pose for neutral, editable posing with the previous animation retained; '
+                      'choose Pose to return to that animation. Bone rest data stays unchanged')
     bl_options = {'REGISTER', 'UNDO'}
 
-    position: EnumProperty(items=(('REST', 'Rest Pose', 'Show the undeformed resting model'),
+    position: EnumProperty(items=(('REST', 'Rest Pose', 'Start or reset a neutral, editable pose isolated from the animation'),
                                  ('POSE', 'Pose', 'Show the current animation pose')))
 
     @classmethod
@@ -550,7 +840,7 @@ class CHARACTERDESIGNER_OT_worklist_pose_position(Operator):
         return _idle(context) and animation_rest_pose.can_show(context)
 
     def execute(self, context):
-        from . import animation_rest_pose
+        from . import animation_rest_pose, animation_pose_test
         try:
             if self.position == 'REST':
                 animation_rest_pose.show_rest(context)
@@ -561,6 +851,92 @@ class CHARACTERDESIGNER_OT_worklist_pose_position(Operator):
             return {'CANCELLED'}
         _redraw(context)
         return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_base_pose(Operator):
+    bl_idname = 'character_designer.worklist_base_pose'
+    bl_label = 'Reset to Base Pose'
+    bl_description = ('Return to the neutral Body pose and keep posing; keep the previous animation '
+                      'and any keyed test drafts. Click again to reset the test pose. '
+                      'Use Object or Pose Mode; selecting a control bone is not required')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    finish: BoolProperty(default=False, options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        from . import animation_pose_test
+        allowed = _idle(context) and animation_pose_test.can_start(context)
+        if (not allowed and getattr(context, 'mode', '') not in {'OBJECT', 'POSE'}
+                and hasattr(cls, 'poll_message_set')):
+            cls.poll_message_set('Finish Edit Mode and use Object or Pose Mode; '
+                                 'a control bone does not need to be selected.')
+        return allowed
+
+    def execute(self, context):
+        from . import animation_pose_test
+        try:
+            if self.finish:
+                result = animation_pose_test.finish(context)
+                message = ('Previous animation restored; keyed test drafts are kept.'
+                           if result.get('changed', True) else
+                           'No Base Pose test is active; the animation was left unchanged.')
+            else:
+                result = animation_pose_test.start_or_reset(context)
+                message = 'Base Pose ready. Rotate the controls; click Base Pose again to reset.'
+        except (ValueError, RuntimeError, AttributeError, ReferenceError, TypeError, KeyError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, message)
+        _redraw(context)
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_keep_base_pose_draft(Operator):
+    bl_idname = 'character_designer.worklist_keep_base_pose_draft'
+    bl_label = 'Keep Draft and Exit Test'
+    bl_description = ('Keep an outdated Base Pose draft and its recovery record, then leave the test '
+                      'without applying the old rig pose. Select an animation for the current rig next')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        from . import animation_pose_test
+        if not _idle(context) or not animation_pose_test.can_start(context):
+            return False
+        setup = getattr(context.scene, 'character_designer_setup', None)
+        worklist = getattr(context.scene, 'character_designer_animation_worklist', None)
+        rig = getattr(setup, 'rig', None) or getattr(worklist, 'rig', None)
+        return animation_pose_test.active(rig)
+
+    def execute(self, context):
+        from . import animation_pose_test
+        try:
+            animation_pose_test.keep_stale_draft(context)
+        except (ValueError, RuntimeError, AttributeError, ReferenceError, TypeError, KeyError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, 'Old draft and current pose snapshot kept. '
+                             'Choose an animation for the current rig, or start a new Base Pose.')
+        _redraw(context)
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_use_current_revision(Operator):
+    bl_idname = 'character_designer.worklist_use_current_revision'
+    bl_label = 'Use Current Rig'
+    bl_description = ('Keep the previous animation versions and create local editable versions '
+                      'of their motion curves for the current rig')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return (settings is not None and bool(settings.items) and _idle(context)
+                and getattr(context, 'mode', '') in {'OBJECT', 'POSE'})
+
+    def execute(self, context):
+        return _run(self, context, 'use_current_rig_version')
 
 
 class CHARACTERDESIGNER_OT_worklist_add(Operator):
@@ -580,9 +956,9 @@ class CHARACTERDESIGNER_OT_worklist_add(Operator):
 
 class CHARACTERDESIGNER_OT_worklist_add_ready(Operator):
     bl_idname = 'character_designer.worklist_add_ready'
-    bl_label = 'Import Prepared'
+    bl_label = 'Sync List'
     bl_description = (
-        'Import animations prepared in Unity. Use this workspace\'s animation rig when available; '
+        'Sync animations prepared in Unity. Use this workspace\'s animation rig when available; '
         'otherwise create a separate animation scene and import the character. '
         'Keep existing custom edits and the active animation')
 
@@ -672,6 +1048,12 @@ class CHARACTERDESIGNER_OT_worklist_activate(Operator):
 
     @classmethod
     def description(cls, _context, properties):
+        settings = _state(_context)
+        item = next((row for row in getattr(settings, 'items', ())
+                     if row.item_id == getattr(properties, 'item_id', '')), None)
+        if item is not None and getattr(item, 'current_rig_revision', ''):
+            return ('View this current-rig version\'s starting motion' if properties.side == 'SOURCE'
+                    else 'Edit this motion on the current rig')
         return ('View the original animation'
                 if properties.side == 'SOURCE' else 'Edit your version of this animation')
 
@@ -682,6 +1064,9 @@ class CHARACTERDESIGNER_OT_worklist_activate(Operator):
     def execute(self, context):
         settings = _state(context)
         rig = getattr(settings, 'rig', None)
+        if settings is not None:
+            # A previous collection cancellation is not this cell's outcome.
+            settings.collection_feedback = False
         get = getattr(rig, 'get', None)
         restored = get('character_designer_worklist_main_restored_v1') if callable(get) else None
         needs_resume = (type(restored) in (bool, int) and restored == 1
@@ -755,6 +1140,7 @@ class CHARACTERDESIGNER_OT_worklist_drag_handle(Operator):
 def stop_worklist_ui():
     """Stop owned collection work and pointer moves during add-on refresh."""
     _cancel_pending_scan('Scan stopped before reload or file load.')
+    _clear_list_sync_review()
     _collection().stop()
     for operator in tuple(_DRAGS):
         operator._cancelled = True
@@ -935,7 +1321,8 @@ class CHARACTERDESIGNER_UL_animation_worklist(UIList):
             cell = columns.row(align=True)
             cell.enabled = action is not None
             activate = cell.operator('character_designer.worklist_activate', text=item.name, icon=icon,
-                                     emboss=False, depress=_active_side(item, side))
+                                     emboss=True, depress=(_active_data.active_index == _index
+                                                           and _active_side(item, side)))
             activate.item_id, activate.side = item.item_id, side
 
 
@@ -946,7 +1333,7 @@ def _draw_worklist_actions(layout, context, settings):
     header.label(text='Source', icon='LINKED')
     header.label(text='Custom', icon='EDITMODE_HLT')
     column.template_list('CHARACTERDESIGNER_UL_animation_worklist', 'actions',
-                         settings, 'items', settings, 'active_index', rows=5, maxrows=5)
+                         settings, 'items', settings, 'list_cursor', rows=5, maxrows=5)
 
 
 def _draw_rigging(layout, context, item):
@@ -978,8 +1365,9 @@ def _draw_rigging(layout, context, item):
     save.operator('character_designer.worklist_save_controls', text='Save Controls', icon='KEY_HLT').item_id = item.item_id
 
 
-def draw_worklist(layout, context):
-    draw_original_inputs(layout, context)
+def draw_worklist(layout, context, *, include_original_inputs=True):
+    if include_original_inputs:
+        draw_original_inputs(layout, context)
     old_controls = layout.column()
     old_controls.enabled = not original_inputs_live(context)
     layout = old_controls
@@ -996,50 +1384,81 @@ def draw_worklist(layout, context):
     connection_label, connection_icon = _workspace_connection_display(settings)
     header.operator('character_designer.worklist_connect', text=connection_label, icon=connection_icon)
     header.operator('character_designer.worklist_refresh', text='', icon='FILE_REFRESH')
-    box.label(text='Scene: ' + getattr(context.scene, 'name', 'Unnamed'), icon='SCENE_DATA')
     busy = scan_pending() or _collection().running()
-    from . import animation_rest_pose
+    from . import animation_rest_pose, animation_pose_test
     if animation_rest_pose.can_show(context):
         display_rig = animation_rest_pose.get_rig(context)
         pose_row = box.row(align=True)
-        pose_row.enabled = _idle(context)
-        for position, label in (('REST', 'Rest Pose'), ('POSE', 'Pose')):
-            show = pose_row.operator('character_designer.worklist_pose_position', text=label,
-                                     depress=display_rig.data.pose_position == position)
-            show.position = position
+        pose_row.enabled = _idle(context) and getattr(context, 'mode', '') in {'OBJECT', 'POSE'}
+        testing = animation_pose_test.active(display_rig)
+        natural = animation_pose_test.natural_active(display_rig)
+        rest = pose_row.operator('character_designer.worklist_pose_position', text='Rest Pose',
+                                 depress=natural or display_rig.data.pose_position == 'REST')
+        rest.position = 'REST'
+        if testing and not natural:
+            pose_row.operator('character_designer.worklist_base_pose', text='Return to Animation',
+                              icon='ACTION').finish = True
+        else:
+            show = pose_row.operator('character_designer.worklist_pose_position', text='Pose',
+                                     depress=not natural and display_rig.data.pose_position == 'POSE')
+            show.position = 'POSE'
+        if testing:
+            recovery = box.row()
+            recovery.enabled = _idle(context)
+            recovery.operator('character_designer.worklist_keep_base_pose_draft',
+                              text='Keep Draft / Exit Test', icon='FILE_BACKUP')
     if settings.workspace_path:
-        box.label(text='Character: ' + (settings.target_name or 'Unnamed'))
         setup = getattr(context.scene, 'character_designer_setup', None)
         main = getattr(setup, 'rig', None)
         rig = getattr(settings, 'rig', None)
-        if main is not None:
+        if (main is not None and not (rig is not None and hasattr(rig, 'get')
+                and rig.get('character_designer_worklist_main_session_v1') is not None)):
             row = box.row(align=True)
             row.enabled = _idle(context)
-            if (rig is not None and hasattr(rig, 'get')
-                    and rig.get('character_designer_worklist_main_session_v1') is not None):
-                row.label(text='Rig: ' + rig.name, icon='ARMATURE_DATA')
-            else:
-                row.operator('character_designer.worklist_use_main_rig', text='Edit Animations', icon='ARMATURE_DATA')
+            row.operator('character_designer.worklist_use_main_rig', text='Edit Animations', icon='ARMATURE_DATA')
+        local_current = any(getattr(item, 'current_rig_revision', '') for item in settings.items)
+        if local_current:
+            box.label(text='Current Rig: local animation versions', icon='ACTION')
+            box.label(text='Prepare matching Unity sources before exporting.', icon='INFO')
+        elif (main is not None and callable(getattr(getattr(main, 'data', None), 'get', None))
+                and main.data.get('character_designer_current_leg_rest_acceptance_v1') is not None):
+            row = box.row()
+            row.enabled = _idle(context)
+            row.operator('character_designer.worklist_use_current_revision', text='Use Current Rig', icon='ARMATURE_DATA')
         batch = box.row(align=True)
-        batch.enabled = _idle(context)
-        batch.operator('character_designer.worklist_add_ready', text='Import Prepared', icon='IMPORT')
+        batch.enabled = _idle(context) and not local_current
+        batch.operator('character_designer.worklist_sync_list', text='Sync List', icon='FILE_REFRESH')
         batch.operator('character_designer.worklist_sync_changed', text='Export Changes', icon='EXPORT')
         if _prepared_rigging_target(context):
             prepared = box.row()
-            prepared.enabled = _idle(context)
+            prepared.enabled = _idle(context) and not local_current
             prepared.operator_context = 'INVOKE_DEFAULT'
             prepared.operator('character_designer.worklist_add_prepared_animation',
                               text='Add Prepared Animation', icon='ADD')
         if settings.items:
             _draw_worklist_actions(box, context, settings)
         else:
-            box.label(text='Prepare motions in Unity, then click Import Prepared.', icon='INFO')
+            box.label(text='Add motions in Unity, then click Sync List.', icon='INFO')
         _draw_rigging(box, context, _selected(settings))
         advanced = box.row()
         advanced.prop(settings, 'show_advanced', text='Advanced', emboss=False,
                       icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
         if settings.show_advanced:
+            base = box.operator('character_designer.worklist_base_pose', text='Base Pose',
+                                icon='LOOP_BACK')
+            base.finish = False
             box.operator('character_designer.worklist_register_new', text='New Action', icon='ACTION')
+            retired = getattr(settings, 'retired_items', ())
+            if retired:
+                archive = box.box()
+                archive.label(text='Retired Animations (' + str(len(retired)) + ')', icon='FILE_BACKUP')
+                for item in retired:
+                    row = archive.row(align=True)
+                    row.label(text=item.name, icon='ACTION')
+                    restore = row.operator('character_designer.worklist_restore_retired', text='Restore')
+                    restore.item_id = item.item_id
+                    discard = row.operator('character_designer.worklist_discard_retired', text='Discard', icon='TRASH')
+                    discard.item_id = item.item_id
             if (rig is not None and hasattr(rig, 'get')
                     and rig.get('character_designer_worklist_main_session_v1') is not None):
                 box.operator('character_designer.worklist_restore_main_rig',
@@ -1053,11 +1472,11 @@ def draw_worklist(layout, context):
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.status, width=width)):
             box.label(text=line, icon=('ERROR' if settings.has_error else 'INFO') if index == 0 else 'BLANK1')
-    if ((settings.has_error or busy or unresolved or getattr(settings, 'collection_feedback', False)) and settings.collection_status
+    if ((busy or unresolved or getattr(settings, 'collection_feedback', False)) and settings.collection_status
             and (not show_status or settings.collection_status != settings.status)):
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.collection_status, width=width)):
-            box.label(text=line, icon=('ERROR' if settings.has_error else 'INFO') if index == 0 else 'BLANK1')
+            box.label(text=line, icon='INFO' if index == 0 else 'BLANK1')
     selected = _selected(settings)
     if (unresolved and selected is not None and selected.scan_state in {'UNKNOWN', 'BLOCKED'}
             and selected.scan_reason and selected.scan_reason != settings.collection_status):
@@ -1074,9 +1493,19 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_connect,
     CHARACTERDESIGNER_OT_worklist_add_prepared_animation,
     CHARACTERDESIGNER_OT_worklist_refresh,
+    CHARACTERDESIGNER_OT_worklist_sync_list,
+    CHARACTERDESIGNER_OT_worklist_sync_review,
+    CHARACTERDESIGNER_OT_worklist_sync_confirm,
+    CHARACTERDESIGNER_OT_worklist_sync_discard_confirm,
+    CHARACTERDESIGNER_OT_worklist_sync_back,
+    CHARACTERDESIGNER_OT_worklist_restore_retired,
+    CHARACTERDESIGNER_OT_worklist_discard_retired,
     CHARACTERDESIGNER_OT_worklist_use_main_rig,
     CHARACTERDESIGNER_OT_worklist_restore_main_rig,
     CHARACTERDESIGNER_OT_worklist_pose_position,
+    CHARACTERDESIGNER_OT_worklist_base_pose,
+    CHARACTERDESIGNER_OT_worklist_keep_base_pose_draft,
+    CHARACTERDESIGNER_OT_worklist_use_current_revision,
     CHARACTERDESIGNER_OT_worklist_add,
     CHARACTERDESIGNER_OT_worklist_add_ready,
     CHARACTERDESIGNER_OT_worklist_scan_changes,

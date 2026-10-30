@@ -164,6 +164,192 @@ class WorklistUI(unittest.TestCase):
             self.context, layout, self.state, item, 0, self.state, 'active_index')
         return layout
 
+    @contextmanager
+    def base_pose_modules(self, active=False):
+        """Keep the real UI/operator; isolate the separate pose transaction."""
+        package = sys.modules[self.ui.__package__]
+        rest = ModuleType(self.ui.__package__ + '.animation_rest_pose')
+        pose = ModuleType(self.ui.__package__ + '.animation_pose_test')
+        rig = SimpleNamespace(data=SimpleNamespace(pose_position='POSE'))
+        rest.can_show, rest.get_rig = Mock(return_value=True), Mock(return_value=rig)
+        state = {'active': active, 'events': []}
+
+        def display(position):
+            state['events'].append(position)
+            rig.data.pose_position = position
+            return rig
+
+        rest.show_rest = Mock(side_effect=lambda _context: display('REST'))
+        rest.show_pose = Mock(side_effect=lambda _context: display('POSE'))
+
+        def start(_context):
+            state['active'] = True
+            return {'rig': rig, 'reset': False, 'draft': None}
+
+        def finish(_context):
+            state['events'].append('FINISH')
+            changed = state['active']
+            state['active'] = False
+            return {'rig': rig, 'draft': None, 'changed': changed}
+
+        pose.can_start = Mock(return_value=True)
+        pose.active = Mock(side_effect=lambda _rig: state['active'])
+        pose.start_or_reset, pose.finish = Mock(side_effect=start), Mock(side_effect=finish)
+        with patch.dict(sys.modules, {rest.__name__: rest, pose.__name__: pose}), \
+                patch.object(package, 'animation_rest_pose', rest, create=True), \
+                patch.object(package, 'animation_pose_test', pose, create=True):
+            yield pose, state
+
+    def base_pose_buttons(self):
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        return {value[1]['text']: value[2] for kind, value, _enabled in layout.records
+                if kind == 'operator' and value[0] == 'character_designer.worklist_base_pose'}
+
+    def execute_pose_button(self, payload, remembered_finish):
+        # The native fixture separately verifies Blender's last-property merge.
+        # Here the real draw payload must override a remembered opposite route.
+        operator = self.ui.CHARACTERDESIGNER_OT_worklist_base_pose()
+        operator.finish = remembered_finish
+        for name, value in vars(payload).items():
+            setattr(operator, name, value)
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        return operator
+
+    def test_base_pose_buttons_explicitly_pin_both_routes(self):
+        for active in (False, True):
+            for advanced in (False, True):
+                with self.subTest(active=active, advanced=advanced), self.base_pose_modules(active):
+                    self.state.show_advanced = advanced
+                    buttons = self.base_pose_buttons()
+                    self.assertEqual('Base Pose' in buttons, advanced)
+                    if advanced:
+                        self.assertIs(getattr(buttons['Base Pose'], 'finish', None), False)
+                    self.assertEqual('Return to Animation' in buttons, active)
+                    if active:
+                        self.assertIs(buttons['Return to Animation'].finish, True)
+
+    def test_native_rest_and_pose_buttons_pin_and_execute_opposite_display_routes(self):
+        with self.base_pose_modules() as (pose, state):
+            rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
+            rig = rest.get_rig(self.context)
+            for current in ('REST', 'POSE'):
+                rig.data.pose_position = current
+                layout = Layout()
+                self.ui.draw_worklist(layout, self.context)
+                buttons = {value[1]['text']: (value, enabled)
+                           for kind, value, enabled in layout.records
+                           if kind == 'operator'
+                           and value[0] == 'character_designer.worklist_pose_position'}
+                self.assertEqual(set(buttons), {'Rest Pose', 'Pose'})
+                for label, position in (('Rest Pose', 'REST'), ('Pose', 'POSE')):
+                    with self.subTest(current=current, label=label):
+                        value, enabled = buttons[label]
+                        self.assertTrue(enabled)
+                        self.assertEqual(value[2].position, position)
+                        self.assertEqual(value[1]['depress'], current == position)
+                        operator = self.ui.CHARACTERDESIGNER_OT_worklist_pose_position()
+                        operator.position = 'POSE' if position == 'REST' else 'REST'
+                        for name, setting in vars(value[2]).items():
+                            setattr(operator, name, setting)
+                        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+                        self.assertEqual(rig.data.pose_position, position)
+            pose.start_or_reset.assert_not_called()
+            pose.finish.assert_not_called()
+            self.assertFalse(state['active'])
+
+    def test_native_display_remains_available_when_base_pose_admission_refuses(self):
+        with self.base_pose_modules() as (pose, _state):
+            pose.can_start.return_value = False
+            self.assertFalse(self.ui.CHARACTERDESIGNER_OT_worklist_base_pose.poll(self.context))
+            self.assertTrue(self.ui.CHARACTERDESIGNER_OT_worklist_pose_position.poll(self.context))
+            layout = Layout()
+            self.ui.draw_worklist(layout, self.context)
+            buttons = {value[1]['text']: enabled for kind, value, enabled in layout.records
+                       if kind == 'operator'
+                       and value[0] == 'character_designer.worklist_pose_position'}
+            self.assertEqual(buttons, {'Rest Pose': True, 'Pose': True})
+            pose.start_or_reset.assert_not_called()
+
+    def test_native_display_keeps_its_own_admission_and_busy_guards(self):
+        with self.base_pose_modules():
+            rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
+            for admitted, idle in ((True, True), (False, True), (True, False)):
+                with self.subTest(admitted=admitted, idle=idle):
+                    rest.can_show.return_value = admitted
+                    self.animation._link_idle.return_value = idle
+                    self.assertEqual(
+                        self.ui.CHARACTERDESIGNER_OT_worklist_pose_position.poll(self.context),
+                        admitted and idle)
+                    layout = Layout()
+                    self.ui.draw_worklist(layout, self.context)
+                    buttons = [(value, enabled) for kind, value, enabled in layout.records
+                               if kind == 'operator'
+                               and value[0] == 'character_designer.worklist_pose_position']
+                    self.assertEqual(len(buttons), 2 if admitted else 0)
+                    self.assertTrue(all(enabled == idle for _value, enabled in buttons))
+            rest.show_rest.assert_not_called()
+            rest.show_pose.assert_not_called()
+
+    def test_live_original_inputs_still_disable_native_display_controls(self):
+        with self.base_pose_modules(), patch.object(self.ui, 'original_inputs_live', return_value=True):
+            layout = Layout()
+            self.ui.draw_worklist(layout, self.context)
+        buttons = [(value, enabled) for kind, value, enabled in layout.records
+                   if kind == 'operator'
+                   and value[0] == 'character_designer.worklist_pose_position']
+        self.assertEqual(len(buttons), 2)
+        self.assertTrue(all(not enabled for _value, enabled in buttons))
+
+    def test_rest_from_base_keeps_existing_finish_then_display_route(self):
+        with self.base_pose_modules(active=True) as (pose, state):
+            layout = Layout()
+            self.ui.draw_worklist(layout, self.context)
+            buttons = {value[1]['text']: value for kind, value, _enabled in layout.records
+                       if kind == 'operator'
+                       and value[0] in {'character_designer.worklist_pose_position',
+                                        'character_designer.worklist_base_pose'}}
+            self.assertEqual(set(buttons), {'Rest Pose', 'Return to Animation'})
+            self.assertIs(buttons['Return to Animation'][2].finish, True)
+            operator = self.ui.CHARACTERDESIGNER_OT_worklist_pose_position()
+            operator.position = buttons['Rest Pose'][2].position
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            self.assertFalse(state['active'])
+            self.assertEqual(state['events'], ['FINISH', 'REST'])
+            pose.finish.assert_called_once_with(self.context)
+            pose.start_or_reset.assert_not_called()
+
+    def test_base_pose_reentry_overrides_remembered_return_route(self):
+        self.state.show_advanced = True
+        with self.base_pose_modules() as (pose, state):
+            first = self.execute_pose_button(self.base_pose_buttons()['Base Pose'], True)
+            self.assertTrue(state['active'])
+            self.assertIn('Base Pose ready', first.last_report[1])
+            returned = self.execute_pose_button(self.base_pose_buttons()['Return to Animation'], False)
+            self.assertFalse(state['active'])
+            self.assertIn('Previous animation restored', returned.last_report[1])
+            reentered = self.execute_pose_button(self.base_pose_buttons()['Base Pose'], True)
+            self.assertTrue(state['active'])
+            self.assertIn('Base Pose ready', reentered.last_report[1])
+            self.assertEqual(pose.start_or_reset.call_count, 2)
+            pose.finish.assert_called_once_with(self.context)
+
+    def test_base_pose_finish_feedback_distinguishes_no_change(self):
+        for active in (False, True):
+            with self.subTest(active=active), self.base_pose_modules(active) as (pose, state):
+                operator = self.ui.CHARACTERDESIGNER_OT_worklist_base_pose()
+                operator.finish = True
+                self.assertEqual(operator.execute(self.context), {'FINISHED'})
+                self.assertFalse(state['active'])
+                pose.finish.assert_called_once_with(self.context)
+                pose.start_or_reset.assert_not_called()
+                self.assertEqual(operator.last_report[0], {'INFO'})
+                if active:
+                    self.assertIn('Previous animation restored', operator.last_report[1])
+                else:
+                    self.assertNotIn('restored', operator.last_report[1])
+                    self.assertIn('No Base Pose test is active', operator.last_report[1])
+
     def load_animation(self):
         """Load the actual coordinator; only Blender/services are substitutes."""
         package_name = self.ui.__package__
@@ -336,31 +522,46 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
         self.assertTrue(operator.poll(self.context))
 
-    def test_failed_refresh_marks_current_connection_without_clearing_saved_work(self):
-        self.backend.refresh.side_effect = ValueError('Workspace identity changed.')
+    def test_failed_refresh_sync_keeps_previous_connection_and_saved_work(self):
+        reconcile = SimpleNamespace(plan=Mock(side_effect=ValueError('Workspace identity changed.')),
+                                    begin=Mock())
         before = self.state.workspace_path, self.state.workspace_identity, self.state.items[:]
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_refresh()
-        self.assertEqual(operator.execute(self.context), {'CANCELLED'})
-        self.assertTrue(self.state.connection_check_failed)
-        self.assertEqual(self.ui._workspace_connection_display(self.state), ('Check Failed', 'ERROR'))
-        self.assertEqual((self.state.workspace_path, self.state.workspace_identity, self.state.items), before)
-        self.assertIn('last Refresh failed', self.ui.CHARACTERDESIGNER_OT_worklist_connect.description(self.context, None))
-        self.backend.refresh.side_effect = None
-        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        with patch.object(self.ui, '_reconcile', return_value=reconcile):
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            reconcile.plan.assert_not_called()
+            self.ui._poll_list_sync()
+        self.assertTrue(self.state.has_error)
+        self.assertEqual(self.state.status, 'Workspace identity changed.')
         self.assertFalse(self.state.connection_check_failed)
         self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
+        self.assertEqual((self.state.workspace_path, self.state.workspace_identity, self.state.items), before)
+        reconcile.begin.assert_not_called()
+        self.backend.refresh.assert_not_called()
+        reconcile.plan.side_effect = None
+        reconcile.plan.return_value = dict(blocked=[], extras=[], token='retry-token', workspace_path=before[0])
+        with patch.object(self.ui, '_reconcile', return_value=reconcile):
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            self.ui._poll_list_sync()
+        reconcile.begin.assert_called_once_with(self.context, 'retry-token', workspace_path=before[0])
 
     def test_rejected_replacement_keeps_previous_connection_check(self):
-        self.backend.connect.side_effect = ValueError('Another character workspace cannot replace this worklist.')
+        reconcile = SimpleNamespace(
+            plan=Mock(side_effect=ValueError('Another character workspace cannot replace this worklist.')),
+            begin=Mock())
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect()
         operator.filepath = 'different-workspace.json'
-        self.assertEqual(operator.execute(self.context), {'CANCELLED'})
+        before = self.state.workspace_path, self.state.workspace_identity, self.state.items[:]
+        with patch.object(self.ui, '_reconcile', return_value=reconcile):
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            self.ui._poll_list_sync()
         self.assertFalse(self.state.connection_check_failed)
         self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
-        self.backend.connect.side_effect = None
-        self.state.connection_check_failed = True
-        self.assertEqual(operator.execute(self.context), {'FINISHED'})
-        self.assertFalse(self.state.connection_check_failed)
+        self.assertEqual((self.state.workspace_path, self.state.workspace_identity, self.state.items), before)
+        self.assertTrue(self.state.has_error)
+        reconcile.plan.assert_called_once_with(self.context, 'different-workspace.json')
+        reconcile.begin.assert_not_called()
+        self.backend.connect.assert_not_called()
 
     def test_rna_contract_has_no_action_switching_update_callbacks(self):
         state = self.ui.CharacterDesignerAnimationWorklistState.__annotations__
@@ -662,8 +863,8 @@ class WorklistUI(unittest.TestCase):
             for item in self.state.items:
                 self.draw_action_row(item)
         labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
-        self.assertIn('Character: Cosha', labels)
-        self.assertIn('Scene: Animation Worklist · Cosha', labels)
+        self.assertNotIn('Character: Cosha', labels)
+        self.assertNotIn('Scene: Animation Worklist · Cosha', labels)
         self.assertNotIn('Source: Soldier', labels)
         lists = [value for kind, value, _enabled in layout.records if kind == 'list']
         self.assertEqual(len(lists), 1)
@@ -678,7 +879,7 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
             ('character_designer.worklist_connect', 'Connected'),
             ('character_designer.worklist_refresh', ''),
-            ('character_designer.worklist_add_ready', 'Import Prepared'),
+            ('character_designer.worklist_sync_list', 'Sync List'),
             ('character_designer.worklist_sync_changed', 'Export Changes')])
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
                                                    for item in self.state.items]), before)
@@ -823,6 +1024,29 @@ class WorklistUI(unittest.TestCase):
         self.ui.draw_worklist(layout, self.context)
         self.assertIn({'text': 'Workspace identity changed.', 'icon': 'ERROR'},
                       [value for kind, value, _enabled in layout.records if kind == 'label'])
+
+    def test_adopted_rig_omits_identity_labels_but_keeps_export_warning_and_error(self):
+        class Rig(dict):
+            pass
+
+        rig = Rig(character_designer_worklist_main_session_v1='owned-session')
+        rig.name, rig.type, rig.library = 'CoshaRig', 'ARMATURE', None
+        rig.data = SimpleNamespace()
+        self.state.rig = rig
+        self.context.scene.character_designer_setup = SimpleNamespace(rig=rig)
+        self.state.items[0].current_rig_revision = 'local-current-rig-revision'
+        self.state.status, self.state.has_error = 'Workspace identity changed.', True
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
+        self.assertFalse(any(label.startswith(('Character:', 'Rig:', 'Scene:')) for label in labels))
+        self.assertIn('Current Rig: local animation versions', labels)
+        self.assertIn('Prepare matching Unity sources before exporting.', labels)
+        self.assertIn({'text': self.state.status, 'icon': 'ERROR'},
+                      [value for kind, value, _enabled in layout.records if kind == 'label'])
+        exports = [enabled for kind, value, enabled in layout.records
+                   if kind == 'operator' and value[0] == 'character_designer.worklist_sync_changed']
+        self.assertEqual(exports, [False])
 
     def test_pending_scan_and_collection_show_progress_and_cancel_only_while_busy(self):
         self.state.status = 'Importing animations...'

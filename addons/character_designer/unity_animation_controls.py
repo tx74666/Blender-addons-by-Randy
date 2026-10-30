@@ -221,39 +221,86 @@ def _basis_for_native(pb, desired, plan):
     return bone.convert_local_to_pose(desired[pb.name], bone.matrix_local, invert=True, **kwargs)
 
 
-def _capture_channels(target, clone, plan, keyed, channels, previous_q, previous_e):
-    needs_translation = False
+def _post_redirect_updates(target, plan, order):
+    """Keep barriers for native writes that read an evaluated control parent.
+
+    Every redirected matrix setter already has a mandatory pre-update, and the
+    loop ends with an update before any eye/output reads. An immediate update
+    after a redirect is only needed when an intervening native basis calculation
+    reads pb.parent.matrix. Mapped parents use the supplied desired matrices.
+    Read current native parents once per synchronous bake; retain no pose cache.
+    """
+    required, reads_parent = set(), False
+    for name in reversed(order):
+        if name in plan.redirects:
+            if reads_parent:
+                required.add(name)
+            # This redirect's existing pre-update resolves earlier writes.
+            reads_parent = False
+        else:
+            parent = target.data.bones[name].parent
+            if (parent is not None and parent.name not in plan.mapped_names
+                    and parent.name in plan.control_names):
+                reads_parent = True
+    return frozenset(required)
+
+
+def _compile_channel_capture(target, plan, keyed):
+    """Prepare invariant channel metadata for this synchronous bake only.
+
+    The disposable solver changes clone poses, not target names, rotation modes,
+    connectivity or the verified driver plan. Keep no RNA references or cache
+    across bakes; a later import must read its current target metadata again.
+    """
+    bones = []
     for name in keyed:
+        pb = target.pose.bones[name]
+        mode = pb.rotation_mode
+        rotation_path, size = (('rotation_quaternion', 4) if mode == 'QUATERNION' else
+                               ('rotation_axis_angle', 4) if mode == 'AXIS_ANGLE' else
+                               ('rotation_euler', 3))
+        destinations = []
+        for prop, count in (('location', 3), (rotation_path, size), ('scale', 3)):
+            path = pb.path_from_id(prop)
+            destinations.append(tuple((index, (path, index)) for index in range(count)
+                                      if (path, index) not in plan.driver_keys))
+        bones.append((name, target.data.bones[name].use_connect, mode, tuple(destinations)))
+    switches = tuple(((target.pose.bones[name].path_from_id() + '[' + json.dumps(prop) + ']', 0), value)
+                     for (name, prop), value in plan.switches.items())
+    return tuple(bones), switches
+
+
+def _capture_channels(target, clone, plan, keyed, channels, previous_q, previous_e, *, capture_plan=None):
+    if capture_plan is None:
+        capture_plan = _compile_channel_capture(target, plan, keyed)
+    needs_translation = False
+    for name, connected, mode, destinations in capture_plan[0]:
         pb = clone.pose.bones[name]
         location, rotation, scale = pb.matrix_basis.decompose()
         if _difference(pb.matrix_basis, Matrix.LocRotScale(location, rotation, scale)) > SHEAR_TOLERANCE:
             raise _error(f"'{name}' requires shear; the original rig was left untouched.")
-        if target.data.bones[name].use_connect and location.length > 1.0e-7:
+        if connected and location.length > 1.0e-7:
             needs_translation = True
         if name in previous_q and rotation.dot(previous_q[name]) < 0:
             rotation.negate()
         previous_q[name] = rotation.copy()
-        mode = target.pose.bones[name].rotation_mode
         if mode == 'QUATERNION':
-            rotation_path, components = 'rotation_quaternion', rotation
+            components = rotation
         elif mode == 'AXIS_ANGLE':
             axis, angle = rotation.to_axis_angle()
-            rotation_path, components = 'rotation_axis_angle', (angle, *axis)
+            components = (angle, *axis)
         else:
             euler = rotation.to_euler(mode, previous_e[name]) if name in previous_e else rotation.to_euler(mode)
             previous_e[name] = euler.copy()
-            rotation_path, components = 'rotation_euler', euler
-        for prop, values in (('location', location), (rotation_path, components), ('scale', scale)):
-            path = target.pose.bones[name].path_from_id(prop)
-            for index, value in enumerate(values):
-                if (path, index) in plan.driver_keys:
-                    continue  # Root scale continues to use its owned uniform-scale driver.
+            components = euler
+        for values, outputs in zip((location, components, scale), destinations):
+            for index, key in outputs:
+                value = values[index]
                 if not math.isfinite(value):
                     raise _error(f"'{name}' produced a non-finite animation channel.")
-                channels.setdefault((path, index), []).append(float(value))
-    for (name, prop), value in plan.switches.items():
-        path = target.pose.bones[name].path_from_id() + '[' + json.dumps(prop) + ']'
-        channels.setdefault((path, 0), []).append(float(value))
+                channels.setdefault(key, []).append(float(value))
+    for key, value in capture_plan[1]:
+        channels.setdefault(key, []).append(float(value))
     return needs_translation
 
 
@@ -314,7 +361,9 @@ def _bake_channels(context, target, plan, desired_samples):
             clone.pose.bones[name][prop] = value
         _update(context, clone)
 
+        capture_plan = _compile_channel_capture(target, plan, keyed)
         order = sorted(authored_names, key=lambda name: len(target.data.bones[name].parent_recursive))
+        post_redirect_updates = _post_redirect_updates(target, plan, order)
         for sample_index, desired in enumerate(desired_samples):
             if set(desired) != plan.mapped_names:
                 raise _error('An exact motion sample does not cover the validated native skeleton.')
@@ -326,7 +375,8 @@ def _bake_channels(context, target, plan, desired_samples):
                     # parent. Resolve that parent after preceding native writes.
                     _update(context, clone)
                     clone.pose.bones[plan.redirects[name]].matrix = desired[name]
-                    _update(context, clone)
+                    if name in post_redirect_updates:
+                        _update(context, clone)
                 else:
                     clone.pose.bones[name].matrix_basis = _basis_for_native(clone.pose.bones[name], desired, plan)
             _update(context, clone)
@@ -349,7 +399,8 @@ def _bake_channels(context, target, plan, desired_samples):
                 if error > MATRIX_TOLERANCE:
                     raise _error(f"'{name}' cannot reproduce exact sample {sample_index} through its controls "
                                  f'(matrix error {error:.6g}); the original rig was left untouched.')
-            needs_translation |= _capture_channels(target, clone, plan, keyed, channels, previous_q, previous_e)
+            needs_translation |= _capture_channels(target, clone, plan, keyed, channels, previous_q, previous_e,
+                                                   capture_plan=capture_plan)
             count += 1
         if count == 0:
             raise _error('The animation contains no exact pose samples.')

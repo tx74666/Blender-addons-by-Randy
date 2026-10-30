@@ -19,6 +19,11 @@ def _motion():
     return skirt_wiggle
 
 
+def _physics_choices():
+    from . import animation_physics
+    return animation_physics
+
+
 def _display_owner(source):
     rig = source[skirt_rig.RIG_KEY]
     owner = rig.get(skirt_rig.ORIGINAL_DISPLAY_OWNER_KEY)
@@ -150,7 +155,12 @@ class CHARACTERDESIGNER_OT_dress_wiggle_mode(Operator):
         workflow = _workflow()
         source = workflow._source(context)
         try:
-            message = _motion().set_mode(context, source, self.mode)
+            record = skirt_rig.read_record(source)
+            if record is None:
+                raise ValueError("Create the Dress controls before choosing its motion.")
+            _physics_choices().set_skirt_mode(context, source.name, self.mode,
+                                               expected_owner=record['owner'])
+            message = "Dress motion: " + self.mode.title() + "."
         except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as error:
             workflow._report(self, context, str(error), error=True)
             return {"CANCELLED"}
@@ -231,6 +241,7 @@ def draw_wiggle_motion(layout, context, source, record):
         return False
     try:
         state = _motion().status(context, source)
+        desired = _physics_choices()._skirt_choice(source, record, state['mode'])['mode']
         original = _original(source)
         original_supported = _original_supported(source)
         controls_visible = _controls_visible(source, record)
@@ -242,9 +253,9 @@ def draw_wiggle_motion(layout, context, source, record):
     automatic = row.row(align=True)
     automatic.enabled = state["available"]
     automatic.operator("character_designer.dress_wiggle_mode", text="Automatic · Wiggle Bones",
-                       depress=state["mode"] == "AUTOMATIC").mode = "AUTOMATIC"
+                       depress=desired == "AUTOMATIC").mode = "AUTOMATIC"
     row.operator("character_designer.dress_wiggle_mode", text="Manual",
-                 depress=state["mode"] == "MANUAL").mode = "MANUAL"
+                 depress=desired == "MANUAL").mode = "MANUAL"
     if state.get("message"):
         layout.label(text=state["message"], icon="INFO")
     row = layout.row(align=True)

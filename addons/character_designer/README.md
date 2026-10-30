@@ -1,4 +1,610 @@
-# Character Designer 0.77.85
+# Character Designer 0.77.137
+
+## Native mirrored Pose application (0.77.137)
+
+Shift-double-click and Apply Pose Flipped use Blender's native flip calculation
+for saved managed Poses, including Relax Pose and newly saved gestures. Slightly
+asymmetric left/right joints no longer trigger the former symmetric-head rule.
+The selected source-side region transfers to its opposite side; destination
+selection and unrelated-selection fallback follow the same shared selection
+policy. Mirrored bone names and stable IK reference seeds travel in temporary
+operation metadata; the source asset and its Action slot stay intact.
+
+Original/Controls and Object/Pose modes stay in place. Driver, Rest, matching
+and recovery protections remain; a pose that cannot retain the current IK mode
+refuses with its current inputs preserved. The previous local-deformation
+mirror convention is replaced by native Pose flip semantics, including Rest
+roll and position differences. Ordinary unflipped Pose matching is retained.
+
+## Regional hand Pose evaluation (0.77.136)
+
+Complete managed native-finger poses use one regional evaluation when their
+ownership, Rest, closed descendants and unconstrained transforms are proven.
+This avoids repeated Body matching for poses such as Relax Pose with Auto Key
+off. Original keeps its current native edits and return checkpoint; explicit
+Return merges the hand gesture with earlier edits. Object/Pose mode stays put.
+
+Complex regions, partial transforms, mirrored metadata mismatches and Auto Key
+continue through the existing matcher. Natural test refusal, driver protection
+and transactional rollback remain in place. Small private-fixture measurements
+are reference timings, not a claim about current artist-scene UI latency.
+
+## Individual Source and Custom selection (0.77.135)
+
+Each animation cell is a separate button. Only the current row, side, Action and
+slot are highlighted. The list keeps its filtering and scrolling; passive row
+selection does not change the animation. Explicit cell clicks retain the existing
+activation and mode protections. A refused switch keeps the previous binding and
+identifies the animation operation, including when Original mode prevents it.
+
+Previous collection cancellation feedback is cleared from view on the next cell
+operation. Unresolved scan and recovery information remains available.
+
+Hair list labels also show one strand name and one bone count, keeping the strand
+number and L/R suffix while removing repeated names and the root segment suffix.
+
+## Animation section order (0.77.134)
+
+Original Rigging Inputs now appears below Animations on the Animation page.
+Both sections keep their existing independent fold states and controls.
+
+
+## Foot driver curve validation (0.77.133)
+
+Natural Pose also verifies the generated identity mapping of each admitted Foot
+driver: two linear points, linear extrapolation and no sampled curve. An edited
+mapping refuses before the test changes any pose. Foot drivers remain enabled.
+
+## Owned Foot drivers in Natural tests (0.77.132)
+
+Natural Pose recognizes the exact path and array index of the already validated
+Foot Controls roll/bank drivers, alongside the owned Root scale drivers. Their
+expressions, targets, ownership and recovery remain governed by the existing
+Body validators. These drivers stay enabled; the test resets their manual inputs
+and retains the exact native Rest check. Unrecognized transform drivers still
+refuse without changing the rig.
+
+## Neutral Dress during Rest Pose (0.77.131)
+
+The generated manual Dress graph is recognized through its exact source,
+registry, bone, wire, Hook, constraint and driver ownership. Rest Pose temporarily
+pauses its terminal Spline IK constraints so the native skeleton can reach the
+same neutral Rest as the Body. Mid/Hem curve controls are paused during this
+static test; native posing and Forearm Test Angle remain available. Pose Return
+and failed entry restore the original constraint mutes and animation checkpoint.
+
+The source and wire references stay pinned throughout the test. Edited or foreign
+graphs refuse with recovery retained. This support covers the manual Dress setup;
+active motion, pending recovery and Dress physics backends keep their guards.
+
+## Paired Hair rows (0.77.130)
+
+Proven left/right strands share one row. A pair with four bones on each side
+shows four bones per side. Select Checked selects both complete chains; Check
+Selected Bones from either side checks that same row. Rebuild Checked Strands
+changes both sides to the target count and creates their corresponding weights
+in a retained version. Original and asymmetric strands remain unchanged.
+
+Center and unproven strands stay separate. A pair with differing categories
+shows Mixed and stays visible under either member category. Assign Category
+updates both without changing either member's current motion/depth or sync flag.
+The dialog distinguishes checked entries from the underlying physical chains;
+per-side counts are never added together. Filters keep whole checked entries.
+These pair operations belong to the list workflow; the legacy explicit bone
+selection/core rebuild API keeps its existing scope semantics.
+
+## Editable neutral Rest Pose (0.77.129)
+
+Rest Pose opens an editable neutral test, independent of the current animation.
+The Rest Pose button stays selected while Blender internally uses Pose Position
+so ordinary bone translation/rotation works. The real bind/rest skeleton stays
+unchanged. Choose Pose to restore the previous Action, slot, NLA state and
+current pose/Object inputs. Keyed test drafts are retained on Reset or Return.
+
+Forearm Edit Calibration keeps Object Mode and its Test Angle control. A trial
+from native Rest Position first opens the neutral test; it never exposes the
+animated pose. Confirm/Cancel ends the wrist trial and leaves the neutral test
+open. Existing calibration recovery remains available.
+
+Finish live Rigging Inputs/Composition and other pose trials before starting.
+Asset Apply/Blend and changing rig version require leaving this static test.
+Unknown pose constraints/drivers and segmented deform B-Bones refuse safely.
+
+## Hair selection button names (0.77.128)
+
+Check Selected Bones checks the list rows belonging to the currently selected
+Hair bones. Select Checked selects the bones belonging to checked list rows.
+The actions keep their existing behavior and scope guards.
+
+## Hair strand categories and checked batches (0.77.127)
+
+Refresh the Strands list to see every bound chain and its current count. Filter
+Front / Bangs, Side, Back / Long or Unassigned. Check individual rows, Check
+Visible, or Check Selected Bones; filters keep hidden checks and show both
+total and visible checked counts. Select Checked highlights the chains.
+
+Assign Category organizes only the checked strands while retaining their current
+motion values and depth settings. It does not apply a group preset. Select both
+members of a synchronized pair when changing their category. Existing saved
+motion-profile groups remain the single category record.
+
+Rebuild Checked Strands changes the explicit checked chains to the chosen count
+in a retained version. The dialog shows current counts and includes hidden
+checks. Empty, foreign and stale source/version selections refuse. Existing
+bone-selection changes remain available. Original and earlier versions remain.
+Rest Position permits categories and selection; choose Pose Position to rebuild.
+Refresh after Undo if the transient list is stale. A completed change keeps its
+native Undo entry even if subsequent list refresh fails.
+
+## Test Angle during animated forearm calibration (0.77.126)
+
+Edit Calibration uses Object Mode so the deformed forearm and correction can
+update. Test Angle also works when the hand has Action, NLA or driver animation.
+Its temporary preview changes the evaluated wrist rotation while retaining the
+original animation, pose inputs and Rest. The existing range remains ±120°.
+Version 0.77.129 replaces the earlier Rest Position display preview with the
+editable neutral test described above.
+
+Confirm keeps the edited loop profile and removes the trial rotation. Cancel
+restores the previous calibration; both return to the entry editing context.
+Owned preview resources are authenticated for cleanup and recovery.
+
+## Change selected Hair strands (0.77.125)
+
+In Pose Mode, select any bone in each strand you want to change. Select both
+sides to change a symmetric pair together. Choose Change Selected Strands and
+set New Bones per Strand; the dialog shows the selected count and old counts.
+Selected Strands is the default. All Strands in This Mesh is an explicit choice.
+The result keeps only the changed chains selected so you can inspect them and
+continue with the next strand, including versions with different chain counts.
+
+A retained version changes only the chosen chains. Other strands keep their
+current weights, Rest, bone names, native Action/NLA channels, constraints,
+drivers and settings. Compatible manual symmetry pairs retain their proof.
+Native Mirror pairs sharing source geometry must be selected together; unrelated
+or empty bone selections never fall back to changing the whole mesh. The
+original remains available through Original Hair. Changed bending and motion
+are sampled approximations. Stop Hair Preview and pause running skirt physics
+before changing segments. Existing current-author and recovery guards remain.
+
+## Hair sampling and current animation edits (0.77.124)
+
+Hair version sampling preserves the current values of supported animated RNA
+channels across their active Action/NLA slots, including other objects, custom
+properties, constraints and Shape Keys. Success and rollback restore those
+current author values without rewriting their Actions or drivers. Unsupported
+or conflicting channels are refused before creating a version.
+
+Creating and switching versions retain temporary edits. Removing versions
+requires resolved temporary animation edits so native Undo can restore them.
+
+## Physics Off, Hair segment versions and regional Pose compatibility (0.77.123)
+
+Physics Off detaches owned Hair and Skirt bones from the shared native solver
+list while retaining their reversible sessions. A running peer keeps its own
+solver entries. Paused frame and timer callbacks skip the full author-data
+checks; explicit resume and stop still validate ownership and recovery.
+Hair pose edits made while physics is off are retained on resume or stop.
+
+For existing bound Hair, Change Hair Segments creates an independent version
+with 1–12 bones per chain, including six or seven. It migrates the current
+painted influences and strand settings, retains the original mesh, rig and
+animation, and samples the visible Action/NLA motion into a new Action. Retained
+versions can be shown for comparison. Changed counts approximate bending and
+animation between samples; check the result before continuing. Stop Hair Preview
+before creating or switching versions, and pause running skirt physics before
+creating a version.
+
+Saved regional Poses validate their keyed native bones and both recorded/current
+ancestor chains. Unrelated branches may retain their current Rest. A connection
+flag difference is admitted only for an otherwise unchanged Rest with proven
+zero translation. Real Original-session Rest validation remains strict.
+
+## Direct Rest/Pose display (0.77.122)
+
+The Animations panel puts native Rest Pose and Pose display switches together.
+They use the Main Rig configured in Rig without repeating the Scene, Character
+or Rig names. Base Pose remains a separate posing test under Advanced; its
+normal draft recovery and Return to Animation controls are retained.
+
+Display switching keeps the existing local-rig, shared-data and editing guards.
+It does not rewrite Actions, bone Rest, weights or bindings. Physics, Pose
+blending, animation offsets and playback implementations are unchanged.
+
+## Skirt-specific Control Mode and peer recovery (0.77.121)
+
+Control Mode is beside Skirt and changes only that skirt's Manual/Automatic
+choice. Released is Automatic; pressed is Manual. It does not switch the whole
+character between Original and Controls. The Skirt and Hair switches stay left
+aligned without empty disclosure arrows.
+
+Starting Automatic Skirt motion first recovers authenticated, stopped Hair
+history residue belonging to the same character. This leaves Hair stopped and
+does not change its permission. Active Hair sessions stay active. Unmarked,
+foreign or changed ownership remains a refusal; the native Wiggle ownership
+checks are unchanged.
+
+## Pose blending and animation offsets (0.77.120)
+
+In the Asset Browser, right-click a native-bone Pose and use Blend Pose with
+generated controls. Type 0.5 for half strength, Enter to keep it or Esc to restore
+the captured start. Preview does not insert keys; supported Auto Key contexts
+publish a protected Custom or Pose-test draft on confirmation.
+
+Offset Animation with Pose creates a new editable Custom animation using a fixed
+Rest-to-Pose offset, retaining the original swing, Source and previous Custom.
+Strength defaults to 0.5 and the Arms region excludes fingers. This first version
+requires supported FK channels; it refuses IK, driven mode changes and active NLA
+composition. Affected channels use integer-frame plus original-key sampling with
+linear interpolation; their exact Bezier/subframe shape is not retained.
+
+The 3D Pose Shelf context menu is supported. Direct thumbnail click and drag keep
+their native route. Existing Rest, weights, physics and playback optimization code
+are preserved. No playback handler, polling timer or runtime AI service is added.
+
+## Control Mode and direct physics recovery (0.77.118)
+
+Animation Physics has one Control Mode toggle: on uses the existing controllers,
+off uses the existing guarded Original bone editing mode. It preserves the normal
+pose transfer and ownership checks. Supported owned Wiggle skirt physics can run
+on its separate PHYS bones during authenticated Original editing, while direct
+Dress corrections remain editable. Only completed mode changes may reconnect an
+explicit Automatic choice. Cloth/Direct cache and editing guards remain in force.
+
+Click Hair to finish authenticated history or partial cleanup, then start or
+resume its own physics. A failed restart keeps completed recovery stopped and
+preserves the error; it never revives stale flags or stops a foreign owner.
+Normal Preview/history/lease text, the skirt waiting sentence and Physics Details
+folds are removed. Genuine failures remain visible beside usable controls.
+
+No new solver, frame handler, polling timer or performance setting is added.
+
+## Direct Skirt and Hair physics switches (0.77.117)
+
+Skirt and Hair use left-aligned checkbox rows without empty folds or a CTL
+button. Checking Skirt explicitly requests Automatic physics, including when a
+prior Rig-side choice was Manual. Unchecking pauses its owned physics and keeps
+the current shape; Hair remains independent. The underlying manual rig controls
+remain available in Rig.
+
+An explicit Automatic request deferred by Original display stays checked and
+shows one conditional notice until Controls returns. Stopped, failed and
+recovery states do not appear as running. Actual application still uses the
+existing ownership, Original and native rollback guards; drawing starts nothing.
+
+## Exact display recovery after a refused control selection (0.77.116)
+
+A failed Direct control selection restores the generated bones' visibility and
+selectability, pose visibility, collection visibility/solo and custom-shape
+display along with its prior native mode, desired choice and selection.
+
+## Keep all Dress mode entry points consistent (0.77.115)
+
+Removing a Dress setup clears its owned mode choice before a new setup can be
+created. Rig, Cloth and Direct user mode actions update that same choice;
+internal Original suspension still preserves intent. Batch tuning and later
+control-selection failures restore both native state and prior choice bytes.
+
+## Compact Physics controls and independent skirt choice (0.77.114)
+
+Physics uses a checkbox in its header. Skirt has one CTL button: released is
+Automatic, pressed is Manual. New unset skirt choices default to Automatic;
+existing saved choices remain. Choices can be edited in Original display or
+while physics is off. Native application waits for Controls and permission,
+then uses the existing ownership and setup guards. A failed application retains
+the requested choice and shows its error without undoing a completed return.
+
+The current character, normal backend readiness, routine motion status and
+Original explanations are omitted. Missing Wiggle provides an author download
+entry and Check Again; an installed disabled backend offers Enable. Actual
+errors and owned cleanup actions remain. Drawing never discovers dependencies
+or starts a solver; an explicit On action checks an unknown dependency.
+
+## Hair checkbox controls the preview (0.77.113)
+
+Check Hair to start its owned preview, uncheck to pause, and check again to
+resume the same session. An inactive preview appears unchecked even when its
+saved preference is enabled. Master Physics still pauses/resumes existing
+sessions. Normal Start/Resume/Stop buttons and routine explanatory labels are
+omitted; a cleanup button remains when owned recovery needs attention.
+
+## Physics status without routine explanations (0.77.112)
+
+Routine checkbox and off-state explanations are omitted from the Physics panel.
+The controls show their current states directly.
+
+## Compact Physics status (0.77.111)
+
+The Physics panel shows one short off-state message. Checkbox instructions remain
+in its tooltip; repeated permission explanations are omitted. Actual errors and
+pending recovery remain visible in their existing sections.
+
+## Physics permission switches in Original display (0.77.110)
+
+Turning Physics or Skirt permission off no longer requires returning to Controls
+when the skirt is already inactive in Original display. The permission switch
+retains existing skirt modes and Original data, and can pause the character's
+owned Hair preview. Starting or changing Dress motion retains its existing
+Controls and ownership checks.
+
+## Continuous Hair preview at the playback loop boundary (0.77.109)
+
+Hair preview now continues when the same native timeline reaches the end of its
+unchanged playback range and loops to its first frame. It reseeds only its owned
+simulation state at that boundary. Other backward seeks, changed playback ranges
+and large frame jumps still stop the transient preview for review.
+
+## Auto-Rig Pro compatibility for Hair preview (0.77.108)
+
+An installed Auto-Rig Pro animated-layer callback could prevent Hair preview
+from starting even when its animated-layer feature was off. Hair now verifies
+the reviewed callback and allows its inactive state, while continuing to reject
+unknown callbacks and conflicting animated-layer settings. This does not change
+Auto-Rig Pro, its settings, the character's weights or the existing skirt modes.
+
+## Shared Hair and Skirt preview (0.77.107)
+
+Hair preview and Automatic Skirt use the same verified Wiggle 2 2.2.4 backend.
+Animation > Physics offers one shared backend setup action, separate Hair/Skirt
+permissions and collapsible sections. Hair's explicit Start/Resume preview plays
+an idle timeline; the permission checkbox alone does not start a preview.
+Hair preview creates no animation keys or export data.
+
+Each preview owns only its registered bones. Pausing one part keeps the other
+part's simulation; the master switch pauses both. Automatic/Manual remain the
+existing Skirt modes. Save, history and load end transient previews without
+automatically reconnecting them. Explicit actions validate saved ownership
+before restoring their own native flags; unknown changes remain visible.
+
+## Animation sections and Wiggle setup (0.77.106)
+
+Animation groups Physics, Original Rigging Inputs and Animations into independent
+collapsible sections. Physics also separates Skirt and Hair controls. Longer
+diagnostic text is wrapped in expandable details for narrow sidebars.
+
+Physics distinguishes its saved permission from the external add-on's enabled
+state and the actual simulation session. Installed supported Wiggle backends can
+be checked and enabled directly from Physics, with the same native schema,
+ownership and callback validation used by simulation actions. The setup action
+does not download an add-on or save preferences. Specific start failures remain
+visible instead of disappearing behind a generic compatibility notice.
+
+When Dress motion is blocked by Bone Display's Original mode, Physics shows
+the reason and a **Return to Controls** action. This uses the existing checked
+return operation only after an explicit click; drawing and dependency enabling
+do not exit Original, repair an ownership record or change the artist's pose.
+
+## Animation physics controls (0.77.105)
+
+Animation now groups this character's **Enable Physics**, **Skirt** and **Hair**
+permissions above the animation worklist. The existing Dress **Automatic** and
+**Manual** modes remain separate from the physics permission. Pausing physics
+retains the setup, saved modes and authored animation; it does not create a new
+Dress method. Resume validates the suspended owned endpoints before changing
+them, and preserves external edits when it cannot resume safely.
+
+The master switch pauses owned Dress simulations and an active Hair preview.
+Hair pause keeps the current timeline position; its existing Save/Undo/load
+preview lifecycle still applies. Starting Hair requires its supported external
+backend, and the existing Hair/Dress solver compatibility restrictions remain.
+The checkbox reports permission; activity and refused operations are displayed
+separately. No playback FPS improvement is claimed by this feature.
+
+## Pole guide visibility in Blender 5 (0.77.104)
+
+Pole guide lines follow the same Pose visibility flag as Blender's control
+shapes. An Edit Mode hide flag no longer suppresses the line while its Pole
+arrow is visible in Pose Mode. Older Blender versions retain their existing
+visibility fallback. The change does not move controls or alter IK, Rest,
+animation channels, weights or Shape Keys.
+
+## Local animation versions for the current rig (0.77.103)
+
+After fitting controls to an edited Rest, **Use Current Rig** creates local
+versions of the active animations for the current skeleton. It preserves an
+obsolete Base Pose draft and the earlier animation records before switching.
+The copied animation channels follow the current Rest; matching the old world
+motion is not guaranteed. Prepare matching Unity sources before exporting these
+local versions.
+
+**Discard** removes an unwanted Retired Animations entry and checks its owned
+Source and Custom copies for cleanup. Shared, edited, asset and recovery data
+are retained. Sync review offers separate Retire and Discard choices.
+
+This is a functional change. Runtime installation, actual character acceptance
+and scene saving are recorded separately; it carries no playback FPS claim.
+
+## Fit controls to edited legs (0.77.102)
+
+Advanced offers a one-time **Fit Controls to Edited Legs** operation when an
+adopted character's leg Rest was edited before releasing its controls. It keeps
+the current Rest, painted weights, author Shape Keys and historical Actions,
+then rebuilds Both Legs from the accepted current geometry. Older animation
+recovery proofs retain their original validation requirements.
+
+The operation validates the existing control graph and protects all bound
+meshes. Forearm correction refresh follows the current scene, including hidden
+objects, while meshes outside that scene retain their protected state. Failure
+restores the current author checkpoint. This is a functional repair and carries
+no new playback FPS claim.
+
+## Base Pose button (0.77.101)
+
+Base Pose explicitly enters or resets the editable test pose, including after
+Return to Animation was used. The two buttons keep their own operation choice
+when Blender remembers the last operator properties. A return request with no
+active test now reports that the animation was left unchanged.
+
+## Prepared playback (0.77.100)
+
+Forearm playback prepares its controller definitions when playback starts.
+Stable viewport playback reuses that preparation while evaluating the original
+deformation math on every frame. Stopping playback, history changes, record
+edits and explicit calibration tools return to full validation. Redo clears
+playback preparation before Blender restores its history state.
+
+Preparation is limited to the current viewport graph, scene and identified
+objects. Controller constraint or driver definitions edited in place during
+playback are rechecked when playback stops or an explicit tool runs. Stop
+playback before changing those definitions.
+
+This change preserves authored mesh data, weights, Shape Keys, materials and
+deformation quality. Current-session installation and measured performance are
+recorded separately in the delivery receipts.
+
+## Original pose editing (0.77.98)
+
+Original mode validates the actual local rig and its saved references before
+editing. Returning compares changes against the settled entry pose, so tiny
+bake differences do not rematch untouched limbs. Rest and author data remain
+protected by the existing verification and rollback checks.
+
+Existing leg Pole repair updates only the legs that require repair. A healthy
+opposite leg retains its constraint inputs and metadata. Exact saved control
+display is restored without rebuilding Body/FK membership.
+
+This change does not claim a playback FPS improvement.
+
+## Unity Mesh Update identity check (0.77.97)
+
+Mesh Update accepts an unused local duplicate only when its identity is retained
+solely by its own recognized Finger Bank references. Objects used by another
+scene, collection, child or external reference still block the update.
+The preflight and final identity check use the same rule; no object, mesh or
+saved identity is deleted or rewritten by this exception.
+
+Release 0.77.97 contains only the Unity identity-check change. Original mode and
+playback optimization candidates remain separate. Local installation and current
+scene verification are recorded in the release receipts.
+
+## Editable Base Pose (0.77.96)
+
+Choose **Base Pose** to return the Body to its neutral pose while staying in
+Pose Mode. Rotate the controls normally, and click Base Pose again to reset.
+**Return to Animation**, or selecting a worklist animation, restores the
+previous animation binding. The original Action and NLA tracks are not edited.
+Keyed tests are retained as local Pose Test Draft Actions when reset or closed.
+
+The test uses an independent Action and temporarily disables NLA evaluation.
+Your AutoKey choice is preserved; any test keys go into the independent draft.
+Its recovery state survives normal save/reopen.
+Existing calibration and IK/FK modes are matched through the Body controls;
+unsupported rigs or active Composition/Rigging previews are rejected without
+changing the previous pose. This does not change bone Rest data or rebind weights.
+
+The original native **Rest Display** is retained under Advanced for viewing the
+binding reference. It intentionally does not show pose rotation. Use Base Pose
+for editable pose testing. Installation and current-scene acceptance are recorded
+separately; this documentation alone does not confirm a live update.
+
+## Playback normal bridge (0.77.95)
+
+A playback normal bridge can be explicitly installed for a supported body mesh.
+The add-on registers its lifecycle callbacks. Native Play temporarily removes
+unused custom-normal data only from derived viewport geometry after fresh
+ownership and configuration checks. Authored custom normals, mesh data, weights,
+Shape Keys and corrective animation remain intact and continue to evaluate.
+
+Stopping disables the bridge. Save and render suspend it for the rest of the
+current playback; load, Undo and Redo recover using fresh data references. An
+invalid configuration, changed ownership or failed active check closes the
+bridge rather than enabling unproven geometry. Source custom normals are never
+deleted. Rendering and edit/cage display do not use the playback bridge.
+
+This release retains approved 0.77.94 Forearm and body behavior. Finite native
+lifecycle and same-frame output checks support the tested configuration.
+The private frame-30 material comparison used a controlled test clock and found
+no obvious change in the saved view. It does not establish a GPU route, exact
+pixel equivalence, current-artist playback speed or a fixed frame rate.
+Deployment and current-session acceptance are recorded separately.
+
+## Managed Forearm coordinate access (0.77.94)
+
+Repeated corrective updates can use Blender's bulk point collection for the
+three existing coordinate-buffer transfers. Existing validation, restoration,
+cache acceptance and dependency-graph updates remain active. This preserves
+the authored model, Shape Keys, weights, custom normals and modifier stack.
+The .94 release did not include the playback normal bridge.
+
+## Approved source-Rest release (0.77.93)
+
+The 0.77.93 local release extends the approved 0.77.92 package with
+the source-Rest read reuse below. The paused regional-ownership candidate
+in canonical sources is excluded through the hash-locked release projection.
+
+## Reuse source-Rest reads during validation (0.77.93)
+
+Repeated checks within the same synchronous validation can reuse a successful
+result that no source-Rest view is needed. Each rig and nested validation keeps
+its own result, which is released when that validation ends. Exceptions and
+actual Rest views are still read normally; ownership, structure, Rest, driver,
+mute and widget checks remain active. Nothing is reused across frames.
+
+This reduces repeated validation work while keeping the same animation and
+deformation. It does not establish a fixed playback frame rate.
+
+## Forearm calculation and empty Reference Sets (0.77.92)
+
+Forearm correction avoids repeated matrix-row lookups while retaining the same
+ordered sums, validation and deformation results. A local paired background
+test observed about 10% less time in the calculation span and 2% less time in
+the complete frame update. These measurements do not establish GUI playback
+improvement or a fixed frame rate.
+
+An empty Reference Sets list returns no selection without reading its empty
+dynamic selector, avoiding repeated enum warnings. Existing selections and
+reference data stay intact.
+
+## Sync checks and export recovery (0.77.91)
+
+Sync confirmation still checks the current Custom animation contents. Its
+rollback backup no longer repeats the same content scan after that check.
+Restoring a retired entry validates both Action slots before changing the
+active list, so a missing or incompatible slot leaves the retired entry intact.
+
+If an export starts but its completion timer cannot be registered, its own
+worker and link lock are released so the operation can be retried. This applies
+to ordinary animation exports, worklist exports and composition exports.
+
+## Control display during playback (0.77.89)
+
+Automatic control visibility follows the current pose after playback stops.
+During native playback it keeps the current display and defers its ownership
+checks and visibility updates. Stopping revalidates the current rig before one
+display synchronization. Explicit rig operations keep their own validation.
+Animation, constraints, mesh deformation and forearm corrections continue to
+evaluate normally. This change does not hide the character or reduce quality.
+
+## Animation import and confirmation feedback (0.77.88)
+
+Control animation import prepares channel metadata once per bake and avoids
+redundant solver refreshes when no intervening calculation reads their result.
+Exact motion, shear, ownership and failure recovery checks remain in place.
+Animation reference traversal avoids repeatedly decoding nested values while
+still validating current owners and native references on each check.
+
+**Retire and Sync** displays its processing state before validation starts.
+The confirmation check remains synchronous; cancel is available before it
+starts and between complete animation imports. An older **Back** button
+cannot replace a started or completed sync result with a cancellation message.
+
+## Sync the Unity animation list (0.77.86)
+
+Use **Sync List** to reconcile the complete prepared Unity list with the
+current X Main Rig. Compatible existing Source/Custom pairs stay intact;
+missing animations are added as Actions without importing another model
+or changing scenes. Workspace and model revisions are checked against the
+physical files and the Main Rig's actual bone/control mapping.
+
+If a local work item is absent or its prepared Source has been rebuilt,
+review **Retire and Sync** or **Back** before anything changes. Retired
+Animations retains its complete work record and both Actions; Advanced
+provides Restore. Unrelated project Actions are kept. A changed list,
+file or Custom draft invalidates an earlier confirmation. Cancellation
+keeps completed additions and retired work recoverable for retry.
+
+**Export Changes** remains the explicit return to Unity. Unity still
+collects, previews and explicitly applies the result.
 
 ## Stable Move to Floor (0.77.85)
 

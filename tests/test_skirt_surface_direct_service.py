@@ -28,6 +28,7 @@ def require(value, message):
 
 def loaded(names, **extras):
     env = dict(json=json, math=math, _require=require, SkirtDirectError=DirectError,
+               _physics_enabled=lambda _source: True,
                STATE_KEY="direct-state", VERSION=1, BACKEND="DIRECT_MAIN_CLOTH_V1",
                profiles=NS(MODES=("MANUAL", "AUTOMATIC"), PROFILE_KEY="profile"),
                shared=NS(_json=lambda value: json.dumps(value, sort_keys=True)))
@@ -202,6 +203,24 @@ class DirectServiceTests(unittest.TestCase):
         self.assertEqual(source["direct-state"], captured["raw_state"])
         self.assertTrue(output.properties.inputs.Socket_2.value)
         self.assertEqual(vars(cloth.point_cache), cache_before)
+
+    def test_character_physics_gate_overrides_output_without_changing_mode_or_cache(self):
+        env, source, record, context, output, cloth = self.state_fixture()
+        before = source["direct-state"]
+        cache_before = dict(vars(cloth.point_cache))
+        env["_physics_enabled"] = lambda _source: False
+        env["_sync"](source, record, env["_state"](source, record))
+        self.assertFalse(output.properties.inputs.Socket_2.value)
+        self.assertFalse(cloth.show_viewport)
+        self.assertFalse(cloth.show_render)
+        self.assertEqual(source["direct-state"], before)
+        self.assertEqual(vars(cloth.point_cache), cache_before)
+        env["_physics_enabled"] = lambda _source: True
+        env["_sync"](source, record, env["_state"](source, record))
+        self.assertTrue(output.properties.inputs.Socket_2.value)
+        self.assertTrue(cloth.show_viewport)
+        self.assertTrue(cloth.show_render)
+        self.assertEqual(source["direct-state"], before)
 
     def test_unsealed_manual_requires_explicit_reset_before_automatic(self):
         env, source, record, context, output, cloth = self.state_fixture()

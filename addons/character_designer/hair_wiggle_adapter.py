@@ -1,4 +1,7 @@
-"""Transactional, unbaked Hair preview through the external Wiggle Bones 1.1.2.
+"""Hair preview facade; current public entry points use external Wiggle 2.
+
+The private legacy implementation below is retained for historical 1.1.2
+evidence. It is not the current product backend or dependency requirement.
 
 No physics code is bundled. The external extension must already be registered.
 The supported sources are the unmodified files in the upstream 1.1.2 tag:
@@ -98,14 +101,19 @@ def _backend():
         if hashlib.sha256(payload).hexdigest() != expected:
             _fail('Wiggle source differs from the official 1.1.2 tag: ' + filename)
     properties = module.properties
-    for owner, typename in ((bpy.types.Scene, 'WiggleScene'),
-                            (bpy.types.Object, 'WiggleObject'),
-                            (bpy.types.PoseBone, 'WiggleBoneSettings')):
+    schema = ((bpy.types.Scene, 'WiggleScene'),
+              (bpy.types.Object, 'WiggleObject'),
+              (bpy.types.PoseBone, 'WiggleBoneSettings'))
+    # Official disable may leave PointerRNA targets freed. Prove every class
+    # is live before dereferencing any pointer's fixed_type.
+    if any(not getattr(getattr(properties, name, None), 'is_registered', False)
+           for _owner, name in schema):
+        _fail('Wiggle Bones 1.1.2 is disabled or its RNA classes are not registered.')
+    for owner, typename in schema:
         prop = owner.bl_rna.properties.get('wiggle')
-        expected = getattr(properties, typename, None)
-        if (prop is None or prop.type != 'POINTER' or expected is None
-                or prop.fixed_type.identifier != expected.bl_rna.identifier
-                or not getattr(expected, 'is_registered', False)):
+        expected = getattr(properties, typename)
+        if (prop is None or prop.type != 'POINTER'
+                or prop.fixed_type.identifier != expected.bl_rna.identifier):
             _fail('The registered .wiggle RNA schema does not match 1.1.2.')
     engine = getattr(module, 'physics_engine', None)
     core = sys.modules.get(name + '.wiggle_core')
@@ -118,7 +126,7 @@ def _backend():
     return {'name': name, 'module': module, 'core': core, 'engine': engine}
 
 
-def available(context=None):
+def _legacy_available(context=None):
     """Read-only backend availability; does not import or enable an extension."""
     global _AVAILABLE_CACHE, _AVAILABLE_CACHE_TIME
     now = time.monotonic()
@@ -135,9 +143,10 @@ def available(context=None):
     return dict(result)
 
 
-def status(context=None):
+def _legacy_status(context=None):
     session = _SESSION
     return {'active': session is not None, 'source': session['source'].name if session else None,
+            'paused': bool(session and session.get('physics_paused', False)),
             'strand_ids': list(session['ids']) if session else [],
             'started_playback': bool(session and session['started_playback']),
             'reason': _LAST_REASON, 'version': BACKEND_VERSION, 'mapping_version': MAPPING_VERSION}
@@ -355,8 +364,11 @@ def _handler_gate(backend, armature, hair_names):
     # Exact exported callables, not __name__/module-name matching. The reviewed
     # body callback changes display bindings/membership and excludes owned Hair.
     # The ordinary forearm callback updates owned corrective mesh Shape Keys.
+    # The normal bridge guard only proves/disables its owned Mesh modifier;
+    # it never writes pose channels, Actions or Wiggle settings.
     for module_name, function_name in (('bone_collections', '_frame_visibility'),
-                                        ('forearm_twist', '_frame_post')):
+                                        ('forearm_twist', '_frame_post'),
+                                        ('playback_normal_bridge', '_guard')):
         module = sys.modules.get(__package__ + '.' + module_name)
         function = getattr(module, function_name, None)
         if function:
@@ -438,9 +450,10 @@ def _preflight(context, source, registry, profiles, strand_ids, backend):
     if registry != fresh:
         _fail('The supplied strand registry is stale; refresh its strict ownership proof.')
     armature = source.get(hair.RIG_KEY)
+    from . import limb_ik
     if (armature.name not in context.scene.objects or armature.data.pose_position != 'POSE'
             or source.library or source.override_library or armature.library
-            or armature.override_library or armature.data.library or armature.data.users != 1):
+            or armature.override_library or armature.data.library or not limb_ik._single_armature_user(armature)):
         _fail('Preview needs a local single-user Armature in Pose position in this Scene.')
     ids = tuple(strand_ids)
     by_id = {item['strand_id']: item for item in fresh['strands']}
@@ -577,16 +590,25 @@ def _configure(session, by_id, effective):
     armature.wiggle.freeze = False
 
 
-def start_preview(context, source, registry, profiles, strand_ids):
+def _legacy_start_preview(context, source, registry, profiles, strand_ids):
     """Start one stage; profiles is an effective mapping keyed by strand_id."""
     global _SESSION, _LAST_REASON
-    backend = _backend()
+    from .animation_physics import require_enabled
+    require_enabled(source, context=context, component='HAIR')
+    try:
+        backend = _backend()
+    except (HairWiggleError, AttributeError, ReferenceError) as error:
+        from .physics_dependencies import describe_failure
+        _LAST_REASON = describe_failure('HAIR', error)
+        _fail(_LAST_REASON)
+    from .physics_dependencies import note_verified
+    note_verified('HAIR', backend)
     armature, fresh, ids, by_id, effective = _preflight(
         context, source, registry, profiles, strand_ids, backend)
     session = _snapshot(context, source, armature, fresh, ids, backend)
     _SESSION = session
     try:
-        register_guards()
+        _legacy_register_guards()
         _configure(session, by_id, effective)
         if not bpy.app.timers.is_registered(_mode_timer):
             bpy.app.timers.register(_mode_timer, first_interval=0.1)
@@ -597,10 +619,10 @@ def start_preview(context, source, registry, profiles, strand_ids):
             if 'FINISHED' not in result or not context.screen.is_animation_playing:
                 _fail('Blender did not start timeline playback.')
         _LAST_REASON = ''
-        return status(context)
+        return _legacy_status(context)
     except Exception as exc:
         try:
-            stop_preview(context, reason='Start failed; restored the original author state.')
+            _legacy_stop_preview(context, reason='Start failed; restored the original author state.')
         except Exception as rollback:
             raise HairWiggleError('Start failed and rollback needs attention: ' + str(rollback)) from exc
         if isinstance(exc, HairWiggleError):
@@ -608,12 +630,36 @@ def start_preview(context, source, registry, profiles, strand_ids):
         raise HairWiggleError('Wiggle preview start failed: ' + str(exc)) from exc
 
 
-def stop_preview(context=None, *, reason='Stopped'):
+def _legacy_set_preview_paused(context, source, paused):
+    """Freeze only this owned preview without rewinding or restoring channels."""
+    session = _SESSION
+    if (type(paused) is not bool or session is None or _STOPPING
+            or session['source'] != source or session['scene'] != context.scene):
+        _fail('The Hair preview changed. Use its current Physics controls again.')
+    reason = _changed(session)
+    if reason:
+        _fail(reason)
+    previous = bool(session.get('physics_paused', False))
+    armature = session['armature']
+    if armature.wiggle.freeze != previous:
+        _fail('The Hair freeze setting changed outside this preview; preserve it before switching Physics.')
+    try:
+        armature.wiggle.freeze = paused
+        if armature.wiggle.freeze != paused:
+            _fail('Blender did not retain the Hair physics pause.')
+    except Exception:
+        armature.wiggle.freeze = previous
+        raise
+    session['physics_paused'] = paused
+    return _legacy_status(context)
+
+
+def _legacy_stop_preview(context=None, *, reason='Stopped'):
     """Freeze first, restore author state, cancel only playback we started."""
     global _SESSION, _LAST_REASON, _STOPPING
     session = _SESSION
     if session is None or _STOPPING:
-        return status(context)
+        return _legacy_status(context)
     _STOPPING = True
     errors = []
     try:
@@ -670,7 +716,7 @@ def stop_preview(context=None, *, reason='Stopped'):
         if errors:
             _LAST_REASON += ' ' + '; '.join(errors)
             raise HairWiggleError(_LAST_REASON)
-        return status(context)
+        return _legacy_status(context)
     finally:
         _STOPPING = False
 
@@ -711,17 +757,17 @@ def _frame_guard(scene, *args):
         elif frame < session['lastframe'] or frame - session['lastframe'] > 4:
             reason = 'Timeline wrapped, moved backwards or skipped more than four frames.'
         if reason:
-            stop_preview(reason=reason)
+            _legacy_stop_preview(reason=reason)
         else:
             session['lastframe'] = frame
     except Exception as exc:
-        stop_preview(reason='Preview guard stopped: ' + str(exc))
+        _legacy_stop_preview(reason='Preview guard stopped: ' + str(exc))
 
 
 @persistent
 def _lifecycle_guard(*args):
     if _SESSION:
-        stop_preview(reason='Save, undo, redo, load or render ended Hair preview.')
+        _legacy_stop_preview(reason='Save, undo, redo, load or render ended Hair preview.')
 
 
 def _mode_timer():
@@ -733,9 +779,9 @@ def _mode_timer():
         try:
             reason = _changed(_SESSION)
             if reason:
-                stop_preview(reason=reason)
+                _legacy_stop_preview(reason=reason)
         except Exception as exc:
-            stop_preview(reason='Preview guard stopped: ' + str(exc))
+            _legacy_stop_preview(reason='Preview guard stopped: ' + str(exc))
     finally:
         _TIMER_RUNNING = False
     return 0.1 if _SESSION else None
@@ -744,7 +790,7 @@ def _mode_timer():
 _LIFECYCLE_LISTS = ('save_pre', 'undo_pre', 'redo_pre', 'load_pre', 'render_pre')
 
 
-def register_guards():
+def _legacy_register_guards():
     """Idempotently register only CD-owned guards; never change Wiggle handlers."""
     global _GUARDS_REGISTERED
     if _frame_guard not in bpy.app.handlers.frame_change_pre:
@@ -756,9 +802,9 @@ def register_guards():
     _GUARDS_REGISTERED = True
 
 
-def unregister_guards():
+def _legacy_unregister_guards():
     global _GUARDS_REGISTERED
-    stop_preview(reason='Character Designer unregistered.')
+    _legacy_stop_preview(reason='Character Designer unregistered.')
     _GUARDS_REGISTERED = False
     if bpy.app.timers.is_registered(_mode_timer):
         bpy.app.timers.unregister(_mode_timer)
@@ -768,3 +814,70 @@ def unregister_guards():
         while function in collection:
             collection.remove(function)
     _FRAME_OWNERSHIP.clear()
+
+
+# Public compatibility facade. Private 1.1.2 proofs remain for historical
+# replay evidence; current product entry points use the shared Wiggle 2 solver.
+def _wiggle2_adapter():
+    from . import hair_wiggle2_adapter
+    return hair_wiggle2_adapter
+
+
+def available(context=None):
+    return _wiggle2_adapter().available(context)
+
+
+def status(context=None):
+    return _wiggle2_adapter().status(context)
+
+
+def start_preview(context, source, registry, profiles, strand_ids):
+    return _wiggle2_adapter().start_preview(context, source, registry, profiles, strand_ids)
+
+
+def set_preview_paused(context, source, paused):
+    return _wiggle2_adapter().set_preview_paused(context, source, paused)
+
+
+def resume_preview(context, source):
+    return _wiggle2_adapter().resume_preview(context, source)
+
+
+def stop_preview(context=None, *, reason='Stopped', source=None):
+    return _wiggle2_adapter().stop_preview(context, reason=reason, source=source)
+
+
+def preview_state(source):
+    return _wiggle2_adapter().preview_state(source)
+
+
+def prepare_recovery(context, source):
+    return _wiggle2_adapter().prepare_recovery(context, source)
+
+
+def recover_saved(context, source, token=None):
+    return _wiggle2_adapter().recover_saved(context, source, token)
+
+
+def rollback_recovery(context, token):
+    return _wiggle2_adapter().rollback_recovery(context, token)
+
+
+def register_guards():
+    # Remove only this facade's exact historical callbacks. Shared backend
+    # callbacks and reviewed callback ownership proofs retain their identities.
+    if _SESSION is not None:
+        raise HairWiggleError('Stop the legacy Hair preview before switching its backend.')
+    if bpy.app.timers.is_registered(_mode_timer):
+        bpy.app.timers.unregister(_mode_timer)
+    for name, function in [('frame_change_pre', _frame_guard)] + [
+            (name, _lifecycle_guard) for name in _LIFECYCLE_LISTS]:
+        collection = getattr(bpy.app.handlers, name)
+        while function in collection:
+            collection.remove(function)
+    return _wiggle2_adapter().register_guards()
+
+
+def unregister_guards():
+    _wiggle2_adapter().unregister_guards()
+    _legacy_unregister_guards()

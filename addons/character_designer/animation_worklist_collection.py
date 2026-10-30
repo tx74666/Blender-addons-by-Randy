@@ -140,6 +140,8 @@ def _with_rigging(proof, item, *, source=False):
 
 
 def item_fingerprint(context, item):
+    if getattr(item, 'current_rig_revision', ''):
+        raise ValueError('This local motion uses the current rig; prepare matching Unity sources before exporting it.')
     if _composition_row(item):
         return _composition_fingerprint(context, item)
     proof = fingerprint_native(item.custom_action, item.rig, context.scene, item.custom_slot)
@@ -580,15 +582,17 @@ def _begin(context, mode, entries):
     return queue
 
 
-def begin_add_ready(context):
+def begin_add_ready(context, *, _clip_keys=None, _main_rig=None, _input_pins=None):
     worklist._idle(context)
     saved = worklist.state(context)
     catalog = worklist._fresh_workspace(saved)
     request = workspace.prepare_request(catalog)
     requested = set(request[1]) if request is not None else None
     included = {item.clip_key for item in saved.items}
+    explicit = set(_clip_keys) if _clip_keys is not None else None
     entries = [QueueItem(worklist._clip_key(clip)) for clip in catalog['clips']
-               if (requested is None or workspace.work_item_id(clip) in requested)
+               if ((worklist._clip_key(clip) in explicit) if explicit is not None else
+                   (requested is None or workspace.work_item_id(clip) in requested))
                and clip.get('compositionReferenceSource') is not True and clip.get('sourceOnly') is not True
                and worklist._clip_key(clip) not in included and not clip.get('needsRebuild')
                and clip.get('linkManifest') and Path(clip['linkManifest']).is_file()]
@@ -596,6 +600,10 @@ def begin_add_ready(context):
     if not queue.busy:
         return queue
     _batch['prepare_request'] = request
+    if _main_rig is not None:
+        _batch['main_rig'] = _main_rig
+    if _input_pins is not None:
+        _batch['input_pins'] = dict(_input_pins)
     # Freeze every selected row's route before the first native import. A later
     # request/source/slot change stops the remainder, retaining completed rows.
     _batch['add_routes'] = {worklist._clip_key(clip): (workspace.route_identity(clip), clip['linkManifest'])
@@ -623,6 +631,26 @@ def begin_sync_changed(context, *, changed_only=False):
     return queue
 
 
+def abort_pending_add(queue):
+    """Rollback one caller-owned ADD before its first event-loop tick.
+
+    This is deliberately narrower than stop(): never cancel another owner's
+    batch, an export worker, or any successfully imported prefix.
+    """
+    global _batch
+    batch = _batch
+    if batch is None or batch['queue'] is not queue:
+        return False
+    if queue.mode != ADD or queue.running is not None or queue.successes or batch['job'] is not None:
+        raise ValueError('A started animation batch cannot be rolled back as a pending list transaction.')
+    queue.cancel(lambda _attempt: None)
+    if bpy.app.timers.is_registered(_poll_collection):
+        bpy.app.timers.unregister(_poll_collection)
+    if _batch is batch:
+        _batch = None
+    return True
+
+
 def _record_launch_proof(batch, attempt, item, link, proof):
     if batch.get('changed_only'):
         receipt = comparison_receipt(item, link, export_implementation())
@@ -641,6 +669,13 @@ def _start(context, batch, attempt):
     queue = batch['queue']
     if queue.mode == ADD:
         saved = worklist.state(context)
+        if batch.get('main_rig') is not None and (
+                saved.rig is not batch['main_rig']
+                or context.scene.objects.get(saved.rig.name) is not saved.rig):
+            raise ValueError('The synchronized Main Rig changed; no model or scene was imported.')
+        for path, digest in batch.get('input_pins', {}).items():
+            if not Path(path).is_file() or links._sha256(Path(path)) != digest:
+                raise ValueError('A synchronized Unity input changed; completed drafts were kept. Review Sync List again.')
         catalog = worklist._fresh_workspace(saved)
         if workspace.prepare_request(catalog) != batch['prepare_request']:
             raise ValueError('The Unity preparation request changed; completed Custom work was kept.')

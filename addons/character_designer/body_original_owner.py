@@ -8,6 +8,7 @@ unchanged motion data.  This is not a generic shared-data exception.
 import hashlib
 import json
 import math
+from contextlib import contextmanager
 
 import bpy
 from mathutils import Matrix, Vector
@@ -16,6 +17,236 @@ from mathutils import Matrix, Vector
 _FRAME_EPSILON = 1e-6
 _FRAME_X_RESIDUAL_LIMIT = 2e-5
 _FOOT_REFERENCE_ROLES = frozenset(('FK_TOE_REF', 'AUTO_TOE_REF'))
+POSE_REFS = 'character_designer_original_pose_owner_refs_v1'
+
+
+class _PoseCapability:
+    """Invocation-local permission; never a shared-data or Rest recovery proof."""
+    pass
+
+
+def _pose_require(value, message):
+    if not value:
+        raise ValueError(message)
+
+
+def _pose_refmap(refs):
+    return {'id_' + str(i): value for i, value in enumerate(refs)}
+
+
+def _same_pose_refs(actual, refs):
+    expected = _pose_refmap(refs)
+    return (hasattr(actual, 'items') and set(actual) == set(expected)
+            and all(actual[key] is value for key, value in expected.items()))
+
+
+def _pose_history(value, refs, *, add=False, seen=None):
+    """Hash complete carrier properties, pinning native IDs without pointers."""
+    if isinstance(value, bpy.types.ID):
+        index = next((i for i, target in enumerate(refs) if target is value), None)
+        if index is None:
+            _pose_require(add, 'An Original history carrier changed a native ID reference.')
+            index = len(refs)
+            refs.append(value)
+        if seen is not None:
+            seen.add(index)
+        return {'id': 'id_' + str(index)}
+    if type(value) is str:
+        return {'utf8_sha256': hashlib.sha256(value.encode('utf-8')).hexdigest(),
+                'length': len(value)}
+    if value is None or type(value) in (bool, int):
+        return value
+    if type(value) is float:
+        _pose_require(math.isfinite(value), 'An Original history carrier is not finite.')
+        return {'float': value.hex()}
+    if hasattr(value, 'items'):
+        _pose_require(all(type(key) is str for key in value), 'Invalid Original history property key.')
+        return {key: _pose_history(value[key], refs, add=add, seen=seen) for key in sorted(value)}
+    if not isinstance(value, (str, bytes)) and hasattr(value, '__iter__'):
+        return [_pose_history(item, refs, add=add, seen=seen) for item in value]
+    raise ValueError('Unsupported Original history carrier value: ' + type(value).__name__)
+
+
+def _pose_data_paths(value, data, path=()):
+    if isinstance(value, bpy.types.ID):
+        return [path] if value is data else []
+    if hasattr(value, 'items'):
+        return [leaf for key, child in value.items()
+                for leaf in _pose_data_paths(child, data, path + (key,))]
+    if not isinstance(value, (str, bytes)) and hasattr(value, '__iter__'):
+        return [leaf for i, child in enumerate(value)
+                for leaf in _pose_data_paths(child, data, path + (i,))]
+    return []
+
+
+def _pose_state(context, rig, refs=None):
+    from . import animation_worklist_target as target, unity_animation as ua
+    data = rig.data
+    _pose_require(rig.type == 'ARMATURE' and rig.mode in {'OBJECT', 'POSE'}
+                  and not getattr(data, 'is_editmode', False)
+                  and context.mode in {'OBJECT', 'POSE'} and not rig.library and not data.library
+                  and not rig.override_library and not data.override_library
+                  and rig.is_editable and data.is_editable,
+                  'Original pose editing needs one local editable armature outside Edit Mode.')
+    _pose_require(not context.screen or not context.screen.is_animation_playing,
+                  'Pause playback before switching Original or Controls.')
+    bound = [obj for obj in bpy.data.objects if obj.type == 'ARMATURE' and obj.data is data]
+    _pose_require(len(bound) == 1 and bound[0] is rig,
+                  'Another Object shares this Original armature data; its existing rig was kept.')
+    _pose_require(context.scene.objects.get(rig.name) is rig
+                  and context.view_layer.objects.get(rig.name) is rig
+                  and [scene for scene in bpy.data.scenes if scene.objects.get(rig.name) is rig] == [context.scene],
+                  'Return to the Original rig scene and view layer.')
+    _pose_require(not data.use_fake_user and not getattr(data, 'use_extra_user', False),
+                  'An unexplained fake or extra user owns the Original armature data.')
+    owners = bpy.data.user_map(subset={data}).get(data, set())
+    _pose_require(rig in owners, 'The Original armature lost its native Object owner.')
+    actions = []
+    ref_count = 1
+    for owner in owners:
+        paths = _pose_data_paths(dict(owner.items()), data)
+        if owner is rig:
+            _pose_require(all(len(path) == 2 and path[0] in {target.REFS, POSE_REFS}
+                              and type(path[1]) is str for path in paths),
+                          'An unknown rig property refers to Original armature data.')
+        else:
+            _pose_require(isinstance(owner, bpy.types.Action) and not owner.library
+                          and not owner.override_library and owner.get(target.ACTION_RIG_KEY) is rig
+                          and paths and all(path in {(ua.ORIGINAL_DATA_KEY,), (ua.PREVIEW_DATA_KEY,)} for path in paths),
+                          'An unknown owner or property refers to Original armature data.')
+            actions.append(owner)
+        ref_count += len(paths)
+    _pose_require(data.users == ref_count, 'Original armature user counts do not match its exact native references.')
+    fresh = refs is None
+    refs = [rig, data, context.scene] if fresh else list(refs)
+    _pose_require(len(refs) >= 3 and refs[0] is rig and refs[1] is data and refs[2] is context.scene,
+                  'The Original pose owner rig, data or scene changed.')
+    for action in sorted(actions, key=lambda item: item.name_full):
+        _pose_history(action, refs, add=fresh)
+    actions.sort(key=lambda item: next(i for i, value in enumerate(refs) if value is item))
+    rig_history = {key: rig[key] for key in (target.SESSION, target.REFS, target.RESTORED) if key in rig}
+    seen = set(range(3))
+    payload = [context.view_layer.name, _pose_history(rig_history, refs, add=fresh, seen=seen),
+               [[_pose_history(action, refs, seen=seen), _pose_history(dict(action.items()), refs, add=fresh, seen=seen)]
+                for action in actions]]
+    _pose_require(seen == set(range(len(refs))), 'The Original pose reference map contains an unexplained native ID.')
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':'),
+                                      allow_nan=False).encode('utf-8')).hexdigest()
+    rest = json.loads(json.dumps(_saved_rest(ua._rest_state(data), 'Current Original pose-only Rest'), allow_nan=False))
+    return rest, digest, refs
+
+
+def pose_capability(context, rig, *, entering=False):
+    from . import body_original_mode as original, limb_ik
+    if rig is None or getattr(rig, 'type', None) != 'ARMATURE':
+        return None
+    raw = rig.get(original.SESSION)
+    saved = json.loads(raw) if raw is not None else {}
+    _pose_require(type(saved) is dict, 'The Original session is not a valid record.')
+    marker = saved.get('pose_only_owner')
+    if marker is None:
+        if not entering or limb_ik._single_armature_user(rig):
+            return None
+        _pose_require(POSE_REFS not in rig, 'An unfinished Original pose reference map was kept.')
+        rest, digest, refs = _pose_state(context, rig)
+    else:
+        _pose_require(type(marker) is dict and set(marker) == {'version', 'rest', 'carrier_sha256'}
+                      and type(marker['version']) is int and marker['version'] == 1,
+                      'The Original pose-only session record is invalid.')
+        _saved_rest(marker['rest'], 'Saved Original pose-only Rest')
+        native = rig.get(POSE_REFS)
+        _pose_require(hasattr(native, 'items') and all('id_' + str(i) in native for i in range(len(native))),
+                      'The Original pose-only native reference map is missing or invalid.')
+        refs = [native['id_' + str(i)] for i in range(len(native))]
+        _pose_require(_same_pose_refs(native, refs), 'The Original pose-only reference map changed.')
+        rest, digest, _refs = _pose_state(context, rig, refs)
+        _pose_require(rest == marker['rest'] and digest == marker['carrier_sha256'],
+                      'Original pose-only Rest or retained history changed; keep the current Original edit.')
+    cap = _PoseCapability()
+    cap.context, cap.rig, cap.data = context, rig, rig.data
+    cap.rest, cap.digest, cap.refs = rest, digest, tuple(refs)
+    cap.fields = {'version': 1, 'rest': rest, 'carrier_sha256': digest}
+    cap.before_refs = dict(rig[POSE_REFS]) if POSE_REFS in rig else None
+    cap.installed, cap.finished, cap.checkpoint = cap.before_refs is not None, False, None
+    cap.returning = marker is not None
+    return cap
+
+
+def pose_session_fields(cap):
+    return {} if cap is None else json.loads(json.dumps(cap.fields, allow_nan=False))
+
+
+def _check_pose_capability(cap, rig, *, repair=False):
+    from . import body_original_mode as original
+    _pose_require(type(cap) is _PoseCapability and cap.rig is rig and cap.data is rig.data,
+                  'Original pose permission does not own this exact rig and data.')
+    _pose_require((_same_pose_refs(rig.get(POSE_REFS), cap.refs) if cap.installed else POSE_REFS not in rig),
+                  'Original pose-only native references changed during the operation.')
+    rest, digest, _refs = _pose_state(cap.context, rig, cap.refs)
+    _pose_require(rest == cap.rest and digest == cap.digest,
+                  'Original pose-only Rest or retained history changed; keep the current Original edit.')
+    if original.SESSION in rig:
+        saved = json.loads(rig[original.SESSION])
+        _pose_require(saved.get('pose_only_owner') == cap.fields,
+                      'The Original pose-only session marker changed.')
+    else:
+        _pose_require(not cap.returning or cap.checkpoint is not None or cap.finished,
+                      'The Original pose-only session disappeared before return.')
+    if repair:
+        from . import skirt_rig, limb_ik_fk
+        checkpoint = cap.checkpoint
+        names = {pb.name for pb in rig.pose.bones if not pb.bone.get(skirt_rig.OWNER_KEY)}
+        _pose_require(type(checkpoint) is tuple and len(checkpoint) == 6
+                      and isinstance(checkpoint[0], dict) and set(checkpoint[0]) == names,
+                      'Original Pole repair needs its complete active outer pose checkpoint.')
+        limb_ik_fk._require_existing_switches(rig)
+    return True
+
+
+def _display_pose_capability(cap, rig):
+    if cap is None or type(cap) is not _PoseCapability or cap.rig is not rig:
+        return False
+    return _check_pose_capability(cap, rig)
+
+
+def install_pose_session(cap):
+    if cap is not None:
+        _check_pose_capability(cap, cap.rig)
+        _pose_require(cap.before_refs is None, 'Original pose references are already installed.')
+        cap.rig[POSE_REFS] = _pose_refmap(cap.refs)
+        cap.installed = True
+
+
+def restore_pose_session(cap):
+    if cap is not None:
+        if cap.before_refs is None:
+            cap.rig.pop(POSE_REFS, None)
+        else:
+            cap.rig[POSE_REFS] = cap.before_refs
+        cap.installed, cap.finished = cap.before_refs is not None, False
+
+
+def finish_pose_session(cap):
+    if cap is not None:
+        _check_pose_capability(cap, cap.rig)
+        _pose_require(cap.returning and cap.checkpoint is not None,
+                      'Original pose references may only finish inside the return transaction.')
+        cap.rig.pop(POSE_REFS)
+        cap.installed, cap.finished = False, True
+
+
+@contextmanager
+def pose_return_checkpoint(cap, checkpoint):
+    if cap is None:
+        yield
+        return
+    _check_pose_capability(cap, cap.rig)
+    _pose_require(cap.returning and cap.checkpoint is None, 'An Original pose return checkpoint is already active.')
+    cap.checkpoint = checkpoint
+    try:
+        yield
+    finally:
+        cap.checkpoint = None
 
 
 def _saved_rest(value, label):
@@ -273,6 +504,13 @@ def _admit(context, rig):
 def run_return(context, rig, callback):
     """Return Controls with bounded ownership and a complete failure rollback."""
     from . import body_original_mode as original, body_region, limb_ik
+    capability = pose_capability(context, rig)
+    if capability is not None:
+        def finish_pose_return():
+            _check_pose_capability(capability, rig)
+            _pose_require(capability.finished and not original.active(rig),
+                          'Original pose-only return did not finish its authenticated session.')
+        return callback(finish_pose_return, _original_pose=capability)
     if not original.active(rig) or rig.data.users == 1 or limb_ik._single_armature_user(rig):
         return callback()
     from . import unity_animation as ua

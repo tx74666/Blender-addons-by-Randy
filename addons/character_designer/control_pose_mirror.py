@@ -1,8 +1,8 @@
-"""Mirror saved native poses without transferring asymmetric Rest roll.
+"""Mirror saved Poses with Blender's native Action flip semantics.
 
-Managed poses reflect their local deformation increments. Legacy poses retain
-Blender's disposable Action flip. The character and source asset are read-only;
-the normal pose service retains matching, undo and auto-key.
+Managed poses use complete saved inputs in one disposable Action. Legacy poses
+retain their partial-channel reconstruction. The character and source asset are
+read-only; the normal pose service retains matching, undo and auto-key.
 """
 
 import math
@@ -11,7 +11,6 @@ import bpy
 from mathutils import Euler, Matrix, Quaternion, Vector
 
 _MATRIX_TOLERANCE = 2e-6
-_HEAD_TOLERANCE = 2e-5
 
 
 def _rotation_property(mode):
@@ -60,10 +59,9 @@ def _complete_basis(rig, name, fields):
         raise ValueError(f'{name}: this saved Pose exceeds native transform precision.')
     if min(abs(value) for value in scale) < 1e-8:
         raise ValueError(f'{name}: this saved Pose has a singular scale; it cannot be mirrored exactly.')
-    if rig.data.bones[name].use_connect:
-        if max(abs(value) for value in location) > _MATRIX_TOLERANCE:
-            raise ValueError(f'{name}: connected bones cannot mirror nonzero location channels.')
-        location = Vector((0., 0., 0.))
+    # Keep complete raw location channels, including connected bones. Native
+    # Action flip transforms those channels; Pose evaluation separately ignores
+    # their displacement. Clamping here breaks native flip round trips.
     if rotation_prop == 'rotation_quaternion':
         rotation = Quaternion(entries[rotation_prop])
     elif rotation_prop == 'rotation_axis_angle':
@@ -92,10 +90,46 @@ def _validate_managed_pair(source, target):
     target_parent = target.parent.name if target.parent else None
     if parent != target_parent or source.use_connect != target.use_connect:
         raise ValueError(f'{source.name}: opposite bones need corresponding parents and connection settings.')
-    head = source.matrix_local.translation.copy()
-    head.x = -head.x
-    if (head - target.matrix_local.translation).length > _HEAD_TOLERANCE:
-        raise ValueError(f'{source.name}: opposite Rest joint positions differ; this Pose cannot be mirrored exactly.')
+
+
+def _mirrored_metadata(rig, metadata, names, native):
+    """Derive an operation view without rewriting the source asset or its slot."""
+    from copy import deepcopy
+    from . import control_pose_assets as poses
+
+    result = deepcopy(metadata)
+    result['names'] = sorted(names)
+    seeds = poses._validate_stable_ik_seed_metadata(metadata)
+    if seeds:
+        seed_values, targets = {}, {}
+        for sources in seeds.values():
+            for name, saved in sources.items():
+                target = bpy.utils.flip_name(name)
+                if name not in native or target not in native:
+                    raise ValueError('This saved Pose has no opposite native IK seed bone.')
+                loc, rot, scale = Matrix(saved['matrix_basis']).decompose()
+                seed_values[name] = {'location': dict(enumerate(loc)),
+                    'rotation_quaternion': dict(enumerate(rot)), 'scale': dict(enumerate(scale))}
+                targets[name] = target
+        seed_result = _managed_channels(rig, seed_values, targets, list(seed_values),
+                                        {name: {} for name in targets.values()})
+        flipped = {}
+        for key, sources in seeds.items():
+            kind, side = key.split('/')
+            target_key = kind + '/' + ('R' if side == 'L' else 'L')
+            entries = {}
+            for name, saved in sources.items():
+                target_name = targets[name]
+                fields = seed_result[target_name]
+                basis = Matrix.LocRotScale(Vector([fields['location'][i] for i in range(3)]),
+                    Quaternion([fields['rotation_quaternion'][i] for i in range(4)]),
+                    Vector([fields['scale'][i] for i in range(3)]))
+                entries[target_name] = dict(rotation_mode=saved['rotation_mode'],
+                    matrix_basis=[list(row) for row in basis])
+            flipped[target_key] = entries
+        result['stable_ik_seed'] = flipped
+        poses._validate_stable_ik_seed_metadata(result)
+    return result
 
 
 def _exact_transform_fields(bone, basis):
@@ -124,32 +158,54 @@ def _exact_transform_fields(bone, basis):
 
 
 def _managed_channels(rig, values, targets, transformed, result):
-    """Reflect each saved local skin increment, including center bones.
+    """Use native Action flip on complete authored inputs, without binding it.
 
-    For standard inheritance, skin_b = skin_parent @ (Rest_b @ basis_b @
-    Rest_b.inverted()). Reflect that increment and express it in the target
-    Rest: basis_R = Rest_R^-1 @ F @ Rest_L @ basis_L @ Rest_L^-1 @ F @ Rest_R.
-    Identity stays identity even when the opposite Rest rolls differ. No current
-    source-parent deformation is copied into a partial limb or hand Pose.
+    The one-slot scratch Action uses each source bone's current representation
+    so native flip reads the authored rotation even when live mode is Euler.
+    No current parent deformation or partial-channel reconstruction is added.
     """
-    reflection = Matrix.Diagonal((-1., 1., 1., 1.))
-    for name in transformed:
-        source, target = rig.data.bones[name], rig.data.bones[targets[name]]
-        _validate_managed_pair(source, target)
-        basis = _complete_basis(rig, name, values[name])
-        source_rest, target_rest = source.matrix_local.copy(), target.matrix_local.copy()
-        mirrored = (target_rest.inverted() @ reflection @ source_rest @ basis
-                    @ source_rest.inverted() @ reflection @ target_rest)
-        result[target.name].update(_exact_transform_fields(target, mirrored))
-    return result
+    from . import control_pose_assets as poses
+    fields_by_name = {}
+    for name, fields in values.items():
+        _validate_managed_pair(rig.data.bones[name], rig.data.bones[targets[name]])
+        output = {prop: dict(entries) for prop, entries in fields.items() if prop in poses._BBONE}
+        if name in transformed:
+            loc, rot, scale = _complete_basis(rig, name, fields).decompose()
+            mode = rig.pose.bones[name].rotation_mode
+            output.update(location=dict(enumerate(loc)), scale=dict(enumerate(scale)))
+            output[_rotation_property(mode)] = dict(enumerate(_rotation_values(rot, mode)))
+        fields_by_name[name] = output
+    action = bpy.data.actions.new('Character Designer temporary native mirrored Pose')
+    try:
+        slot = action.slots.new(id_type='OBJECT', name=rig.name)
+        bag = action.layers.new(name='Pose').strips.new(type='KEYFRAME').channelbag(slot, ensure=True)
+        for name, fields in fields_by_name.items():
+            for prop, entries in fields.items():
+                for index, value in entries.items():
+                    bag.fcurves.new(data_path=rig.pose.bones[name].path_from_id(prop), index=index).keyframe_points.insert(1., float(value))
+        action.flip_with_pose(rig)
+        flipped = poses.channels(action, rig)
+        for name, fields in fields_by_name.items():
+            target = targets[name]
+            for prop, entries in fields.items():
+                if prop.startswith('rotation_'):
+                    mode = rig.pose.bones[name].rotation_mode
+                    rot = _quaternion(flipped[target][prop], mode)
+                    result[target]['rotation_quaternion'] = dict(enumerate(rot))
+                else:
+                    result[target][prop] = {index: flipped[target][prop][index] for index in entries}
+            if any(not math.isfinite(value) for entries in result[target].values() for value in entries.values()):
+                raise ValueError('Native mirroring produced non-finite Pose channels.')
+        return result
+    finally:
+        bpy.data.actions.remove(action)
 
 
 def mirrored_channels(rig, values, *, metadata=None):
     """Return the opposite-side pose, leaving all unrelated bones untouched.
 
-    Managed complete transforms reflect local deformation about corresponding
-    Rest joints. Legacy channels retain Blender's rest-aware Action flip and
-    keyed location/scale components. Both return complete authored rotations so
+    Managed complete transforms and legacy channels use native rest-aware Action
+    flip, including asymmetric joints and Rest roll. Both return authored rotations so
     different destination Euler orders are handled correctly.
     """
     from . import control_pose_assets as poses
@@ -171,10 +227,12 @@ def mirrored_channels(rig, values, *, metadata=None):
               for name, target in targets.items()}
     transformed = [name for name, fields in values.items()
                    if any(prop in poses._TRANSFORMS for prop in fields)]
+    if metadata is not None:
+        if transformed:
+            _managed_channels(rig, values, targets, transformed, result)
+        return poses._AssetChannels(result, _mirrored_metadata(rig, metadata, result, native))
     if not transformed:
         return result
-    if metadata is not None:
-        return _managed_channels(rig, values, targets, transformed, result)
 
     action = bpy.data.actions.new('Character Designer temporary mirrored pose')
     try:

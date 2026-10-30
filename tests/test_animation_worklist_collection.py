@@ -219,6 +219,8 @@ class CollectionTests(unittest.TestCase):
                         and node.name == 'sync')
         rigging_dispatch = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                                 and node.name == '_rigging_module')
+        item_workspace = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == '_item_workspace')
         namespace = dict(__name__=self.worklist.__name__,
             __package__=self.worklist.__name__.rsplit('.', 1)[0],
             bpy=sys.modules['bpy'], Path=Path, json=json, links=self.links,
@@ -229,7 +231,14 @@ class CollectionTests(unittest.TestCase):
             _fresh_workspace=self.worklist._fresh_workspace,
             _clip_key=self.worklist._clip_key, _validate_route=self.worklist._validate_route,
             _association=Mock())
-        exec(compile(ast.Module(body=[rigging_dispatch, function], type_ignores=[]), str(path), 'exec'), namespace)
+        exec(compile(ast.Module(body=[item_workspace, rigging_dispatch, function], type_ignores=[]), str(path), 'exec'), namespace)
+        ui_path = SOURCE / 'animation.py'
+        track = next(node for node in ast.parse(ui_path.read_bytes()).body
+                     if isinstance(node, ast.FunctionDef) and node.name == '_track_action_export')
+        self.animation.__dict__.update(
+            __package__=self.animation.__name__.rsplit('.', 1)[0], bpy=sys.modules['bpy'])
+        exec(compile(ast.Module(body=[track], type_ignores=[]), str(ui_path), 'exec'),
+             self.animation.__dict__)
         def begin_export(_context, _rig):
             self.active_job = {}
             return self.active_job

@@ -618,7 +618,8 @@ def _purge_owned(source, owner):
 
 
 def _clear_source_properties(source):
-    from . import skirt_wiggle
+    from . import animation_physics, skirt_wiggle
+    source.pop(animation_physics.SKIRT_CHOICE, None)
     source.pop(skirt_wiggle.STATE_KEY, None)
     source.pop(skirt_wiggle.STATE_SCENE_KEY, None)
     from . import skirt_original_mode, skirt_motion_profiles

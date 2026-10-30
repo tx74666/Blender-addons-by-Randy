@@ -596,7 +596,10 @@ def _cleanup_inventory(source):
             raise rig.HairBonesRigError("A generated copy's binding ownership changed; cleanup stopped.")
         rig._validate_owned(mesh, armature, record, rig._mesh_snapshot(mesh))
         expected = {record["parent"], *(name for chain in record["chains"] for name in chain["bones"])}
-        if set(armature.data.bones.keys()) != expected:
+        if mesh.get('character_designer_hair_resegment_v1') == 1:
+            from . import hair_resegment
+            hair_resegment.verify_cleanup(mesh, armature)
+        elif set(armature.data.bones.keys()) != expected:
             raise rig.HairBonesRigError("A generated rig contains other bones; cleanup stopped.")
         owned = {mesh, armature}
         reference = mesh.get(rig.MIRROR_KEY)
@@ -725,6 +728,13 @@ def _reveal_source(context, source):
 
 
 def remove_generated_copies(context, source):
+    if any(c.get(variants.MODE_KEY) == 'RESEGMENTED' for c in variants.variants_for(source)):
+        from . import hair_resegment
+        return hair_resegment.cleanup_versions(context, source, _remove_generated_copies_impl)
+    return _remove_generated_copies_impl(context, source)
+
+
+def _remove_generated_copies_impl(context, source):
     motion_lifecycle.before_mutation(context, source)
     """Delete verified historical copies, retaining and revealing the source."""
     if source is None or source.type != "MESH" or variants.source_for(source) is not source:
@@ -746,6 +756,11 @@ def remove_generated_copies(context, source):
         counts["backup"] = str(backup)
     mesh_data = {obj.data for obj in meshes}
     armature_data = {obj.data for obj in armatures}
+    copied_actions = set()
+    for mesh in meshes:
+        if mesh.get('character_designer_hair_resegment_v1') == 1:
+            from . import hair_resegment
+            copied_actions.update(hair_resegment.owned_actions(mesh))
     for obj in objects:
         bpy.data.objects.remove(obj, do_unlink=True)
     for collection in collections:
@@ -756,6 +771,9 @@ def remove_generated_copies(context, source):
     for data in armature_data:
         if data.users == 0:
             bpy.data.armatures.remove(data)
+    for action in copied_actions:
+        if action.users == 0:
+            bpy.data.actions.remove(action)
     _reveal_source(context, source)
     rig._mode(context, source, "OBJECT")
     return counts

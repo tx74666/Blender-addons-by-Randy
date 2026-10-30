@@ -1987,7 +1987,8 @@ def test_direct_pole_guide_segments_and_dynamic_arrow_display():
 
     # A hidden Pole must not leak its shaft, but restoring visibility must not
     # depend on selection state.
-    hidden_pole = armature.data.bones[pole_names[0]]
+    hidden_pose = armature.pose.bones[pole_names[0]]
+    hidden_pole = hidden_pose if hasattr(hidden_pose, 'hide') else hidden_pose.bone
     hidden_pole.hide = True
     if len(limb_ik._direct_pole_guide_segments(bpy.context)) != 1:
         raise AssertionError("A hidden Direct Pole still exposed its viewport shaft")

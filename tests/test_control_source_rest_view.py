@@ -11,6 +11,8 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock
 
+from test_validation_native_scope import load_scope
+
 
 SOURCE = Path(__file__).resolve().parents[1] / 'addons/character_designer'
 
@@ -63,7 +65,7 @@ def fixture(module):
             calls.append(live.name)
             return protected[live.name]
 
-    namespace = {'OWNER_KEY': 'owner', 'OWNER_VALUE': 'generated', 'bpy': NS(data=NS(
+    namespace = {'validation_native': load_scope(), 'OWNER_KEY': 'owner', 'OWNER_VALUE': 'generated', 'bpy': NS(data=NS(
         collections=NS(get=lambda _name: object()), objects=NS(get=lambda _name: None))),
         '_error': ValueError, 'get_record': lambda _rig: record,
         '_owned': lambda item, _record, _role: item is not None,
@@ -81,7 +83,8 @@ def fixture(module):
     limb = NS(_validation_mute=lambda _pb, constraint, _view: constraint.mute)
     limb._validation_source_bone = function('limb_ik', '_validation_source_bone', {})
     limb._validation_source_rest = function('limb_ik', '_validation_source_rest', {
-        'animation_worklist_target': target, 'LimbIKError': ValueError}, strip_import=True)
+        'animation_worklist_target': target, 'LimbIKError': ValueError,
+        'validation_native': namespace['validation_native']}, strip_import=True)
     namespace['_limb'] = lambda: limb
     if module == 'torso_controls':
         # Its only local import is the adjacent module's read-only constraint inventory.
@@ -198,10 +201,12 @@ class InventoryAutoRestTests(unittest.TestCase):
     def setUp(self):
         self.connector = NS(is_adopted=Mock(return_value=False), control_rest_view=Mock(return_value=None))
         self.error = type('LimbIKError', (ValueError,), {})
+        scope = load_scope()
         helper = function('limb_ik', '_validation_source_rest', {
-            'animation_worklist_target': self.connector, 'LimbIKError': self.error}, strip_import=True)
+            'animation_worklist_target': self.connector, 'LimbIKError': self.error,
+            'validation_native': scope}, strip_import=True)
         self.records = Mock(return_value=[])
-        namespace = {'_validation_source_rest': helper, 'LimbIKError': self.error,
+        namespace = {'validation_native': scope, '_validation_source_rest': helper, 'LimbIKError': self.error,
                      '_owned_constraint_records': self.records, 'OWNER_KEY': 'owner', 'OWNER_VALUE': 'generated'}
         for key in ('ARMATURE_ID_KEY', 'SCHEMA_KEY', 'DIRECT_REST_KEY', 'SOURCE_WIDGETS_KEY',
                     'TARGET_ROTATION_VERSION_KEY'):

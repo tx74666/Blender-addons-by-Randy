@@ -51,15 +51,31 @@ def _encode(value, references):
 
 
 def _decode(value, references):
+    # Rest arrays are mostly scalar values. Validate/copy those in this pass;
+    # only nested containers need another decoder call.
     if isinstance(value, dict):
         if set(value) == {'$id'}:
             target = references.get(value['$id'])
             if target is None:
                 raise ValueError('A saved Main Rig recovery data block was removed.')
             return target
-        return {key: _decode(entry, references) for key, entry in value.items()}
+        decoded = {}
+        for key, entry in value.items():
+            if isinstance(entry, (dict, list)):
+                entry = _decode(entry, references)
+            elif isinstance(entry, float) and not math.isfinite(entry):
+                raise ValueError('A saved Main Rig recovery value is not finite.')
+            decoded[key] = entry
+        return decoded
     if isinstance(value, list):
-        return [_decode(entry, references) for entry in value]
+        decoded = []
+        for entry in value:
+            if isinstance(entry, (dict, list)):
+                entry = _decode(entry, references)
+            elif isinstance(entry, float) and not math.isfinite(entry):
+                raise ValueError('A saved Main Rig recovery value is not finite.')
+            decoded.append(entry)
+        return decoded
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError('A saved Main Rig recovery value is not finite.')
     return value
@@ -665,13 +681,27 @@ def _data_reference_keys(owner, data):
 
 
 def _encoded_reference_keys(value):
-    if isinstance(value, dict):
-        if set(value) == {'$id'}:
-            return {value['$id']}
-        return set().union(*(_encoded_reference_keys(entry) for entry in value.values()))
-    if isinstance(value, list):
-        return set().union(*(_encoded_reference_keys(entry) for entry in value))
-    return set()
+    # One invocation-local accumulator; primitive Rest arrays contain no ID
+    # references. Recurse only into containers, preserving the original DFS
+    # validation/error order and never caching a successful ownership result.
+    references = set()
+
+    def collect(container):
+        if isinstance(container, dict):
+            if set(container) == {'$id'}:
+                references.add(container['$id'])
+                return
+            entries = container.values()
+        elif isinstance(container, list):
+            entries = container
+        else:
+            return
+        for entry in entries:
+            if isinstance(entry, (dict, list)):
+                collect(entry)
+
+    collect(value)
+    return references
 
 
 def single_armature_user(rig):
@@ -753,7 +783,10 @@ def _validate_record(context, rig, record):
     ua._mapping(rig, packet, context.scene.unit_settings.scale_length)
     previous = record['capture']['targets'][0]['action']
     action = rig.animation_data.action if rig.animation_data else None
-    allowed = [previous] + [value for item in saved.items for value in (item.source_action, item.custom_action)]
+    # A retired row keeps its native Action and recovery ownership. Retiring
+    # membership never forces the artist away from the currently shown draft.
+    rows = list(saved.items) + list(getattr(saved, 'retired_items', ()))
+    allowed = [previous] + [value for item in rows for value in (item.source_action, item.custom_action)]
     if action not in allowed:
         raise ValueError('The artist selected an unrelated Action; select a Worklist Action before restoring Main Rig.')
 

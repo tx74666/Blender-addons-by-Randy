@@ -232,6 +232,90 @@ def _resolve(context, main, entries):
     return result
 
 
+def wiggle_original_context(source, record=None):
+    """Lightweight candidate context, never permission for a native write.
+
+    The live action separately authenticates the complete Original transaction.
+    Drawing and the running lease read only local source/rig references and the
+    exact saved text; they do not parse the Original pose/Rest arrays.
+    """
+    import bpy
+    if not isinstance(source, bpy.types.Object) or source.type != 'MESH':
+        return None
+    if record is None:
+        try:
+            record = json.loads(source.get(skirt.RECORD_KEY, 'null'))
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(record, dict) or record.get('physics') or not record.get('owner'):
+        return None
+    rig = source.get(skirt.RIG_KEY)
+    if not isinstance(rig, bpy.types.Object) or rig.type != 'ARMATURE':
+        return None
+    if skirt._ORIGINAL_SESSION_KEY in source:
+        return None  # A mesh cannot own an armature Original transaction.
+    if record.get('shared'):
+        registry = rig.get(skirt.SHARED_SOURCES_KEY, {})
+        if not hasattr(registry, 'get') or registry.get(record['owner']) != source:
+            return None
+    elif (rig.get(skirt.OWNER_KEY) != record['owner']
+          or rig.get(skirt.SOURCE_KEY) != source
+          or rig.data.get(skirt.OWNER_KEY) != record['owner']):
+        return None
+    owner = rig if skirt._ORIGINAL_SESSION_KEY in rig else rig.get(skirt.ORIGINAL_DISPLAY_OWNER_KEY)
+    if not isinstance(owner, bpy.types.Object) or owner.type != 'ARMATURE':
+        return None
+    raw = owner.get(skirt._ORIGINAL_SESSION_KEY)
+    if type(raw) is not str or not raw:
+        return None
+    if owner != rig:
+        refs = owner.get('character_designer_original_display_refs_v1', {})
+        if (rig.get(skirt.ORIGINAL_DISPLAY_OWNER_KEY) != owner
+                or not hasattr(refs, 'values') or rig not in refs.values()):
+            return None
+    return owner, raw
+
+
+def require_wiggle_original(context, source, record, names):
+    """Prove disjoint PHYS ownership inside an existing Original transaction.
+
+    This permission is specific to the already generated Wiggle physics layer.
+    It never permits rebuilding a setup, editing Rest, or bypassing Cloth/Direct
+    editing and cache guards. No scene state is changed by this preflight.
+    """
+    import bpy
+    from . import body_original_mode as original, body_original_owner as owner_service
+    token = wiggle_original_context(source, record)
+    if token is None:
+        raise ValueError('Restore this skirt\'s exact Original ownership before enabling its physics.')
+    main, raw = token
+    if (context.scene != bpy.context.scene or context.scene.objects.get(main.name) != main
+            or main.library or main.override_library or not main.is_editable):
+        raise ValueError('Enable skirt physics only on its local character in the active Scene.')
+    capability = owner_service.pose_capability(context, main)
+    saved = original._require(context, main, _original_pose=capability)
+    if not isinstance(saved, dict) or saved.get('version') != 1 or not isinstance(saved.get('dress_edit'), list):
+        raise ValueError('Complete this Original skirt session before enabling its physics.')
+    original._validate_session_rest(main, saved)
+    validate_active(context, main, saved['dress_edit'])
+    targets = _resolve(context, main, saved['dress_edit'])
+    matches = [(entry, target) for entry, target, candidate, current, _relations in targets
+               if candidate == source and current['owner'] == record['owner']]
+    if len(matches) != 1 or matches[0][1] != source.get(skirt.RIG_KEY):
+        raise ValueError('The Original skirt record no longer owns this exact source and rig.')
+    entry, target = matches[0]
+    if (not names or len(names) != len(set(names))
+            or set(names).intersection(entry['names'])
+            or target == main and set(names).intersection(saved['rest'])
+            or any(target.data.bones.get(name) is None
+                   or target.data.bones[name].get(skirt.OWNER_KEY) != record['owner']
+                   for name in names)):
+        raise ValueError('Skirt physics must own separate generated bones from the editable Original bones.')
+    if wiggle_original_context(source, record) != token or main.get(original.SESSION) != raw:
+        raise ValueError('The Original skirt session changed during physics verification.')
+    return token
+
+
 def validate_active(context, main, entries):
     """Refuse edits to isolated setup state before returning to Controls."""
     for entry, _target, _source, _record, relations in _resolve(context, main, entries):
@@ -243,12 +327,15 @@ def validate_active(context, main, entries):
                 raise ValueError('A Dress pose constraint changed in Original; undo that edit before returning.')
 
 
-def prepare(context, main):
+def prepare(context, main, *, _original_pose=None):
     """Read-only exact ownership/animation preflight before any pose mutation."""
     entries = []
     for owner, (target, source, record) in _inventory(context, main).items():
         from . import bone_display
-        bone_display._editable(target)
+        if _original_pose is None:
+            bone_display._editable(target)
+        else:
+            bone_display._editable(target, _original_pose=_original_pose)
         relations = _relations(target, source, record)
         _service, surface_identity = _surface(source, target, record)
         evaluated = target.evaluated_get(context.evaluated_depsgraph_get())
