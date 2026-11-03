@@ -93,13 +93,14 @@ def _worklist_binding(context, rig):
 def _pose_test_binding(rig):
     from . import animation_pose_test as pose
     action = rig.animation_data.action if rig.animation_data else None
-    return (rig.get(pose.TOKEN_KEY), action.get(pose.SESSION_KEY) if action else None,
+    return (rig.get(pose.TOKEN_KEY), rig.get(pose.NATURAL_KEY),
+            action.get(pose.SESSION_KEY) if action else None,
             _simple(action.get(pose.REFS_KEY, {})) if action else None)
 
 
 def _state(context, rig):
     poses = _poses()
-    from . import body_original_mode as original, bone_collections, bone_display
+    from . import body_original_mode as original, bone_collections, bone_display, animation_pose_test
     return {
         'rig': (_pointer(rig), _pointer(rig.data), rig.name, rig.data.name),
         'context': (_pointer(context.scene), _pointer(context.view_layer),
@@ -123,6 +124,9 @@ def _state(context, rig):
         'collection_ids': tuple((c.name, _pointer(c), _pointer(c.parent)) for c in rig.data.collections_all),
         'active_bone': rig.data.bones.active.name if rig.data.bones.active else None,
         'original': rig.get(original.SESSION),
+        'natural_original_refs': ((original.DISPLAY_REFS in rig,
+                                   _simple(rig.get(original.DISPLAY_REFS, {})))
+                                 if animation_pose_test.natural_active(rig) else None),
         'pole_metadata': poses.match._leg_pole_metadata(rig),
         'layout': bone_collections.snapshot_layout(rig), 'display': bone_display._snapshot(rig),
     }
@@ -256,7 +260,10 @@ def _check(context, session):
 def _owner(context, rig):
     from . import animation_pose_test
     if animation_pose_test.natural_active(rig):
-        raise ValueError('Choose Pose to finish the static Rest test before blending a Pose.')
+        animation_pose_test._admission(context, rig, natural=True)
+        _action, record, refs = animation_pose_test._record(context, rig)
+        animation_pose_test._natural_plan(rig)
+        animation_pose_test._natural_original(rig, record['before'], refs)
     if (rig is None or rig.type != 'ARMATURE' or rig.library or rig.data.library
             or rig.override_library or rig.data.override_library
             or context.object != rig or context.mode not in {'OBJECT', 'POSE'}
@@ -291,7 +298,8 @@ def _key_domain(context, rig):
         action, record, refs = pose._record(context, rig)
         return {'kind': 'POSE_TEST', 'action': action, 'record': deepcopy(record),
                 'session_raw': action[pose.SESSION_KEY], 'refs': dict(refs),
-                'token': rig[pose.TOKEN_KEY], 'fake': action.use_fake_user}
+                'token': rig[pose.TOKEN_KEY], 'natural_token': rig.get(pose.NATURAL_KEY),
+                'fake': action.use_fake_user}
     ad = rig.animation_data
     action = ad.action if ad else None
     saved = getattr(context.scene, 'character_designer_animation_worklist', None)
@@ -373,18 +381,24 @@ def begin(context, asset=None, *, rig=None, values=None, metadata=None, flipped=
     poses = _poses()
     rig = rig or context.object
     pose_only = _owner(context, rig)
+    from . import animation_pose_test, body_original_mode as original
+    natural = animation_pose_test.natural_active(rig)
     if values is None:
         asset = asset or getattr(context, 'asset', None)
         if asset is None or asset.id_type != 'ACTION':
             raise ValueError('Choose a Pose asset before blending.')
         values = poses._asset_channels(asset, rig)
         if values is None:
+            if natural:
+                raise ValueError('This control-authored Pose cannot be applied inside the editable Rest test.')
             raise NativeBlendRequired('This Pose already targets controls; use native Blend Pose.')
         metadata = getattr(values, 'metadata', None)
     values, metadata = deepcopy(dict(values)), deepcopy(metadata)
     if not values:
         raise ValueError('This Pose has no channels to blend.')
     if set(values) - set(poses.native_rest(rig)):
+        if natural:
+            raise ValueError('This control-authored Pose cannot be applied inside the editable Rest test.')
         raise NativeBlendRequired('This Pose contains control channels; use native Blend Pose.')
     # Classify control-authored assets before applying our Auto Key policy.
     # Native Blend keeps its own owner rules; our Source check follows
@@ -435,7 +449,8 @@ def begin(context, asset=None, *, rig=None, values=None, metadata=None, flipped=
     return {'rig': rig, 'initial': initial, 'expected': initial['state'],
             'values': values, 'metadata': metadata, 'start_local': start_local,
             'target_local': target_local, 'evaluated': evaluated, 'order': order,
-            'matching': matching, 'pose_only': pose_only, 'factor': 0.,
+            'matching': matching, 'pose_only': pose_only,
+            'natural_original': natural and original.active(rig), 'factor': 0.,
             'closed': False, 'owned_action': None, 'key_domain': key_domain}
 
 
@@ -501,7 +516,12 @@ def preview(context, session, factor):
                 desired, bases = _desired(session, float(factor))
                 changed = {name for name, matrix in desired.items()
                            if poses._difference(matrix, session['evaluated'][name]) > 1e-7}
-                if session['matching']:
+                if session.get('natural_original', False):
+                    # Natural's existing Original graph is already muted. Its
+                    # opaque SESSION/REFS must not advance through matching.
+                    _write_free(context, session, bases)
+                    poses.match._verify(rig, desired)
+                elif session['matching']:
                     if original.active(rig):
                         poses._match_original(context, rig, desired, changed, preserve_modes=True)
                     else:
@@ -559,7 +579,8 @@ def _key_preview(context, session):
         from . import animation_pose_test as pose
         action, _record, refs = pose._record(context, rig)
         if (action != domain['action'] or action[pose.SESSION_KEY] != domain['session_raw']
-                or rig.get(pose.TOKEN_KEY) != domain['token'] or dict(refs) != domain['refs']):
+                or rig.get(pose.TOKEN_KEY) != domain['token']
+                or rig.get(pose.NATURAL_KEY) != domain['natural_token'] or dict(refs) != domain['refs']):
             raise BlendStateChanged('The Pose test recovery owner changed; its draft and current edits were kept.')
     if domain['kind'] == 'WORKLIST':
         from . import control_pose_offset
@@ -588,6 +609,8 @@ def _key_preview(context, session):
         ad.action_slot = staged_slot
     if domain['kind'] == 'POSE_TEST':
         rig[pose.TOKEN_KEY] = session['new_pose_token']
+        if pose._natural_record(domain['record']):
+            rig[pose.NATURAL_KEY] = session['new_pose_token']
     frame = context.scene.frame_current + context.scene.frame_subframe
     for pb in rig.pose.bones:
         _mode, basis, ik_fk = session['initial']['before_key'][pb.name]
@@ -615,9 +638,18 @@ def _restore_binding(session):
     if domain['kind'] == 'POSE_TEST':
         from . import animation_pose_test as pose
         token = rig.get(pose.TOKEN_KEY)
-        if token not in {domain['token'], session.get('new_pose_token')}:
+        natural_token = rig.get(pose.NATURAL_KEY)
+        allowed_natural = {domain['natural_token']}
+        if pose._natural_record(domain['record']) and session.get('new_pose_token'):
+            allowed_natural.add(session['new_pose_token'])
+        if (token not in {domain['token'], session.get('new_pose_token')}
+                or natural_token not in allowed_natural):
             raise BlendStateChanged('The Pose test token changed outside this blend; its recovery was retained.')
         rig[pose.TOKEN_KEY] = domain['token']
+        if domain['natural_token'] is None:
+            rig.pop(pose.NATURAL_KEY, None)
+        else:
+            rig[pose.NATURAL_KEY] = domain['natural_token']
         domain['action'].use_fake_user = domain['fake']
     ad = rig.animation_data
     if ad is not None:

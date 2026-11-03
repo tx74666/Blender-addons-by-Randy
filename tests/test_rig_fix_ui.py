@@ -105,21 +105,19 @@ class RigFixUITests(unittest.TestCase):
                 self.assertEqual(panel.poll(ctx), expected)
                 self.assertEqual(vars(ctx.window_manager.character_designer), before)
 
-    def test_body_adjustments_reuse_placement_and_display_without_a_foot_special_case(self):
+    def test_body_adjustments_keep_placement_without_a_visibility_section(self):
         layout, ctx = Layout(), context()
         self.ui.draw_body_adjustments(layout, ctx)
         self.ground.draw.assert_called_once_with(layout, ctx)
-        buttons = [row for row in layout.records if row[0] == 'operator']
-        self.assertEqual([(row[1], row[2]) for row in buttons],
-                         [('character_designer.fix_show_body_controls', True)])
-        self.assertNotIn(('label', 'Moves meshes, rig and controls together.'), layout.records)
-        self.assertIn(('label', 'Display only; keeps custom shapes.'), layout.records)
+        self.assertEqual(layout.records, [])
+        self.display.character_rig.assert_not_called()
+        self.original.active.assert_not_called()
         self.display.show_controls.assert_not_called()
         self.rebuild.rebuild.assert_not_called()
 
     def test_original_mode_keeps_return_to_controls_explicit(self):
         layout, ctx = Layout(), context(original=True)
-        self.ui.draw_body_adjustments(layout, ctx)
+        self.ui._draw_body_controls(layout, ctx)
         self.assertFalse(next(row for row in layout.records
                               if row[:2] == ('operator', 'character_designer.fix_show_body_controls'))[2])
         self.assertIn(('label', 'Choose Controls in Bone Display first.'), layout.records)
@@ -128,7 +126,7 @@ class RigFixUITests(unittest.TestCase):
     def test_absent_body_controls_cannot_be_generated_from_display_adjustments(self):
         self.display.groups.body_collection.return_value = None
         layout = Layout()
-        self.ui.draw_body_adjustments(layout, context())
+        self.ui._draw_body_controls(layout, context())
         self.assertFalse(next(row for row in layout.records
                               if row[:2] == ('operator', 'character_designer.fix_show_body_controls'))[2])
         self.assertIn(('label', 'Set up body controls first.'), layout.records)
@@ -136,7 +134,7 @@ class RigFixUITests(unittest.TestCase):
     def test_display_error_remains_readable_without_creating_controls(self):
         self.display.character_rig.side_effect = ValueError('Choose one character rig.')
         layout = Layout()
-        self.ui.draw_body_adjustments(layout, context())
+        self.ui._draw_body_controls(layout, context())
         self.assertIn(('label', 'Choose one character rig.'), layout.records)
         self.assertFalse(any(row[:2] == ('operator', 'character_designer.fix_show_body_controls')
                              for row in layout.records))

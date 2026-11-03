@@ -104,10 +104,9 @@ def _draw_body_controls(layout, context):
 
 
 def draw_body_adjustments(layout, context):
-    """Shared body display/placement tools; part rebuild lives in its selector."""
+    """Shared body placement tools; part rebuild lives in its selector."""
     from . import character_ground
 
-    _draw_body_controls(layout, context)
     character_ground.draw(layout, context)
 
 

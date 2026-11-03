@@ -125,6 +125,7 @@ class RevisionRoutes(unittest.TestCase):
         self.enterContext(patch.object(f.worklist.bpy, 'data',
                                       SimpleNamespace(actions=actions), create=True))
         pose = self.module(f.worklist, 'animation_pose_test', TOKEN_KEY=key,
+                           natural_active=lambda value: False,
                            _rig=Mock(return_value=rig), active=lambda value: key in value,
                            _restore=Mock(side_effect=AssertionError('old recovery must not run')))
         events = []

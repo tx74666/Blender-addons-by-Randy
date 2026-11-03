@@ -117,6 +117,9 @@ class CharacterDesignerHairBonesState(PropertyGroup):
     list_items: CollectionProperty(type=strand_list_ui.CharacterDesignerHairStrandListItem, options={"SKIP_SAVE"})
     list_filter: EnumProperty(name="Category", items=strand_list_ui.FILTER_ITEMS, default="ALL", options={"SKIP_SAVE"})
     list_active_index: IntProperty(default=0, min=0, options={"SKIP_SAVE"})
+    list_anchor_key: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    list_anchor_filter: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    show_tools: BoolProperty(name='Advanced', default=False, options={'SKIP_SAVE'})
     list_assign_group: EnumProperty(name="Assign Category", items=strand_list_ui.GROUP_ITEMS, default="UNASSIGNED", options={"SKIP_SAVE"})
     list_pin: StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     list_pose_position: StringProperty(options={"SKIP_SAVE"})
@@ -291,7 +294,7 @@ class CHARACTERDESIGNER_OT_generate_hair_bones(Operator):
 
 
 class CHARACTERDESIGNER_PT_hair_bones(Panel):
-    bl_label = "Hair Bones"
+    bl_label = "Hair"
     bl_idname = "CHARACTERDESIGNER_PT_hair_bones"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -308,6 +311,30 @@ class CHARACTERDESIGNER_PT_hair_bones(Panel):
         if settings is None:
             return
         source = _source(context)
+        try:
+            already_bound = bool(source and (_binding().is_bound(source) or hair_resegment_ui.is_version(source)))
+        except (ValueError, RuntimeError) as error:
+            layout.label(text=str(error), icon='ERROR')
+            already_bound = False
+        if already_bound:
+            strand_list_ui.draw_browser(layout, context, source, True)
+            layout.prop(settings, 'show_tools', text='Advanced',
+                        icon='TRIA_DOWN' if settings.show_tools else 'TRIA_RIGHT', emboss=False)
+            if settings.show_tools:
+                tools = layout.column(align=True)
+                tools.label(text=source.name, icon='OUTLINER_OB_MESH')
+                hair_resegment_ui.draw_versions(tools, context, source, True)
+                if not _source_edit(context):
+                    tools.operator('character_designer.hair_show_source', text='Edit Source', icon='EDITMODE_HLT')
+                if not hair_resegment_ui.is_version(source):
+                    row = tools.row()
+                    row.alert = True
+                    row.operator('character_designer.hair_remove_binding', icon='UNLINKED')
+                if _variants().variants_for(source):
+                    row = tools.row()
+                    row.alert = True
+                    row.operator('character_designer.hair_cleanup_generated_copies', icon='TRASH')
+            return
         if source:
             layout.label(text=f"Source: {source.name}", icon="OUTLINER_OB_MESH")
         capture_error = None

@@ -411,8 +411,121 @@ def _cleanup(owned):
                 values.remove(item, do_unlink=True)
 
 
+def _capture_sampling_display(context):
+    """Checkpoint pre-existing display targets of the global frame handler."""
+    from . import bone_display, bone_collections as groups, limb_fk_visuals
+    tables = {name: getattr(groups, name) for name in ('_FRAME_CACHE', '_FRAME_OWNER_REJECTIONS')}
+    entries = []
+    for rig in context.scene.objects:
+        if (rig.type != 'ARMATURE' or rig.mode == 'EDIT' or rig.library or rig.data.library
+                or not rig.is_editable or not rig.data.get(groups.PROFILE_KEY)
+                or rig.data.get(groups.AUTO_KEY) == 0 or not groups.has_layout_backup(rig)
+                or groups.VIEW_KEY in rig.data
+                or 'character_designer_body_original_mode_v1' in rig
+                or context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') is rig
+                or groups.body_collection(rig) is None):
+            continue
+        data, key = rig.data, rig.as_pointer()
+        display = bone_display._snapshot(rig)
+        record = limb_fk_visuals.get_record(rig)
+        widgets = {entry['object']: bpy.data.objects.get(entry['object'])
+                   for entry in (record or {}).get('bindings', {}).values()}
+        if any(widget is None for widget in widgets.values()):
+            raise HairResegmentError('A source display widget is missing before Hair sampling.')
+        entries.append(dict(rig=rig, pointer=key, data=data, data_pointer=data.as_pointer(),
+            bones=tuple((bone, bone.as_pointer(), bone.name) for bone in data.bones),
+            collections=tuple((item, item.as_pointer(), item.name, item.parent,
+                item.parent.as_pointer() if item.parent else None,
+                {key: groups._copy_property(item[key]) for key in item.keys()}, tuple(item.bones),
+                tuple(bone.as_pointer() for bone in item.bones)) for item in data.collections_all),
+            widgets=tuple((name, widget, widget.as_pointer()) for name, widget in widgets.items()),
+            backup_refs_present=groups.BACKUP_REFS_KEY in data,
+            backup_refs=groups._copy_property(data.get(groups.BACKUP_REFS_KEY, {})),
+            display=display,
+            caches={name: (key in table, table.get(key)) for name, table in tables.items()}))
+    return dict(scene=context.scene, view_layer=context.view_layer.as_pointer(), tables=tables, entries=entries)
+
+
+def _restore_sampling_display(context, saved):
+    """Restore display/cache state only while all original native IDs match."""
+    from . import bone_display, bone_collections as groups
+    if (context.scene is not saved['scene'] or context.view_layer.as_pointer() != saved['view_layer']
+            or any(getattr(groups, name) is not table for name, table in saved['tables'].items())):
+        raise HairResegmentError('Hair display recovery lost its original scene, view layer or cache owner.')
+
+    def validate(entry):
+        rig, data = entry['rig'], entry['data']
+        if (bpy.data.objects.get(rig.name) is not rig or rig.as_pointer() != entry['pointer']
+                or rig.data is not data or data.as_pointer() != entry['data_pointer']
+                or tuple((bone.as_pointer(), bone.name) for bone in data.bones)
+                    != tuple((pointer, name) for bone, pointer, name in entry['bones'])
+                or tuple(item.as_pointer() for item in data.collections_all)
+                    != tuple(row[1] for row in entry['collections'])
+                or (groups.BACKUP_REFS_KEY in data) != entry['backup_refs_present']
+                or groups._copy_property(data.get(groups.BACKUP_REFS_KEY, {})) != entry['backup_refs']):
+            raise HairResegmentError('Hair display recovery source data, bones, collections or backup references changed.')
+        for item, pointer, name, parent, parent_pointer, properties, members, pointers in entry['collections']:
+            if (item.as_pointer() != pointer or item.name != name or item.parent != parent
+                    or (item.parent.as_pointer() if item.parent else None) != parent_pointer
+                    or {key: groups._copy_property(item[key]) for key in item.keys()} != properties
+                    or tuple(bone.as_pointer() for bone in members) != pointers):
+                raise HairResegmentError('Hair display recovery collection or original member identity changed.')
+        if any(bpy.data.objects.get(name) is not widget or widget.as_pointer() != pointer
+               for name, widget, pointer in entry['widgets']):
+            raise HairResegmentError('Hair display recovery widget identity changed.')
+        bone_display._check_object_restore(rig, entry['display'])
+
+    # Authenticate every target before the first display write.
+    for entry in saved['entries']:
+        validate(entry)
+    for entry in saved['entries']:
+        rig = entry['rig']
+        bone_display._restore(rig, entry['display'])
+        for item, pointer, name, parent, parent_pointer, properties, members, pointers in entry['collections']:
+            current = tuple(item.bones)
+            actual = tuple(bone.as_pointer() for bone in current)
+            if len(actual) != len(pointers) or set(actual) != set(pointers):
+                raise HairResegmentError('Hair display recovery did not restore the exact original member set.')
+            if actual != pointers:
+                for bone in current:
+                    item.unassign(bone)
+                for bone in members:
+                    item.assign(bone)
+        validate(entry)
+        if (bone_display._snapshot(rig) != entry['display']
+                or any(tuple(bone.as_pointer() for bone in row[0].bones) != row[7]
+                       for row in entry['collections'])):
+            raise HairResegmentError('Hair display recovery did not restore its exact native checkpoint.')
+        for name, (present, value) in entry['caches'].items():
+            table = saved['tables'][name]
+            if present:
+                table[entry['pointer']] = value
+            else:
+                table.pop(entry['pointer'], None)
+
+
+def _detach_copied_main_authority(rig, copy_rig, actions, owned, original_actions):
+    """An owned Hair version is not another adopted Main Rig or Custom draft."""
+    from . import animation_worklist_target
+    if (copy_rig is rig or copy_rig.data is rig.data
+            or copy_rig not in owned['objects'] or copy_rig.data not in owned['armatures']
+            or any(not isinstance(action, bpy.types.Action) or action.library is not None
+                   or action in original_actions or action not in owned['actions']
+                   for action in actions)):
+        raise HairResegmentError('Only newly owned Hair copies may detach inherited Main Rig recovery metadata.')
+    # Preserve the source's exact SESSION/REFS and every original Action. Only
+    # these newly created IDs must stop claiming the source's recovery identity.
+    animation_worklist_target.restore_session_metadata(copy_rig, {})
+    keys = animation_worklist_target._action_motion_keys()
+    for action in actions:
+        for key in keys:
+            if key in action:
+                del action[key]
+
+
 def _copy(context, source, rig, root, count, actions, owned, strand_signatures=None,
           partial_state=None):
+    original_actions = frozenset(bpy.data.actions)
     index = max((int(c.get(variants.INDEX_KEY, 0)) for c in variants.variants_for(root)), default=0) + 1
     label = (f'{root.name} · Selected {count} Segments {index:02d}' if strand_signatures is not None
              else f'{root.name} · {count} Segments {index:02d}')
@@ -500,6 +613,7 @@ def _copy(context, source, rig, root, count, actions, owned, strand_signatures=N
         prepared = hair_resegment_partial.prepare_copy(rig, copy_rig, source, clone, actions, selected_names)
         if partial_state is not None:
             partial_state.update(prepared)
+    _detach_copied_main_authority(rig, copy_rig, actions, owned, original_actions)
     return collection, clone, copy_rig, index
 
 
@@ -752,6 +866,7 @@ def _publish(context, source, clone, copy_rig, collection, root, index):
 def create(context, source, *, bone_count=6, frame_start=None, frame_end=None, activate=True,
            strand_signatures=None):
     rig, record, old_registry, old_profiles = _preflight(context, source, bone_count, strand_signatures)
+    sampling_display = _capture_sampling_display(context)
     selected_signatures = tuple(chain['signature'] for chain in _selected_chains(record, strand_signatures))
     # frame_set evaluates the whole Main, including unrelated current edits.
     # Prove every authored animated leaf before creating any temporary IDs.
@@ -777,6 +892,9 @@ def create(context, source, *, bone_count=6, frame_start=None, frame_end=None, a
         plans, updated = _chains(context, source, rig, clone, copy_rig, record, bone_count,
                                  strand_signatures)
         _write_weights(source, clone, rig, plans)
+        # Authenticate the independent version before expensive frame sampling.
+        _motion_settings(source, clone, old_registry, old_profiles,
+                         selected=strand_signatures is not None)
         if strand_signatures is None:
             _write_action(context, rig, copy_rig, plans, times, actions,
                           frame[0] + frame[1], author_pose, author_channels)
@@ -788,8 +906,8 @@ def create(context, source, *, bone_count=6, frame_start=None, frame_end=None, a
         for action in actions:
             action[COPY_KEY] = updated['source_id']
             action.use_fake_user = False
-        _motion_settings(source, clone, old_registry, old_profiles,
-                         selected=strand_signatures is not None)
+        # Frame evaluation must not invalidate the early copied-Rest proof.
+        registry.read(clone, validate=True)
         _publish(context, source, clone, copy_rig, collection, root, index)
         context.scene.frame_set(frame[0], subframe=frame[1])
         _restore_author_pose(rig, author_pose)
@@ -810,11 +928,12 @@ def create(context, source, *, bone_count=6, frame_start=None, frame_end=None, a
             hair_resegment_partial.restore_copy(context, partial_state, author_channels)
         context.view_layer.update()
         channels.verify(author_channels)
+        _restore_sampling_display(context, sampling_display)
         return dict(mesh=clone, armature=copy_rig, collection=collection, count=bone_count,
             samples=times, mode='RESEGMENTED', original_retained=True,
             selected_signatures=selected_signatures,
             strand_counts={chain['signature']: chain['count'] for chain in updated['chains']},
-            exact_deformation_equivalence=False)
+            exact_deformation_equivalence=False, _owned=owned)
     except Exception as error:
         failures = []
         try:
@@ -836,7 +955,62 @@ def create(context, source, *, bone_count=6, frame_start=None, frame_end=None, a
             channels.verify(author_channels)
         except Exception as failure:
             failures.append(str(failure))
+        try:
+            _restore_sampling_display(context, sampling_display)
+        except Exception as failure:
+            failures.append(str(failure))
         suffix = ' Recovery needs attention: ' + '; '.join(failures) if failures else ''
         raise HairResegmentError(str(error) + suffix) from error
     finally:
         context.scene.tool_settings.use_keyframe_insert_auto = auto
+
+
+def replace_selected(context, source, *, bone_count=6, frame_start=None, frame_end=None,
+                     activate=True, strand_signatures=None):
+    """Sample privately, then replace only the chosen chains on this binding.
+
+    The private sample is a transaction input, never another published Hair
+    version. Previously created versions remain the artist's separate data.
+    """
+    from . import hair_replace, hair_replace_authority, body_original_mode
+    record = hair._read_records(source)
+    signatures = tuple(chain['signature'] for chain in
+                       _selected_chains(record, strand_signatures))
+    rig = source.get(hair.RIG_KEY)
+    was_original = body_original_mode.active(rig)
+    if was_original:
+        body_original_mode.leave(context, rig)
+    sampled, result = None, None
+    try:
+        # Refuse unsupported recovery/animation contexts before sampling frames.
+        admission = hair_replace_authority.prepare(context, rig,
+            tuple(name for chain in _selected_chains(record, signatures) for name in chain['bones']))
+        hair_replace_authority.rollback(admission)
+        witness = hair_replace.capture_input(source)
+        sampled = create(context, source, bone_count=bone_count, frame_start=frame_start,
+                         frame_end=frame_end, activate=False, strand_signatures=signatures)
+        result = hair_replace.replace_from_version(context, source, sampled['mesh'],
+            signatures, activate=activate, expected_input=witness)
+        result.update(samples=sampled['samples'], count=bone_count,
+                      selected_signatures=signatures, mode='REPLACED',
+                      original_retained=False, exact_deformation_equivalence=False)
+        return result
+    finally:
+        try:
+            if sampled is not None:
+                try:
+                    _cleanup(sampled['_owned'])
+                except Exception as error:
+                    if result is None:
+                        raise
+                    # A completed replacement must retain its native Undo entry.
+                    result['cleanup_warning'] = 'Hair replaced; private sample cleanup needs review: ' + str(error)
+        finally:
+            if was_original:
+                try:
+                    body_original_mode.enter(context, rig)
+                except Exception as error:
+                    if result is None:
+                        raise
+                    message = 'Hair replaced; return to Original needs review: ' + str(error)
+                    result['cleanup_warning'] = (result.get('cleanup_warning', '') + ' ' + message).strip()

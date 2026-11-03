@@ -94,6 +94,11 @@ def _same_anchor(before, actual):
 def _source_rest_view(armature):
     """Authenticate only the connected-flag exception of a managed copy."""
     from . import animation_worklist_target
+    if 'character_designer_hair_current_topology_v1' in armature:
+        from . import hair_replace_authority
+        current = hair_replace_authority.current_topology_view(armature)
+        if current is not None:
+            return current
     if not animation_worklist_target.is_adopted(armature):
         return None
     try:

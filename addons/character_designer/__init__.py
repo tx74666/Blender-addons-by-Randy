@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 137),
+    "version": (0, 77, 165),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -8886,8 +8886,37 @@ def _validate_registration_integrity():
         raise RuntimeError(f"Character Designer registration is inconsistent: {details}.")
 
 
+def _register_runtime_hooks():
+    """Start the same idempotent runtime hooks on first and repeated registration."""
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge, limb_ik_wrist_rotation_ui
+    register_mesh_mirror_runtime()
+    register_refine_symmetry_runtime()
+    register_finger_bones_runtime()
+    register_finger_root_runtime()
+    register_animation_runtime()
+    register_composition_runtime()
+    register_rigging_runtime()
+    register_reference_view_handlers()
+    body_calibration_ui.register()
+    control_pose_assets.register()
+    control_pose_capture.register()
+    legacy_weights.register()
+    register_limb_ik_viewport_handler()
+    register_bone_collection_handlers()
+    register_bone_display_sync()
+    register_forearm_twist_runtime()
+    playback_normal_bridge.register()
+    _register_workspace_filter_guard()
+    _register_source_watch()
+    generated_names.register_handlers()
+    register_hair_motion_guards()
+    skirt_wiggle_ui.register()
+    skirt_wiggle.register()
+    limb_ik_wrist_rotation_ui.register()
+
+
 def register():
-    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge, limb_ik_wrist_rotation_ui
     centerline_registered = hasattr(bpy.types.WindowManager, "character_designer")
     delta_registered = hasattr(
         bpy.types.WindowManager,
@@ -8943,29 +8972,7 @@ def register():
         custom_vertex_groups.register_properties()
         custom_vertex_parts.register_properties()
         unity_update_selection_ui.register_properties()
-        register_mesh_mirror_runtime()
-        register_refine_symmetry_runtime()
-        register_finger_bones_runtime()
-        register_finger_root_runtime()
-        register_animation_runtime()
-        register_composition_runtime()
-        register_rigging_runtime()
-        register_reference_view_handlers()
-        body_calibration_ui.register()
-        control_pose_assets.register()
-        control_pose_capture.register()
-        legacy_weights.register()
-        register_limb_ik_viewport_handler()
-        register_bone_collection_handlers()
-        register_bone_display_sync()
-        register_forearm_twist_runtime()
-        playback_normal_bridge.register()
-        _register_workspace_filter_guard()
-        _register_source_watch()
-        generated_names.register_handlers()
-        register_hair_motion_guards()
-        skirt_wiggle_ui.register()
-        skirt_wiggle.register()
+        _register_runtime_hooks()
         return
     if any(registration_state):
         raise RuntimeError("Character Designer is only partially registered.")
@@ -9055,31 +9062,10 @@ def register():
             options={"SKIP_SAVE"},
         )
         added_properties.append("character_designer_references")
-        register_mesh_mirror_runtime()
-        register_refine_symmetry_runtime()
-        register_finger_bones_runtime()
-        register_finger_root_runtime()
-        register_animation_runtime()
-        register_composition_runtime()
-        register_rigging_runtime()
-        register_reference_view_handlers()
-        body_calibration_ui.register()
-        control_pose_assets.register()
-        control_pose_capture.register()
-        legacy_weights.register()
-        register_limb_ik_viewport_handler()
-        register_bone_collection_handlers()
-        register_bone_display_sync()
-        register_forearm_twist_runtime()
-        playback_normal_bridge.register()
-        _register_workspace_filter_guard()
-        _register_source_watch()
-        generated_names.register_handlers()
-        register_hair_motion_guards()
-        skirt_wiggle_ui.register()
-        skirt_wiggle.register()
+        _register_runtime_hooks()
     except Exception:
-        playback_normal_bridge.unregister()
+        limb_ik_wrist_rotation_ui.unregister()
+        playback_normal_bridge.unregister(recover_pending=False)
         if added_unity_update_selection:
             unity_update_selection_ui.unregister_properties()
         skirt_wiggle.unregister()
@@ -9132,7 +9118,8 @@ def register():
 
 
 def unregister():
-    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge
+    from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge, limb_ik_wrist_rotation_ui
+    limb_ik_wrist_rotation_ui.unregister()
     playback_normal_bridge.unregister()
     unity_update_selection_ui.unregister_properties()
     custom_vertex_parts.unregister_properties()

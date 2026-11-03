@@ -15,6 +15,7 @@ from bpy.types import Menu, Operator, PropertyGroup, UIList
 
 from . import custom_vertex_visibility as visibility
 from . import mesh_selection_rows as row_selection
+from .mesh_catalog_order import name_sort_swaps
 
 
 PREFIX = 'Custom_'
@@ -295,13 +296,8 @@ def group_action(context, action):
     active = mesh.attributes.active.name if _is_group(mesh.attributes.active) else ''
     bm = bmesh.from_edit_mesh(mesh) if mesh.is_editmode else None
     if action == 'SORT_NAME':
-        desired = sorted(names, key=lambda name: (name.casefold(), name))
-        for target, name in enumerate(desired):
-            index = names.index(name)
-            while index > target:
-                _swap_groups(mesh, names[index - 1], names[index], bm)
-                names[index - 1], names[index] = names[index], names[index - 1]
-                index -= 1
+        for first, second in name_sort_swaps(names):
+            _swap_groups(mesh, first, second, bm)
     elif action == 'DUPLICATE':
         source = _active(mesh)
         name, locked = source.name, is_locked(source)

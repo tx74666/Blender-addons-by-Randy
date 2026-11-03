@@ -67,7 +67,7 @@ def _refresh_after_commit(operator, context, source, checked_signatures=()):
 class CHARACTERDESIGNER_OT_hair_resegment(bpy.types.Operator):
     bl_idname = 'character_designer.hair_resegment'
     bl_label = 'Change Hair Segments'
-    bl_description = 'Change the selected Hair strands together; retain all other strands and the original version'
+    bl_description = 'Replace the selected Hair strands with the new bone count on the current character'
     bl_options = {'REGISTER', 'UNDO'}
 
     bone_count: IntProperty(name='New Bones per Strand', default=6, min=1, max=12)
@@ -174,19 +174,20 @@ class CHARACTERDESIGNER_OT_hair_resegment(bpy.types.Operator):
         if self.scope == 'SELECTED':
             layout.label(text='Only these strands change; other strands stay as they are.')
             layout.label(text='Select bones on both sides to change a pair together.')
-        layout.label(text='Retains the original; new bending and motion are sampled.')
+        layout.label(text='Replaces these strands; bending and motion are sampled.')
 
     def execute(self, context):
         try:
             source, signatures, summary = self._targets(context)
-            result = service().create(context, source, bone_count=self.bone_count,
+            result = service().replace_selected(context, source, bone_count=self.bone_count,
                                       strand_signatures=signatures)
             settings = context.window_manager.character_designer_hair_bones
             settings.source = result['mesh']
             settings.bone_count = self.bone_count
-            settings.last_message = (f"Changed {summary['strands']} Hair strands to {self.bone_count} bones; "
-                                     'other strands and the original retained.')
+            settings.last_message = f"Replaced {summary['strands']} Hair strands with {self.bone_count} bones each."
             _refresh_after_commit(self, context, result['mesh'], result['selected_signatures'])
+            if result.get('cleanup_warning'):
+                self.report({'WARNING'}, result['cleanup_warning'])
             self.report({'INFO'}, settings.last_message)
             return {'FINISHED'}
         except (ValueError, RuntimeError, KeyError, TypeError) as error:
@@ -239,20 +240,6 @@ class CHARACTERDESIGNER_OT_hair_show_original_version(bpy.types.Operator):
 
 def draw_versions(layout, context, source, bound):
     from . import hair_bones_variants as variants
-    if bound:
-        button = layout.operator('character_designer.hair_resegment',
-            text='Change Selected Strands' if context.mode == 'POSE' else 'Change Hair Segments',
-            icon='BONE_DATA')
-        button.scope = 'SELECTED'
-        if context.mode == 'POSE':
-            try:
-                signatures = selection.selected(context, source)
-                record, unused_rig = selection.binding(source)
-                summary = selection.summarize(record['chains'], signatures)
-                counts = ', '.join(str(count) for count in summary['current_counts'])
-                layout.label(text=f"{summary['strands']} selected strands · {counts} bones")
-            except (ValueError, RuntimeError) as error:
-                layout.label(text=str(error), icon='INFO')
     if source is None:
         return
     original = service().root_source(source)

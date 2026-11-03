@@ -936,6 +936,11 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
             bone_collections._FRAME_CACHE.pop(armature.as_pointer(), None)
             raise
         return {"mode": mode, "changed": False, "keyed": False, "errors": (0.0, 0.0, 0.0)}
+    keyed = bool(keyframe if keyframe is not None else context.scene.tool_settings.use_keyframe_insert_auto)
+    action_owner = None
+    if keyed:
+        from . import limb_ik_fk_action_owner
+        action_owner = limb_ik_fk_action_owner.prepare(context, armature)
     _update(context, armature)
     desired = _matrices(armature, pose_names(rig)) if desired_pose is None else {
         name: matrix.copy() for name, matrix in desired_pose.items()
@@ -985,11 +990,15 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
         final_inventory = _limb()._validate_inventory(armature)
         if sync_display:
             bone_collections.sync_limb_display(armature, final_inventory, keys=(key,), force_flags=True)
-        keyed = bool(keyframe if keyframe is not None else context.scene.tool_settings.use_keyframe_insert_auto)
         if keyed:
+            owned_action = limb_ik_fk_action_owner.stage(action_owner) if action_owner is not None else None
             _key_switch(context, armature, target, affected, value_before, pose_before,
-                        pole_angles=angle_before)
+                        pole_angles=angle_before, owned_action=owned_action)
+            if action_owner is not None:
+                limb_ik_fk_action_owner.preserve_staged(action_owner, ((target, affected, angle_before),))
+                limb_ik_fk_action_owner.publish(action_owner)
     except Exception:
+        owner_rollback_error = None
         bone_display._restore(armature, display_before)
         bone_collections._FRAME_CACHE.pop(armature.as_pointer(), None)
         for con, mute in mute_before:
@@ -1006,12 +1015,27 @@ def switch_limb(context, armature, key, mode, *, keyframe=None, desired_pose=Non
                 del target[PROPERTY]
             if VERSION_KEY in target.bone:
                 del target.bone[VERSION_KEY]
-        for name, (rotation_mode, basis) in pose_before.items():
-            pb = armature.pose.bones.get(name)
-            if pb is not None:
-                pb.rotation_mode = rotation_mode
-                pb.matrix_basis = basis
+        # Remove only this match's newly installed switching fields before
+        # validating the owner's original raw-channel recovery snapshot.
+        if action_owner is not None:
+            try:
+                limb_ik_fk_action_owner.rollback(action_owner)
+            except Exception as error:
+                owner_rollback_error = error
+        # The owner rollback already restored every raw input component. A
+        # second matrix decomposition would round those authored channels.
+        if action_owner is None or owner_rollback_error is not None:
+            for name, (rotation_mode, basis) in pose_before.items():
+                pb = armature.pose.bones.get(name)
+                if pb is not None:
+                    pb.rotation_mode = rotation_mode
+                    pb.matrix_basis = basis
         _update(context, armature)
+        if action_owner is not None and owner_rollback_error is None:
+            limb_ik_fk_action_owner.restore_display(action_owner['display_attempt'])
+        if owner_rollback_error is not None:
+            raise _error('IK/FK could not complete Custom recovery; retained recovery data: '
+                         + str(owner_rollback_error)) from owner_rollback_error
         raise
     return {"mode": mode, "changed": True, "keyed": keyed, "errors": errors}
 
@@ -1251,7 +1275,7 @@ def _restore_bookend(curve, frame, plan):
 
 
 def _key_switch(context, armature, target, affected, old_value, pose_before, *, keep_previous=False,
-                pole_angles=()):
+                pole_angles=(), owned_action=None):
     # Stage the key changes in a copy so an insertion failure cannot leave a
     # half-keyed switch. Preserve shared Actions by keeping the previous one.
     angle_inputs = [(constraint, float(previous), float(constraint.pole_angle))
@@ -1259,10 +1283,12 @@ def _key_switch(context, armature, target, affected, old_value, pose_before, *, 
     animation = armature.animation_data_create()
     previous_action = animation.action
     previous_slot = animation.action_slot
+    if owned_action is not None and previous_action is not owned_action:
+        raise _error('The prepared IK/FK Custom Action is no longer active.')
     if previous_action and previous_action.library:
         raise _error("Make the current Action local before keying an IK/FK switch.")
-    staged = previous_action.copy() if previous_action else None
-    if staged:
+    staged = owned_action if owned_action is not None else previous_action.copy() if previous_action else None
+    if staged and owned_action is None:
         animation.action = staged
         if previous_slot:
             for slot in staged.slots:
@@ -1358,7 +1384,7 @@ def _key_switch(context, armature, target, affected, old_value, pose_before, *, 
         animation.action = previous_action
         if previous_action and previous_slot:
             animation.action_slot = previous_slot
-        if failed and failed is not previous_action:
+        if owned_action is None and failed and failed is not previous_action:
             # A surrounding batch retains its previous Action until every limb
             # commits. The failed copy is transaction-owned, including an
             # inherited fake user; no real user may be discarded here.
@@ -1369,7 +1395,8 @@ def _key_switch(context, armature, target, affected, old_value, pose_before, *, 
         for constraint, _previous, current in angle_inputs:
             constraint.pole_angle = current
         raise
-    if not keep_previous and previous_action and previous_action.users == 0 and not previous_action.use_fake_user:
+    if (owned_action is None and not keep_previous and previous_action
+            and previous_action.users == 0 and not previous_action.use_fake_user):
         old_name = previous_action.name
         bpy.data.actions.remove(previous_action)
         animation.action.name = old_name

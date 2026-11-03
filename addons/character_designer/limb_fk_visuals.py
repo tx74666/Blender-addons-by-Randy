@@ -56,6 +56,20 @@ def _owned(item, record, role):
             and item.get(RIG_KEY) == record['armature_id'])
 
 
+def binding_names(kind, chain):
+    """Native joints with owned rings: arms include the wrist, legs do not."""
+    return chain[:3 if kind == 'ARM' else 2]
+
+
+def ring_radius(armature, kind, chain, name):
+    """Size a new wrist ring like its forearm; never resize existing rings."""
+    radius_name = chain[1] if kind == 'ARM' and name == chain[2] else name
+    radius = float(armature.pose.bones[radius_name].bone.length) * RADIUS_FACTORS[kind]
+    if not math.isfinite(radius) or radius <= 1e-6:
+        raise _error(f"Bone '{name}' is too short for an FK ring.")
+    return radius
+
+
 def get_record(armature):
     raw = armature.data.get(RECORD_KEY)
     if raw is None:
@@ -68,7 +82,8 @@ def get_record(armature):
             raise ValueError('unsupported record')
         for name, entry in record['bindings'].items():
             if (entry['kind'] not in RADIUS_FACTORS or entry['side'] not in {'L', 'R'}
-                    or len(entry['chain']) != 3 or name not in entry['chain'][:2]
+                    or len(entry['chain']) != 3
+                    or name not in binding_names(entry['kind'], entry['chain'])
                     or not isinstance(entry['object'], str) or not isinstance(entry['mesh'], str)):
                 raise ValueError('invalid binding')
             _limb()._validate_shape_state(entry['original'], 'Saved FK ring display', original=True)
@@ -138,7 +153,7 @@ def restore_native_display(armature, saved):
 
 
 def sync_native_display(armature, inventory, *, keys=None):
-    """Display native FK sections while preserving strictly owned ring assets.
+    """Display native FK segments and retain the wrist's owned control ring.
 
     ``inventory`` must already have passed the operator's strict preflight.
     The handoff audits only these bindings, never rescans scene objects.
@@ -164,7 +179,11 @@ def sync_native_display(armature, inventory, *, keys=None):
                 or pb.custom_shape != (None if name in before else widget)
                 or not _same_display(pb, entry['generated'])):
             raise _error(f"The owned FK display on '{name}' changed; preserve that setup first.")
-        native = limb_ik_fk.mode_for_rig(armature, rig) == 'FK'
+        # Upper/lower segments use native FK bones; the wrist keeps its ring
+        # on the same native hand bone and its existing rotation/keying channels.
+        # A saved older wrist detach is restored by this same guarded handoff.
+        wrist = entry['kind'] == 'ARM' and name == entry['chain'][2]
+        native = limb_ik_fk.mode_for_rig(armature, rig) == 'FK' and not wrist
         shape = None if native else widget
         if pb.custom_shape != shape:
             if _animated_display(armature, pb):
@@ -253,7 +272,11 @@ def _create_widget(context, armature, record, name, entry):
     mesh = bpy.data.meshes.new(entry['mesh'])
     entry['mesh'] = mesh.name
     _tag(mesh, record, name)
-    vertices, edges = _geometry()
+    if entry.get('shape_kind') == 'HAND':
+        from . import limb_fk_wrist_visuals
+        vertices, edges = limb_fk_wrist_visuals.geometry()
+    else:
+        vertices, edges = _geometry()
     mesh.from_pydata(vertices, edges, [])
     mesh.update()
     obj = bpy.data.objects.new(entry['object'], mesh)
@@ -296,7 +319,12 @@ def _verify_pose(armature, expected):
 
 
 def build(context, armature):
-    """Add missing upper/lower rings; keep existing artist shapes and anchors."""
+    """Add missing joint rings and standard wrist Hand shapes on explicit setup.
+
+    Existing two-joint arm records stay valid and gain only eligible wrists.
+    Artist shapes, animated display and previously generated widgets stay intact.
+    Existing wrist circles require the separate explicit Hand-shape migration.
+    """
     _active(context, armature)
     inventory = _limb()._validate_inventory(armature)
     previous = validate(armature, inventory)
@@ -309,7 +337,7 @@ def build(context, armature):
     pending = []
     originals = {}
     for (kind, side), rig in inventory['rigs'].items():
-        for name in rig['chain'][:2]:
+        for name in binding_names(kind, rig['chain']):
             if name in record['bindings']:
                 continue
             pb = armature.pose.bones[name]
@@ -319,17 +347,26 @@ def build(context, armature):
             if _animated_display(armature, pb):
                 record['skipped'][name] = 'Animated custom-shape display'
                 continue
-            radius = float(pb.bone.length) * RADIUS_FACTORS[kind]
-            if not math.isfinite(radius) or radius <= 1e-6:
-                raise _error(f"Bone '{name}' is too short for an FK ring.")
+            wrist = kind == 'ARM' and name == rig['chain'][2]
+            if wrist:
+                from . import limb_fk_wrist_visuals
+                try:
+                    generated = limb_fk_wrist_visuals.plan(armature, rig)
+                except limb_fk_wrist_visuals.UnsupportedSource as exc:
+                    record['skipped'][name] = str(exc)
+                    continue
+            else:
+                radius = ring_radius(armature, kind, rig['chain'], name)
+                generated = {'custom_shape': '', 'custom_shape_transform': '', 'use_bone_size': False,
+                             'scale': [radius] * 3, 'translation': [0.0] * 3, 'rotation': [0.0] * 3,
+                             'wire_width': 2.0 if hasattr(pb, 'custom_shape_wire_width') else None}
             original = _limb()._pose_shape_json_state(pb)
-            generated = {'custom_shape': '', 'custom_shape_transform': '', 'use_bone_size': False,
-                         'scale': [radius] * 3, 'translation': [0.0] * 3, 'rotation': [0.0] * 3,
-                         'wire_width': 2.0 if hasattr(pb, 'custom_shape_wire_width') else None}
             widget_name = generated_names.widget_name(armature, 'FK_' + name)
             record['bindings'][name] = {'kind': kind, 'side': side, 'chain': list(rig['chain']),
                                          'object': widget_name, 'mesh': widget_name,
                                          'original': original, 'generated': generated}
+            if wrist:
+                record['bindings'][name]['shape_kind'] = 'HAND'
             originals[name] = _limb()._pose_shape_runtime_state(pb)
             record['skipped'].pop(name, None)
             pending.append(name)

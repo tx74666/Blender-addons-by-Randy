@@ -78,6 +78,11 @@ class TargetTests(unittest.TestCase):
         self.skirt = ModuleType(name + '.skirt_rig')
         self.skirt.OWNER_KEY = 'character_designer_skirt_owner'
         self.worklist = ModuleType(name + '.animation_worklist')
+        self.dependencies = ModuleType(name + '.animation_worklist_dependencies')
+        # File copying has its own dependency contract suite. This fixture uses
+        # synthetic packet paths to isolate the existing native ownership gates.
+        self.dependencies.pin_recovery_packet = Mock(side_effect=lambda packet: packet['_path'])
+        self.dependencies.packet_path = lambda rig, record: record['packet_path']
         self.worklist._idle = Mock()
         self.worklist._slot = Mock()
         self.worklist._check_baseline = Mock()
@@ -105,7 +110,7 @@ class TargetTests(unittest.TestCase):
         modules = patch.dict(sys.modules, {name: package, 'bpy': bpy,
             self.ua.__name__: self.ua, self.original.__name__: self.original,
             self.limb.__name__: self.limb, self.skirt.__name__: self.skirt,
-            self.worklist.__name__: self.worklist})
+            self.worklist.__name__: self.worklist, self.dependencies.__name__: self.dependencies})
         modules.start()
         self.addCleanup(modules.stop)
         for module in (self.ua, self.original, self.worklist, self.limb, self.skirt):

@@ -100,6 +100,12 @@ class CollectionTests(unittest.TestCase):
         self.worklist.state = lambda context: context.scene.character_designer_animation_worklist
         self.worklist._fresh_workspace = Mock(side_effect=lambda _saved, _item=None: deepcopy(self.catalog))
         self.worklist._clip_key = lambda clip: clip['clip_key']
+        def item_workspace(item):
+            path, identity = getattr(item, 'workspace_path', ''), getattr(item, 'workspace_identity', '')
+            if bool(path) != bool(identity):
+                raise ValueError('The attached workspace path and identity must remain paired.')
+            return bool(path)
+        self.worklist._item_workspace = item_workspace
         self.worklist._validate_route = Mock()
         self.worklist._check_baseline = Mock()
         self.worklist._item = lambda saved, key: next(item for item in saved.items if item.item_id == key)

@@ -22,6 +22,35 @@ button borders. Five visible rows keep long worklists inside their own scroll
 area. Expand the list's filter to search animation names; saved order is retained.
 Selecting list padding or reopening the file does not switch Actions.
 
+## Simplify Keys (0.77.138 candidate)
+
+While editing the current **Custom**, click **Simplify Keys** below the animation
+list. Set the allowed position error in scene units, rotation error in degrees,
+and scale error as a fraction. The defaults are `0.0005`, `0.1` degrees and
+`0.001` (0.1%). The operation considers the whole current Custom Action.
+
+The reduced result becomes a new retained Custom version in the existing
+two-column list, sharing the same Source. The previous Custom remains available.
+The displayed key counts are recorded when the result is created. **Before** /
+**After** compare those two Custom versions; they do not replace the Source
+comparison column. Return to **After** before starting another simplification.
+Native Undo is available.
+
+Reduction uses eligible complete transform groups with synchronized LINEAR keys.
+Exactly constant raw groups can be reduced in any supported rig mode;
+approximate reductions require supported FK groups. Unsupported groups are
+copied exactly into the new version. The native rig check measures the chosen
+errors at every authored key time and at the quarter, half and three-quarter
+points between adjacent times. This sampled check does not guarantee a
+continuous world-space error bound between those samples.
+
+Key pending manual pose edits before using **Before** / **After**. The unchanged
+current pose intentionally preserved when creating the result is accepted as
+the initial comparison state if it had no pending edits. Editing either retained
+Action invalidates this fixed comparison; select the desired Custom directly
+to continue working. Source and active editing/session guards remain in force;
+a refusal reports its reason in the panel.
+
 ## Rest Pose (0.77.44)
 
 **Rest Pose** shows the Main Rig in Blender's native rest display. **Pose**

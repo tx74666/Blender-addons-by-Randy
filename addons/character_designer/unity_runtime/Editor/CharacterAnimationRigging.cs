@@ -332,7 +332,7 @@ namespace CharacterDesigner.Unity.Editor
                 "The Target input and base packet do not share the same source identity and seconds grid.");
             Require(returned != null && returned.schema == Schema && Hex64(packetSha256) && returned.sourcePacketSha256 == packetSha256 &&
                 returned.bindingsSha256 == packet.rigging.bindingsSha256 && returned.targetGuid == packet.targetGuid &&
-                !string.IsNullOrEmpty(workItemId) && returned.workItemId == workItemId && returned.newActionId == packet.rigging.newActionId &&
+                SameWorkItemId(returned.workItemId, workItemId) && returned.newActionId == packet.rigging.newActionId &&
                 !string.IsNullOrEmpty(action) && returned.sourceAction == action && actionSlot >= 0 && returned.sourceActionSlot >= 0 &&
                 returned.sourceActionSlot == actionSlot && !string.IsNullOrWhiteSpace(returned.targetInputAction) &&
                 returned.targetInputAction != action && returned.targetInputActionSlot >= 0,
@@ -340,6 +340,17 @@ namespace CharacterDesigner.Unity.Editor
             Require(returned.sampleRate == packet.rigging.sampleRate && returned.loopTime == authoredLoop && Finite(authoredDuration) && authoredDuration > 0 &&
                 Math.Abs(returned.duration - authoredDuration) <= .0002f, "Arm control timing differs from the authored base return.");
             ValidateFrames(returned.frames, returned.duration, returned.sampleRate, false);
+        }
+
+        static bool SameWorkItemId(string left, string right)
+        {
+            static bool Parse(string value, out Guid id)
+            {
+                id = Guid.Empty;
+                return value != null && ((value.Length == 32 && Guid.TryParseExact(value, "N", out id)) ||
+                    (value.Length == 36 && Guid.TryParseExact(value, "D", out id))) && id != Guid.Empty;
+            }
+            return Parse(left, out Guid a) && Parse(right, out Guid b) && a == b;
         }
 
         /// <summary>Creates an owned transient candidate only. The caller publishes it in the existing return transaction.</summary>

@@ -76,6 +76,7 @@ class CharacterDesignerHairMotionState(PropertyGroup):
     strand_id: StringProperty(options={'SKIP_SAVE'})
     pair_left_id: StringProperty(options={'SKIP_SAVE'})
     show_depth: BoolProperty(name='Along Strand', default=False, options={'SKIP_SAVE'})
+    show_advanced: BoolProperty(name='Advanced', default=False, options={'SKIP_SAVE'})
     group: EnumProperty(name='Group', items=[(key, label, '') for key, label in (
         ('FRONT', 'Front / Bangs'), ('SIDE', 'Side'), ('BACK', 'Back / Long'), ('UNASSIGNED', 'Unassigned'))])
     sync_mirror: BoolProperty(name='Sync Mirror Settings', default=True)
@@ -138,18 +139,8 @@ class CHARACTERDESIGNER_OT_hair_motion_navigate(Operator):
     def execute(self, context):
         def run():
             _stop(context)
-            source = _source(context)
-            data = registry.read(source, validate=True)
-            if not data:
-                raise ValueError('Initialize the Hair motion strands first.')
-            items = sorted(data['strands'], key=lambda item: item['order'])
-            current = _state(context).strand_id
-            if self.direction == 0:
-                selected = getattr(context, 'active_pose_bone', None)
-                current = next((item['strand_id'] for item in items if selected and selected.name in item['bones']), current)
-            index = next((index for index, item in enumerate(items) if item['strand_id'] == current), 0)
-            index = (index + self.direction) % len(items)
-            _load(context, source, items[index]['strand_id'], highlight=True, verified_registry=data)
+            from . import hair_strand_list_ui
+            return hair_strand_list_ui.navigate_ui(context, self.direction)
         return _operate(self, context, run)
 
 
@@ -307,7 +298,7 @@ class CHARACTERDESIGNER_OT_hair_motion_pair(Operator):
 
 
 class CHARACTERDESIGNER_PT_hair_motion(Panel):
-    bl_label = 'Strand Motion'
+    bl_label = 'Physics'
     bl_idname = 'CHARACTERDESIGNER_PT_hair_motion'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -335,33 +326,20 @@ class CHARACTERDESIGNER_PT_hair_motion(Panel):
         if data is None or profile is None:
             layout.operator('character_designer.hair_motion_initialize')
             return
-        # Saved metadata can still parse after an intentional Rest/segment edit.
-        # Keep its explicit reconciliation action available without doing the
-        # full native ownership/structure proof during every sidebar redraw.
-        op = layout.operator('character_designer.hair_motion_initialize', text='Reconcile Strands')
-        op.reconcile = True
         items = sorted(data['strands'], key=lambda item: item['order'])
         item = next((item for item in items if item['strand_id'] == settings.strand_id), None)
-        row = layout.row(align=True)
-        row.operator('character_designer.hair_motion_navigate', text='Previous').direction = -1
-        row.operator('character_designer.hair_motion_navigate', text='Next').direction = 1
-        row.operator('character_designer.hair_motion_navigate', text='Selected').direction = 0
         if item is None:
             layout.label(text='Select a strand to edit its settings.')
+            op = layout.operator('character_designer.hair_motion_initialize', text='Reconcile Strands')
+            op.reconcile = True
             return
-        layout.label(text=f'Strand {items.index(item) + 1} / {len(items)} · {item["side"]}')
-        layout.label(text=item['bones'][0])
-        layout.prop(settings, 'group')
-        layout.operator('character_designer.hair_motion_apply', text='Use Group Preset').action = 'PRESET'
-        row = layout.row()
-        row.enabled = bool(item['mirror_id']) and item['side'] != 'C'
-        row.prop(settings, 'sync_mirror')
-        if not item['mirror_id'] or item['side'] == 'C':
-            layout.label(text='Center strand' if item['side'] == 'C' else 'No proven mirror pair', icon='INFO')
-        if item['side'] == 'U':
-            row = layout.row(align=True)
-            row.operator('character_designer.hair_motion_pair', text='Mark Left').side = 'LEFT'
-            row.operator('character_designer.hair_motion_pair', text='Pair Right').side = 'RIGHT'
+        row = layout.row(align=True)
+        row.prop(settings, 'group')
+        row.operator('character_designer.hair_motion_apply', text='Use Group Preset').action = 'PRESET'
+        has_pair = (item['side'] in {'L', 'R'} and bool(item['mirror_id'])
+                    and item['pair_proof'] in registry.PROOFS - {'NONE'})
+        if has_pair:
+            layout.prop(settings, 'sync_mirror')
         for key in profiles.RANGES:
             layout.prop(settings, key)
         layout.operator('character_designer.hair_motion_apply').action = 'SETTINGS'
@@ -394,7 +372,18 @@ class CHARACTERDESIGNER_PT_hair_motion(Panel):
             row.operator('character_designer.hair_motion_preview', text='Preview All').scope = 'ALL'
             if not available.get('available'):
                 layout.label(text=available.get('reason', 'Enable Wiggle Bones 1.1.2 first.'), icon='INFO')
-        layout.label(text='Preview uses timeline playback.')
+        layout.prop(settings, 'show_advanced',
+                    icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT', emboss=False)
+        if settings.show_advanced:
+            box = layout.box()
+            # Saved metadata can parse after an intentional Rest/segment edit;
+            # keep explicit reconciliation without a full native draw-time scan.
+            op = box.operator('character_designer.hair_motion_initialize', text='Reconcile Strands')
+            op.reconcile = True
+            if item['side'] == 'U':
+                row = box.row(align=True)
+                row.operator('character_designer.hair_motion_pair', text='Mark Left').side = 'LEFT'
+                row.operator('character_designer.hair_motion_pair', text='Pair Right').side = 'RIGHT'
         if settings.last_message:
             layout.label(text=settings.last_message, icon='ERROR')
 

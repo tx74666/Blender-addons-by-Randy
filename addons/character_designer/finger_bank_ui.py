@@ -175,8 +175,10 @@ CLASSES = (CharacterDesignerFingerSlot, CharacterDesignerFingerBank, CHARACTERDE
 
 
 def register_runtime():
-    bpy.types.Object.character_designer_finger_bank = PointerProperty(type=CharacterDesignerFingerBank)
-    bpy.types.Scene.character_designer_finger_setup = PointerProperty(type=bpy.types.Object)
+    if not hasattr(bpy.types.Object, 'character_designer_finger_bank'):
+        bpy.types.Object.character_designer_finger_bank = PointerProperty(type=CharacterDesignerFingerBank)
+    if not hasattr(bpy.types.Scene, 'character_designer_finger_setup'):
+        bpy.types.Scene.character_designer_finger_setup = PointerProperty(type=bpy.types.Object)
 
 
 def unregister_runtime():

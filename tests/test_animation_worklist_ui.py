@@ -14,6 +14,27 @@ import uuid
 SOURCE = Path(__file__).resolve().parents[1] / 'addons/character_designer'
 
 
+class Action(dict):
+    """Native-shaped metadata only; no curves or evaluated data in this fixture."""
+    def __init__(self, name, *, linked=False):
+        super().__init__()
+        self.name = name
+        self.library = SimpleNamespace(filepath='source.blend') if linked else None
+        self.asset_data = None
+        self.is_action_layered = True
+
+    def __bool__(self):
+        return True
+
+    def __eq__(self, other):
+        return self is other
+
+    def __ne__(self, other):
+        return self is not other
+
+    __hash__ = object.__hash__
+
+
 class Layout:
     def __init__(self, records=None, enabled=True):
         self.records = records if records is not None else []
@@ -61,7 +82,7 @@ class WorklistUI(unittest.TestCase):
         package.__path__ = [str(SOURCE)]
         bpy = ModuleType('bpy')
         props = ModuleType('bpy.props')
-        for name in ('BoolProperty', 'CollectionProperty', 'EnumProperty', 'IntProperty',
+        for name in ('BoolProperty', 'CollectionProperty', 'EnumProperty', 'FloatProperty', 'IntProperty',
                      'PointerProperty', 'StringProperty'):
             setattr(props, name, lambda **kwargs: kwargs)
         types = ModuleType('bpy.types')
@@ -113,9 +134,15 @@ class WorklistUI(unittest.TestCase):
         spec.loader.exec_module(self.ui)
         self.addCleanup(self.ui.stop_worklist_ui)
         self.animation = animation
-        rig = SimpleNamespace(animation_data=SimpleNamespace(action=None))
+        # Controller-UI integration derivative: native Source/Custom copies have
+        # explicit Object slots. Model that existing admission field instead of
+        # weakening the product's active Action/slot identity guard.
+        rig = SimpleNamespace(name='Fixture Rig',
+                              animation_data=SimpleNamespace(action=None, action_slot_handle=1))
         items = [SimpleNamespace(item_id='id-' + name, clip_key='clip-' + name, name=name,
-                                 source_action=object(), custom_action=object(), rig=rig, side='CUSTOM',
+                                 source_action=Action(name+' Source', linked=True),
+                                 custom_action=Action(name+' Custom'), rig=rig, side='CUSTOM',
+                                 source_slot=1, custom_slot=1,
                                  last_synced_receipt='', scan_state='NOT_SCANNED', scan_reason='',
                                  sync_selected=False)
                  for name in ('Walk', 'Run', 'Idle')]
@@ -123,7 +150,7 @@ class WorklistUI(unittest.TestCase):
         catalog = [SimpleNamespace(clip_key='clip-' + name, name=name, source_name=source,
                                    link_path='link.json' if ready else '', ready=ready)
                    for name, source, ready in (('Walk', 'Soldier', True), ('Dance', 'Civilian', False))]
-        self.state = SimpleNamespace(items=items, catalog=catalog, active_index=0, catalog_index=1,
+        self.state = SimpleNamespace(items=items, catalog=catalog, active_index=0, list_cursor=0, catalog_index=1,
                                      search='', workspace_path='character_animation_workspace.json',
                                      workspace_identity='validated-workspace-identity',
                                      connection_check_failed=False,
@@ -131,6 +158,7 @@ class WorklistUI(unittest.TestCase):
                                      collection_status='', scan_completed=False, show_advanced=False)
         self.context = SimpleNamespace(
             scene=SimpleNamespace(name='Animation Worklist · Cosha', character_designer_animation_worklist=self.state),
+            mode='OBJECT',
             screen=SimpleNamespace(areas=[]), region=SimpleNamespace(width=360),
             preferences=SimpleNamespace(system=SimpleNamespace(ui_scale=1.0)),
             workspace=SimpleNamespace(status_text_set=Mock()),
@@ -172,6 +200,12 @@ class WorklistUI(unittest.TestCase):
         pose = ModuleType(self.ui.__package__ + '.animation_pose_test')
         rig = SimpleNamespace(data=SimpleNamespace(pose_position='POSE'))
         rest.can_show, rest.get_rig = Mock(return_value=True), Mock(return_value=rig)
+        def get_rig(_context):
+            # can_show is the production wrapper for this same admission.
+            if not rest.can_show.return_value:
+                raise ValueError('Rest display admission refused')
+            return rig
+        rest.get_rig.side_effect = get_rig
         state = {'active': active, 'events': []}
 
         def display(position):
@@ -194,6 +228,7 @@ class WorklistUI(unittest.TestCase):
 
         pose.can_start = Mock(return_value=True)
         pose.active = Mock(side_effect=lambda _rig: state['active'])
+        pose.natural_active = Mock(return_value=False)
         pose.start_or_reset, pose.finish = Mock(side_effect=start), Mock(side_effect=finish)
         with patch.dict(sys.modules, {rest.__name__: rest, pose.__name__: pose}), \
                 patch.object(package, 'animation_rest_pose', rest, create=True), \
@@ -301,7 +336,7 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(len(buttons), 2)
         self.assertTrue(all(not enabled for _value, enabled in buttons))
 
-    def test_rest_from_base_keeps_existing_finish_then_display_route(self):
+    def test_rest_from_base_delegates_transition_to_rest_service(self):
         with self.base_pose_modules(active=True) as (pose, state):
             layout = Layout()
             self.ui.draw_worklist(layout, self.context)
@@ -314,9 +349,13 @@ class WorklistUI(unittest.TestCase):
             operator = self.ui.CHARACTERDESIGNER_OT_worklist_pose_position()
             operator.position = buttons['Rest Pose'][2].position
             self.assertEqual(operator.execute(self.context), {'FINISHED'})
-            self.assertFalse(state['active'])
-            self.assertEqual(state['events'], ['FINISH', 'REST'])
-            pose.finish.assert_called_once_with(self.context)
+            # Approved editable-Rest behavior belongs to the Rest service.
+            # This Worklist fixture isolates that boundary; the UI must not
+            # finish a Base Pose itself before delegating the transition.
+            self.assertTrue(state['active'])
+            self.assertEqual(state['events'], ['REST'])
+            pose.finish.assert_not_called()
+            sys.modules[self.ui.__package__ + '.animation_rest_pose'].show_rest.assert_called_once_with(self.context)
             pose.start_or_reset.assert_not_called()
 
     def test_base_pose_reentry_overrides_remembered_return_route(self):
@@ -870,7 +909,7 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(len(lists), 1)
         args, options = lists[0]
         self.assertEqual(args, ('CHARACTERDESIGNER_UL_animation_worklist', 'actions', self.state,
-                                'items', self.state, 'active_index'))
+                                'items', self.state, 'list_cursor'))
         self.assertEqual((options['rows'], options['maxrows']), (5, 5))
         self.assertIn('Source', labels)
         self.assertIn('Custom', labels)
@@ -880,7 +919,9 @@ class WorklistUI(unittest.TestCase):
             ('character_designer.worklist_connect', 'Connected'),
             ('character_designer.worklist_refresh', ''),
             ('character_designer.worklist_sync_list', 'Sync List'),
-            ('character_designer.worklist_sync_changed', 'Export Changes')])
+            ('character_designer.worklist_sync_changed', 'Export Changes'),
+            ('character_designer.make_controller_animation', 'Make Controller Animation'),
+            ('character_designer.worklist_simplify_keys', 'Simplify Keys')])
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
                                                    for item in self.state.items]), before)
         self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
@@ -979,7 +1020,10 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual([options['icon'] for _name, options, _payload in buttons], ['LINKED', 'EDITMODE_HLT'])
         self.assertEqual([options['depress'] for name, options, _payload in buttons
                           if name.endswith('worklist_activate')], [False, True])
-        self.assertTrue(all(options.get('emboss') is False for _name, options, _payload in buttons))
+        # Approved144 already uses raised action cells and a separate passive
+        # list cursor. Keep that accepted presentation; controller integration
+        # changes neither source function (byte-exact comparison recorded).
+        self.assertTrue(all(options.get('emboss') is True for _name, options, _payload in buttons))
         self.assertTrue(any(kind == 'split' and value.get('factor') == .5
                             for kind, value, _enabled in layout.records))
         self.assertIn('INTERNAL', self.ui.CHARACTERDESIGNER_OT_worklist_drag.bl_options)

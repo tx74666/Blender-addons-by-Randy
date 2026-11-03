@@ -391,8 +391,10 @@ def _unaffected(api, action, slot, affected):
                                     allow_nan=False).encode('utf8')).hexdigest()
 
 
-def _publish(plan, action):
-    api, rig, saved, item = (plan[key] for key in ('api', 'rig', 'saved', 'item'))
+def _publish(plan, action, *, capture=None):
+    api, rig, saved = (plan[key] for key in ('api', 'rig', 'saved'))
+    item = (api.worklist._item(saved, plan['item_id'])
+            if plan.get('variant_api') == 1 else plan['item'])
     row = api.revision._row(item)
     new_id, token = uuid.uuid4().hex, uuid.uuid4().hex
     label = plan.get('variant_label', plan['asset_name'] + ' Offset')
@@ -403,6 +405,8 @@ def _publish(plan, action):
     checkpoint = None
     if plan['revision_value'] is not None:
         value = _clone_containers(plan['revision_value'])
+        fresh = plan['capture'] if capture is None else capture
+        value['capture'] = api.target._merge_owned_ik_poles(value['capture'], fresh, rig)
         row.update(current_rig_revision=token, work_item_id=uuid.uuid4().hex,
                    clip_key='local-current:' + new_id,
                    link_identity=api.revision._json({'schema': api.revision.SCHEMA, 'token': token,
@@ -416,6 +420,9 @@ def _publish(plan, action):
         checkpoint = api.bpy.data.actions.new('Pose Offset Work Checkpoint')
         plan['owned_checkpoint'] = checkpoint
         encoded = api.revision._encode(value, references, history, rig, custom=action, token=token)
+        # $custom decodes this Action without an ID reference. Native edit
+        # guards also need its explicit owner in this new checkpoint only.
+        references['current_custom_action'] = action
         api.revision._store(checkpoint, encoded, references)
         action[api.revision.TOKEN], action[api.revision.CHECKPOINT] = token, checkpoint
         probe = SimpleNamespace(**row)
@@ -438,12 +445,8 @@ def _publish(plan, action):
         raise
 
 
-def prepare_variant(context, rig, *, label='Pose Blend'):
-    """Capture one genuine Custom owner before an Auto Key preview.
-
-    No FK restriction: the pose service owns IK matching. Whole-Action/source
-    hashes are captured here and checked at publication, never per mouse tick.
-    """
+def _variant_admission(context, rig, *, label='Pose Blend'):
+    """Common read-only owner/policy admission, before any content proof."""
     api = _modules()
     _require(type(label) is str and label.strip() and len(label) <= 120, 'Choose a short Pose variant label.')
     api.worklist._idle(context)
@@ -478,6 +481,16 @@ def prepare_variant(context, rig, *, label='Pose Blend'):
     _require(not (ad.use_nla and any(not track.mute and track.strips for track in ad.nla_tracks))
              and ad.action_blend_type == 'REPLACE' and ad.action_influence == 1.,
              'Active NLA or weighted Actions need their dedicated keying workflow.')
+    return api, saved, item, original, slot
+
+
+def prepare_variant(context, rig, *, label='Pose Blend'):
+    """Capture one genuine Custom owner before an Auto Key preview.
+
+    No FK restriction: the pose service owns IK matching. Whole-Action/source
+    hashes are captured here and checked at publication, never per mouse tick.
+    """
+    api, saved, item, original, slot = _variant_admission(context, rig, label=label)
     value = None
     if getattr(item, 'current_rig_revision', ''):
         value = api.revision.validate(context, item.item_id)
@@ -485,7 +498,7 @@ def prepare_variant(context, rig, *, label='Pose Blend'):
         api.worklist._check_baseline(item)
         _require(not any(key in original for key in (api.revision.TOKEN, api.revision.CHECKPOINT)),
                  'This Action lost its current-Rig row ownership; recovery was kept.')
-    capture = api.target._capture(context, rig)
+    capture = api.target._capture(context, rig, include_owned_ik_poles=True)
     api.target._validate_capture(context, capture)
     return dict(variant_api=1, phase='prepared', api=api, context=context, rig=rig,
         saved=saved, item=item, item_id=item.item_id, original=original, slot=slot.handle,
@@ -617,10 +630,11 @@ def create(context, rig, asset, *, strength=.5, bone_names=None, flipped=False, 
     """Create a retained worklist variant; never replace the original row/Action."""
     _require(type(activate) is bool, 'activate must be a boolean.')
     plan = prepare(context, rig, asset, strength=strength, bone_names=bone_names, flipped=flipped)
+    parent_item_id = plan['item'].item_id
     sampled = _sample(plan) if plan['strength'] else None
     api, saved, original = (plan[key] for key in ('api', 'saved', 'original'))
     previous = (saved.active_index, saved.status, saved.has_error)
-    capture = api.target._capture(context, rig)
+    capture = api.target._capture(context, rig, include_owned_ik_poles=True)
     api.target._validate_capture(context, capture)
     previous_target = context.window_manager.character_designer_animation.target
     unaffected = _unaffected(api, original, plan['slot'], set(sampled or {}))
@@ -642,13 +656,14 @@ def create(context, rig, asset, *, strength=.5, bone_names=None, flipped=False, 
             strength=plan['strength'], frame_start=plan['frames'][0], frame_end=plan['frames'][-1],
             sampling='integer frames plus authored transform key times; linear affected channels',
             subframe_equivalence=False), ensure_ascii=False, allow_nan=False)
-        new_item, checkpoint = _publish(plan, action)
+        new_item, checkpoint = _publish(plan, action, capture=capture)
         if activate:
             activation_attempted = True
             api.worklist.activate(context, new_item.item_id, 'CUSTOM')
         _require(all(_action_hash(api, original, handle) == digest for handle, digest in plan['hashes'].items()),
                  'The original Custom Action changed during offset preparation.')
-        _require(_action_hash(api, plan['item'].source_action, plan['item'].source_slot) == plan['source_hash'],
+        source_item = api.worklist._item(saved, parent_item_id)
+        _require(_action_hash(api, source_item.source_action, source_item.source_slot) == plan['source_hash'],
                  'The read-only Source changed during offset preparation.')
         saved.status, saved.has_error = 'Pose Offset created as a new editable Custom version.', False
         return dict(action=action, item_id=new_item.item_id, strength=plan['strength'],

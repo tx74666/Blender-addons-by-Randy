@@ -1,29 +1,40 @@
 # Add-on source and deployment
 
-<!-- cd137-pose-mirror-parity-20261030 -->
-Current complete239/207py **0.77.137** extends approved136 by5changed/234exact.
-Approved `D:/Blender/Projects/Character/X/validation/pose_mirror_parity_20261030/stage137_02/projection.json`,
-SHA `badac1419f2492abff52dfc9e4c9abab5e369f76e5f521140ff2f0a187075f90`.
-Managed saved Poses use native Action.flip_with_pose like native Fist, including
-asymmetric joints/pi-roll and full connected keyed raw inputs. Source/destination,
-center/empty/unrelated selection shares native region policy. Detached target
-names/IK seeds preserve source asset/slot; full Rest/ownership/data guards remain.
-136 free-finger batch and Original opaque SESSION/REFS, existing edits and mode
-choices stay; explicit Return merges edits. Complex/AutoKey paths keep guards.
-All136 Worklist/Hair/Inputs and133 Natural/Dress/Foot/Forearm bytes retained.
-Private native9/policy15/Rest5/updater26 passed within their recorded scopes.
-Center Body IK refusal is not successful Apply; center FK math is separate.
-Final unflipped/archive/deployment/live scopes are in the pinned acceptance.
-Artist12460 scoped6functions+1helper committed1.677s; bounded native/context exact; Blend lazy disk137, metadata136.
-No artist Pose/GUI-event/full-array claim, scene/prefs save, restart/fullreload,
-Inputs close, Unity/Git/FPS/monitoring authority follows from this release.
-Old skin/neutral-pi-roll policy is superseded by native parity; retain all old
-failures plus connected-raw and Return-container harness diagnoses unchanged.
-Entry `D:/Blender/Projects/Character/X/validation/pose_mirror_parity_20261030/acceptance_summary137.json`,
-SHA `1d6b3849f9bf7c118e95d8fb269912ca987b9e00d70415749231b123a9c83913`.
-Future releases extend complete137; retain earlier scopes/recovery evidence.
+<!-- cd164-controller-custom-20261103 -->
+Source/package/disk164 **0.77.164**:262files/230py;6changed4new252exact
+complete Main163; Hair161/Main163/HAND/native matcher and CurrentRig retained.
+Approved projection `validation/controller_authoring_design_20261102/stage164_01/projection.json`,
+SHA `1d9381986e6c3c2d23d0ee334924ccae9de231c1b770f3e87ea149f3a4c52830`;
+complete parent163 SHA `26f676232bf264f3f443d1fca0ace1b366fda02d463a86be2e739479ea3a34e8`.
+Supported ordinary imports create controller Customs; old Customs use Make.
+Installed limbs use full-clip IK trajectories; current-frame IK/FK is separate.
+AutoKeyOff WholeMove applies constant target-local motion to a new Custom;
+ordinary Insert edits the current time. Source/oldCustom/history/Rest retained.
+Reverse complete editable bone-curve synchronization and time-faded correction
+are not implemented. Matched/sample native2e-4 gates retained; interval probes
+use world1mm/.25deg, relative scale/stretch guards. No continuous-time bound.
+Focused243/static-math reuse/genuine Controller->Main163 pending-right-arm pass.
+Worker28:217bones/60samples+2FBXreadbacks passed unchanged gates, consuming
+retained15/17 snapshot evidence with0newsolver/Make/hostlease. Prior failures stay.
+OfficialZIP SHA `40028c220f85fd99430e6a27bad86d20a6066106c5cd153135ea9e097bfda863`;
+CRC/exact262/dual5.2-X check0diff; package receipt a6481431db289994c7bfafbc0af7d4dfbe440009a274424d7f74f2a01189820a.
+Artist36008 scoped09 adopted5function bodies+2operators+1exact156doc.
+Validator code/default objects and Main163 leaf45/14/22/9 identities/state kept.
+Native20 twofault/unknown-doc0writes passed;08 actual refusal and automatic
+rollback retained. Independent post02 ALREADY0allwrites; witness98052420... equal.
+Pose/f15/Hair4/AutoKeyOff/dirtytrue/currentAction+slot retained DURING code adoption;
+no scene/preferences save, pose/frame/Action operation or fullreload in that scope.
+No whole-runtime refresh/deep artist author-array/physical-I/GUIUndo/FPS/Unity claim.
+Code acceptance `validation/controller_authoring_design_20261102/acceptance164_01.json`,
+SHA `31725c0183622672d129e5c0e62eea5f15a0c75afe35aceea4975e87d14f3ff6`.
+Current Walk only passed separate readonly readiness at this checkpoint;
+any later Make/conversion/save is distinct evidence, never inferred from code.
+Release note `docs/releases/CharacterDesigner_0.77.164_controller_animation_20261103.md`.
+Prior163 full entry points backed up as canonical_AGENTS_before164.md and
+X_AGENTS_before164.md under controller_authoring_design_20261102.
+Reobserve fresh scene/code authority before further artist work; extend complete164.
 
-                                                                                                                                                                                                                                                                                            <!-- cd114-compact-physics-20261029 -->
+<!-- cd114-compact-physics-20261029 -->
 Current complete225/193py **0.77.114** extends approved113 by6changed/219exact.
 Approved `D:/Blender/Projects/Character/X/validation/physics_compact114_20261029/stage114_01/projection.json`,
 SHA `0df365bdfa6ab58006405703f71096d56c40dc599632c39480ff90d0be0a8e36`. Physics checkbox is in its header;

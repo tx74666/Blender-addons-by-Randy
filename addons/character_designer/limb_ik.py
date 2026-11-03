@@ -6963,9 +6963,11 @@ class CHARACTERDESIGNER_OT_limb_ik_fk_switch(Operator):
     keyframe: BoolProperty(name="Insert Switch Keys", default=False)
 
     def execute(self, context):
+        from . import limb_control_selection
         settings = _settings(context)
         try:
             armature = _require_active_armature(context, settings, analyzed=False)
+            selection = limb_control_selection.capture(context, armature)
             key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
             before = bone_groups.capture_managed_layout(armature)
             result = limb_ik_fk.switch_limb(
@@ -6976,6 +6978,7 @@ class CHARACTERDESIGNER_OT_limb_ik_fk_switch(Operator):
         except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             self.report({"WARNING"}, str(exc))
             return {"CANCELLED"}
+        limb_control_selection.handoff(context, armature, selection, self.mode, keys=(key,))
         message = f"{key[0].title()} {key[1]}: {result['mode']}; current pose matched."
         if result["keyed"]:
             message += " Switch keys inserted."
@@ -6994,15 +6997,17 @@ class CHARACTERDESIGNER_OT_body_ik_fk_switch(Operator):
     keyframe: BoolProperty(name="Insert Switch Keys", default=False)
 
     def execute(self, context):
-        from . import limb_ik_fk_batch
+        from . import limb_ik_fk_batch, limb_control_selection
         settings = _settings(context)
         try:
             armature = _require_active_armature(context, settings, analyzed=False)
+            selection = limb_control_selection.capture(context, armature)
             result = limb_ik_fk_batch.switch_all(context, armature, self.mode,
                                                 keyframe=True if self.keyframe else None)
         except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             self.report({"WARNING"}, str(exc))
             return {"CANCELLED"}
+        limb_control_selection.handoff(context, armature, selection, self.mode)
         message = f"Arms and legs: {result['mode']}; current pose matched."
         if result["keyed"]:
             message += " Switch keys inserted."
@@ -8810,7 +8815,7 @@ def _target_rotation_has_driver(armature, target_name):
 class CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation(Operator):
     bl_idname = "character_designer.limb_ik_reset_target_rotation"
     bl_label = "Reset Target Rotation"
-    bl_description = "Zero only the active Hand/Foot Target's local rotation"
+    bl_description = "Reset an IK wrist to neutral, or zero a Foot Target's local rotation"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -8827,6 +8832,13 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation(Operator):
                 context,
                 strict=True,
             )
+            if target.bone.get(ROLE_KEY) == "HAND_IK":
+                from . import limb_ik_wrist_rotation
+                limb_ik_wrist_rotation.reset_wrist_neutral(context, target=target)
+                message = f"Reset wrist rotation to neutral on '{target.name}'."
+                _set_status(settings, "SUCCESS", message)
+                self.report({"INFO"}, message)
+                return {"FINISHED"}
             if inventory["target_rotation_version"] != TARGET_ROTATION_VERSION:
                 raise LimbIKError(
                     "Rebuild Rig once before using aligned Target rotation."
@@ -9067,10 +9079,11 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_control_visual(Operator):
 
 
 def _draw_body_limb_modes(layout, context, armature):
-    from . import limb_ik_fk_batch, body_original_mode
+    from . import limb_ik_fk_batch, limb_ik_fk, body_original_mode
     if armature is None or armature.type != "ARMATURE":
         layout.label(text="Select the main armature.", icon="INFO")
         return None
+    layout.label(text="All Arms / Legs · Current Frame")
     row = layout.row(align=True)
     row.enabled = context.active_object == armature and context.mode in {"OBJECT", "POSE"}
     inventory = None
@@ -9086,7 +9099,19 @@ def _draw_body_limb_modes(layout, context, armature):
         row.operator("character_designer.body_ik_fk_switch", text=choice,
                      depress=mode == choice).mode = choice
     if mode == "MIXED":
-        layout.label(text="Arms and legs use different modes", icon="INFO")
+        for part, label in (("ARM", "Arms"), ("LEG", "Legs")):
+            states = []
+            for side in ("L", "R"):
+                entry = inventory['rigs'].get((part, side)) if inventory is not None else None
+                if entry is None:
+                    continue
+                state = limb_ik_fk.mode_for_rig(armature, entry)
+                if state == "BLEND":
+                    target = armature.pose.bones[entry['target'].name]
+                    state = f"Blend {float(target.get(limb_ik_fk.PROPERTY, 1.0)):.0%}"
+                states.append(f"{side}: {state}")
+            if states:
+                layout.label(text=label + " · " + " / ".join(states), icon="INFO")
     return inventory
 
 

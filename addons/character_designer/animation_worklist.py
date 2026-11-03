@@ -72,6 +72,10 @@ def _validate_route(saved, clip, link, item=None):
     if item is not None and _item_workspace(item):
         record = _fresh_workspace(saved, item)
         actual = next((row for row in record['clips'] if _clip_key(row) == item.clip_key), None)
+        if clip is None:
+            # Attached rows can resolve their clip at this final fresh read.
+            # The caller need not load the same workspace before reading Link.
+            clip = actual
         if (actual is None or actual.get('needsRebuild') or not actual.get('linkManifest')
                 or Path(actual['linkManifest']).resolve() != Path(item.manifest_path).resolve()
                 or workspace.route_identity(actual) != workspace.route_identity(clip)
@@ -79,6 +83,8 @@ def _validate_route(saved, clip, link, item=None):
                 or record['modelSha256'].lower() != item.model_sha256):
             raise ValueError('The attached work item lost its own prepared workspace, route or model.')
         target_guid = record['targetGuid'].lower()
+    if clip is None:
+        raise ValueError('The prepared work item is missing from its workspace.')
     if (link['targetGuid'].lower() != target_guid or
             workspace.route_identity(clip) != workspace.route_identity(link)):
         raise ValueError('The prepared Link belongs to another work item, source, character or destination slot.')
@@ -332,6 +338,30 @@ def _slot(action, handle=None):
     if len(slots) != 1:
         raise ValueError('The worklist Action needs its saved, unambiguous Object slot.')
     return slots[0]
+
+
+def _populate_controller_custom(context, rig, source_action, custom):
+    """Populate only this import's unbound copy, never its retained input.
+
+    The caller's add transaction owns disposal if native writing fails. Source
+    and adopted edits remain independent IDs throughout conversion.
+    """
+    if custom is source_action or custom.library is not None:
+        raise ValueError('Controller import needs its own local Custom copy.')
+    from . import controller_animation
+    built = controller_animation.build_controller_channels(
+        context, rig, source_action, _slot(source_action).handle)
+    state = built.get('conversion_state')
+    if state not in {'CONTROLLER', 'NATIVE_FK'}:
+        raise ValueError('The imported animation did not establish its controller representation.')
+    result = controller_animation.apply_to_action(custom, _slot(custom).handle, built)
+    if result.get('conversion_state') != state:
+        raise ValueError('The imported controller result lost its conversion state.')
+    if state == 'CONTROLLER' and not isinstance(result.get('metadata'), dict):
+        raise ValueError('The imported controller motion lost its complete-clip metadata.')
+    if state == 'NATIVE_FK' and result.get('metadata') is not None:
+        raise ValueError('Native FK input cannot claim a generated IK conversion.')
+    return state
 
 
 def _linked_baseline(saved, action, item_id, clip_name, *, _ownership=None):
@@ -593,6 +623,9 @@ def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_co
         cache_owner = SimpleNamespace(workspace_id=_prepared_context['workspace_id'],
             model_sha256=_prepared_context['model_sha256'])
     rigging = _rigging_module(saved.rig, packet=packet)
+    if rigging is None:
+        from . import controller_animation
+        controller_animation._require_private_evaluation_idle()
     old_context = source._context_state(context)
     previous_target = context.window_manager.character_designer_animation.target
     created_before = set(bpy.data.user_map())
@@ -666,12 +699,20 @@ def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_co
             baseline = imported.action
             target.restore_import_preview(context, rig, baseline)
         _clean_action(baseline)
-        custom = existing_edit or baseline.copy()
+        # Ordinary controller conversion only writes a newly owned copy. The
+        # separate captured-Rigging route keeps its established base/input
+        # ownership and publication path; it is not a generic IK conversion.
+        custom = (existing_edit if existing_edit is not None and 'rigging' in packet
+                  else (existing_edit or baseline).copy())
         _clean_action(custom)
-        if existing_edit is None:
+        if existing_edit is None or 'rigging' not in packet:
             custom.name = saved.target_name + ' · ' + clip['clipName'] + ' · Custom'
         item_id = uuid.uuid4().hex
         linked, cache_file, cache_hash = _linked_baseline(cache_owner, baseline, item_id, clip['clipName'])
+        controller_state = None
+        if 'rigging' not in packet:
+            controller_state = _populate_controller_custom(
+                context, rig, existing_edit or linked, custom)
         # Re-check inputs before publishing a row; preparation may have changed
         # while the synchronous native bake was running.
         latest = links.load_link(link['_manifest_path'])
@@ -710,7 +751,15 @@ def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_co
         else:
             saved.active_index = -1
         bpy.data.actions.remove(baseline)
-        saved.status, saved.has_error = 'Added ' + item.name + '. Select Source to compare or Custom to edit.', False
+        if existing_edit is not None and custom is not existing_edit:
+            existing_edit.use_fake_user = True
+        if controller_state == 'CONTROLLER':
+            message = 'Added ' + item.name + '. Controller animation is ready.'
+        elif controller_state == 'NATIVE_FK':
+            message = 'Added ' + item.name + '. Native FK controls are retained; this rig has no generated IK limbs.'
+        else:
+            message = 'Added ' + item.name + '. Rigging input editing is retained.'
+        saved.status, saved.has_error = message, False
         if captured:
             captured['data'].use_fake_user = captured['fake_user']
         rig.show_in_front = True
@@ -776,11 +825,22 @@ def _check_baseline(item):
         return
     if item.source_action is None or item.source_action.library is None:
         raise ValueError('The Source Action is missing or was made editable; its baseline is not trusted.')
-    path = Path(item.source_file)
+    from .animation_worklist_dependencies import source_path
+    path = Path(source_path(item))
     if Path(bpy.path.abspath(item.source_action.library.filepath)).resolve() != path.resolve():
         raise ValueError('The Source Action no longer refers to its recorded baseline library.')
     if not path.is_file() or links._sha256(path) != item.source_hash:
         raise ValueError('The read-only Source cache changed or is missing. Existing Custom edits are kept.')
+
+
+def package_dependencies(context, directory):
+    from .animation_worklist_dependencies import package_dependencies as package
+    return package(context, directory)
+
+
+def rebind_dependencies(context, manifest_path):
+    from .animation_worklist_dependencies import rebind_dependencies as rebind
+    return rebind(context, manifest_path)
 
 
 def _association_record(item):

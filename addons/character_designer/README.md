@@ -1,4 +1,150 @@
-# Character Designer 0.77.137
+# Character Designer 0.77.164
+
+## Complete controller animation (0.77.164)
+
+New ordinary imported motions populate a separate controller Custom when the
+character has supported body limb controls. Source stays available for comparison.
+For an older Custom, use **Make Controller Animation** below the animation list.
+Installed arms and legs receive controller trajectories and IK weights across
+the whole clip; the previous Custom remains available. Key pending pose edits
+and pause any running Hair Physics preview before conversion. Existing Rigging
+Inputs keep their dedicated workflow.
+
+Matched key poses retain strict checks. The default interval playback budget is
+1 mm for body-bone world positions and 0.25 degrees for orientations, with scale
+and shape protection retained. Source and previous Customs stay available.
+
+To move a hand slightly outward for a whole walk, turn Auto Key off, move its IK
+target, then use **Apply Move Across Clip** before inserting a key. This offsets
+the complete target-local trajectory while preserving timing and handles.
+The world direction follows the target parent. A normal Insert still edits
+the current time. Conversion and Apply Move Across Clip retain an earlier
+Custom. The IK/FK buttons now describe all arms/legs at the current frame and
+show each limb when their modes differ.
+
+This release provides complete controller authoring. Automatic reverse editing
+between a second complete bone-curve projection and controller curves remains
+a separate feature. Preserved native FK curves are rig inputs, rather than a
+newly sampled post-IK result. New controller channels require a fresh Export
+Base Pose if that export workflow asks for one.
+
+## FK arm controls (0.77.146)
+
+FK upper-arm, forearm and wrist widgets stay selectable on the native bones.
+The existing Body Setup Update can add missing wrist widgets. FK and IK
+switches select the matching arm
+control and keep unrelated selections. FK Rotation keys use the current
+editable Action and slot. Artist shapes and animated displays are preserved.
+
+## Local wrist reset (0.77.145)
+
+Alt+R and Reset Target Rotation now check only the current editable Custom
+owner and the selected wrist graph. They do not scan Source or the complete
+animation, read files, or capture and replay the whole pose. Auto Key Off reads
+no Action points. Auto Key On retains only the target rotation curves needed
+for local rollback. The rest of the animation remains outside this operation.
+
+The visible hand still matches its own native/FK rotation neutral at the current
+arm pose. Pose Mirror resets the authenticated pair; Edit Mirror alone resets
+one wrist. Alt+G and Alt+S keep their native behavior. Unrelated Source, animation
+and FK edits are allowed between preparation and application and are not replayed.
+Restoration, switching versions and export retain their separate complete checks.
+
+## Portable editing files and explicit export inputs (0.77.144)
+
+Animation > Advanced adds **Package Editing Files** and **Locate Editing Files**.
+Package the linked Source libraries and Main Rig recovery inputs into a new
+folder, then save the editing blend normally. Keep the blend and package in the
+same relative layout when moving them. Logical work-item and Current Rig
+checkpoint identities remain unchanged. Unity publication routes stay in their
+existing workspace; captured Rigging/Composition and missing linked IDs retain
+their separate recovery requirements.
+
+For an ordinary sparse Custom, choose **Capture Export Base Pose** in Advanced
+or the Action export dialog. Future exports use those saved unkeyed inputs in
+their private snapshot, independent of later unkeyed trial poses and the current
+timeline frame. Capture again deliberately for a different base. Adding/removing
+enabled channels or changing supported rig structure requires recapture.
+Unknown external/complex dependency graphs are refused rather than guessed.
+Fully keyed plain FK inputs can still export without a saved base; authenticated
+Rigging inputs retain their existing export contract.
+
+**Clear Export Base Pose** deliberately removes only these saved export defaults.
+The already validated Dress manual/surface snapshot contracts retain their own
+export path and do not apply an ordinary retained base. If an Action already has
+one, clear it explicitly before using that path. Unknown external targets still
+refuse. The independent legacy accessory rig's existing skeleton-filter limit is
+retained; it is not claimed fixed. Draft 143 was withdrawn before deployment
+when this Dress compatibility issue was found; its evidence remains available.
+
+Rest/Base Pose, Original/Controls and Physics behavior are unchanged. Their
+state-coordination and naming changes remain a separate proposal.
+
+## Wrist reset latency (0.77.142)
+
+Alt+R and Reset Target Rotation now share one operation-local admission and
+pose capture for one or both wrists. Fresh complete Source/Custom checks use
+bounded native bulk reads instead of repeated per-key RNA and JSON snapshots.
+Current-Rig Source authentication retains its original persisted fingerprint;
+the compatible bulk collector produces the same digest. Proofs are never
+cached between operations. Prepare-to-apply changes still refuse, and both
+wrists, their rotation keys and all unrelated channels retain the existing
+whole-operation protection and rollback. No usage or key-reduction step is needed.
+
+## Body panel cleanup (0.77.141)
+
+The Body panel no longer includes the Control Visibility section. Use Bone Display
+or native Hide controls; Move to Floor and existing visibility actions remain.
+
+## Neutral IK wrist reset and pose mirror (0.77.140)
+
+In Pose Mode, select one generated IK hand control and press **Alt+R**, or use
+**Reset Target Rotation**. The visible wrist returns to the orientation of
+clearing the native/FK hand's rotation with the current forearm pose. The hand
+position, arm solution and native FK inputs stay in place. This does not apply
+the whole saved Relax Pose or change finger curls.
+
+With Pose X-Axis Mirror enabled, one selected hand resets both authenticated
+IK wrists. Each wrist uses its own native/FK neutral reference, including
+asymmetric Rest axes and current arm poses. Selecting both IK wrists and
+pressing Alt+R also resets the pair. With pose mirroring off, the Reset button
+continues to reset its active wrist. Both sides are checked before writing and recover together
+if either side cannot complete. The Edit Mode X-Axis Mirror flag does not
+block a Pose Mode wrist reset. Mirror settings and selection stay unchanged.
+
+Existing IK animation keeps its interpretation. The target's compensated raw
+rotation can therefore be nonzero after this semantic reset. Auto Key off
+changes only the current pose; Auto Key on keys only target rotation in the
+current editable Custom Action and slot, without creating another worklist row.
+Available/Needed Auto Key options and the chosen keyframe type are respected.
+Only Insert Available requires existing rotation channels. Visual keying,
+Cycle Aware and Only Active Keying Set options require turning those options off.
+Source, Original, FK/blended limbs, mixed selections, active
+Keying Sets, locks, drivers and unsupported graphs refuse with a message.
+Other bones retain Blender's normal Alt+R. Foot Reset retains its prior behavior.
+
+## Reversible Custom key reduction (0.77.138)
+
+Use **Simplify Keys** below the Source/Custom list while editing Custom. A new
+retained Custom version shares the same Source; the previous Custom is kept.
+Key counts and **Before** / **After** compare the two versions at the current
+frame. Source remains the independent original comparison. Both Custom versions
+remain in the worklist and support its normal save/reopen behavior.
+
+The first version reduces complete synchronized LINEAR transform groups in
+supported FK animation. It keeps original key times/values, seam neighbors and
+marker segments. Bezier, modified, sparse, partial or mismatched groups are
+copied exactly. Finite-vector error bounds precede a full-rig native check of
+world heads/tails, rotations and scale at authored knots and quarter intervals.
+The native bound is sampled, not a continuous world-space guarantee. The fresh
+pre-operation raw inputs are restored before publishing the new Action.
+
+Tolerances default to .0005 position units, .1 rotation degrees and .001 relative
+scale. Pause playback and Hair/Dress physics, finish temporary editing sessions,
+and select Custom first. Ownership/Rest/FK/driver and sample-budget guards remain
+authoritative. Comparison refuses edited or replaced pair content, preserving
+both Actions. Key pending pose edits before comparing. This tool changes editing keys; the existing per-frame FBX bake
+and Unity compression policy are unchanged. No runtime/FPS gain is claimed.
 
 ## Native mirrored Pose application (0.77.137)
 
@@ -3398,3 +3544,24 @@ available in Material Properties. Existing allow-list entries are never removed
 and filtering is never disabled. The guard runs after registration and continues
 to cover project loads, add-on refreshes, workspace changes, and render-engine
 changes.
+
+
+## 0.77.148: editable Rest posing and native FK bones
+
+The Character Designer Rest Pose button opens an isolated, editable Natural Pose
+test. Double-click a native-bone Pose asset to apply it; Shift-double-click applies
+the mirrored pose. Blend Pose uses the same owned test. Bone selection limits
+the applied region; clear a partial selection when applying the complete pose.
+
+Auto Key authors only the owned test draft. Returning to Pose restores the
+retained animation, and keeps an authored scratch as a local Pose Test Draft.
+Native-bone legacy poses and managed saved poses are supported; control-authored
+assets remain explicitly refused inside the Natural test.
+
+Arms and legs use their native bone shapes in FK. IK retains its target controls.
+Generation, Update and regional rebuilding synchronize the display to the actual
+mode; regional rebuilding retains its existing reset-to-IK behavior. Owned ring
+resources are retained, and foreign artist shapes are protected.
+
+Graph Editor I inserts into existing editable curves. Timeline or 3D View keying
+authors the selected bones' keying channels; these are different native tools.

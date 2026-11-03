@@ -148,6 +148,100 @@ def _cached_count_label(item):
     return _count_label(_read_array(item.counts_json), [member['side'] for member in members])
 
 
+def _display_labels(state):
+    from . import hair_strand_labels
+    return {entry['key']: entry['label'] for entry in hair_strand_labels.logical_labels(
+        tuple(dict(key=item.entry_key, bone_label=item.bone_label) for item in state.list_items))}
+
+
+def _motion_snapshot(context):
+    motion = getattr(context.window_manager, 'character_designer_hair_motion', None)
+    if motion is None:
+        return None, {}
+    from . import hair_motion_profiles
+    names = ('strand_id', 'group', 'sync_mirror', 'depth_index') + tuple(hair_motion_profiles.RANGES)
+    names += tuple('depth_' + key for key in ('position', 'recovery', 'damping', 'mass', 'gravity'))
+    return motion, {name: getattr(motion, name) for name in names}
+
+
+def _load_motion_selection(context, snapshot, signatures, active_key='', *, active_signature=''):
+    state = _state(context)
+    if not signatures:
+        return
+    active = next((item for item in state.list_items if item.entry_key == active_key), None)
+    target_signatures = _cached_entry(active)['signatures'] if active else signatures
+    row = next((row for row in snapshot['rows'] if active_signature in signatures
+                and row['signature'] == active_signature), None)
+    if row is None:
+        row = next((row for row in snapshot['rows'] if row['signature'] in target_signatures), None)
+    if row is None:
+        return
+    source = _resolve(snapshot['fingerprint']['source'])
+    from . import hair_motion_profiles, hair_motion_ui, hair_strand_registry
+    data = hair_strand_registry.read(source, validate=True)
+    if (data is not None and getattr(context.window_manager, 'character_designer_hair_motion', None)
+            and hair_motion_profiles.read(source, registry=data) is not None):
+        hair_motion_ui._load(context, source, row['strand_id'], highlight=False, verified_registry=data)
+
+
+def _import_pose_selection(context, source, snapshot):
+    from . import hair_resegment_selection
+    signatures = set(hair_resegment_selection.selected(context, source))
+    state = _state(context)
+    chosen = tuple(item.entry_key for item in state.list_items
+                   if signatures.intersection(_cached_entry(item)['signatures']))
+    old = tuple(item.checked for item in state.list_items), state.list_active_index, state.list_anchor_key, state.list_anchor_filter
+    motion, saved_motion = _motion_snapshot(context)
+    try:
+        for item in state.list_items:
+            item.checked = item.entry_key in chosen
+        state.list_active_index = next((index for index, item in enumerate(state.list_items)
+                                        if item.checked), state.list_active_index)
+        active = getattr(context, 'active_pose_bone', None)
+        active_row = next((row for row in snapshot['rows'] if active and active.name in row['bones']
+                           and row['signature'] in signatures), None)
+        active_key = next((item.entry_key for item in state.list_items if active_row
+                           and active_row['signature'] in _cached_entry(item)['signatures']), '')
+        if active_key:
+            state.list_active_index = next(index for index, item in enumerate(state.list_items)
+                                          if item.entry_key == active_key)
+        _load_motion_selection(context, snapshot, _checked(state), active_key,
+                               active_signature=active_row['signature'] if active_row else '')
+        state.list_anchor_key = ''
+        state.list_anchor_filter = ''
+    except Exception:
+        for item, selected in zip(state.list_items, old[0]):
+            item.checked = selected
+        state.list_active_index, state.list_anchor_key, state.list_anchor_filter = old[1:]
+        for name, value in saved_motion.items():
+            setattr(motion, name, value)
+        raise
+
+
+def navigate_ui(context, direction):
+    """Navigate visible logical entries with the same proof and scope as a row click."""
+    from types import SimpleNamespace
+    source, armature, unused_signatures, snapshot = _authenticate(
+        SimpleNamespace(action_pin=_capture(context)), context)
+    if direction == 0:
+        _import_pose_selection(context, source, snapshot)
+        return {'FINISHED'}
+    if direction not in (-1, 1):
+        raise ValueError('Choose Previous, Next or Selected Hair strands.')
+    state = _state(context)
+    visible = tuple(item for item in state.list_items if _visible(item, state.list_filter))
+    if not visible:
+        raise ValueError('No Hair entries are visible in this category.')
+    motion = getattr(context.window_manager, 'character_designer_hair_motion', None)
+    current = next((index for index, item in enumerate(visible) if motion
+                    and any(member['strand_id'] == motion.strand_id
+                            for member in _cached_entry(item)['members'])), None)
+    index = ((current + direction) % len(visible)) if current is not None else (0 if direction > 0 else len(visible) - 1)
+    key = visible[index].entry_key
+    _apply_list_selection(context, armature, snapshot, (key,), anchor=key, active_key=key)
+    return {'FINISHED'}
+
+
 def invalidate_ui(context):
     """Invalidate authorization without discarding cached rows or artist data."""
     _state(context).list_pin = ''
@@ -161,10 +255,11 @@ def refresh_ui(context, source=None, checked_signatures=None):
         snapshot = _service().strict_snapshot(source)
         rows = snapshot['rows']
         entries = _entries().build_entries(rows)
+        old = json.loads(state.list_pin) if state.list_pin else {}
+        same_source = old.get('source') == snapshot['fingerprint']['source']
         if checked_signatures is None:
             # Preserve checks only within this same source object/session.
-            old = json.loads(state.list_pin) if state.list_pin else {}
-            chosen = _checked(state) if old.get('source') == snapshot['fingerprint']['source'] else ()
+            chosen = _checked(state) if same_source else ()
         else:
             if isinstance(checked_signatures, (str, bytes)):
                 raise ValueError('The checked Hair strand list is unreadable.')
@@ -206,6 +301,9 @@ def refresh_ui(context, source=None, checked_signatures=None):
             item.sync_mirror = all(member.get('sync_mirror', False) for member in row['members'])
             item.checked = bool(chosen.intersection(row['signatures']))
         state.list_active_index = min(state.list_active_index, max(0, len(entries) - 1))
+        if not same_source or state.list_anchor_key not in {entry['key'] for entry in entries}:
+            state.list_anchor_key = ''
+            state.list_anchor_filter = ''
         from . import hair_bones_rig
         armature = source.get(hair_bones_rig.RIG_KEY)
         state.list_pose_position = armature.data.pose_position
@@ -225,7 +323,8 @@ def _capture(context):
     signatures = _checked(state)
     identities = _cached_identities(state)
     checked_keys = {item.entry_key for item in state.list_items if item.checked}
-    summary = [dict(key=item.entry_key, bone_label=item.bone_label, count=item.count,
+    labels = _display_labels(state)
+    summary = [dict(key=item.entry_key, bone_label=item.bone_label, display_label=labels[item.entry_key], count=item.count,
                     counts=_read_array(item.counts_json),
                     sides=[member['side'] for member in _read_array(item.members_json)],
                     member_count=item.member_count)
@@ -316,8 +415,137 @@ def _after_commit(operator, context, source, signatures, *, bone_count=None):
         operator.report({'WARNING'}, 'Hair changed; refresh the strand list. ' + str(error))
 
 
+def _selection_context(context, armature):
+    """Only capture state touched by a list selection; no mesh/author scans."""
+    if context.mode not in {'OBJECT', 'POSE'}:
+        raise ValueError('Use Object or Pose Mode to select Hair strands from the list.')
+    if context.mode == 'POSE' and any(obj is not armature for obj in context.objects_in_mode):
+        raise ValueError('Use the bound Hair rig alone in Pose Mode to select its strands.')
+    active = context.view_layer.objects.active
+    arms = {obj for obj in (active, armature) if obj and obj.type == 'ARMATURE'}
+    return dict(active=active, mode=active.mode if active else 'OBJECT',
+                selected=tuple(obj for obj in context.view_layer.objects if obj.select_get()),
+                arms={obj: dict(active=obj.data.bones.active,
+                    selected={p.name: bool(p.select) for p in obj.pose.bones},
+                    hidden={b.name: bool(b.hide) for b in obj.data.bones},
+                    collections={c.name: bool(c.is_visible) for c in obj.data.collections_all},
+                    in_front=obj.show_in_front) for obj in arms})
+
+
+def _restore_selection_context(context, saved):
+    active = context.view_layer.objects.active
+    needs_mode = active is not saved['active'] or (active and active.mode != saved['mode'])
+    if needs_mode and active and active.mode != 'OBJECT':
+        if bpy.ops.object.mode_set(mode='OBJECT') != {'FINISHED'}:
+            raise RuntimeError('Could not restore the Hair selection mode.')
+    for obj in context.view_layer.objects:
+        obj.select_set(obj in saved['selected'])
+    context.view_layer.objects.active = saved['active']
+    if needs_mode and saved['active'] and saved['mode'] != 'OBJECT':
+        if bpy.ops.object.mode_set(mode=saved['mode']) != {'FINISHED'}:
+            raise RuntimeError('Could not restore the original Hair selection mode.')
+    for obj, state in saved['arms'].items():
+        obj.show_in_front = state['in_front']
+        for pose in obj.pose.bones:
+            pose.select = state['selected'][pose.name]
+            pose.bone.hide = state['hidden'][pose.name]
+        for collection in obj.data.collections_all:
+            collection.is_visible = state['collections'][collection.name]
+        obj.data.bones.active = state['active']
+
+
+def _select_list_chains(context, armature, names, active_name=None):
+    """Select an explicit scope, including empty, without repeated mode bounces."""
+    if context.object is not armature or context.mode != 'POSE':
+        from . import hair_bones_rig
+        hair_bones_rig._mode(context, armature, 'POSE')
+    wanted = set(names)
+    for pose in armature.pose.bones:
+        pose.select = pose.name in wanted
+    if wanted:
+        armature.show_in_front = True
+    for name in names:
+        bone = armature.data.bones[name]
+        bone.hide = False
+        for collection in bone.collections:
+            collection.is_visible = True
+    armature.data.bones.active = armature.data.bones.get(active_name or (names[0] if names else ''))
+
+
+def _apply_list_selection(context, armature, snapshot, keys, *, anchor='', active_key=''):
+    state = _state(context)
+    chosen = set(keys)
+    entries = [_cached_entry(item) for item in state.list_items if item.entry_key in chosen]
+    signatures = {signature for entry in entries for signature in entry['signatures']}
+    names = tuple(name for row in snapshot['rows'] if row['signature'] in signatures for name in row['bones'])
+    target = next((entry for entry in entries if entry['key'] == active_key), None)
+    active_name = next((row['bones'][0] for row in snapshot['rows']
+                        if target and row['signature'] in target['signatures']), None)
+    saved = _selection_context(context, armature)
+    motion, saved_motion = _motion_snapshot(context)
+    old = (tuple(item.checked for item in state.list_items), state.list_active_index,
+           state.list_anchor_key, state.list_anchor_filter)
+    try:
+        _select_list_chains(context, armature, names, active_name)
+        for index, item in enumerate(state.list_items):
+            item.checked = item.entry_key in chosen
+            if item.entry_key == active_key:
+                state.list_active_index = index
+        state.list_anchor_key = anchor
+        state.list_anchor_filter = state.list_filter
+        _load_motion_selection(context, snapshot, tuple(signatures), active_key if target else '')
+    except Exception as error:
+        for item, checked in zip(state.list_items, old[0]):
+            item.checked = checked
+        state.list_active_index, state.list_anchor_key, state.list_anchor_filter = old[1:]
+        for name, value in saved_motion.items():
+            setattr(motion, name, value)
+        try:
+            _restore_selection_context(context, saved)
+        except Exception as recovery_error:
+            raise RuntimeError(str(error) + '; selection recovery needs attention: ' + str(recovery_error)) from error
+        raise
+
+
+class CHARACTERDESIGNER_OT_hair_strand_list_click(Operator):
+    bl_idname = 'character_designer.hair_strand_list_click'
+    bl_label = 'Select Hair Strand'
+    bl_description = 'Select full strands: Ctrl toggles, Shift selects a visible range, Ctrl+Shift adds a range'
+    bl_options = {'UNDO'}
+    entry_key: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    action_pin: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    filter_pin: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    extend: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    toggle: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        self.extend, self.toggle = event.shift, event.ctrl
+        return self.execute(context)
+
+    def execute(self, context):
+        try:
+            unused_source, armature, unused_signatures, snapshot = _authenticate(self, context)
+            state = _state(context)
+            if self.filter_pin != state.list_filter:
+                raise ValueError('The category filter changed; select the Hair row again.')
+            from . import hair_list_selection
+            keys, anchor = hair_list_selection.plan(
+                tuple(item.entry_key for item in state.list_items),
+                tuple(item.entry_key for item in state.list_items if _visible(item, state.list_filter)),
+                tuple(item.entry_key for item in state.list_items if item.checked),
+                self.entry_key,
+                state.list_anchor_key if state.list_anchor_filter == state.list_filter else '',
+                extend=self.extend, toggle=self.toggle)
+            _apply_list_selection(context, armature, snapshot, keys, anchor=anchor, active_key=self.entry_key)
+            state.last_message = ''
+            return {'FINISHED'}
+        except Exception as error:
+            return _failure(self, context, error)
+
+
 class CharacterDesignerHairStrandListItem(PropertyGroup):
-    checked: BoolProperty(name='Checked', default=False, options={'SKIP_SAVE'})
+    # Keep the transient property/API for existing pinned actions and Redo.
+    checked: BoolProperty(name='Selected', default=False, options={'SKIP_SAVE'})
     signature: StringProperty(options={'SKIP_SAVE'})
     strand_id: StringProperty(options={'SKIP_SAVE'})
     bone_label: StringProperty(options={'SKIP_SAVE'})
@@ -341,10 +569,21 @@ class CharacterDesignerHairStrandListItem(PropertyGroup):
 class CHARACTERDESIGNER_UL_hair_strand_list(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
-        row.prop(item, 'checked', text='')
-        row.label(text=_strand_label(item.bone_label), icon='BONE_DATA')
-        row.label(text=_cached_count_label(item))
-        row.label(text=item.group.title() + ' / ' + item.side)
+        row.operator_context = 'INVOKE_DEFAULT'
+        try:
+            pin = _capture(context)
+            label = (_display_labels(data)[item.entry_key] + '   ·   ' +
+                     _cached_count_label(item) + '   ·   ' + item.group.title() + ' / ' + item.side)
+        except (ValueError, KeyError, TypeError):
+            pin = ''
+            label = 'Refresh strand list'
+            row.enabled = False
+        op = row.operator('character_designer.hair_strand_list_click',
+                          text=label,
+                          icon='BONE_DATA', depress=item.checked)
+        op.entry_key = item.entry_key
+        op.action_pin = pin
+        op.filter_pin = data.list_filter
 
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
@@ -369,11 +608,11 @@ class CHARACTERDESIGNER_OT_hair_strand_list_refresh(Operator):
 
 class CHARACTERDESIGNER_OT_hair_strand_list_check(Operator):
     bl_idname = 'character_designer.hair_strand_list_check'
-    bl_label = 'Check Hair Strands'
-    bl_description = 'Change the list checks; category filtering keeps hidden checks'
+    bl_label = 'Select Hair Strands'
+    bl_description = 'Select list entries; Check Selected Bones keeps the viewport bone selection unchanged'
     action: EnumProperty(items=(
-        ('SELECT_VISIBLE', 'Check Visible', ''),
-        ('CLEAR', 'Clear All Checks', ''),
+        ('SELECT_VISIBLE', 'Select Visible', ''),
+        ('CLEAR', 'Deselect All', ''),
         ('IMPORT_POSE', 'Check Selected Bones', 'Check the strands containing the Hair bones currently selected in Pose Mode'),
     ))
     action_pin: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
@@ -381,22 +620,18 @@ class CHARACTERDESIGNER_OT_hair_strand_list_check(Operator):
 
     def execute(self, context):
         try:
-            source, unused_rig, unused_signatures, unused_snapshot = _authenticate(self, context)
+            source, armature, unused_signatures, snapshot = _authenticate(self, context)
             state = _state(context)
             if self.action == 'SELECT_VISIBLE':
                 if self.filter_pin and self.filter_pin != state.list_filter:
-                    raise ValueError('The category filter changed; choose Check Visible again.')
-                for item in state.list_items:
-                    if _visible(item, state.list_filter):
-                        item.checked = True
+                    raise ValueError('The category filter changed; choose Select Visible again.')
+                keys = tuple(item.entry_key for item in state.list_items
+                             if item.checked or _visible(item, state.list_filter))
+                _apply_list_selection(context, armature, snapshot, keys)
             elif self.action == 'CLEAR':
-                for item in state.list_items:
-                    item.checked = False
+                _apply_list_selection(context, armature, snapshot, ())
             elif self.action == 'IMPORT_POSE':
-                from . import hair_resegment_selection
-                signatures = set(hair_resegment_selection.selected(context, source))
-                for item in state.list_items:
-                    item.checked = bool(signatures.intersection(_cached_entry(item)['signatures']))
+                _import_pose_selection(context, source, snapshot)
             else:
                 raise ValueError('Choose a strand list check action.')
             return {'FINISHED'}
@@ -447,8 +682,8 @@ class CHARACTERDESIGNER_OT_hair_strand_list_assign_category(Operator):
 
 class CHARACTERDESIGNER_OT_hair_strand_list_rebuild(Operator):
     bl_idname = 'character_designer.hair_strand_list_rebuild'
-    bl_label = 'Rebuild Checked Strands'
-    bl_description = 'Change only the checked chains to the new count in a retained Hair version'
+    bl_label = 'Rebuild Selected Strands'
+    bl_description = 'Replace the selected strands with the new bone count on the current character'
     bl_options = {'REGISTER', 'UNDO'}
     bone_count: IntProperty(name='New Bones per Strand', default=6, min=1, max=12)
     action_pin: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
@@ -467,12 +702,12 @@ class CHARACTERDESIGNER_OT_hair_strand_list_rebuild(Operator):
         try:
             pin = json.loads(self.action_pin)
             layout.label(text='Hair: ' + pin['fingerprint']['source']['name'], icon='OUTLINER_OB_MESH')
-            layout.label(text=str(len(pin['summary'])) + ' checked entries (' +
+            layout.label(text=str(len(pin['summary'])) + ' selected entries (' +
                          str(len(pin['signatures'])) + ' physical chains)')
             for item in pin['summary'][:8]:
                 paired = item['member_count'] == 2
                 side = 'L/R' if paired else item['sides'][0]
-                layout.label(text=_strand_label(item['bone_label']) + ': ' +
+                layout.label(text=item.get('display_label', _strand_label(item['bone_label'])) + ': ' +
                              _count_label(item['counts'], item['sides']) + ' → ' +
                              str(self.bone_count) + ' bones · ' + side)
             if len(pin['summary']) > 8:
@@ -480,22 +715,24 @@ class CHARACTERDESIGNER_OT_hair_strand_list_rebuild(Operator):
         except (ValueError, KeyError, TypeError):
             layout.label(text='Refresh the Hair strand list and choose again.', icon='ERROR')
         layout.prop(self, 'bone_count')
-        layout.label(text='Hidden checked entries and both paired chains are included.')
-        layout.label(text='Retains the original; bending and motion are sampled.')
+        layout.label(text='Hidden selected entries and both paired chains are included.')
+        layout.label(text='Replaces these strands; bending and motion are sampled.')
 
     def execute(self, context):
         try:
             source, unused_rig, signatures, unused_snapshot = _authenticate(self, context, require_checked=True)
             from . import hair_resegment
             # This explicit non-empty tuple must never become None (all Hair).
-            result = hair_resegment.create(context, source, bone_count=self.bone_count,
+            result = hair_resegment.replace_selected(context, source, bone_count=self.bone_count,
                                            strand_signatures=tuple(signatures))
         except Exception as error:
             return _failure(self, context, error)
         _after_commit(self, context, result['mesh'], result['selected_signatures'],
                       bone_count=self.bone_count)
-        self.report({'INFO'}, 'Changed ' + str(len(signatures)) + ' checked physical Hair chains to ' +
-                    str(self.bone_count) + ' bones each; the original is retained.')
+        if result.get('cleanup_warning'):
+            self.report({'WARNING'}, result['cleanup_warning'])
+        self.report({'INFO'}, 'Replaced ' + str(len(signatures)) + ' Hair strands with ' +
+                    str(self.bone_count) + ' bones each.')
         return {'FINISHED'}
 
 
@@ -504,65 +741,75 @@ def draw_browser(layout, context, source, bound):
     state = _state(context)
     box = layout.box()
     row = box.row(align=True)
-    row.label(text='Strands', icon='BONE_DATA')
-    row.operator('character_designer.hair_strand_list_refresh', text='Refresh', icon='FILE_REFRESH')
     if not bound:
+        row.label(text='Strands', icon='BONE_DATA')
         box.label(text='Bind Hair before using the strand list.', icon='INFO')
         return
-    box.prop(state, 'list_filter', text='Category')
     rows = tuple(state.list_items)
     try:
         visible = tuple(item for item in rows if _visible(item, state.list_filter))
         checked = _checked(state)
-        physical_count = sum(item.member_count for item in rows)
+        pin = _capture(context) if state.list_pin else ''
+        labels = _display_labels(state)
     except (ValueError, KeyError, TypeError):
+        row.label(text='Strands', icon='BONE_DATA')
+        row.operator('character_designer.hair_strand_list_refresh', text='', icon='FILE_REFRESH')
         box.label(text='Refresh the Hair strand list.', icon='ERROR')
         return
+    title = 'Strands'
+    motion = getattr(context.window_manager, 'character_designer_hair_motion', None)
+    for item in rows:
+        member = next((member for member in _cached_entry(item)['members']
+                       if motion and member['strand_id'] == motion.strand_id), None)
+        if member is not None:
+            title += ' · ' + labels[item.entry_key]
+            if item.member_count == 2:
+                title += ' · ' + member['side']
+            break
+    row.label(text=title, icon='BONE_DATA')
+    row.operator('character_designer.hair_strand_list_refresh', text='', icon='FILE_REFRESH')
     visible_checked = sum(item.checked for item in visible)
     checked_count = sum(item.checked for item in rows)
-    box.label(text=str(len(rows)) + ' entries · ' + str(physical_count) + ' physical chains')
-    box.label(text=str(len(visible)) + ' visible · ' + str(checked_count) +
-                   ' checked entries (' + str(visible_checked) + ' visible; ' +
-                   str(len(checked)) + ' physical chains)')
     column = box.column()
     column.enabled = bool(state.list_pin)
+    navigation = column.row(align=True)
+    navigation.operator('character_designer.hair_motion_navigate', text='Previous').direction = -1
+    navigation.operator('character_designer.hair_motion_navigate', text='Next').direction = 1
+    selected = navigation.operator('character_designer.hair_strand_list_check', text='Selected')
+    selected.action = 'IMPORT_POSE'
+    selected.action_pin = pin
+    column.prop(state, 'list_filter', text='Category')
     column.template_list('CHARACTERDESIGNER_UL_hair_strand_list', '', state, 'list_items',
-                         state, 'list_active_index', rows=6, maxrows=10)
+                         state, 'list_active_index', rows=8, maxrows=12)
     if not state.list_pin:
         box.label(text='Refresh to validate the current Hair source/version.', icon='INFO')
         return
-    try:
-        pin = _capture(context)
-    except (ValueError, KeyError, TypeError):
-        box.label(text='Refresh the Hair strand list.', icon='ERROR')
-        return
     row = column.row(align=True)
-    op = row.operator('character_designer.hair_strand_list_check', text='Check Visible')
+    op = row.operator('character_designer.hair_strand_list_check', text='Select Visible')
     op.action, op.action_pin, op.filter_pin = 'SELECT_VISIBLE', pin, state.list_filter
-    op = row.operator('character_designer.hair_strand_list_check', text='Clear All')
+    op = row.operator('character_designer.hair_strand_list_check', text='Deselect All')
     op.action, op.action_pin = 'CLEAR', pin
-    op = column.operator('character_designer.hair_strand_list_check', text='Check Selected Bones')
-    op.action, op.action_pin = 'IMPORT_POSE', pin
     actions = column.column()
     actions.enabled = bool(checked)
-    actions.operator('character_designer.hair_strand_list_select_pose',
-                     text='Select Checked').action_pin = pin
+    count_row = actions.row(align=True)
+    count_row.operator_context = 'EXEC_DEFAULT'
+    count_row.prop(state, 'bone_count', text='Bones')
+    op = count_row.operator('character_designer.hair_strand_list_rebuild', text='Apply', icon='CHECKMARK')
+    op.action_pin, op.bone_count = pin, state.bone_count
     row = actions.row(align=True)
     row.prop(state, 'list_assign_group', text='')
     op = row.operator('character_designer.hair_strand_list_assign_category', text='Assign Category')
     op.action_pin, op.group = pin, state.list_assign_group
-    op = actions.operator('character_designer.hair_strand_list_rebuild', text='Rebuild Checked Strands',
-                          icon='BONE_DATA')
-    op.action_pin = pin
     if state.list_pose_position == 'REST':
-        box.label(text='Rest Position: category and selection are available.', icon='INFO')
-        box.label(text='Choose Pose Position before rebuilding strands.')
-    box.label(text='Filters retain whole entries; actions include both paired chains and hidden checks.')
+        box.label(text='Use Pose Position to rebuild.', icon='INFO')
+    if checked_count > visible_checked:
+        box.label(text=str(checked_count - visible_checked) + ' selected entries hidden by category.', icon='INFO')
 
 
 ITEM_CLASSES = (CharacterDesignerHairStrandListItem,)
 CLASSES = (
     CHARACTERDESIGNER_UL_hair_strand_list,
+    CHARACTERDESIGNER_OT_hair_strand_list_click,
     CHARACTERDESIGNER_OT_hair_strand_list_refresh,
     CHARACTERDESIGNER_OT_hair_strand_list_check,
     CHARACTERDESIGNER_OT_hair_strand_list_select_pose,

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
-from types import SimpleNamespace as NS
+from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
 
@@ -33,6 +33,20 @@ class ID(dict):
 
 class Armature(ID):
     pass
+
+
+class Collection:
+    def __init__(self, name, bones=(), parent=None):
+        self.name, self.bones, self.parent = name, list(bones), parent
+        self.writes = []
+    def as_pointer(self):
+        return id(self)
+    def unassign(self, bone):
+        self.writes.append(('unassign', bone))
+        self.bones.remove(bone)
+    def assign(self, bone):
+        self.writes.append(('assign', bone))
+        self.bones.append(bone)
 
 
 class Action(ID):
@@ -128,10 +142,15 @@ class RevisionTests(unittest.TestCase):
         self.db = DB()
         self.bpy = NS(types=NS(ID=ID, Armature=Armature, Action=Action),
                       data=self.db, path=NS(abspath=lambda value: value))
-        patcher = patch.dict(sys.modules, {'bpy': self.bpy}); patcher.start(); self.addCleanup(patcher.stop)
-        spec = importlib.util.spec_from_file_location('_current_revision_test', SOURCE)
+        self.groups = NS(_FRAME_CACHE={}, _FRAME_OWNER_REJECTIONS={})
+        package = ModuleType('_current_revision_fixture'); package.__path__ = []
+        package.bone_collections = self.groups
+        patcher = patch.dict(sys.modules, {'bpy': self.bpy, package.__name__: package})
+        patcher.start(); self.addCleanup(patcher.stop)
+        spec = importlib.util.spec_from_file_location(package.__name__+'.animation_worklist_revision', SOURCE)
         self.m = importlib.util.module_from_spec(spec); spec.loader.exec_module(self.m)
-        self.data = Armature('Current102')
+        self.m.__package__ = package.__name__
+        self.data = Armature('Current102', collections_all=[])
         self.pb = ID('thigh.L', location=[3., 4., 5.], rotation_euler=[0., 0., 0.],
                      rotation_quaternion=[1., 0., 0., 0.], rotation_axis_angle=[0., 0., 1., 0.],
                      scale=[1., 1., 1.], rotation_mode='QUATERNION', constraints={},
@@ -174,7 +193,10 @@ class RevisionTests(unittest.TestCase):
                         _linked_baseline=self.baseline, _check_baseline=self.check_baseline),
             target=NS(SESSION='old_session', REFS='old_refs', _action_motion_keys=lambda: ('old_motion_data',),
                       _data_reference_keys=lambda owner, data: {key for key, value in owner.items() if any(x is data for x in DB.ids(value))},
-                      _capture=self.capture, _validate_capture=Mock(), _apply_capture=self.apply),
+                      _capture=self.capture, _validate_capture=Mock(), _apply_capture=self.apply,
+                      # This legacy ownership fixture has no constraints; its
+                      # old capture grants no owned-Pole scalar capability.
+                      _validate_owned_ik_poles=lambda entry: {}),
             ua=NS(active_preview=lambda rig: None, _rest_state=lambda data: {'current': 102},
                   _set_playing=Mock(), _set_frame=Mock()),
             pose=NS(_admission=Mock(), active=lambda rig: False, _structure=lambda rig: 'current graph'),
@@ -209,7 +231,8 @@ class RevisionTests(unittest.TestCase):
     def owners(self, rig):
         return {'owners': sorted(action.name for action in self.db.user_map().get(self.data, ()) if isinstance(action, Action)),
                 'raw': rig['old_session'], 'refs': self.props_hash(rig['old_refs'])}
-    def capture(self, context, rig):
+    def capture(self, context, rig, *, include_owned_ik_poles=False):
+        self.assertIsInstance(include_owned_ik_poles, bool)
         fields = ('location','rotation_euler','rotation_quaternion','rotation_axis_angle','scale','rotation_mode')
         entry = dict(target=rig, data=self.data,
             snapshot={'pose':{'thigh.L':{key:copy.deepcopy(getattr(self.pb,key)) for key in fields}},
@@ -390,6 +413,177 @@ class RevisionTests(unittest.TestCase):
         self.db.user_map=lambda:{camera:{alias}}
         with self.assertRaisesRegex(ValueError,'native ID dependencies: Camera'):
             self.m._no_native_dependencies(action)
+
+    def test_activation_fault_restores_both_fresh_cache_entries_only_for_this_rig(self):
+        item=self.m.create(self.context,'Walk_N')
+        self.ad.action=item.custom_action; self.ad.action_slot=item.custom_action.slots[0]
+        key=self.rig.as_pointer(); other=key+1
+        original_apply=self.apply
+        def apply(context,rig,capture):
+            original_apply(context,rig,capture)
+            self.groups._FRAME_CACHE.pop(key,None)
+            self.groups._FRAME_OWNER_REJECTIONS.pop(key,None)
+        self.api.target._apply_capture=apply
+        for side in ('SOURCE','CUSTOM'):
+            with self.subTest(side=side):
+                state=('native-mode',side); refusal=('native-rejection',side)
+                self.groups._FRAME_CACHE.update({key:state,other:('other-character',)})
+                self.groups._FRAME_OWNER_REJECTIONS.update({key:refusal,other:('other-refusal',)})
+                tables=(self.groups._FRAME_CACHE,self.groups._FRAME_OWNER_REJECTIONS)
+                self.pb.location=[12.,13.,14.]
+                self.api.ua._set_frame=Mock(side_effect=ValueError('frame fault'))
+                with self.assertRaisesRegex(ValueError,'frame fault'):
+                    self.m.activate(self.context,item.item_id,side)
+                self.assertIs(self.groups._FRAME_CACHE,tables[0])
+                self.assertIs(self.groups._FRAME_OWNER_REJECTIONS,tables[1])
+                self.assertIs(self.groups._FRAME_CACHE[key],state)
+                self.assertIs(self.groups._FRAME_OWNER_REJECTIONS[key],refusal)
+                self.assertEqual(self.groups._FRAME_CACHE[other],('other-character',))
+                self.assertEqual(self.groups._FRAME_OWNER_REJECTIONS[other],('other-refusal',))
+                self.assertEqual(self.pb.location,[12.,13.,14.])
+
+    def test_activation_fault_restores_absent_cache_entries_without_clearing_other_rig(self):
+        item=self.m.create(self.context,'Walk_N');key=self.rig.as_pointer()
+        self.ad.action=item.custom_action; self.ad.action_slot=item.custom_action.slots[0]
+        self.groups._FRAME_CACHE[key+1]=('other-character',)
+        def seek(*args):
+            self.groups._FRAME_CACHE[key]=('attempt',)
+            self.groups._FRAME_OWNER_REJECTIONS[key]=('attempt-refusal',)
+            raise ValueError('frame fault')
+        self.api.ua._set_frame=seek
+        with self.assertRaisesRegex(ValueError,'frame fault'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertNotIn(key,self.groups._FRAME_CACHE)
+        self.assertNotIn(key,self.groups._FRAME_OWNER_REJECTIONS)
+        self.assertEqual(self.groups._FRAME_CACHE[key+1],('other-character',))
+
+    def test_activation_foreign_cache_table_replacement_refuses_before_generic_restore(self):
+        item=self.m.create(self.context,'Walk_N');key=self.rig.as_pointer()
+        old=self.groups._FRAME_CACHE;old[key]=('before',)
+        foreign={key:('foreign',)}
+        def seek(*args):
+            self.groups._FRAME_CACHE=foreign
+            raise ValueError('frame fault')
+        self.api.ua._set_frame=seek
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertEqual(self.apply_calls,[])
+        self.assertIs(self.groups._FRAME_CACHE,foreign)
+        self.assertEqual(foreign,{key:('foreign',)})
+        self.assertEqual(old,{key:('before',)})
+
+    def test_activation_foreign_data_refuses_before_generic_restore(self):
+        item=self.m.create(self.context,'Walk_N')
+        foreign=Armature('foreign-data')
+        def seek(*args):
+            self.rig.data=foreign
+            raise ValueError('frame fault')
+        self.api.ua._set_frame=seek
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertEqual(self.apply_calls,[])
+        self.assertIs(self.rig.data,foreign)
+
+    def test_activation_cache_replacement_during_generic_restore_is_not_overwritten(self):
+        item=self.m.create(self.context,'Walk_N');key=self.rig.as_pointer()
+        self.groups._FRAME_CACHE[key]=('before',)
+        foreign={key:('foreign-during-restore',)}
+        original_apply=self.apply
+        def apply(context,rig,capture):
+            original_apply(context,rig,capture)
+            self.groups._FRAME_CACHE=foreign
+        self.api.target._apply_capture=apply
+        self.api.ua._set_frame=Mock(side_effect=ValueError('frame fault'))
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertIs(self.groups._FRAME_CACHE,foreign)
+        self.assertEqual(foreign,{key:('foreign-during-restore',)})
+
+    def test_activation_success_keeps_new_cache_state_without_historical_restore(self):
+        item=self.m.create(self.context,'Walk_N');key=self.rig.as_pointer()
+        self.groups._FRAME_CACHE[key]=('before',)
+        fresh=('new-action-native-state',)
+        self.api.ua._set_frame=lambda *args:self.groups._FRAME_CACHE.__setitem__(key,fresh)
+        self.assertIs(self.m.activate(self.context,item.item_id,'SOURCE'),item.source_action)
+        self.assertIs(self.groups._FRAME_CACHE[key],fresh)
+
+    def test_activation_failed_generic_restore_does_not_claim_cache_success(self):
+        item=self.m.create(self.context,'Walk_N');key=self.rig.as_pointer()
+        self.groups._FRAME_CACHE[key]=('before',)
+        original_apply=self.apply
+        def apply(context,rig,capture):
+            original_apply(context,rig,capture)
+            self.groups._FRAME_CACHE.pop(key,None)
+            raise ValueError('generic restore failed')
+        self.api.target._apply_capture=apply
+        self.api.ua._set_frame=Mock(side_effect=ValueError('frame fault'))
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertNotIn(key,self.groups._FRAME_CACHE)
+
+    def test_activation_fault_restores_member_order_using_same_native_refs(self):
+        item=self.m.create(self.context,'Walk_N')
+        bones=[ID(name) for name in ('A','B','C')]
+        collection=Collection('Body',bones);self.data.collections_all=[collection]
+        original_apply=self.apply
+        def apply(context,rig,capture):
+            original_apply(context,rig,capture)
+            collection.bones[:]=[bones[2],bones[0],bones[1]]
+        self.api.target._apply_capture=apply
+        self.api.ua._set_frame=Mock(side_effect=ValueError('frame fault'))
+        with self.assertRaisesRegex(ValueError,'frame fault'):
+            self.m.activate(self.context,item.item_id,'CUSTOM')
+        self.assertEqual(collection.bones,bones)
+        self.assertEqual(collection.writes,[('unassign',bones[2]),('unassign',bones[0]),('unassign',bones[1]),
+                                            ('assign',bones[0]),('assign',bones[1]),('assign',bones[2])])
+        self.assertIs(self.data.collections_all[0],collection)
+
+    def test_activation_checks_all_member_sets_before_any_order_repair(self):
+        item=self.m.create(self.context,'Walk_N');key=self.rig.as_pointer()
+        a,b,c,foreign=[ID(name) for name in ('A','B','C','foreign')]
+        first,second=Collection('Body',[a,b]),Collection('Other',[c])
+        self.data.collections_all=[first,second]
+        self.groups._FRAME_CACHE[key]=('before',)
+        original_apply=self.apply
+        def apply(context,rig,capture):
+            original_apply(context,rig,capture)
+            first.bones[:]=[b,a];second.bones[:]=[foreign]
+            self.groups._FRAME_CACHE.pop(key,None)
+        self.api.target._apply_capture=apply
+        self.api.ua._set_frame=Mock(side_effect=ValueError('frame fault'))
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertEqual(first.bones,[b,a]);self.assertEqual(second.bones,[foreign])
+        self.assertEqual(first.writes,[]);self.assertEqual(second.writes,[])
+        self.assertNotIn(key,self.groups._FRAME_CACHE)
+
+    def test_activation_foreign_collection_identity_refuses_before_generic_restore(self):
+        item=self.m.create(self.context,'Walk_N')
+        bone=ID('A');original=Collection('Body',[bone]);foreign=Collection('Body',[bone])
+        self.data.collections_all=[original]
+        def seek(*args):
+            self.data.collections_all[:]=[foreign]
+            raise ValueError('frame fault')
+        self.api.ua._set_frame=seek
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertEqual(self.apply_calls,[])
+        self.assertEqual(self.data.collections_all,[foreign])
+        self.assertEqual(original.writes,[]);self.assertEqual(foreign.writes,[])
+
+    def test_activation_foreign_collection_parent_refuses_before_generic_restore(self):
+        item=self.m.create(self.context,'Walk_N')
+        original=Collection('Body',[ID('A')]);foreign=Collection('foreign-parent')
+        self.data.collections_all=[original]
+        def seek(*args):
+            original.parent=foreign
+            raise ValueError('frame fault')
+        self.api.ua._set_frame=seek
+        with self.assertRaisesRegex(RuntimeError,'rollback needs review'):
+            self.m.activate(self.context,item.item_id,'SOURCE')
+        self.assertEqual(self.apply_calls,[])
+        self.assertIs(original.parent,foreign)
+        self.assertEqual(original.writes,[])
 
 
 if __name__ == '__main__':

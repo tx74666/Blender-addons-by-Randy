@@ -3,15 +3,17 @@
 from pathlib import Path
 import json
 import math
+import sys
 import textwrap
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, PropertyGroup, UIList
 
 from .animation_original_inputs_ui import (
     ORIGINAL_INPUT_CLASSES, draw_original_inputs, has_original_inputs, original_inputs_live,
 )
+from .controller_animation_ui import CONTROLLER_ANIMATION_CLASSES, draw_controller_animation
 
 
 _DRAGS = []
@@ -47,6 +49,35 @@ def _reconcile():
     return animation_worklist_reconcile
 
 
+def _key_reduce():
+    from . import animation_key_reduce
+    return animation_key_reduce
+
+
+def _key_reduce_status(context):
+    """Read only the loaded backend's bounded pair metadata during drawing."""
+    backend = sys.modules.get(__package__ + '.animation_key_reduce')
+    if backend is None:
+        return None
+    try:
+        return backend.status(context)
+    except (ValueError, RuntimeError, ReferenceError, AttributeError, KeyError):
+        return None
+
+
+def _key_reduce_custom(context):
+    """Display eligibility only; execution reauthenticates the complete Action."""
+    item = _selected(_state(context))
+    if (item is None or item.side != 'CUSTOM' or not _idle(context)
+            or getattr(context, 'mode', 'OBJECT') not in {'OBJECT', 'POSE'}):
+        return False
+    animation = getattr(item.rig, 'animation_data', None)
+    slot = getattr(item, 'custom_slot', None)
+    return bool(animation is not None and slot is not None and item.custom_action is not None
+                and animation.action == item.custom_action
+                and getattr(animation, 'action_slot_handle', None) == slot)
+
+
 def _state(context):
     scene = getattr(context, 'scene', None)
     return getattr(scene, 'character_designer_animation_worklist', None)
@@ -64,6 +95,7 @@ def scan_pending():
             and not bpy.app.timers.is_registered(_SCAN_PENDING['callback'])):
         # Nonpersistent timers disappear on file load. Release the Python lock
         # without touching either the removed scene or the newly loaded scene.
+        _release_scan_guard(_SCAN_PENDING)
         _SCAN_PENDING = None
     if (_LIST_SYNC_PENDING is not None and _LIST_SYNC_PENDING['armed']
             and not bpy.app.timers.is_registered(_LIST_SYNC_PENDING['callback'])):
@@ -202,17 +234,27 @@ def _scan_feedback(pending, message, error=False):
         pass  # The old scene/window may already have been removed.
 
 
-def _clear_pending_scan(*, unregister=True):
+def _release_scan_guard(pending):
+    """Remove only this scan's temporary input-change callback."""
+    callback = pending.pop('guard', None)
+    callbacks = pending.pop('guard_callbacks', ())
+    if callback is not None and callback in callbacks:
+        callbacks.remove(callback)
+
+
+def _clear_pending_scan(*, unregister=True, release_guard=True):
     global _SCAN_PENDING
     pending, _SCAN_PENDING = _SCAN_PENDING, None
     if pending is not None and unregister and pending['armed']:
         callback = pending['callback']
         if bpy.app.timers.is_registered(callback):
             bpy.app.timers.unregister(callback)
+    if pending is not None and release_guard:
+        _release_scan_guard(pending)
     return pending
 
 
-def _cancel_pending_scan(message='Scan cancelled before it started.'):
+def _cancel_pending_scan(message='Scan cancelled; scan again before exporting.'):
     pending = _clear_pending_scan()
     pending_list = _clear_list_sync()
     if pending_list is not None:
@@ -223,7 +265,8 @@ def _cancel_pending_scan(message='Scan cancelled before it started.'):
 
 
 def _poll_scan():
-    pending = _clear_pending_scan(unregister=False)
+    global _SCAN_PENDING
+    pending = _clear_pending_scan(unregister=False, release_guard=False)
     if pending is None:
         return None
     try:
@@ -231,26 +274,67 @@ def _poll_scan():
         if (window not in tuple(bpy.context.window_manager.windows) or window.scene != scene
                 or scene not in tuple(bpy.data.scenes)):
             _scan_feedback(pending, 'Scan cancelled: its owning window or scene changed.')
+            _release_scan_guard(pending)
             return None
         with bpy.context.temp_override(window=window, scene=scene):
             if not _idle(bpy.context):
-                raise RuntimeError('Another animation operation started before the scan.')
+                raise RuntimeError('Another animation operation started during Scan.')
             collection = _collection()
-            collection.scan_changes(bpy.context)
+            callbacks = getattr(getattr(bpy.app, 'handlers', None), 'depsgraph_update_post', None)
+            update = getattr(getattr(bpy.context, 'view_layer', None), 'update', None)
+            if callbacks is None or not callable(update):
+                # Without a trustworthy between-tick signal keep the complete
+                # scan synchronous; stale Unchanged rows must never be skipped.
+                if 'guard' in pending:
+                    raise RuntimeError('The Scan input guard was lost; scan again.')
+                collection.scan_changes(bpy.context)
+                complete = True
+            else:
+                # Flush pre-existing edits before the first proof/registration,
+                # and subsequent edits while the already-installed guard is on.
+                update()
+                if 'guard' not in pending:
+                    def changed(*_args):
+                        if not pending.get('guard_suspended', False):
+                            pending['inputs_changed'] = True
+                    pending['guard'], pending['guard_callbacks'] = changed, callbacks
+                    callbacks.append(changed)
+                elif pending['guard'] not in callbacks:
+                    raise RuntimeError('The Scan input guard was removed; scan again.')
+                if pending.get('inputs_changed', False):
+                    raise ValueError('Animation inputs changed during Scan; scan again before exporting.')
+                pending['guard_suspended'] = True
+                try:
+                    if 'scan' not in pending:
+                        pending['scan'] = collection.prepare_scan(bpy.context)
+                    complete = collection.step_scan(bpy.context, pending['scan'])
+                    if not complete:
+                        scan = pending['scan']
+                        _scan_feedback(pending, 'Scanning animations: ' + str(scan['index']) +
+                                       ' / ' + str(len(scan['rows'])) + '. Cancel between animations.')
+                    # Own row/status writes are drained in this one synchronous
+                    # scope, then every external depsgraph update invalidates.
+                    update()
+                finally:
+                    pending['guard_suspended'] = False
+            if not complete:
+                _SCAN_PENDING = pending
+                return .01
+            _release_scan_guard(pending)
             if pending['sync_after']:
                 collection.begin_sync_changed(bpy.context, changed_only=True)
             _redraw(bpy.context)
     except Exception as exc:
         _scan_feedback(pending, str(exc), error=True)
+    _release_scan_guard(pending)
     return None
 
 
 def _defer_scan(operator, context, *, sync_after=False):
-    """Give Scanning feedback one redraw before the same synchronous backend.
+    """Scan one animation per tick, allowing redraw/Cancel between animations.
 
-    This does not reduce scan CPU cost. Cancel works while pending; once the
-    synchronous scan starts Blender cannot process Cancel until it returns.
-    No Operator or transient Context is retained by the timer.
+    An individual Action still authenticates synchronously. No Operator or
+    transient Context is retained by the timer.
     """
     global _SCAN_PENDING
     if scan_pending():
@@ -262,7 +346,7 @@ def _defer_scan(operator, context, *, sync_after=False):
         if pending['window'] is None or _state(context) is None or not _idle(context):
             raise RuntimeError('Run the scan in an idle owning Blender window.')
         _SCAN_PENDING = pending
-        _scan_feedback(pending, 'Scanning animations... Blender responds when this check finishes.')
+        _scan_feedback(pending, 'Scanning animations... Cancel between animations.')
         bpy.app.timers.register(pending['callback'], first_interval=.05)
         pending['armed'] = True
     except Exception as exc:
@@ -332,15 +416,17 @@ def _rigging_display(rig):
 
 
 def _active_side(item, side):
-    action = item.source_action if side == 'SOURCE' else item.custom_action
-    rig = item.rig
+    action = getattr(item, 'source_action' if side == 'SOURCE' else 'custom_action', None)
+    rig = getattr(item, 'rig', None)
     if getattr(getattr(rig, 'data', None), 'pose_position', 'POSE') == 'REST':
         return False
-    if action is None or rig is None or rig.animation_data is None or item.side != side:
+    if action is None or rig is None or getattr(rig, 'animation_data', None) is None or item.side != side:
         return False
-    slot = item.source_slot if side == 'SOURCE' else item.custom_slot
+    slot = getattr(item, 'source_slot' if side == 'SOURCE' else 'custom_slot', None)
+    if slot is None:
+        return False
     if rig.animation_data.action == action:
-        return rig.animation_data.action_slot_handle == slot
+        return getattr(rig.animation_data, 'action_slot_handle', None) == slot
     display = _rigging_display(rig)
     return bool(display and display['rig'] is rig and display['base_action'] is action
                 and display['base_slot'] == slot
@@ -462,6 +548,90 @@ def _run_collection(operator, context, *names):
         return {'CANCELLED'}
     _redraw(context)
     return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_package_dependencies(Operator):
+    bl_idname = 'character_designer.worklist_package_dependencies'
+    bl_label = 'Package Editing Files'
+    bl_description = ('Copy the linked animation sources and Main Rig recovery inputs into a new folder, '
+                      'use the verified copies, then save the blend normally to retain their locations')
+
+    directory: StringProperty(subtype='DIR_PATH')
+    filter_folder: BoolProperty(default=True, options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and bool(settings.workspace_path) and _idle(context)
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        manifest = None
+        try:
+            backend = _backend()
+            package = backend.package_dependencies(context, self.directory)
+            manifest = package['manifest_path']
+            relocated = backend.rebind_dependencies(context, manifest)
+            message = ('Editing files packaged and connected. Save the blend normally to retain their locations. '
+                       'Unity publication files remain in their existing workspace.')
+            if not relocated.get('portable_paths', False):
+                message = ('Editing files packaged with absolute locations. Save the blend first, then package '
+                           'on the same drive for portable locations. Unity publication files remain in their existing workspace.')
+            settings = _state(context)
+            settings.status, settings.has_error = message, False
+            self.report({'INFO'}, message)
+        except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
+            message = str(exc)
+            if manifest is not None:
+                message += ' The completed package was kept at ' + str(manifest)
+            settings = _state(context)
+            if settings is not None:
+                settings.status, settings.has_error = message, True
+            self.report({'ERROR'}, message)
+            _redraw(context)
+            return {'CANCELLED'}
+        _redraw(context)
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_locate_dependencies(Operator):
+    bl_idname = 'character_designer.worklist_locate_dependencies'
+    bl_label = 'Locate Editing Files'
+    bl_description = 'Reconnect this worklist to a verified editing-files package after moving it'
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default='character_designer_dependencies.json;*.json', options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        settings = _state(context)
+        return settings is not None and bool(settings.workspace_path) and _idle(context)
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        try:
+            relocated = _backend().rebind_dependencies(context, self.filepath)
+            message = 'Editing files connected. Save the blend normally to retain their locations.'
+            if not relocated.get('portable_paths', False):
+                message += ' Save on the same drive and locate again before moving this workspace.'
+            settings = _state(context)
+            settings.status, settings.has_error = message, False
+            self.report({'INFO'}, message)
+        except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
+            settings = _state(context)
+            if settings is not None:
+                settings.status, settings.has_error = str(exc), True
+            self.report({'ERROR'}, str(exc))
+            _redraw(context)
+            return {'CANCELLED'}
+        _redraw(context)
+        return {'FINISHED'}
 
 
 class CharacterDesignerAnimationWorklistCatalog(PropertyGroup):
@@ -974,7 +1144,7 @@ class CHARACTERDESIGNER_OT_worklist_add_ready(Operator):
 class CHARACTERDESIGNER_OT_worklist_scan_changes(Operator):
     bl_idname = 'character_designer.worklist_scan_changes'
     bl_label = 'Scan Changes'
-    bl_description = 'Check full Custom key data after redraw; scanning is synchronous and Cancel works before it starts'
+    bl_description = 'Check full Custom key data one animation at a time; Cancel between animations'
 
     @classmethod
     def poll(cls, context):
@@ -1027,7 +1197,7 @@ class CHARACTERDESIGNER_OT_worklist_sync_changed(Operator):
 class CHARACTERDESIGNER_OT_worklist_cancel_collection(Operator):
     bl_idname = 'character_designer.worklist_cancel_collection'
     bl_label = 'Cancel Collection'
-    bl_description = 'Stop the collection batch; keep completed updates. A running scan must finish first.'
+    bl_description = 'Stop the collection batch; keep completed updates. Cancel scans between animations.'
 
     @classmethod
     def poll(cls, context):
@@ -1236,6 +1406,89 @@ class CHARACTERDESIGNER_OT_worklist_sync(Operator):
         return _run(self, context, 'sync')
 
 
+class CHARACTERDESIGNER_OT_worklist_simplify_keys(Operator):
+    bl_idname = 'character_designer.worklist_simplify_keys'
+    bl_label = 'Simplify Keys'
+    bl_description = 'Create a reduced-key Custom version and keep the current version for comparison'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    position_error: FloatProperty(name='Position Error', default=.0005, min=0.0,
+                                  precision=5, unit='LENGTH',
+                                  description='Maximum position error in scene units')
+    rotation_error: FloatProperty(name='Rotation Error (degrees)', default=.1, min=0.0,
+                                  precision=3,
+                                  description='Maximum rotation error in degrees')
+    scale_error: FloatProperty(name='Scale Error', default=.001, min=0.0, precision=4,
+                               description='Maximum scale error as a fraction; 0.001 means 0.1 percent')
+
+    @classmethod
+    def poll(cls, context):
+        if not _key_reduce_custom(context):
+            return False
+        info = _key_reduce_status(context)
+        return not (info and info['active_before'])
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, _context):
+        self.layout.label(text='Create a new Custom version.', icon='ACTION')
+        self.layout.prop(self, 'position_error')
+        self.layout.prop(self, 'rotation_error')
+        self.layout.prop(self, 'scale_error')
+
+    def execute(self, context):
+        try:
+            backend = _key_reduce()
+            plan = backend.prepare(context, position_error=self.position_error,
+                                   rotation_error=self.rotation_error, scale_error=self.scale_error)
+            backend.apply(context, plan)
+        except (ValueError, RuntimeError, OSError, ReferenceError, AttributeError, KeyError) as exc:
+            settings = _state(context)
+            if settings is not None:
+                settings.status, settings.has_error = str(exc), True
+            self.report({'ERROR'}, str(exc))
+            _redraw(context)
+            return {'CANCELLED'}
+        info = _key_reduce_status(context)
+        message = ('Keys: ' + str(info['before_keys']) + ' → ' + str(info['after_keys'])
+                   if info is not None else 'Created a simplified Custom version.')
+        settings = _state(context)
+        if settings is not None:
+            settings.status, settings.has_error = message, False
+        self.report({'INFO'}, message)
+        _redraw(context)
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_compare_keys(Operator):
+    bl_idname = 'character_designer.worklist_compare_keys'
+    bl_label = 'Compare Simplified Keys'
+    bl_description = 'View the retained Before or After Custom version of this simplification'
+    bl_options = {'REGISTER', 'UNDO'}
+    original: BoolProperty(default=False, options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        item = _selected(_state(context))
+        return bool(item is not None and item.side == 'CUSTOM' and _idle(context)
+                    and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
+                    and _key_reduce_status(context) is not None)
+
+    def execute(self, context):
+        try:
+            _key_reduce().compare(context, original=self.original)
+        except (ValueError, RuntimeError, OSError, ReferenceError, AttributeError, KeyError) as exc:
+            settings = _state(context)
+            if settings is not None:
+                settings.status, settings.has_error = str(exc), True
+            self.report({'ERROR'}, str(exc))
+            _redraw(context)
+            return {'CANCELLED'}
+        _redraw(context)
+        return {'FINISHED'}
+
+
 class CHARACTERDESIGNER_OT_worklist_rigging_edit(Operator):
     bl_idname = 'character_designer.worklist_rigging_edit'
     bl_label = 'Edit Rigging Action'
@@ -1336,6 +1589,25 @@ def _draw_worklist_actions(layout, context, settings):
                          settings, 'items', settings, 'list_cursor', rows=5, maxrows=5)
 
 
+def _draw_key_reduce(layout, context, item):
+    if item is None or item.side != 'CUSTOM':
+        return
+    info = _key_reduce_status(context)
+    row = layout.row()
+    row.enabled = _key_reduce_custom(context) and not (info and info['active_before'])
+    row.operator_context = 'INVOKE_DEFAULT'
+    row.operator('character_designer.worklist_simplify_keys', text='Simplify Keys', icon='KEY_HLT')
+    if info is not None:
+        layout.label(text='Keys: ' + str(info['before_keys']) + ' → ' + str(info['after_keys']))
+        compare = layout.row(align=True)
+        compare.enabled = (_idle(context)
+                           and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'})
+        for original, label in ((True, 'Before'), (False, 'After')):
+            operator = compare.operator('character_designer.worklist_compare_keys', text=label,
+                                        depress=bool(info['active_before']) == original)
+            operator.original = original
+
+
 def _draw_rigging(layout, context, item):
     if item is not None and has_original_inputs(item.rig):
         return
@@ -1386,8 +1658,11 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
     header.operator('character_designer.worklist_refresh', text='', icon='FILE_REFRESH')
     busy = scan_pending() or _collection().running()
     from . import animation_rest_pose, animation_pose_test
-    if animation_rest_pose.can_show(context):
+    try:
         display_rig = animation_rest_pose.get_rig(context)
+    except (ValueError, AttributeError, ReferenceError):
+        display_rig = None
+    if display_rig is not None:
         pose_row = box.row(align=True)
         pose_row.enabled = _idle(context) and getattr(context, 'mode', '') in {'OBJECT', 'POSE'}
         testing = animation_pose_test.active(display_rig)
@@ -1437,13 +1712,38 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
                               text='Add Prepared Animation', icon='ADD')
         if settings.items:
             _draw_worklist_actions(box, context, settings)
+            draw_controller_animation(box, context)
         else:
             box.label(text='Add motions in Unity, then click Sync List.', icon='INFO')
+        _draw_key_reduce(box, context, _selected(settings))
         _draw_rigging(box, context, _selected(settings))
         advanced = box.row()
         advanced.prop(settings, 'show_advanced', text='Advanced', emboss=False,
                       icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
         if settings.show_advanced:
+            files = box.row(align=True)
+            files.enabled = _idle(context)
+            files.operator('character_designer.worklist_package_dependencies', text='Package Editing Files', icon='PACKAGE')
+            files.operator('character_designer.worklist_locate_dependencies', text='Locate Editing Files', icon='FILE_FOLDER')
+            selected = _selected(settings)
+            if (selected is not None and selected.side == 'CUSTOM'
+                    and selected.rig is not None and selected.custom_action is not None):
+                export_base = box.row()
+                export_base.enabled = _idle(context) and _key_reduce_custom(context)
+                capture = export_base.operator('character_designer.animation_export_base_pose',
+                                               text='Capture Export Base Pose', icon='POSE_HLT')
+                capture.rig_name = selected.rig.name
+                capture.action_name = selected.custom_action.name
+                capture.clear = False
+                if ('character_designer_animation_export_base_v1' in selected.custom_action
+                        or 'character_designer_animation_export_base_v1_count' in selected.custom_action):
+                    clear_base = box.row()
+                    clear_base.enabled = export_base.enabled
+                    clear = clear_base.operator('character_designer.animation_export_base_pose',
+                                                text='Clear Export Base Pose', icon='X')
+                    clear.rig_name = selected.rig.name
+                    clear.action_name = selected.custom_action.name
+                    clear.clear = True
             base = box.operator('character_designer.worklist_base_pose', text='Base Pose',
                                 icon='LOOP_BACK')
             base.finish = False
@@ -1487,9 +1787,12 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
 
 WORKLIST_CLASSES = (
     *ORIGINAL_INPUT_CLASSES,
+    *CONTROLLER_ANIMATION_CLASSES,
     CharacterDesignerAnimationWorklistCatalog,
     CharacterDesignerAnimationWorklistItem,
     CharacterDesignerAnimationWorklistState,
+    CHARACTERDESIGNER_OT_worklist_package_dependencies,
+    CHARACTERDESIGNER_OT_worklist_locate_dependencies,
     CHARACTERDESIGNER_OT_worklist_connect,
     CHARACTERDESIGNER_OT_worklist_add_prepared_animation,
     CHARACTERDESIGNER_OT_worklist_refresh,
@@ -1518,6 +1821,8 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_drag_handle,
     CHARACTERDESIGNER_OT_worklist_drag,
     CHARACTERDESIGNER_OT_worklist_sync,
+    CHARACTERDESIGNER_OT_worklist_simplify_keys,
+    CHARACTERDESIGNER_OT_worklist_compare_keys,
     CHARACTERDESIGNER_OT_worklist_rigging_edit,
     CHARACTERDESIGNER_OT_worklist_save_controls,
     CHARACTERDESIGNER_UL_animation_catalog,

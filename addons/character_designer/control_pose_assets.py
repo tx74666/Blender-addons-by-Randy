@@ -937,9 +937,6 @@ class _AssetChannels(dict):
 
 
 def _asset_channels(asset, rig):
-    from . import animation_pose_test
-    if animation_pose_test.natural_active(rig):
-        raise ValueError('Choose Pose to finish the static Rest test before applying or blending a Pose asset.')
     def read(action):
         metadata = asset_metadata(action)
         native = set(native_rest(rig))
@@ -951,6 +948,10 @@ def _asset_channels(asset, rig):
             if names - native:
                 raise ValueError('This saved Pose contains generated-control channels; no changes were applied.')
             return _AssetChannels(channels(action, rig), metadata)
+        if names - native:
+            from . import animation_pose_test
+            if animation_pose_test.natural_active(rig):
+                raise ValueError('This control-authored Pose cannot be applied inside the editable Rest test.')
         return None if names - native else channels(action, rig)
     if asset.local_id:
         return read(asset.local_id)
@@ -1027,8 +1028,24 @@ class CHARACTERDESIGNER_OT_apply_control_pose(bpy.types.Operator):
     def execute(self, context):
         from . import animation_pose_test
         if animation_pose_test.natural_active(context.object):
-            self.report({'WARNING'}, 'Choose Pose to finish the static Rest test before applying a Pose asset.')
-            return {'CANCELLED'}
+            from . import control_pose_blend
+            session = None
+            try:
+                session = control_pose_blend.begin(context, rig=context.object,
+                    flipped=self.flipped, respect_selection=True)
+                control_pose_blend.preview(context, session, 1.)
+                control_pose_blend.confirm(context, session)
+                return {'FINISHED'}
+            except (ValueError, RuntimeError, KeyError, TypeError) as exc:
+                if session is not None and not session.get('closed', False):
+                    try:
+                        control_pose_blend.cancel(context, session)
+                    except Exception as recovery_error:
+                        self.report({'WARNING'}, 'Apply Pose failed; its owned recovery needs review: '
+                                    + str(recovery_error))
+                        return {'CANCELLED'}
+                self.report({'WARNING'}, str(exc))
+                return {'CANCELLED'}
         from . import body_setup
         local = getattr(context.asset, 'local_id', None)
         managed = local is not None and ASSET_METADATA in local

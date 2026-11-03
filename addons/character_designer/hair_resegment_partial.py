@@ -414,6 +414,69 @@ def _active_bag(rig, actions):
     return action, strip.channelbags.new(slot)
 
 
+def _existing_sample_dependencies(copy_state):
+    """Keep legacy evaluation when a dangling path can acquire a new bone."""
+    rig, names = copy_state['rig'], copy_state['selected_new']
+    for owner in tuple(dict.fromkeys(copy_state['mapping'].values())):
+        for action, slot in _pairs(owner):
+            for _, _, bag in _bags(action, slot):
+                if not hasattr(bag, 'fcurves'):
+                    return True
+                if any(_bone(curve.data_path) in names for curve in bag.fcurves):
+                    return True
+        animation = getattr(owner, 'animation_data', None)
+        for curve in animation.drivers if animation else ():
+            if _bone(curve.data_path) in names or _driver_depends(curve, rig, names):
+                return True
+        if isinstance(owner, bpy.types.Object):
+            if (owner.parent is rig and owner.parent_type == 'BONE'
+                    and owner.parent_bone in names):
+                return True
+            constraints = [owner]
+            if owner.type == 'ARMATURE':
+                constraints.extend(owner.pose.bones)
+            if any(_constraint_depends(constraint, rig, names)
+                   for item in constraints for constraint in item.constraints):
+                return True
+    return False
+
+
+def _assign_sampled_basis(context, selected, target, *, allow_basis=True):
+    """Assign owned new NONE-inheritance chains when the fast path is proven.
+
+    Carry each RNA-decomposed, realizable parent matrix through the selected
+    tree. Unexpected bone settings or existing animation outputs keep the old
+    caller's per-bone evaluation order. False returns without changing a pose;
+    no sampling or error tolerance changes here.
+    """
+    names, seen = {pose.name for pose in selected}, set()
+    use_basis = allow_basis
+    for pose in selected:
+        bone, parent = pose.bone, pose.parent
+        if (pose.constraints or bone.inherit_scale != 'NONE'
+                or not bone.use_inherit_rotation or not bone.use_local_location
+                or parent and parent.name in names and parent.name not in seen):
+            use_basis = False
+        seen.add(pose.name)
+    if not use_basis:
+        return False
+    computed = {}
+    for pose in selected:
+        parent = pose.parent
+        options = {}
+        if parent:
+            options = dict(parent_matrix=(computed[parent.name] if parent.name in computed
+                                          else parent.matrix.copy()),
+                           parent_matrix_local=parent.bone.matrix_local)
+        pose.rotation_mode = 'QUATERNION'
+        pose.matrix_basis = pose.bone.convert_local_to_pose(
+            target[pose.name], pose.bone.matrix_local, invert=True, **options)
+        computed[pose.name] = pose.bone.convert_local_to_pose(
+            pose.matrix_basis, pose.bone.matrix_local, **options)
+    context.view_layer.update()
+    return True
+
+
 def write_action(context, rig, copy_rig, plans, times, actions, author_frame,
                  author_pose, author_channels, *, copy_state=None):
     """Sample only new selected bone transforms into the copied active Action."""
@@ -427,6 +490,20 @@ def write_action(context, rig, copy_rig, plans, times, actions, author_frame,
     values, previous_q = {}, {}
     selected = [copy_rig.pose.bones[name] for plan in plans for name in plan['names']]
     selected.sort(key=lambda pose: len(pose.parent_recursive))
+    allow_basis = not _existing_sample_dependencies(copy_state)
+    prepared = []
+    for plan in plans:
+        count = len(plan['names'])
+        positions = tuple(index / count for index in range(count + 1))
+        indices = tuple(min(len(plan['old']['bones']) - 1, max(0,
+            service.bisect.bisect_right(plan['distances'],
+                (index + .5) / count * plan['distances'][-1]) - 1))
+            for index in range(count))
+        lengths = tuple(copy_rig.data.bones[name].length for name in plan['names'])
+        prepared.append((plan, positions, indices, lengths))
+    paths = {pose.name: {field: pose.path_from_id(field)
+                        for field in ('location', 'rotation_quaternion', 'scale')}
+             for pose in selected}
     for frame in times:
         context.scene.frame_set(math.floor(frame), subframe=frame - math.floor(frame))
         if abs(frame - author_frame) < 1e-7:
@@ -436,21 +513,20 @@ def write_action(context, rig, copy_rig, plans, times, actions, author_frame,
         context.view_layer.update()
         evaluated = rig.evaluated_get(context.evaluated_depsgraph_get())
         target = {}
-        for plan in plans:
+        for plan, positions, indices, lengths in prepared:
             old = [evaluated.pose.bones[name] for name in plan['old']['bones']]
             points = [tuple(pose.head) for pose in old] + [tuple(old[-1].tail)]
-            positions = [index / len(plan['names']) for index in range(len(plan['names']) + 1)]
             sampled = service.maths.sample_polyline(points, positions, distances=plan['distances'])
             for index, name in enumerate(plan['names']):
-                midpoint = (index + .5) / len(plan['names']) * plan['distances'][-1]
-                old_index = min(len(old) - 1, max(0, service.bisect.bisect_right(plan['distances'], midpoint) - 1))
                 target[name] = service._oriented(service.Vector(sampled[index]),
-                    service.Vector(sampled[index + 1]), old[old_index].matrix.to_3x3().col[2],
-                    copy_rig.data.bones[name].length)
+                    service.Vector(sampled[index + 1]), old[indices[index]].matrix.to_3x3().col[2],
+                    lengths[index])
+        sampled_basis = _assign_sampled_basis(context, selected, target, allow_basis=allow_basis)
         for pose in selected:
-            pose.rotation_mode = 'QUATERNION'
-            pose.matrix = target[pose.name]
-            context.view_layer.update()
+            if not sampled_basis:
+                pose.rotation_mode = 'QUATERNION'
+                pose.matrix = target[pose.name]
+                context.view_layer.update()
             q = pose.rotation_quaternion.copy()
             if pose.name in previous_q and q.dot(previous_q[pose.name]) < 0.:
                 q.negate()
@@ -460,7 +536,7 @@ def write_action(context, rig, copy_rig, plans, times, actions, author_frame,
                 for axis, number in enumerate(vector):
                     if not math.isfinite(number):
                         raise PartialHairError('Selected Hair sampling produced a non-finite transform.')
-                    values.setdefault((pose.path_from_id(field), axis), []).append(float(number))
+                    values.setdefault((paths[pose.name][field], axis), []).append(float(number))
     for (path, axis), numbers in values.items():
         retarget._write_curve(bag, path, axis, times, numbers)
     return action

@@ -446,12 +446,12 @@ def register():
     _RECOVERY_PENDING = True
 
 
-def unregister():
+def unregister(*, recover_pending=True):
     """Turn owned bridges off; retain their disabled persistent components."""
     global _REGISTERED, _RECOVERY_PENDING
     _PLAYING.clear()
     _BLOCKED.clear()
-    if _RECOVERY_PENDING:
+    if recover_pending and _RECOVERY_PENDING:
         _recover_pending()
     if not _off_all():
         raise RuntimeError('Owned playback bridge cleanup failed; guards remain registered.')

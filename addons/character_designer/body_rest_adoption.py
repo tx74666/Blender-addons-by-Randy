@@ -69,12 +69,18 @@ def _historical_pair(rig, previous, motion_rest, mapped_names, motion=None):
     policy._snapshot(motion_rest, 'Historical motion Rest')
     _require(set(previous) == set(motion_rest) and names <= set(previous),
              'The historical mapped names or motion bone inventory changed.')
+    removed_hair = None
     for name, old in previous.items():
         now = motion_rest[name]
         _require(ua._same_current_rest_bone(old, now),
                  'The saved historical motion changed native Rest geometry: ' + name)
         if old['use_connect'] != now['use_connect']:
             original_bone = rig.data.bones.get(name)
+            if original_bone is None:
+                from . import hair_replace_authority
+                if removed_hair is None:
+                    removed_hair = hair_replace_authority.historical_bones(rig)
+                original_bone = removed_hair.get(name)
             motion_bone = motion.bones.get(name) if motion is not None else original_bone
             _require(old['use_connect'] and not now['use_connect'] and name in names
                      and original_bone is not None and motion_bone is not None

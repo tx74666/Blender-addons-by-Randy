@@ -186,6 +186,16 @@ def _atomic(context, rig, operation):
                 bone_display_sync.completed(rig)
 
 
+def _update_fk_controls(context, rig):
+    """Extend an existing display record without rebuilding its limb rig."""
+    from . import limb_fk_visuals
+    if limb_fk_visuals.RECORD_KEY not in rig.data:
+        return []
+    previous = limb_fk_visuals.get_record(rig)
+    record = limb_fk_visuals.build(context, rig)
+    return sorted(set(record['bindings']) - set(previous['bindings']))
+
+
 def generate(context, rig):
     """Add supported missing components without rebuilding existing ones."""
     _require_rig(context, rig)
@@ -206,6 +216,8 @@ def generate(context, rig):
     if not pending:
         def update_axes():
             result['updated'] = limb_ik.sync_wrist_local_axes(rig)
+            result['fk_controls_added'] = _update_fk_controls(context, rig)
+            bone_collections.sync_limb_display(rig, force_flags=True)
             body_calibration.verify_rest(rig,protected_rest)
             context.view_layer.update()
             preserve_object_inputs(context, rig)
@@ -233,6 +245,7 @@ def generate(context, rig):
             preserve_object_inputs(context, rig)
             result['created'].append(entry['key'])
         result['updated'] = limb_ik.sync_wrist_local_axes(rig)
+        result['fk_controls_added'] = _update_fk_controls(context, rig)
         bone_collections.finish_rig_edit(rig, layout)
         control_colors.sync(rig)
         context.view_layer.update()

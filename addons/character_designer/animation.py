@@ -373,6 +373,93 @@ class CHARACTERDESIGNER_OT_animation_link_sync(Operator):
         return {'FINISHED'}
 
 
+def _export_base_owner(context, rig, action):
+    from . import animation_worklist as worklist, animation_pose_test as pose
+    from . import animation_rest_pose as rest, body_original_mode as original
+    from . import animation_composition as composition, unity_animation as ua
+    if not _link_idle():
+        raise ValueError('Finish the current animation operation before capturing the export base pose.')
+    if (rig is None or rig.type != 'ARMATURE' or rig.library or rig.data.library
+            or rig.override_library or not rig.is_editable or not rig.data.is_editable
+            or context.scene.objects.get(rig.name) is not rig
+            or context.view_layer.objects.get(rig.name) is not rig or rig.mode not in {'OBJECT', 'POSE'}):
+        raise ValueError('Return to this local animation rig and scene before capturing its export base pose.')
+    ad = rig.animation_data
+    if (action is None or action.library or action.override_library or not action.is_editable
+            or action.asset_data or ad is None or ad.action is not action
+            or ad.use_tweak_mode):
+        raise ValueError('Activate the intended editable Custom Action outside NLA Tweak Mode before capture.')
+    # Reuse the established same-rig owner, visibility and Forearm trial
+    # admission. It performs no author writes or context changes.
+    pose._admission(context, rig, _purpose='ANIMATION')
+    from . import control_pose_blend_ui as blend
+    modal = getattr(getattr(context, 'window', None), 'modal_operators', None)
+    if (getattr(context, 'object', None) is rig and modal is not None
+            and modal.get('POSELIB_OT_blend_pose_asset') is not None):
+        raise ValueError('Finish or cancel Blend Pose before capturing the export base pose.')
+    for operator in tuple(blend._ACTIVE_OPERATORS):
+        session = getattr(operator, '_session', None)
+        live = isinstance(session, dict) and session.get('rig') is rig and session.get('closed') is not True
+        uncertain = not isinstance(session, dict) and getattr(operator, 'target_name', None) == rig.name
+        if live or uncertain:
+            raise ValueError('Finish or cancel Blend Pose before capturing the export base pose.')
+    if getattr(getattr(context, 'screen', None), 'is_animation_playing', False):
+        raise ValueError('Stop playback before capturing the export base pose.')
+    if (pose.active(rig) or original.active(rig) or rest.is_rest(rig) or composition.active(rig)
+            or ua.active_preview(rig) or pose.SESSION_KEY in action or pose.REFS_KEY in action
+            or worklist._rigging_module(rig, action) is not None):
+        raise ValueError('Return to ordinary Controls animation editing before capturing the export base pose.')
+    saved = getattr(context.scene, 'character_designer_animation_worklist', None)
+    if saved is not None and (saved.workspace_path or saved.items):
+        item = worklist.current(context)
+        if (item is None or item.rig is not rig or item.side != 'CUSTOM' or item.custom_action is not action
+                or getattr(item, 'composition_json', '')
+                or action.is_action_layered and (ad.action_slot is None or ad.action_slot.handle != item.custom_slot)):
+            raise ValueError('Select the active ordinary Custom entry; Source and separate input drafts are protected.')
+        if any(row.source_action is action for row in saved.items):
+            raise ValueError('Source is read-only; capture an export base pose on its Custom copy.')
+    from . import animation_physics as physics
+    state = physics.status(context)
+    if (state.get('hair', {}).get('running') or state.get('hair', {}).get('pending_recovery')
+            or any(row.get('running') or row.get('pending_recovery') for row in state.get('dresses', ()))):
+        raise ValueError('Pause Hair and Dress physics and finish recovery before capturing the export base pose.')
+    return ad.action_slot.handle if action.is_action_layered and ad.action_slot else 0
+
+
+class CHARACTERDESIGNER_OT_animation_export_base_pose(Operator):
+    bl_idname = 'character_designer.animation_export_base_pose'
+    bl_label = 'Capture Export Base Pose'
+    bl_description = ('Retain this Custom Action\'s current unkeyed control inputs for future exports; '
+                      'keep animation keys and the current pose')
+    bl_options = {'REGISTER', 'UNDO'}
+    rig_name: StringProperty(options={'HIDDEN'})
+    action_name: StringProperty(options={'HIDDEN'})
+    clear: BoolProperty(default=False, options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        return _link_idle()
+
+    def execute(self, context):
+        from . import animation_export_inputs as inputs
+        rig = bpy.data.objects.get(self.rig_name) if self.rig_name else _target(context)
+        action = (bpy.data.actions.get(self.action_name) if self.action_name else
+                  rig.animation_data.action if rig and rig.animation_data else None)
+        try:
+            if self.clear:
+                inputs.clear(context, rig, action)
+            else:
+                handle = _export_base_owner(context, rig, action)
+                inputs.capture(rig, action, handle)
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        self.report({'INFO'}, ('Export base pose cleared; animation keys and the current pose were kept.' if self.clear else
+                              'Export base pose captured; animation keys and the current pose were kept.'))
+        _redraw()
+        return {'FINISHED'}
+
+
 class CHARACTERDESIGNER_OT_animation_export(Operator):
     bl_idname = 'character_designer.animation_export'
     bl_label = 'Export Action to Unity'
@@ -412,6 +499,17 @@ class CHARACTERDESIGNER_OT_animation_export(Operator):
         self.layout.prop(self, 'loop')
         self.layout.label(text='One Action; NLA is excluded.')
         self.layout.label(text='Skeletal only: no Shape Keys or events.')
+        from . import animation_export_inputs as inputs
+        rig = bpy.data.objects.get(self.rig_name)
+        action = bpy.data.actions.get(self.action_name)
+        self.layout.label(text=inputs.status(rig, action)['message'])
+        capture = self.layout.operator('character_designer.animation_export_base_pose', icon='POSE_HLT')
+        capture.rig_name, capture.action_name = self.rig_name, self.action_name
+        capture.clear = False
+        if action is not None and (inputs.RECORD in action or inputs.COUNT in action):
+            clear = self.layout.operator('character_designer.animation_export_base_pose',
+                                         text='Clear Export Base Pose', icon='X')
+            clear.rig_name, clear.action_name, clear.clear = self.rig_name, self.action_name, True
 
     def execute(self, context):
         from . import animation_export
@@ -888,6 +986,7 @@ ANIMATION_CLASSES = (
     CHARACTERDESIGNER_OT_animation_link_import,
     CHARACTERDESIGNER_OT_animation_link_model,
     CHARACTERDESIGNER_OT_animation_link_sync,
+    CHARACTERDESIGNER_OT_animation_export_base_pose,
     CHARACTERDESIGNER_OT_animation_export,
     CHARACTERDESIGNER_OT_animation_export_cancel,
     CharacterDesignerAnimationState,

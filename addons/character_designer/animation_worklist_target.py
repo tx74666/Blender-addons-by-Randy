@@ -101,9 +101,87 @@ def _numeric_properties(target):
             for pb in target.pose.bones}
 
 
-def _capture(context, rig):
+def _owned_ik_pole_constraints(target):
+    """Resolve actual owned IK relations, never infer ownership from names."""
+    from . import limb_ik
+    inventory = limb_ik._validate_inventory(target)
+    result = {}
+    for entry in inventory['rigs'].values():
+        owned = [(pb, constraint, record) for pb, constraint, record in entry['entries']
+                 if record['role'] == 'IK']
+        if len(owned) != 1:
+            raise ValueError('Owned Pole recovery needs one verified IK relation per limb.')
+        pb, constraint, record = owned[0]
+        actual = target.pose.bones[pb.name].constraints.get(constraint.name)
+        prop = constraint.bl_rna.properties.get('pole_angle')
+        if (pb.id_data is not target or constraint.id_data is not target
+                or actual is None or actual.as_pointer() != constraint.as_pointer()
+                or constraint.type != 'IK' or constraint.target is not target
+                or constraint.pole_target is not target
+                or record.get('owner') != limb_ik.OWNER_VALUE
+                or record.get('version') != limb_ik.RIG_VERSION
+                or prop is None or prop.type != 'FLOAT' or prop.is_array
+                or prop.is_readonly or not prop.is_animatable):
+            raise ValueError('The native owned IK Pole binding changed; recovery was kept.')
+        value = constraint.pole_angle
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or not prop.hard_min <= value <= prop.hard_max):
+            raise ValueError('The owned IK Pole angle is outside its native scalar range.')
+        key = pb.name, constraint.name
+        if key in result:
+            raise ValueError('Duplicate owned IK Pole recovery relation.')
+        result[key] = constraint
+    return result
+
+
+def _validate_owned_ik_poles(entry):
+    """A saved scalar grants only its captured, freshly authenticated path."""
+    saved = [(name, key, values['pole_angle'])
+             for name, constraints in entry['constraints'].items()
+             for key, values in constraints.items() if 'pole_angle' in values]
+    if not saved:
+        return {}  # Old captures retain their original permissions and cost.
+    owned = _owned_ik_pole_constraints(entry['target'])
+    paths = {}
+    for name, key, value in saved:
+        constraint = owned.get((name, key))
+        if constraint is None or entry['constraints'][name][key]['type'] != 'IK':
+            raise ValueError('A captured Pole angle is not an actual owned IK relation.')
+        prop = constraint.bl_rna.properties['pole_angle']
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or not prop.hard_min <= value <= prop.hard_max):
+            raise ValueError('A captured owned Pole angle is not a finite native scalar.')
+        paths[constraint.path_from_id('pole_angle')] = 1
+    return paths
+
+
+def _merge_owned_ik_poles(captured, fresh, rig):
+    """Extend only a new child's missing scalar coverage, not its history."""
+    previous = [entry for entry in captured['targets'] if entry['target'] is rig]
+    current = [entry for entry in fresh['targets'] if entry['target'] is rig]
+    if len(previous) != 1 or len(current) != 1 or previous[0]['data'] is not current[0]['data']:
+        raise ValueError('The exact fresh current-Rig capture changed before publication.')
+    _validate_owned_ik_poles(current[0])
+    _validate_owned_ik_poles(previous[0])
+    result = _freeze(captured)
+    destination = next(entry for entry in result['targets'] if entry['target'] is rig)
+    for name, constraints in current[0]['constraints'].items():
+        for key, values in constraints.items():
+            if 'pole_angle' not in values:
+                continue
+            old = destination['constraints'].get(name, {}).get(key)
+            if old is None or old['type'] != values['type']:
+                raise ValueError('An owned Pole relation changed across the current-Rig captures.')
+            if 'pole_angle' not in old:
+                old['pole_angle'] = values['pole_angle']
+    return result
+
+
+def _capture(context, rig, *, include_owned_ik_poles=False):
     from . import unity_animation as ua
     from . import bone_display as display, skirt_rig
+    if type(include_owned_ik_poles) is not bool:
+        raise ValueError('Choose explicit owned Pole recovery coverage.')
     targets = list(dict.fromkeys(display._affected(context, rig)))
     if rig not in targets:
         targets.insert(0, rig)
@@ -128,6 +206,10 @@ def _capture(context, rig):
                             **{field: getattr(constraint, field) for field in _CONSTRAINT_FIELDS
                                if hasattr(constraint, field)}} for constraint in pb.constraints}
                             for pb in target.pose.bones}})
+    if include_owned_ik_poles:
+        primary = next(entry for entry in records if entry['target'] is rig)
+        for (name, key), constraint in _owned_ik_pole_constraints(rig).items():
+            primary['constraints'][name][key]['pole_angle'] = float(constraint.pole_angle)
     active = context.view_layer.objects.active
     return _freeze({'targets': records,
             'metadata': [{'owner': owner, 'values': {key: owner[key] for key in keys if key in owner}}
@@ -209,6 +291,7 @@ def _validate_capture(context, captured):
                 raise ValueError('A saved Main Rig constraint changed type.')
             if any(key not in pb for key in entry['properties'][name]):
                 raise ValueError('A saved Main Rig control property was removed.')
+        _validate_owned_ik_poles(entry)
     keys = set(_metadata_keys())
     if any(not isinstance(entry['owner'], bpy.types.ID) or set(entry['values']) - keys
            for entry in captured['metadata']):
@@ -233,6 +316,8 @@ def _validate_capture(context, captured):
 def _apply_capture(context, rig, captured):
     from . import unity_animation as ua
     from . import bone_display as display, body_original_mode as original, bone_collections as groups
+    for entry in captured['targets']:
+        _validate_owned_ik_poles(entry)
     ua._set_playing(context, False)
     for entry in captured['targets']:
         target = entry['target']
@@ -259,6 +344,12 @@ def _apply_capture(context, rig, captured):
                     if field != 'type':
                         setattr(constraint, field, value)
         ua._restore_snapshot(context, target, entry['snapshot'], entry['action'])
+        # Seeking the restored Action can overwrite an unkeyed constraint
+        # scalar. Replay only the explicitly captured owned field afterwards.
+        for name, constraints in entry['constraints'].items():
+            for key, values in constraints.items():
+                if 'pole_angle' in values:
+                    target.pose.bones[name].constraints[key].pole_angle = values['pole_angle']
         display._restore(target, entry['display'])
         target.data.use_fake_user = entry['data_fake_user']
         if entry['action']:
@@ -776,7 +867,8 @@ def _validate_record(context, rig, record):
     _validate_capture(context, record['capture'])
     if rig.data is not record['motion_data'] or not ua._matches_rest_state(rig.data, record['motion_rest']):
         raise ValueError('The adopted Main Rig Rest/data changed; its artist recovery snapshot was kept.')
-    packet = ua.load_package(record['packet_path'])
+    from .animation_worklist_dependencies import packet_path
+    packet = ua.load_package(packet_path(rig, record))
     if packet['_sha256'] != record['packet_sha256']:
         raise ValueError('The adopted Main Rig packet changed; recovery left the artist untouched.')
     context.view_layer.update()
@@ -832,6 +924,8 @@ def adopt_main_rig(context):
                 for item in saved.catalog if item.ready]
     if not prepared:
         raise ValueError('Prepare at least one clip before validating Main Rig adoption.')
+    from .animation_worklist_dependencies import pin_recovery_packet
+    recovery_path = pin_recovery_packet(prepared[0][3])
     retained = _retained_motion_data(rig, saved.items)
     previous_action_refs = _capture_action_motion_refs(saved.items) if retained else []
     captured = _capture(context, rig)
@@ -866,7 +960,7 @@ def adopt_main_rig(context):
                     captured['targets'][0]['rest'], ua._rest_state(editing_data), mapped_names)
         record = {'version': 1, 'rig': rig, 'scene': context.scene,
                   'view_layer': context.view_layer.name, 'workspace_identity': saved.workspace_identity,
-                  'capture': captured, 'packet_path': packet['_path'], 'packet_sha256': packet['_sha256'],
+                  'capture': captured, 'packet_path': recovery_path, 'packet_sha256': packet['_sha256'],
                   'motion_data': rig.data, 'motion_rest': ua._rest_state(rig.data),
                   'mapped_names': mapped_names}
         _store(rig, record)

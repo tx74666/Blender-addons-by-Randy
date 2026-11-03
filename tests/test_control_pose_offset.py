@@ -12,6 +12,66 @@ offset = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(offset)
 
 
+class ExpiredRowReference(RuntimeError):
+    pass
+
+
+class RelocatingRow:
+    """A safe fake: Collection.add invalidates every previous RNA wrapper."""
+    def __init__(self, owner, index):
+        object.__setattr__(self, '_owner', owner)
+        object.__setattr__(self, '_index', index)
+        object.__setattr__(self, '_epoch', owner.epoch)
+    def _record(self):
+        owner = object.__getattribute__(self, '_owner')
+        if object.__getattribute__(self, '_epoch') != owner.epoch:
+            owner.expired_reads += 1
+            raise ExpiredRowReference('old RNA wrapper invalidated by row collection mutation')
+        return owner.records[object.__getattribute__(self, '_index')]
+    def __getattr__(self, name):
+        return self._record()[name]
+    def __setattr__(self, name, value):
+        self._record()[name] = value
+
+
+class RelocatingRows:
+    def __init__(self, records):
+        self.records, self.epoch, self.expired_reads = records, 0, 0
+    def __len__(self):
+        return len(self.records)
+    def __iter__(self):
+        return (RelocatingRow(self, index) for index in range(len(self.records)))
+    def fresh(self, item_id):
+        return RelocatingRow(self, next(i for i,r in enumerate(self.records) if r['item_id']==item_id))
+    def add(self):
+        self.epoch += 1
+        self.records.append({})
+        return RelocatingRow(self, len(self.records)-1)
+    def remove(self, index):
+        self.epoch += 1
+        self.records.pop(index)
+
+
+class RowAction(dict):
+    library = None
+    asset_data = None
+    def __init__(self, name, fingerprint, database):
+        self.name, self.fingerprint, self.database = name, fingerprint, database
+        self.use_fake_user, self.layers = True, []
+        self.slots = [NS(handle=1, target_id_type='OBJECT')]
+    @property
+    def name_full(self):
+        return self.name
+    @property
+    def users(self):
+        return int(self.use_fake_user)
+    def copy(self):
+        result = RowAction(self.name+'.copy',self.fingerprint,self.database)
+        result.update(self)
+        self.database.append(result)
+        return result
+
+
 class OffsetContractTests(unittest.TestCase):
     def test_factor_default_range_and_nonfinite_refusal(self):
         self.assertEqual(offset._factor(.5), .5)
@@ -155,6 +215,72 @@ class OffsetContractTests(unittest.TestCase):
             result = offset.publish_variant(plan, action)
         self.assertTrue(action.use_fake_user)
         self.assertEqual(result['item_id'], 'new-row')
+
+    def _row_transaction(self):
+        actions=[]
+        original=RowAction('Original','custom',actions)
+        source=RowAction('Source','source',actions)
+        foreign=RowAction('Foreign source','foreign',actions)
+        actions.extend((original,source,foreign))
+        rig=NS(animation_data=NS(action=original))
+        rows=RelocatingRows([dict(item_id='parent',name='Original row',rig=rig,
+            custom_action=original,custom_slot=1,source_action=source,source_slot=1,side='CUSTOM')])
+        saved=NS(items=rows,active_index=0,status='before',has_error=False)
+        context=NS(window_manager=NS(character_designer_animation=NS(target=rig)))
+        api=NS(worklist=NS(_item=lambda state,item_id:state.items.fresh(item_id)),
+            fingerprint=NS(fingerprint_action=lambda action,slot:dict(fingerprint_known=True,
+                action_fingerprint=action.fingerprint+':'+str(slot))),
+            revision=NS(_row=lambda row:{key:getattr(row,key) for key in rows.records[0]},
+                CHECKPOINT='checkpoint',_modules=lambda:None),
+            target=NS(_capture=lambda *_args,**_kw:object(),_validate_capture=lambda *_args:None),
+            bpy=NS(data=NS(actions=NS(remove=actions.remove))))
+        api.worklist.activate=lambda _context,item_id,_side:setattr(rig.animation_data,'action',rows.fresh(item_id).custom_action)
+        api.revision._restore_current=lambda *_args:setattr(rig.animation_data,'action',original)
+        plan=dict(api=api,context=context,rig=rig,saved=saved,item=rows.fresh('parent'),
+            original=original,slot=1,hashes={1:'custom:1'},source_hash='source:1',strength=0.,
+            names=['Upper.L'],frames=[1.,9.],asset_name='Pose',revision_value=None,
+            compatibility='test native-ID/row-lifetime scaffold',flipped=False)
+        return NS(actions=actions,original=original,source=source,foreign=foreign,rows=rows,
+                  saved=saved,context=context,rig=rig,api=api,plan=plan)
+
+    def test_create_refetches_original_source_row_after_publish_relocation(self):
+        f=self._row_transaction()
+        with patch.object(offset,'prepare',return_value=f.plan):
+            result=offset.create(f.context,f.rig,object(),strength=0.,activate=False)
+        self.assertEqual(len(f.rows),2)
+        self.assertEqual(f.rows.expired_reads,0)
+        self.assertIs(f.rows.fresh('parent').source_action,f.source)
+        self.assertIs(f.rows.fresh(result['item_id']).custom_action,result['action'])
+
+    def test_variant_publish_refetches_parent_after_inactive_append(self):
+        f=self._row_transaction()
+        f.plan.update(variant_api=1,item_id='parent')
+        inactive=f.rows.add();inactive.item_id='inactive'
+        self.assertEqual(f.rows.expired_reads,0)
+        action=f.original.copy()
+        row,_checkpoint=offset._publish(f.plan,action)
+        self.assertEqual(f.rows.expired_reads,0)
+        self.assertIs(row.source_action,f.source)
+        self.assertIs(row.custom_action,action)
+        self.assertEqual(len(f.rows),3)
+
+    def test_source_rebinding_after_publication_still_refuses_and_cleans_owned_data(self):
+        for field,value in (('source_action','foreign'),('source_slot',2)):
+            with self.subTest(field=field):
+                f=self._row_transaction();before=tuple(f.actions)
+                real_activate=f.api.worklist.activate
+                def rebind(*args):
+                    real_activate(*args)
+                    setattr(f.rows.fresh('parent'),field,f.foreign if value=='foreign' else value)
+                f.api.worklist.activate=rebind
+                with patch.object(offset,'prepare',return_value=f.plan):
+                    with self.assertRaisesRegex(ValueError,'read-only Source changed'):
+                        offset.create(f.context,f.rig,object(),strength=0.,activate=True)
+                self.assertEqual(f.rows.expired_reads,0)
+                self.assertEqual(len(f.rows),1)
+                self.assertEqual(tuple(f.actions),before)
+                self.assertIs(f.rig.animation_data.action,f.original)
+                self.assertEqual(getattr(f.rows.fresh('parent'),field),f.foreign if value=='foreign' else value)
 
 
 if __name__ == '__main__':

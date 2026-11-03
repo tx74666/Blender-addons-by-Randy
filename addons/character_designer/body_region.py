@@ -813,6 +813,7 @@ def _finish_edit_region(rig, key, entry, inventory):
     from . import bone_collections
     body = bone_collections.body_collection(rig)
     if body:
+        bone_collections.sync_limb_display(rig, inventory, keys=(key,), force_flags=True)
         data = inventory['rigs'][key]
         for name in (data['target'].name, data['pole'].name):
             body.assign(rig.data.bones[name])
@@ -833,13 +834,16 @@ def _build_selected_rings(context, rig, keys):
                           'armature_id': inventory['armature_id'], 'bindings': {}, 'skipped': {},
                           'collection': generated_names.collection_name(rig, 'FK Rings')}
     for key in sorted(keys):
-        for name in inventory['rigs'][key]['chain'][:2]:
+        chain = inventory['rigs'][key]['chain']
+        for name in limb_fk_visuals.binding_names(key[0], chain):
             if name in record['bindings']:
                 continue
             pb = rig.pose.bones[name]
             if pb.custom_shape is not None or pb.custom_shape_transform is not None:
                 continue
-            radius = float(pb.bone.length) * limb_fk_visuals.RADIUS_FACTORS[key[0]]
+            if limb_fk_visuals._animated_display(rig, pb):
+                continue
+            radius = limb_fk_visuals.ring_radius(rig, key[0], chain, name)
             widget_name = generated_names.widget_name(rig, 'FK_' + name)
             record['bindings'][name] = {'kind': key[0], 'side': key[1],
                 'chain': list(inventory['rigs'][key]['chain']), 'object': widget_name, 'mesh': widget_name,

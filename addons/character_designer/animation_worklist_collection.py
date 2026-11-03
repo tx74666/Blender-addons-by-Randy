@@ -45,6 +45,12 @@ def export_implementation():
         raise ValueError('The optional Dress export guard pair is incomplete.')
     result.update({name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                    if exists else 'absent' for name, exists in zip(guards, present)})
+    inputs = ('animation_export_inputs.py', 'animation_export_inputs_worker.py')
+    present = [(root / name).is_file() for name in inputs]
+    if any(present) and not all(present):
+        raise ValueError('The retained animation export-input implementation pair is incomplete.')
+    result.update({name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                   if exists else 'absent' for name, exists in zip(inputs, present)})
     composition = ('animation_composition_contract.py', 'animation_composition_controls.py',
                    'animation_composition_export.py', 'animation_composition_export_worker.py',
                    'animation_composition.py')
@@ -151,7 +157,23 @@ def item_fingerprint(context, item):
         # that happens, this current pose is not the snapshot's dependency proof.
         proof = {**proof, 'fingerprint_known': False, 'fingerprint': '',
                  'proof_reason': 'Active Hair preview changes snapshot inputs; unchanged is unproven.'}
-    return _with_rigging(proof, item)
+    return _with_export_base(_with_rigging(proof, item), item.custom_action)
+
+
+def _with_export_base(proof, action):
+    """Bind retained export defaults even if the artist later restores a pose.
+
+    Raw Action-content fingerprints deliberately exclude workflow metadata.
+    Keep this separate so a recaptured sparse-input baseline cannot be skipped
+    as Unchanged while native curves and the current pose remain identical.
+    """
+    from .animation_export_inputs import RECORD, MAX_RECORD
+    raw = action.get(RECORD, '')
+    if not isinstance(raw, str) or len(raw.encode('utf-8')) > MAX_RECORD:
+        raise ValueError('The retained export base pose metadata is invalid.')
+    if not raw:
+        return proof
+    return {**proof, 'export_base_sha256': hashlib.sha256(raw.encode('utf-8')).hexdigest()}
 
 
 def remember_source_baseline(context, item):
@@ -168,7 +190,7 @@ def remember_source_baseline(context, item):
         if hair_wiggle_adapter.status(context).get('active'):
             proof = {**proof, 'fingerprint_known': False, 'fingerprint': '',
                      'proof_reason': 'Active Hair preview changes prepared inputs; unchanged is unproven.'}
-        proof = _with_rigging(proof, item, source=True)
+        proof = _with_export_base(_with_rigging(proof, item, source=True), item.custom_action)
     receipt = {'schema': SOURCE_BASELINE_SCHEMA, 'proof': proof,
                'workItemId': getattr(item, 'work_item_id', ''),
                'identity': list(_identity(item, json.loads(item.link_identity))),
@@ -200,6 +222,8 @@ def _valid_proof(proof):
             FINGERPRINT_SCHEMA, COMPOSITION_FINGERPRINT_SCHEMA}
             or type(proof.get('fingerprint_known')) is not bool
             or proof['fingerprint_known'] and not _sha256_value(proof.get('fingerprint'))):
+        return False
+    if 'export_base_sha256' in proof and not _sha256_value(proof['export_base_sha256']):
         return False
     if 'rigging' in proof or 'base_fingerprint' in proof:
         if (proof['schema'] != FINGERPRINT_SCHEMA or not _valid_rigging_input(proof.get('rigging'))
@@ -237,7 +261,8 @@ def _same_proof(proof, previous):
             or proof.get('fingerprint_known') is not True
             or previous.get('fingerprint_known') is not True
             or proof['schema'] != previous['schema']
-            or proof['fingerprint'] != previous['fingerprint']):
+            or proof['fingerprint'] != previous['fingerprint']
+            or proof.get('export_base_sha256') != previous.get('export_base_sha256')):
         return False
     if 'rigging' in proof or 'rigging' in previous:
         return (proof.get('base_fingerprint') == previous.get('base_fingerprint')
@@ -308,16 +333,15 @@ def _current_link(saved, item, catalog):
     if item.custom_action is None or item.custom_action.library is not None:
         raise ValueError('The local editable Custom Action is missing.')
     worklist._slot(item.custom_action, item.custom_slot)
-    if _composition_row(item) or getattr(item, 'workspace_path', ''):
-        catalog = worklist._fresh_workspace(saved, item)
-    elif catalog is None:
-        catalog = worklist._fresh_workspace(saved)
+    attached = worklist._item_workspace(item)
+    if not attached and (_composition_row(item) or catalog is None):
+        catalog = worklist._fresh_workspace(saved, item if _composition_row(item) else None)
     if getattr(item, 'new_animation', False):
         from .animation_worklist_new import validate
-        return validate(saved, item, catalog)
-    clip = next((entry for entry in catalog['clips']
-                 if worklist._clip_key(entry) == item.clip_key), None)
-    if (clip is None or clip.get('needsRebuild') or not clip.get('linkManifest')
+        return validate(saved, item, worklist._fresh_workspace(saved, item) if attached else catalog)
+    clip = (None if attached else next((entry for entry in catalog['clips']
+                 if worklist._clip_key(entry) == item.clip_key), None))
+    if not attached and (clip is None or clip.get('needsRebuild') or not clip.get('linkManifest')
             or Path(clip['linkManifest']).resolve() != Path(item.manifest_path).resolve()):
         raise ValueError('Prepare this Controller slot in Unity; existing Custom edits are kept.')
     link = links.load_link(item.manifest_path)
@@ -485,78 +509,177 @@ def _receipt(item, link, implementation):
         return None
 
 
-def scan_changes(context):
-    """Read selected-slot content/dependencies once, without activating Actions."""
+def _scan_item(context, saved, item, implementation):
+    """Authenticate and update one row; never activate its native Action."""
+    old_state = item.scan_state
+    changes = dict.fromkeys(('b_edited', 'effective_inputs_changed',
+                             'composition_changed', 'export_needed'), False)
+    try:
+        link = _current_link(saved, item, None)
+        proof = item_fingerprint(context, item)
+        if not _valid_proof(proof):
+            raise ValueError('The animation comparison proof is incomplete.')
+        receipt = comparison_receipt(item, link, implementation)
+        old_proof = receipt.get('proof', {}) if receipt else {}
+        if not proof['fingerprint_known']:
+            state, reason = 'UNKNOWN', proof['proof_reason']
+        elif not receipt and getattr(item, 'new_animation', False) and link.get('revision') == 0:
+            state, reason = 'CHANGED', 'New complete Action; no original version or return exists yet.'
+            changes['export_needed'] = True
+        elif not receipt or not old_proof.get('fingerprint_known'):
+            state, reason = 'UNKNOWN', 'No complete preparation or successful export proof for this comparison.'
+        elif proof['schema'] != old_proof.get('schema'):
+            state, reason = 'UNKNOWN', 'This row has no matching content-proof schema; unchanged is unproven.'
+        elif _same_proof(proof, old_proof):
+            state, reason = 'UNCHANGED', 'Matches its prepared Source or last successful publication, including timing and rig inputs.'
+            if proof['schema'] == COMPOSITION_FINGERPRINT_SCHEMA:
+                reason = 'B curves, canonical export inputs, and full composition/reference metadata match the proven baseline.'
+        elif proof['schema'] == COMPOSITION_FINGERPRINT_SCHEMA:
+            changes.update(
+                b_edited=proof['authored_b_sha256'] != old_proof['authored_b_sha256'],
+                effective_inputs_changed=proof['effective_input_sha256'] != old_proof['effective_input_sha256'],
+                composition_changed=proof['composition_metadata'] != old_proof['composition_metadata'],
+                export_needed=True)
+            if changes['b_edited']:
+                reason = 'Authored B curves changed; isolated B export and composition publication are required.'
+            elif changes['effective_inputs_changed']:
+                reason = 'B export timing or authenticated inputs changed; B curves are unchanged, export is required.'
+            else:
+                reason = 'Composition or reference metadata changed; B curves are unchanged, publication refresh is required.'
+            state = 'CHANGED'
+        else:
+            state, reason = 'CHANGED', 'Content, export timing or necessary rig inputs changed since successful Sync.'
+            changes['export_needed'] = True
+        if (isinstance(proof.get('rigging'), dict) and isinstance(old_proof.get('rigging'), dict)
+                and proof['rigging'] != old_proof['rigging']):
+            changes.update(effective_inputs_changed=True, export_needed=True)
+            if state == 'UNKNOWN':
+                reason = 'Target inputs changed; complete base dependencies remain unproven. Select explicitly to export.'
+            elif state == 'CHANGED':
+                reason = 'Target inputs or their captured ownership changed; a fresh return is required.'
+    except (ValueError, RuntimeError, OSError, ReferenceError, TypeError) as exc:
+        state, reason = 'BLOCKED', str(exc)
+    item.scan_state, item.scan_reason = state, reason
+    for field, value in changes.items():
+        if hasattr(item, field):
+            setattr(item, field, value)
+    if state in {'UNCHANGED', 'BLOCKED'}:
+        item.sync_selected = False
+    elif state == 'UNKNOWN' and old_state != 'UNKNOWN':
+        item.sync_selected = False
+    elif state == 'CHANGED' and old_state in {'NOT_SCANNED', 'UNCHANGED'}:
+        item.sync_selected = True
+    # Unknown is never selected automatically. Preserve only an explicit
+    # artist selection, including the operator's mandatory rescan.
+    return state, (_scan_unchanged_inputs(item, link, receipt) if state == 'UNCHANGED' else None)
+
+
+def _scan_unchanged_inputs(item, link, receipt):
+    """Temporary comparison inputs; never a proof for later publication."""
+    return json.dumps(dict(link=link, receipt=receipt,
+                           last_synced_receipt=getattr(item, 'last_synced_receipt', ''),
+                           source_baseline_receipt=getattr(item, 'source_baseline_receipt', '')),
+                      sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+
+def _scan_native_id(value):
+    if value is None:
+        return None
+    pointer = getattr(value, 'as_pointer', None)
+    return pointer() if callable(pointer) else id(value)
+
+
+def _scan_row_identity(item):
+    return (_scan_native_id(item),
+            *(_scan_native_id(getattr(item, name, None)) for name in
+              ('rig', 'source_action', 'custom_action')),
+            *(getattr(item, name, None) for name in (
+                'item_id', 'clip_key', 'work_item_id', 'side', 'source_slot', 'custom_slot',
+                'manifest_path', 'link_identity', 'source_file', 'source_hash',
+                'workspace_path', 'workspace_identity', 'model_file', 'model_sha256',
+                'new_animation', 'composition_json', 'current_rig_revision')))
+
+
+def _scan_scene_inputs(scene):
+    """Timing scalars can change without a depsgraph callback (frame_set)."""
+    render = getattr(scene, 'render', None)
+    units = getattr(scene, 'unit_settings', None)
+    return (*(getattr(scene, name, None) for name in (
+                'frame_current', 'frame_subframe', 'frame_start', 'frame_end',
+                'use_preview_range', 'frame_preview_start', 'frame_preview_end')),
+            *(getattr(render, name, None) for name in (
+                'fps', 'fps_base', 'frame_map_old', 'frame_map_new')),
+            getattr(units, 'scale_length', None))
+
+
+def prepare_scan(context):
+    """Capture only this scan's owner/list identities, never content authority.
+
+    Every row is freshly authenticated when scanned. No Context or content
+    proof is retained across event-loop ticks or reused for publication.
+    """
     worklist._idle(context)
     saved = worklist.state(context)
-    implementation = export_implementation()
-    counts = dict.fromkeys(('CHANGED', 'UNCHANGED', 'UNKNOWN', 'BLOCKED'), 0)
-    for item in saved.items:
-        old_state = item.scan_state
-        changes = dict.fromkeys(('b_edited', 'effective_inputs_changed',
-                                 'composition_changed', 'export_needed'), False)
-        try:
-            link = _current_link(saved, item, None)
-            proof = item_fingerprint(context, item)
-            if not _valid_proof(proof):
-                raise ValueError('The animation comparison proof is incomplete.')
-            receipt = comparison_receipt(item, link, implementation)
-            old_proof = receipt.get('proof', {}) if receipt else {}
-            if not proof['fingerprint_known']:
-                state, reason = 'UNKNOWN', proof['proof_reason']
-            elif not receipt and getattr(item, 'new_animation', False) and link.get('revision') == 0:
-                state, reason = 'CHANGED', 'New complete Action; no original version or return exists yet.'
-                changes['export_needed'] = True
-            elif not receipt or not old_proof.get('fingerprint_known'):
-                state, reason = 'UNKNOWN', 'No complete preparation or successful export proof for this comparison.'
-            elif proof['schema'] != old_proof.get('schema'):
-                state, reason = 'UNKNOWN', 'This row has no matching content-proof schema; unchanged is unproven.'
-            elif _same_proof(proof, old_proof):
-                state, reason = 'UNCHANGED', 'Matches its prepared Source or last successful publication, including timing and rig inputs.'
-                if proof['schema'] == COMPOSITION_FINGERPRINT_SCHEMA:
-                    reason = 'B curves, canonical export inputs, and full composition/reference metadata match the proven baseline.'
-            elif proof['schema'] == COMPOSITION_FINGERPRINT_SCHEMA:
-                changes.update(
-                    b_edited=proof['authored_b_sha256'] != old_proof['authored_b_sha256'],
-                    effective_inputs_changed=proof['effective_input_sha256'] != old_proof['effective_input_sha256'],
-                    composition_changed=proof['composition_metadata'] != old_proof['composition_metadata'],
-                    export_needed=True)
-                if changes['b_edited']:
-                    reason = 'Authored B curves changed; isolated B export and composition publication are required.'
-                elif changes['effective_inputs_changed']:
-                    reason = 'B export timing or authenticated inputs changed; B curves are unchanged, export is required.'
-                else:
-                    reason = 'Composition or reference metadata changed; B curves are unchanged, publication refresh is required.'
-                state = 'CHANGED'
-            else:
-                state, reason = 'CHANGED', 'Content, export timing or necessary rig inputs changed since successful Sync.'
-                changes['export_needed'] = True
-            if (isinstance(proof.get('rigging'), dict) and isinstance(old_proof.get('rigging'), dict)
-                    and proof['rigging'] != old_proof['rigging']):
-                changes.update(effective_inputs_changed=True, export_needed=True)
-                if state == 'UNKNOWN':
-                    reason = 'Target inputs changed; complete base dependencies remain unproven. Select explicitly to export.'
-                elif state == 'CHANGED':
-                    reason = 'Target inputs or their captured ownership changed; a fresh return is required.'
-        except (ValueError, RuntimeError, OSError, ReferenceError, TypeError) as exc:
-            state, reason = 'BLOCKED', str(exc)
-        item.scan_state, item.scan_reason = state, reason
-        for field, value in changes.items():
-            if hasattr(item, field):
-                setattr(item, field, value)
-        if state in {'UNCHANGED', 'BLOCKED'}:
-            item.sync_selected = False
-        elif state == 'UNKNOWN' and old_state != 'UNKNOWN':
-            item.sync_selected = False
-        elif state == 'CHANGED' and old_state in {'NOT_SCANNED', 'UNCHANGED'}:
-            item.sync_selected = True
-        # Unknown is never selected automatically. Preserve only an explicit
-        # artist selection, including the operator's mandatory rescan.
-        counts[state] += 1
-    saved.scan_completed = True
+    plan = dict(saved=_scan_native_id(saved), scene=_scan_native_id(context.scene),
+                scene_inputs=_scan_scene_inputs(context.scene),
+                rows=tuple(_scan_row_identity(item) for item in saved.items), index=0,
+                counts=dict.fromkeys(('CHANGED', 'UNCHANGED', 'UNKNOWN', 'BLOCKED'), 0),
+                implementation=export_implementation(), unchanged=[], done=False)
+    saved.scan_completed = False
+    return plan
+
+
+def step_scan(context, plan):
+    """Scan at most one row; return True only after complete list validation."""
+    worklist._idle(context)
+    saved = worklist.state(context)
+    if (plan['done'] or _scan_native_id(saved) != plan['saved']
+            or _scan_native_id(context.scene) != plan['scene']
+            or len(saved.items) != len(plan['rows'])):
+        raise ValueError('The owning animation list changed during Scan; scan again.')
+    if _scan_scene_inputs(context.scene) != plan['scene_inputs']:
+        raise ValueError('Scene timing or frame changed during Scan; scan again before exporting.')
+    index = plan['index']
+    if index < len(plan['rows']):
+        item = saved.items[index]
+        if _scan_row_identity(item) != plan['rows'][index]:
+            raise ValueError('An animation row changed during Scan; scan again.')
+        state, unchanged = _scan_item(context, saved, item, plan['implementation'])
+        if unchanged is not None:
+            plan['unchanged'].append((index, unchanged))
+        plan['counts'][state] += 1
+        plan['index'] += 1
+    if plan['index'] != len(plan['rows']):
+        return False
+    # Recheck the completed prefix once, avoiding a full-list comparison on
+    # every tick. Replaced/reordered rows never produce a complete scan.
+    if tuple(_scan_row_identity(item) for item in saved.items) != plan['rows']:
+        raise ValueError('An animation row changed during Scan; scan again.')
+    # These rows will be excluded from automatic export. Native input changes
+    # are guarded between ticks; file/receipt/implementation changes also need
+    # a final synchronous check. Reuse the existing receipt contract, including
+    # its bounded Rigging input authentication, rather than a weaker variant.
+    for index, previous in plan['unchanged']:
+        item = saved.items[index]
+        link = _current_link(saved, item, None)
+        receipt = comparison_receipt(item, link, plan['implementation'])
+        if receipt is None or _scan_unchanged_inputs(item, link, receipt) != previous:
+            raise ValueError('An Unchanged animation input or publication changed during Scan; scan again.')
+    if export_implementation() != plan['implementation']:
+        raise ValueError('The export implementation changed during Scan; scan again before exporting.')
+    plan['done'] = saved.scan_completed = True
+    counts = plan['counts']
     _status(saved, 'Scan: ' + ', '.join(str(counts[key]) + ' ' + key.title() for key in counts) + '.')
     _redraw()
-    return counts
+    return True
+
+
+def scan_changes(context):
+    """Synchronous API; UI advances the same freshly checked work one row/tick."""
+    plan = prepare_scan(context)
+    while not step_scan(context, plan):
+        pass
+    return plan['counts']
 
 
 def _begin(context, mode, entries):

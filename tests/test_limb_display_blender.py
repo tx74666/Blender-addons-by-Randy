@@ -60,7 +60,7 @@ class LimbDisplayTests(unittest.TestCase):
     def bindings(self, rig):
         record = visuals.validate(rig, limb_ik._validate_inventory(rig))
         self.assertIsNotNone(record)
-        self.assertEqual(len(record['bindings']), 8)
+        self.assertEqual(len(record['bindings']), 10)
         return record['bindings']
 
     def assert_limb_display(self, rig, inventory, key, mode):
@@ -77,7 +77,9 @@ class LimbDisplayTests(unittest.TestCase):
             else:
                 self.assertNotIn(name, body_members)
             if name in bindings:
-                expected = None if mode == 'FK' else bpy.data.objects[bindings[name]['object']]
+                native = mode == 'FK' and not (key[0] == 'ARM' and name == item['chain'][2])
+                expected = (None if native
+                            else bpy.data.objects[bindings[name]['object']])
                 self.assertEqual(rig.pose.bones[name].custom_shape, expected, name)
         for role in ('target', 'pole'):
             bone = item[role]
@@ -111,7 +113,8 @@ class LimbDisplayTests(unittest.TestCase):
                               for name, entry in bindings.items()}, widget_pointers)
             if mode == 'FK':
                 self.assertEqual(json.loads(rig.data[visuals.NATIVE_DISPLAY_KEY]),
-                                 {name: entry['object'] for name, entry in bindings.items()})
+                                 {name: entry['object'] for name, entry in bindings.items()
+                                  if not (entry['kind'] == 'ARM' and name == entry['chain'][2])})
             else:
                 self.assertNotIn(visuals.NATIVE_DISPLAY_KEY, rig.data)
 
@@ -168,8 +171,9 @@ class LimbDisplayTests(unittest.TestCase):
         self.assertEqual({name: (limb_ik._pose_shape_json_state(rig.pose.bones[name]),
                          rig.data.bones[name].hide, rig.data.bones[name].hide_select,
                          getattr(rig.pose.bones[name], 'hide', None)) for name in other_names}, before)
-        self.assertEqual(set(json.loads(rig.data[visuals.NATIVE_DISPLAY_KEY])),
-                         set(inventory['rigs'][batch.LIMB_KEYS[0]]['chain'][:2]))
+        self.assertEqual(set(json.loads(rig.data.get(visuals.NATIVE_DISPLAY_KEY, '{}'))),
+                         {name for name in inventory['rigs'][batch.LIMB_KEYS[0]]['chain'][:2]
+                          if name in visuals.get_record(rig)['bindings']})
         limb_ik._validate_inventory(rig)
 
     def test_cone_ray_policy_uses_mode_pose_hide_shapes_collections_and_overlay(self):
@@ -326,7 +330,7 @@ class LimbDisplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='cd-native-fk-display-') as directory:
             path = str(Path(directory) / 'native-fk.blend')
             self.assertEqual(bpy.ops.wm.save_as_mainfile(filepath=path), {'FINISHED'})
-            self.assertEqual(bpy.ops.wm.open_mainfile(filepath=path), {'FINISHED'})
+            self.assertEqual(bpy.ops.wm.open_mainfile(filepath=path, use_scripts=True), {'FINISHED'})
             rig = bpy.data.objects[rig_name]
             self.assertEqual(display_state(rig), before)
             self.assertEqual(json.loads(rig.data[visuals.NATIVE_DISPLAY_KEY]), marker)

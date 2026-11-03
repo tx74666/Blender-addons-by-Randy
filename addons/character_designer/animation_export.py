@@ -92,6 +92,169 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
             loop=loop, sample_rate=sample_rate, export_rig_name=export_rig_name, rigging_export=frozen)
 
 
+def _authenticated_dress_export(rig, action, slot, admission, surfaces, worker):
+    """Read-only compatibility contract for the existing owned Dress closure.
+
+The ordinary retained-base contract deliberately does not cover Curve/Hook
+inputs. This explicit native proof preserves their previous snapshot semantics;
+it is neither an arbitrary-external-target exception nor a determinism claim.
+"""
+    entries = admission.get('sources', ())
+    if not entries:
+        return None
+    from . import skirt_rig as skirt, skirt_surface as surface
+    from . import skirt_physics as physics, unity_animation_dress as dress
+    from . import dress_export_snapshot as boundary
+    def require(value, message):
+        if not value:
+            raise AnimationExportError('Authenticated Dress export: ' + message)
+    require(len(entries) <= 64, 'the owned source inventory exceeds its bound.')
+    require(rig.parent is None and not rig.constraints and not rig.modifiers,
+            'use the existing local unparented skeletal rig without object constraints/modifiers.')
+    surface_by_name = {proof['source']: proof for proof in surfaces}
+    source_rows, wire_rows, targets, known_bones = [], [], {}, set()
+    def target_for(constraint, value):
+        targets[int(constraint.as_pointer())] = value
+    for entry in entries:
+        source = bpy.data.objects.get(entry['name'])
+        require(source is not None and source.type == 'MESH' and not source.library
+                and not source.override_library and not source.data.library
+                and source.get(skirt.RIG_KEY) is rig, 'a source was removed, linked or reassigned.')
+        record = skirt.read_record(source)
+        require(record is not None and record['owner'] == entry['owner']
+                and source.get(skirt.OWNER_KEY) == record['owner'], 'source/native ownership differs.')
+        require(type(record['chain_count']) is int and 3 <= record['chain_count'] <= 64
+                and record['chain_count'] == len(record['chains']) == len(record['controls']['chains'])
+                and type(record['segment_count']) is int and 1 <= record['segment_count'] <= 32
+                and all(len(chain[layer]) == record['segment_count']
+                        for chain in record['chains'] for layer in ('manual', 'phys', 'def')),
+                'the generated chain inventory differs.')
+        control, deform, mechanism = skirt._bone_collection_layout(record)
+        entire = control | deform | mechanism
+        require(not known_bones.intersection(entire), 'two sources share generated bones.')
+        known_bones.update(entire)
+        if skirt.is_shared(record):
+            dress._hierarchy(rig, record)
+        else:
+            require(rig.get(skirt.OWNER_KEY) == record['owner'] and rig.get(skirt.SOURCE_KEY) is source
+                    and rig.data.get(skirt.OWNER_KEY) == record['owner']
+                    and (rig.data.get(skirt.SOURCE_KEY) is None or rig.data.get(skirt.SOURCE_KEY) is source)
+                    and rig.data.users == 1
+                    and set(rig.data.bones.keys()) == entire, 'the separate Dress rig is not exactly source-owned.')
+            waist = record['controls']['waist']
+            parents = {waist: None, record['controls']['mid']: waist, record['controls']['hem']: waist}
+            connected = {name: False for name in parents}
+            for item in record['controls']['chains']:
+                for level in ('mid', 'hem'):
+                    parents[item[level]], connected[item[level]] = record['controls'][level], False
+            for chain in record['chains']:
+                for layer in ('manual', 'phys', 'def'):
+                    for index, name in enumerate(chain[layer]):
+                        parents[name], connected[name] = chain[layer][index - 1] if index else waist, index > 0
+            require(all((rig.data.bones[name].parent.name if rig.data.bones[name].parent else None) == parent
+                        and rig.data.bones[name].use_connect == connected[name]
+                        and rig.data.bones[name].use_inherit_rotation
+                        and rig.data.bones[name].use_local_location and rig.data.bones[name].inherit_scale == 'FULL'
+                        for name, parent in parents.items()), 'the separate Dress hierarchy or inheritance changed.')
+        # Reuse the complete native wire, point-Hook, bind, correction and
+        # generated influence-driver validators; no pose/frame evaluation.
+        surface._deform_proof(source, rig, record)
+        boundary._influence_animation_guard(source, action)
+        physics._physics_bone_animation(rig, record)
+        prefixes = tuple(rig.pose.bones[name].path_from_id() for chain in record['chains'] for name in chain['phys'])
+        selected_slot = next((item for item in action.slots if item.handle == slot), None)
+        require(not any(curve.data_path.startswith(prefixes) for curve in worker._curves(action, selected_slot)),
+                'preserve authored animation on the Dress physics bones before skeletal export.')
+        for chain in record['chains']:
+            for name in chain['def']:
+                constraint = rig.pose.bones[name].constraints['Skirt physics delta']
+                index = list(rig.pose.bones[name].constraints).index(constraint)
+                aliases = (constraint.path_from_id(), rig.pose.bones[name].path_from_id() + '.constraints[' + str(index) + ']')
+                require(not any(boundary._targets_constraint(curve.data_path, aliases)
+                                for curve in worker._curves(action, selected_slot)),
+                        'preserve authored physical constraint channels before skeletal export.')
+        physical = record.get('physics')
+        if physical is not None:
+            if physical.get('backend', 'LEGACY_CAGE') == boundary.BACKEND:
+                require(source.name in surface_by_name, 'the actual-surface source lacks its captured native proof.')
+                tracker = bpy.data.objects[physical['surface']['roles']['TRACKER'][0]]
+            else:
+                require(physical.get('backend', 'LEGACY_CAGE') == 'LEGACY_CAGE', 'the physics backend is unsupported.')
+                physics.validate_physics(source)
+                holder, _identifier, _path = skirt.physics_control(source)
+                require(type(holder.get('physics_influence')) in (int, float)
+                        and holder['physics_influence'] == 0., 'legacy Cloth requires its existing Manual endpoint.')
+                tracker = bpy.data.objects[physical['proxy']]
+            for chain in record['chains']:
+                for name in chain['phys']:
+                    constraint = rig.pose.bones[name].constraints[0]
+                    require(constraint.type == 'DAMPED_TRACK' and constraint.target is tracker,
+                            'the physical tracker is not the freshly validated owned endpoint.')
+                    target_for(constraint, tracker)
+        else:
+            require(all(not rig.pose.bones[name].constraints for chain in record['chains'] for name in chain['phys']),
+                    'an inactive generated physics bone has an unknown constraint.')
+        for index, chain in enumerate(record['chains']):
+            wire = surface._generated_wire(source, rig, record, index)
+            require(all(mod.show_viewport and mod.show_render for mod in wire.modifiers), 'a generated point Hook is disabled.')
+            for name in chain['manual']:
+                constraints = tuple(rig.pose.bones[name].constraints)
+                if name != chain['manual'][-1]:
+                    require(not constraints, 'an intermediate manual bone has an extra constraint.')
+                    continue
+                require(len(constraints) == 1, 'the terminal manual spline has an extra constraint.')
+                constraint = constraints[0]
+                require(constraint.name == 'Skirt manual wire' and constraint.type == 'SPLINE_IK'
+                        and constraint.target is wire and not constraint.mute and constraint.influence == 1.
+                        and constraint.chain_count == record['segment_count'] and constraint.use_even_divisions
+                        and not constraint.use_curve_radius and not constraint.use_chain_offset
+                        and constraint.use_original_scale and constraint.y_scale_mode == 'FIT_CURVE'
+                        and constraint.xz_scale_mode == 'NONE', 'the generated manual Spline IK settings changed.')
+                target_for(constraint, wire)
+            wire_rows.append({'name': wire.name, 'source': source.name, 'owner': record['owner'],
+                'parent_type': wire.parent_type, 'parent_bone': wire.parent_bone,
+                'basis': [float(v) for row in wire.matrix_basis for v in row],
+                'parent_inverse': [float(v) for row in wire.matrix_parent_inverse for v in row],
+                'points': [[float(v) for v in point.co] for point in wire.data.splines[0].points],
+                'hooks': [[mod.subtarget, [float(v) for row in mod.matrix_inverse for v in row]] for mod in wire.modifiers]})
+        require(all(not rig.pose.bones[name].constraints for name in control), 'a generated Dress control has extra constraints.')
+        for chain in record['chains']:
+            for name in chain['def']:
+                rotation = rig.pose.bones[name].constraints['Skirt physics delta']
+                matches = [curve for curve in rig.animation_data.drivers
+                           if curve.data_path == rotation.path_from_id() + '.influence']
+                require(len(matches) == 1, 'the generated physical influence driver is ambiguous.')
+                dress._identity_driver_curve(matches[0])
+        source_rows.append({'source': source.name, 'owner': record['owner'], 'shared': skirt.is_shared(record),
+                            'record_sha256': hashlib.sha256(source[skirt.RECORD_KEY].encode('utf-8')).hexdigest(),
+                            'backend': physical.get('backend', 'LEGACY_CAGE') if physical else 'MANUAL'})
+    require(set(surface_by_name) <= {row['source'] for row in source_rows}, 'a captured surface is outside this source inventory.')
+    # Inspect every target, including muted constraints which an Action could
+    # later enable. Only the exact native endpoints proved above may be external.
+    for constraint in list(rig.constraints) + [con for pb in rig.pose.bones for con in pb.constraints]:
+        require(constraint.type != 'ACTION', 'an Action constraint is outside the owned Dress snapshot contract.')
+        for prop in constraint.bl_rna.properties:
+            if prop.type == 'COLLECTION':
+                require(not len(getattr(constraint, prop.identifier)), 'a nested constraint target is unsupported.')
+            if prop.type == 'POINTER' and prop.identifier != 'rna_type':
+                value = getattr(constraint, prop.identifier)
+                if isinstance(value, bpy.types.ID) and value is not rig and value is not rig.data:
+                    require(prop.identifier == 'target' and targets.get(int(constraint.as_pointer())) is value,
+                            'an unknown external target drives this rig; bake that input separately.')
+    for owner in (rig, rig.data):
+        ad = owner.animation_data
+        for curve in ad.drivers if ad else ():
+            for variable in curve.driver.variables:
+                for target in variable.targets:
+                    require(target.id is rig or target.id is rig.data, 'an unknown external driver input drives this rig.')
+    payload = {'sources': source_rows, 'wires': wire_rows, 'surface_proofs': surfaces}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+    return {'schema': 'cdesigner.authenticated-dress-snapshot/1',
+            'policy': 'existing-authenticated-Dress snapshot; retained base unsupported',
+            'retained_base_supported': False, 'sha256': digest, 'sources': source_rows,
+            'wire_count': len(wire_rows), 'surface_count': len(surfaces)}
+
+
 def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
                   export_rig_name=None, rigging_export=None):
     global _ACTIVE_JOB
@@ -126,6 +289,7 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
     if destination.exists() or metadata.exists():
         raise AnimationExportError('That animation already exists. Choose a new filename to preserve it.')
     slot = _slot(rig, action)
+    from . import animation_export_inputs
     # Meshes refer to the rig, not the other way round, and are deliberately not
     # copied into this small skeletal snapshot. Audit those reverse links here.
     from . import animation_export_worker as worker
@@ -136,6 +300,15 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         dress_scene_roots = dress_export_snapshot.snapshot_scene_roots(dress_surfaces)
     except (ValueError, TypeError) as error:
         raise AnimationExportError('Dress skeletal export boundary: ' + str(error)) from error
+    dress_contract = (_authenticated_dress_export(rig, action, slot, direct_admission, dress_surfaces, worker)
+                      if rigging_export is None else None)
+    if dress_contract is not None and animation_export_inputs.RECORD in action:
+        raise AnimationExportError('This Dress animation uses its existing snapshot inputs. '
+                                   'Choose Clear Export Base Pose explicitly before exporting it.')
+    # The established Rigging DTO and exact owned Dress closure retain their
+    # specialized snapshot contracts. Neither adopts ordinary retained defaults.
+    export_inputs = (animation_export_inputs.prepare(rig, action, slot, frame_start)
+                     if rigging_export is None and dress_contract is None else None)
     omitted = worker._omitted_channels(rig, action, next((s for s in action.slots if s.handle == slot), None))
     discarded = {bone.name for bone in rig.data.bones if bone.use_deform and _is_control(bone)}
     if discarded:
@@ -168,6 +341,12 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
            'source_package_sha256': source_hash,
            'source_blend': bpy.data.filepath, 'action': action.name, 'action_slot': slot,
            'process': None, 'log': None}
+    if export_inputs is not None:
+        spec[animation_export_inputs.JOB_KEY] = export_inputs
+        job[animation_export_inputs.JOB_KEY] = export_inputs
+    if dress_contract is not None:
+        spec['authenticated_dress_export'] = dress_contract
+        job['authenticated_dress_export'] = dress_contract
     if rigging_export is not None:
         # This owned DTO was validated before launching. Publication never
         # resamples a changed live rig or reads the composed deform pose.
@@ -176,6 +355,12 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         from . import hair_wiggle_adapter
         if hair_wiggle_adapter.status(context).get('active'):
             hair_wiggle_adapter.stop_preview(context, reason='Animation export ends transient Hair preview.')
+        if dress_contract is not None:
+            fresh_admission = dress_export_guard.animation_host_admission(bpy.data.objects, rig, action, slot)
+            fresh_surfaces = dress_export_snapshot.capture_animation_surfaces(context, rig, action)
+            fresh_contract = _authenticated_dress_export(rig, action, slot, fresh_admission, fresh_surfaces, worker)
+            if fresh_admission != direct_admission or fresh_surfaces != dress_surfaces or fresh_contract != dress_contract:
+                raise AnimationExportError('The authenticated Dress graph changed before snapshotting; retry with its intended inputs.')
         snapshot = root / 'animation.blend'
         spec['dress_snapshot_path'] = str(snapshot)
         snapshot_boundary = nullcontext()
@@ -188,9 +373,10 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         spec[dress_export_guard.JOB_KEY] = dress_export_guard.bind_animation_snapshot(direct_admission, snapshot)
         (root / 'job.json').write_text(json.dumps(spec), encoding='utf-8')
         job['log'] = (root / 'worker.log').open('w', encoding='utf-8')
+        worker_file = 'animation_export_inputs_worker.py' if export_inputs is not None else 'animation_export_worker.py'
         command = [bpy.app.binary_path, '--background', '--factory-startup', '--disable-autoexec',
                    '--threads', '2', str(snapshot), '--python-exit-code', '1', '--python',
-                   str(Path(__file__).with_name('animation_export_worker.py')), '--', str(root / 'job.json')]
+                   str(Path(__file__).with_name(worker_file)), '--', str(root / 'job.json')]
         job['process'] = subprocess.Popen(command, stdout=job['log'], stderr=subprocess.STDOUT,
                                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         _ACTIVE_JOB = job
@@ -215,6 +401,15 @@ def _dispose(job):
 
 
 def _publish(job, result):
+    from . import animation_export_inputs
+    sealed = job.get(animation_export_inputs.JOB_KEY)
+    if sealed is not None:
+        expected = {'schema': animation_export_inputs.SCHEMA, 'sha256': sealed['sha256'],
+                    'reference_frame': sealed['reference_frame'],
+                    'unkeyed_components': sealed['unkeyed_components'],
+                    'policy': 'captured-action-base-pose' if sealed['retained'] else 'fully-keyed-neutral-deltas'}
+        if result.get(animation_export_inputs.JOB_KEY) != expected:
+            raise AnimationExportError('Worker export base-pose proof differs from the sealed input contract.')
     destination, metadata = job['destination'], job['metadata']
     source = job['stage'] / destination.name
     if not source.is_file() or not source.stat().st_size:
@@ -227,6 +422,8 @@ def _publish(job, result):
               'source_package_sha256': job['source_package_sha256'],
               'channels': 'skeletal-only',
               'limitations': 'No Shape Key, material, camera, audio or animation-event export.'}
+    if job.get('authenticated_dress_export') is not None:
+        report['export_input_policy'] = job['authenticated_dress_export']
     if job.get('rigging_export') is not None:
         if job.get('action_slot') != job['rigging_export']['sourceActionSlot']:
             raise AnimationExportError('The frozen Rigging inputs belong to another exported base Action slot.')

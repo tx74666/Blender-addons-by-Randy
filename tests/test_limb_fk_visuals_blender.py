@@ -4,6 +4,7 @@ import math
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 
 import bpy
 from mathutils import Vector
@@ -39,6 +40,81 @@ def refuse(call, phrase):
     raise AssertionError('Expected safe refusal')
 
 
+def test_legacy_eight_ring_upgrade_rollback_and_idempotence():
+    rig, inventory = fixture()
+    with patch.object(visuals, 'binding_names', side_effect=lambda kind, chain: chain[:2]):
+        old = visuals.build(bpy.context, rig)
+    assert len(old['bindings']) == 8
+    # Reproduce the old FK display marker without changing its owned widgets.
+    marker_data = {}
+    for name, entry in old['bindings'].items():
+        if entry['kind'] == 'ARM':
+            rig.pose.bones[name].custom_shape = None
+            marker_data[name] = entry['object']
+    rig.data[visuals.NATIVE_DISPLAY_KEY] = json.dumps(marker_data)
+    before = displays(rig)
+    raw, marker = rig.data[visuals.RECORD_KEY], rig.data.get(visuals.NATIVE_DISPLAY_KEY)
+    objects, meshes = set(bpy.data.objects.keys()), set(bpy.data.meshes.keys())
+    pointers = {name: bpy.data.objects[entry['object']].as_pointer()
+                for name, entry in old['bindings'].items()}
+    create = visuals._create_widget
+    def fail_after_create(*args):
+        create(*args)
+        raise RuntimeError('Injected legacy wrist upgrade failure')
+    with patch.object(visuals, '_create_widget', side_effect=fail_after_create):
+        try: visuals.build(bpy.context, rig)
+        except RuntimeError: pass
+        else: raise AssertionError('Expected legacy upgrade failure')
+    assert displays(rig) == before
+    assert rig.data[visuals.RECORD_KEY] == raw
+    assert rig.data.get(visuals.NATIVE_DISPLAY_KEY) == marker
+    assert set(bpy.data.objects.keys()) == objects and set(bpy.data.meshes.keys()) == meshes
+    upgraded = visuals.build(bpy.context, rig)
+    assert len(upgraded['bindings']) == 10
+    assert all(upgraded['bindings'][name] == entry for name, entry in old['bindings'].items())
+    assert all(bpy.data.objects[entry['object']].as_pointer() == pointers[name]
+               for name, entry in old['bindings'].items())
+    assert visuals.build(bpy.context, rig) == upgraded
+    visuals.sync_native_display(rig, inventory)
+    visuals.validate(rig, inventory)
+    visuals.remove(bpy.context, rig)
+
+
+def test_legacy_native_display_migration_guard_rollback_and_original_snapshot():
+    rig, inventory = fixture()
+    with patch.object(visuals, 'binding_names', side_effect=lambda kind, chain: chain[:2]):
+        record = visuals.build(bpy.context, rig)
+    # Migrate only the arms to IK; the leg native-FK detaches stay intact.
+    for key, item in inventory['rigs'].items():
+        rig.pose.bones[item['target'].name][limb_ik_fk.PROPERTY] = 1. if key[0] == 'ARM' else 0.
+    marker = {name: entry['object'] for name, entry in record['bindings'].items()}
+    for name in marker:
+        rig.pose.bones[name].custom_shape = None
+    rig.data[visuals.NATIVE_DISPLAY_KEY] = json.dumps(marker)
+    saved, before = visuals.native_display_snapshot(rig), displays(rig)
+    source = inventory['rigs'][('ARM', 'L')]['chain'][0]
+    pb = rig.pose.bones[source]
+    driver = pb.driver_add('custom_shape_scale_xyz', 0)
+    driver.driver.expression = repr(float(pb.custom_shape_scale_xyz.x))
+    refuse(lambda: visuals.sync_native_display(rig, inventory), 'animated')
+    assert displays(rig) == before and visuals.native_display_snapshot(rig) == saved
+    pb.driver_remove('custom_shape_scale_xyz', 0)
+    with patch.object(visuals.json, 'dumps', side_effect=RuntimeError('Injected native marker write')):
+        try: visuals.sync_native_display(rig, inventory)
+        except RuntimeError: pass
+        else: raise AssertionError('Expected native marker write failure')
+    assert displays(rig) == before and visuals.native_display_snapshot(rig) == saved
+    assert visuals.sync_native_display(rig, inventory) == 4
+    assert set(json.loads(rig.data[visuals.NATIVE_DISPLAY_KEY])) == {
+        name for name, entry in record['bindings'].items() if entry['kind'] == 'LEG'}
+    with patch.object(visuals, '_animated_display', side_effect=AssertionError('Idle display scanned animation')):
+        assert visuals.sync_native_display(rig, inventory) == 0
+    visuals.restore_native_display(rig, saved)
+    assert displays(rig) == before and visuals.native_display_snapshot(rig) == saved
+    visuals.validate(rig, inventory)
+    visuals.remove(bpy.context, rig)
+
+
 def test_rings_all_sides_native_joint_anchor_and_roundtrip():
     for method in ('DIRECT_PREROLL', 'ROLL_DECOUPLED'):
         rig, inventory = fixture(method)
@@ -48,7 +124,7 @@ def test_rings_all_sides_native_joint_anchor_and_roundtrip():
         original_objects = set(bpy.data.objects.keys())
         original_meshes = set(bpy.data.meshes.keys())
         record = visuals.build(bpy.context, rig)
-        assert len(record['bindings']) == 8
+        assert len(record['bindings']) == 10
         assert visuals.apply(bpy.context, rig) == record
         assert set(rig.data.bones.keys()) == set(rest)
         visuals._verify_pose(rig, before)
@@ -64,7 +140,9 @@ def test_rings_all_sides_native_joint_anchor_and_roundtrip():
             assert pb.custom_shape_transform is None
             assert tuple(pb.custom_shape_translation) == (0, 0, 0)
             assert tuple(pb.custom_shape_rotation_euler) == (0, 0, 0)
-            assert abs(pb.custom_shape_scale_xyz.x - pb.bone.length * visuals.RADIUS_FACTORS[entry['kind']]) < 1e-6
+            radius_bone = (rig.pose.bones[entry['chain'][1]].bone
+                           if entry['kind'] == 'ARM' and name == entry['chain'][2] else pb.bone)
+            assert abs(pb.custom_shape_scale_xyz.x - radius_bone.length * visuals.RADIUS_FACTORS[entry['kind']]) < 1e-6
             assert before_displays[name]['custom_shape'] == ''
         for key, data in inventory['rigs'].items():
             target = rig.pose.bones[data['target'].name]
@@ -76,7 +154,7 @@ def test_rings_all_sides_native_joint_anchor_and_roundtrip():
             centroid = sum((vertex.co for vertex in pb.custom_shape.data.vertices), Vector()) / 32
             world_anchor = rig.matrix_world @ pb.matrix @ centroid
             assert (world_anchor - rig.matrix_world @ pb.head).length < 2e-6
-        assert visuals.remove(bpy.context, rig) == {'removed': 8}
+        assert visuals.remove(bpy.context, rig) == {'removed': 10}
         visuals._verify_pose(rig, halfway)
         assert displays(rig) == before_displays
         assert set(bpy.data.objects.keys()) == original_objects and set(bpy.data.meshes.keys()) == original_meshes
@@ -99,7 +177,7 @@ def test_artist_shapes_anchors_and_saved_empty_display_are_preserved():
     modified.custom_shape_wire_width = 3.5
     before = displays(rig)
     record = visuals.build(bpy.context, rig)
-    assert len(record['bindings']) == 6 and len(record['skipped']) == 2
+    assert len(record['bindings']) == 8 and len(record['skipped']) == 2
     assert rig.pose.bones[sources[0]].custom_shape == artist
     assert rig.pose.bones[sources[1]].custom_shape_transform.name == 'Hips'
     visuals.remove(bpy.context, rig)
@@ -213,7 +291,7 @@ def test_size_fit_rollback_and_save_reopen():
     with tempfile.TemporaryDirectory(prefix='cd-fk-rings-') as directory:
         path = os.path.join(directory, 'rings.blend')
         bpy.ops.wm.save_as_mainfile(filepath=path)
-        bpy.ops.wm.open_mainfile(filepath=path)
+        bpy.ops.wm.open_mainfile(filepath=path, use_scripts=True)
         rig = bpy.data.objects['Humanoid']
         assert visuals.validate(rig) == record and displays(rig) == saved
         visuals._verify_pose(rig, desired)
@@ -223,7 +301,9 @@ def test_size_fit_rollback_and_save_reopen():
 
 
 if __name__ == '__main__':
-    tests = (test_rings_all_sides_native_joint_anchor_and_roundtrip,
+    tests = (test_legacy_eight_ring_upgrade_rollback_and_idempotence,
+             test_legacy_native_display_migration_guard_rollback_and_original_snapshot,
+             test_rings_all_sides_native_joint_anchor_and_roundtrip,
              test_artist_shapes_anchors_and_saved_empty_display_are_preserved,
              test_ownership_sharing_and_animated_display_guards,
              test_failed_build_and_remove_restore_displays_and_resources,

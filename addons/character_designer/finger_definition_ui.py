@@ -478,7 +478,8 @@ CLASSES = (CharacterDesignerFingerDefinition, CHARACTERDESIGNER_OT_finger_defini
 
 
 def register_runtime():
-    bpy.types.Scene.character_designer_finger_definition = PointerProperty(type=CharacterDesignerFingerDefinition)
+    if not hasattr(bpy.types.Scene, 'character_designer_finger_definition'):
+        bpy.types.Scene.character_designer_finger_definition = PointerProperty(type=CharacterDesignerFingerDefinition)
     for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
         if _invalidate not in handlers: handlers.append(_invalidate)
     for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):

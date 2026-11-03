@@ -275,7 +275,7 @@ def _remove_library(library):
 
 
 def _validate_paths(rig, action, handle, api, capture):
-    """Only raw Pose transforms/numeric properties covered by fresh rollback."""
+    """Only captured raw channels and authenticated owned IK Pole scalars."""
     entry = next(value for value in capture['targets'] if value['target'] is rig)
     supported = {}
     for name, saved in entry['snapshot']['pose'].items():
@@ -284,6 +284,7 @@ def _validate_paths(rig, action, handle, api, capture):
             supported[prefix + '.' + field] = len(saved[field])
         for key in entry['properties'][name]:
             supported[prefix + '[' + json.dumps(key, ensure_ascii=False) + ']'] = 1
+    supported.update(api.target._validate_owned_ik_poles(entry))
     for curve in api.fingerprint._selected_curves(action, handle):
         path, index = curve.data_path, curve.array_index
         _require(path in supported, 'This local revision cannot fully roll back animation channel: ' + path)
@@ -299,6 +300,8 @@ def _validate_paths(rig, action, handle, api, capture):
 
 def _restore_current(context, rig, capture, api):
     """Replay raw overrides after frame_set evaluates the fresh current Action."""
+    for entry in capture['targets']:
+        api.target._validate_owned_ik_poles(entry)
     autokey = capture['targets'][0]['snapshot'].get(
         'autokey', context.scene.tool_settings.use_keyframe_insert_auto)
     apply_error = None
@@ -355,7 +358,7 @@ def create(context, item_id, *, activate_new=False):
     owners = _admit(context, rig, api)
     _require(rig.animation_data is not None and rig.animation_data.action is None,
              'Create the current revision immediately after preserving the stale scratch binding.')
-    capture = api.target._capture(context, rig)
+    capture = api.target._capture(context, rig, include_owned_ik_poles=True)
     api.target._validate_capture(context, capture)
     old_rows = [_row(item) for item in saved.items]
     _require(old_rows and all(not row['current_rig_revision'] and row['rig'] is rig for row in old_rows)
@@ -544,9 +547,41 @@ def activate(context, item_id, side='CUSTOM'):
     value = validate(context, item_id)
     saved = api.worklist.state(context)
     item = api.worklist._item(saved, item_id)
+    from . import hair_replace_authority
+    hair_replace_authority.guard_activation(context, item, side)
     rig = item.rig
-    attempt = api.target._capture(context, rig)
+    attempt = api.target._capture(context, rig, include_owned_ik_poles=True)
     api.target._validate_capture(context, attempt)
+    from . import bone_collections as groups
+    cache_key, cache_data = rig.as_pointer(), rig.data
+    cache_data_pointer = cache_data.as_pointer()
+    # Fresh RAM only: frame handlers may replace these entries during this
+    # attempt. Historical captures never grant display-cache authority.
+    cache = {name: (getattr(groups, name), cache_key in getattr(groups, name),
+                    getattr(groups, name).get(cache_key))
+             for name in ('_FRAME_CACHE', '_FRAME_OWNER_REJECTIONS')}
+    collection_attempt = tuple((collection, collection.as_pointer(), collection.name,
+        collection.parent, collection.parent.as_pointer() if collection.parent else None,
+        tuple(collection.bones), tuple(bone.as_pointer() for bone in collection.bones))
+        for collection in rig.data.collections_all)
+
+    def validate_display_attempt():
+        _require(rig.as_pointer() == cache_key and rig.data == cache_data
+                 and rig.data.as_pointer() == cache_data_pointer
+                 and all(getattr(groups, name) is table
+                         for name, (table, _present, _value) in cache.items()),
+                 'Activation display-cache ownership changed; recovery needs review.')
+        current = tuple(rig.data.collections_all)
+        _require(tuple(collection.as_pointer() for collection in current)
+                 == tuple(row[1] for row in collection_attempt),
+                 'Activation native collections changed; recovery needs review.')
+        for collection, row in zip(current, collection_attempt):
+            parent = collection.parent
+            _require(collection == row[0] and row[0].as_pointer() == row[1]
+                     and collection.name == row[2] and parent == row[3]
+                     and (parent.as_pointer() if parent else None) == row[4]
+                     and tuple(bone.as_pointer() for bone in row[5]) == row[6],
+                     'Activation native display structure changed; recovery needs review.')
     previous_index, previous_side = saved.active_index, item.side
     previous_status, previous_error = saved.status, saved.has_error
     previous_target = context.window_manager.character_designer_animation.target
@@ -582,7 +617,33 @@ def activate(context, item_id, side='CUSTOM'):
         # This is the fresh current checkpoint, never the old historical capture.
         rollback_error = None
         try:
+            validate_display_attempt()
             _restore_current(context, rig, attempt, api)
+            validate_display_attempt()
+            changed = []
+            for row in collection_attempt:
+                members = tuple(row[0].bones)
+                pointers = tuple(bone.as_pointer() for bone in members)
+                _require(len(pointers) == len(row[6]) and set(pointers) == set(row[6]),
+                         'Activation recovery did not restore the native collection member set; review it before retrying.')
+                if pointers != row[6]:
+                    changed.append((row, members))
+            # Prove every set before the first reorder. No new collections,
+            # inferred membership or historical display permissions are used.
+            for row, members in changed:
+                for bone in members:
+                    row[0].unassign(bone)
+                for bone in row[5]:
+                    row[0].assign(bone)
+            validate_display_attempt()
+            _require(all(tuple(bone.as_pointer() for bone in row[0].bones) == row[6]
+                         for row in collection_attempt),
+                     'Activation recovery could not restore native collection member order; review it before retrying.')
+            for table, present, cached in cache.values():
+                if present:
+                    table[cache_key] = cached
+                else:
+                    table.pop(cache_key, None)
         except Exception as error:
             rollback_error = error
         finally:

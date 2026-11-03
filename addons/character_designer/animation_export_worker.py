@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import itertools
 import json
 import math
 from array import array
@@ -19,7 +20,7 @@ import types
 import uuid
 
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 
 
 MAX_SAMPLES = 20000
@@ -196,6 +197,105 @@ def _omitted_channels(rig, action, slot):
     return sorted(set(omitted))
 
 
+def _fit_near_trs(matrix, location):
+    """Try a bounded local fit; only a native reconstruction can certify it.
+
+    Native decompose is not a minimizer of the componentwise matrix error used
+    by this exporter. Polar rotation followed by a small deterministic search
+    can find a valid TRS when decompose narrowly misses the unchanged gate.
+    """
+    def multiply(a, b):
+        return [[sum(a[i][k] * b[k][j] for k in range(3))
+                 for j in range(3)] for i in range(3)]
+
+    def inverse_transpose(a):
+        determinant = (a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+            - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]))
+        if not math.isfinite(determinant) or determinant <= 1e-12:
+            return None
+        return [[(a[(i + 1) % 3][(j + 1) % 3] * a[(i + 2) % 3][(j + 2) % 3]
+            - a[(i + 1) % 3][(j + 2) % 3] * a[(i + 2) % 3][(j + 1) % 3]) / determinant
+            for j in range(3)] for i in range(3)]
+
+    observed = [[float(matrix[i][j]) for j in range(3)] for i in range(3)]
+    base = [row[:] for row in observed]
+    for _ in range(8):
+        other = inverse_transpose(base)
+        if other is None:
+            return None
+        base = [[(base[i][j] + other[i][j]) * .5 for j in range(3)] for i in range(3)]
+        if any(not math.isfinite(value) for row in base for value in row):
+            return None
+    if max(abs(sum(base[k][i] * base[k][j] for k in range(3)) - float(i == j))
+           for i in range(3) for j in range(3)) > 1e-8:
+        return None
+    scales = [sum(base[i][j] * observed[i][j] for i in range(3)) for j in range(3)]
+    if any(not math.isfinite(value) or value <= 0 for value in scales):
+        return None
+    rotation_bound = min(1e-3, 8 * MATRIX_TOLERANCE / max(scales))
+    scale_bound = 8 * MATRIX_TOLERANCE
+    parameters = [0., 0., 0., *scales]
+
+    def candidate(values):
+        if (any(not math.isfinite(value) for value in values)
+                or any(abs(value) > rotation_bound for value in values[:3])
+                or any(value <= 0 or abs(value - initial) > scale_bound
+                       for value, initial in zip(values[3:], scales))):
+            return None
+        x, y, z = values[:3]
+        angle = math.sqrt(x * x + y * y + z * z)
+        skew = [[0., -z, y], [z, 0., -x], [-y, x, 0.]]
+        square = multiply(skew, skew)
+        a = math.sin(angle) / angle if angle else 1.
+        b = (1. - math.cos(angle)) / (angle * angle) if angle else .5
+        delta = [[float(i == j) + a * skew[i][j] + b * square[i][j]
+                  for j in range(3)] for i in range(3)]
+        axes = multiply(delta, base)
+        error = max(abs(observed[i][j] - axes[i][j] * values[j + 3])
+                    for i in range(3) for j in range(3))
+        return error, axes
+
+    def certified(values, axes):
+        rotation = Matrix(axes).to_quaternion()
+        rotation.normalize()
+        scale = Vector(values[3:])
+        if any(not math.isfinite(value) for value in (*rotation, *scale)) or min(scale) <= 0:
+            return None
+        restored = Matrix.LocRotScale(location, rotation, scale)
+        error = max(abs(matrix[i][j] - restored[i][j]) for i in range(4) for j in range(4))
+        if math.isfinite(error) and error <= MATRIX_TOLERANCE:
+            return rotation, scale
+        return None
+
+    best, axes = candidate(parameters)
+    if best <= MATRIX_TOLERANCE:
+        result = certified(parameters, axes)
+        if result is not None:
+            return result
+    # Fixed iteration and parameter bounds, independent of scene/clip size.
+    directions = tuple(itertools.product((-1, 0, 1), repeat=6))
+    for step in (1e-5, 5e-6, 2e-6, 1e-6, 5e-7, 2e-7, 1e-7):
+        for _ in range(4):
+            previous = best
+            for direction in directions:
+                if not any(direction):
+                    continue
+                values = [value + step * delta for value, delta in zip(parameters, direction)]
+                scored = candidate(values)
+                if scored is None or scored[0] >= best:
+                    continue
+                best, axes = scored
+                parameters = values
+                if best <= MATRIX_TOLERANCE:
+                    result = certified(parameters, axes)
+                    if result is not None:
+                        return result
+            if best >= previous:
+                break
+    return None
+
+
 def _trs(matrix, label):
     if any(not math.isfinite(value) for row in matrix for value in row):
         raise AnimationExportError(label + ': non-finite transform.')
@@ -207,6 +307,10 @@ def _trs(matrix, label):
     restored = Matrix.LocRotScale(location, rotation, scale)
     error = max(abs(matrix[row][column] - restored[row][column]) for row in range(4) for column in range(4))
     if error > MATRIX_TOLERANCE:
+        if error <= 4 * MATRIX_TOLERANCE:
+            fitted = _fit_near_trs(matrix, location)
+            if fitted is not None:
+                return location, *fitted
         raise AnimationExportError(f'{label}: shear cannot be represented by FBX TRS channels (error {error:.6g}).')
     return location, rotation, scale
 

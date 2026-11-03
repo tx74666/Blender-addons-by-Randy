@@ -306,7 +306,9 @@ def plan(context, rig):
 
     rings = existing('FK_RINGS', limb_fk_visuals, inventory)
     if not rings:
-        eligible = [name for chain in available.values() for name in chain[:2] if not _display_inputs(rig, [name])]
+        eligible = [name for (kind, _side), chain in available.items()
+                    for name in limb_fk_visuals.binding_names(kind, chain)
+                    if not _display_inputs(rig, [name])]
         put('FK_RINGS', 'ADD' if eligible else 'SKIP', 'Fit missing native FK rings; keep artist shapes.' if eligible else 'No unshaped native limb sections.')
     elif isinstance(rings, dict) and pending:
         put('FK_RINGS', 'ADD', 'Add rings for new limbs; keep existing rings and artist shapes.')
