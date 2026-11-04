@@ -8,7 +8,7 @@ import copy
 import hashlib
 import json
 import math
-from types import SimpleNamespace
+from pathlib import Path
 import uuid
 
 import bpy
@@ -157,8 +157,10 @@ def _history_unchanged(plan):
 
 
 def _action_witness(action, slot, revision, api):
+    native_slot = api.worklist._slot(action, slot)
     return (action, slot, action.name_full, bool(action.use_fake_user),
-            _properties(action, api.body), revision._action_hash(action, slot, api))
+            _properties(action, api.body),
+            (native_slot.handle, native_slot.identifier, native_slot.target_id_type))
 
 
 def _verify_actions(plan):
@@ -166,7 +168,7 @@ def _verify_actions(plan):
     for witness in plan['actions']:
         action, slot = witness[:2]
         _require(_action_witness(action, slot, revision, api) == witness,
-                 'A retained Source or Custom Action changed during Hair replacement.')
+                 'A retained Source/Custom Action identity, slot or metadata changed during Hair replacement.')
     for checkpoint, raw, refs in plan['checkpoints']:
         _require(checkpoint.get(revision.RECORD) == raw
                  and dict(checkpoint.get(revision.REFS, {})) == refs,
@@ -305,6 +307,45 @@ def current_topology_view(rig, context=None):
     return _CurrentTopologyView(rig)
 
 
+def prove_missing_mapped(rig, missing_names):
+    """Permit current control reads only for authenticated removed Hair names.
+
+    This does not alter the historical mapping, validate an old Action, or
+    grant recovery rights. Separate protected/motion data keep the old gate.
+    """
+    missing = _names(missing_names)
+    saved = _read_basic(rig)
+    if saved is None:
+        return False
+    _revision, api, hair, adoption = _modules()
+    record = api.target._load_rest_record(rig, _for_rest_proof=True)
+    original = record['capture']['targets'][0]['data']
+    if original is not rig.data or record['motion_data'] is not rig.data:
+        return False
+    actual_missing = set(record['mapped_names']) - set(rig.data.bones.keys())
+    if missing != actual_missing:
+        return False
+    # Open regional receipts own their old complete protected partition. They
+    # cannot acquire a topology exception, or recursively borrow this proof.
+    if api.body._load(rig):
+        return False
+    historical = historical_bones(rig)
+    from . import limb_ik, skirt_rig
+    for name in missing:
+        bone = historical.get(name)
+        if bone is None or bone.get(hair.OWNER_KEY) != hair.OWNER_VALUE:
+            return False
+        source, signature = bone.get(hair.SOURCE_KEY), bone.get(hair.SIGNATURE_KEY)
+        if (not isinstance(source, bpy.types.Object) or source.type != 'MESH'
+                or source.get(hair.RIG_KEY) is not rig or type(signature) is not str
+                or any(bone.get(key) is not None for key in (limb_ik.OWNER_KEY, skirt_rig.OWNER_KEY))):
+            return False
+        binding = hair._read_records(source)
+        if binding is None or signature not in {chain['signature'] for chain in binding['chains']}:
+            return False
+    return bool(adoption.verified_revision(rig))
+
+
 def guard_activation(context, item, side):
     """Old Source curves must not silently target removed native Hair bones."""
     if side != 'SOURCE' or _read_basic(item.rig) is None:
@@ -319,8 +360,9 @@ def guard_activation(context, item, side):
             raise ValueError('This Source uses the previous Hair topology; keep its original draft and use the current Custom.') from None
 
 
-def prepare(context, rig, old_names):
-    """Authenticate all supported authority before the caller's native writes."""
+def _prepare(context, rig, old_names, *, admission_only):
+    """Shared fresh admission; a summary never owns a transaction or backup."""
+    _require(type(admission_only) is bool, 'Choose an explicit Hair admission mode.')
     revision, api, hair, adoption = _modules()
     old_names = _names(old_names)
     api.worklist._idle(context)
@@ -350,14 +392,18 @@ def prepare(context, rig, old_names):
         expected = {name for chain in record['chains'] if chain['signature'] in signatures
                     for name in chain['bones']}
         _require(expected <= old_names, 'Replace complete Hair chains, not individual bones.')
-    plan = dict(context=context, rig=rig, data=rig.data, revision=revision, api=api,
+    plan = dict(kind='hair_replace.authority_plan', context=context, rig=rig, data=rig.data, revision=revision, api=api,
                 old_names=old_names, source_signatures=sources,
                 old_rest=api.ua._rest_state(rig.data), graph=_graph(rig, old_names, api),
                 created_actions=[], created_armatures=[], committed=False, written=False,
-                before_actions=frozenset(bpy.data.actions))
+                before_actions=frozenset(bpy.data.actions),
+                before_libraries=frozenset(bpy.data.libraries), source_receipts=[])
     # Ordinary single-user rigs need no shared-data or worklist exception.
     if not api.target.managed(rig):
         _require(rig.data.users == 1, 'An unmanaged shared Armature cannot replace Hair in place.')
+        if admission_only:
+            return dict(kind='hair_replace.eligibility', eligible=True, managed=False,
+                        selected_bones=len(old_names))
         plan['managed'] = False
         return plan
     _require(api.target.is_adopted(rig) and adoption.verified_revision(rig),
@@ -383,6 +429,14 @@ def prepare(context, rig, old_names):
     _require(all(row['rig'] is rig for row in rows)
              and len({row['item_id'] for row in rows}) == len(rows),
              'The current worklist contains mixed or duplicated rig rows.')
+    if admission_only:
+        # Only reject unsupported contexts before expensive sampling. The
+        # physical replacement later calls prepare afresh; no witness, native
+        # backup, or authority plan crosses the sampling interval.
+        _read_basic(rig)
+        adoption.recovery_owners(rig)
+        return dict(kind='hair_replace.eligibility', eligible=True, managed=True,
+                    selected_bones=len(old_names))
     witnesses, checkpoints, seen, seen_checkpoints = [], [], set(), set()
     for row in rows:
         for action_key, slot_key in (('source_action', 'source_slot'), ('custom_action', 'custom_slot')):
@@ -419,7 +473,8 @@ def prepare(context, rig, old_names):
         plan['backup'] = backup
         plan['backup_description'] = _backup_description(backup, api)
         _history_unchanged(plan)
-        _verify_actions(plan)
+        # Old Action identity/metadata and complete checkpoints are protected;
+        # this owned data copy introduces no original Action curve writer.
         _require(adoption.recovery_owners(rig) == plan['owners'],
                  'The passive Hair copy changed the original Armature owner map.')
         return plan
@@ -428,6 +483,16 @@ def prepare(context, rig, old_names):
         if backup.users == 0:
             bpy.data.armatures.remove(backup, do_unlink=False)
         raise
+
+
+def admit(context, rig, old_names):
+    """Read-only eligibility check; its plain summary grants no commit rights."""
+    return _prepare(context, rig, old_names, admission_only=True)
+
+
+def prepare(context, rig, old_names):
+    """Capture fresh full witnesses and an owned backup before native writes."""
+    return _prepare(context, rig, old_names, admission_only=False)
 
 
 def _verify_delta(plan, new_names):
@@ -477,8 +542,112 @@ def _undo_metadata(plan):
     plan['written'] = plan['committed'] = False
 
 
+def _live_id(value, inventory):
+    try:
+        pointer = value.as_pointer()
+    except (AttributeError, ReferenceError):
+        return None
+    return next((item for item in inventory if item.as_pointer() == pointer), None)
+
+
+def _remove_owned_library(library, plan, expected_path):
+    """Remove only our empty Source Library, including its native extra-user.
+
+    Blender 5.2 creates a Library with users=1/use_extra_user=True even after
+    its last linked ID is removed. That intrinsic user is not a foreign ID.
+    Never clear counters/flags, and prove all actual references absent first.
+    """
+    _require(isinstance(library, bpy.types.Library)
+             and library not in plan['before_libraries']
+             and library.library is None and library.parent is None
+             and Path(bpy.path.abspath(library.filepath)).resolve() == Path(expected_path).resolve(),
+             'The new Hair Source Library lost its exact transaction ownership.')
+    _require(not bpy.data.user_map(subset={library}).get(library, set()),
+             'A native ID still references the new Hair Source Library; it was kept.')
+    for prop in bpy.data.bl_rna.properties:
+        if prop.type == 'COLLECTION':
+            _require(not any(isinstance(value, bpy.types.ID) and value.library is library
+                             for value in getattr(bpy.data, prop.identifier)),
+                     'The new Hair Source Library still contains linked native IDs; it was kept.')
+    _require(not any(other.parent is library for other in bpy.data.libraries),
+             'Another Library depends on the new Hair Source Library; it was kept.')
+    _require(not library.use_fake_user
+             and library.users == int(bool(library.use_extra_user)),
+             'The new Hair Source Library has an unexplained user; it and its cache were kept.')
+    # No real users/linked IDs remain. do_unlink permits Blender to dispose its
+    # own intrinsic extra-user without user_clear or changing anyone's flags.
+    bpy.data.libraries.remove(library, do_unlink=True)
+
+
+def _cleanup_created_actions(plan):
+    """Dispose only this transaction's IDs before removing its new cache file."""
+    revision = plan['revision']
+    errors, actions, libraries = [], [], []
+    def attempt(call):
+        try:
+            call()
+        except Exception as error:
+            errors.append(str(error))
+    checkpoint = _live_id(plan.get('checkpoint'), bpy.data.actions)
+    if checkpoint is not None:
+        attempt(lambda: checkpoint.pop(revision.REFS, None))
+    for value in reversed(plan['created_actions']):
+        action = _live_id(value, bpy.data.actions)
+        if action is not None and action not in actions:
+            actions.append(action)
+    for receipt in plan['source_receipts']:
+        loaded = receipt.get('load_result')
+        candidates = [receipt.get('action')]
+        if loaded is not None:
+            candidates.extend(getattr(loaded, 'actions', ()))
+        for value in candidates:
+            action = _live_id(value, bpy.data.actions)
+            if action is None or action in plan['before_actions']:
+                continue
+            if action not in actions:
+                actions.append(action)
+            library = action.library
+            if (library is not None and library not in plan['before_libraries']
+                    and str(Path(bpy.path.abspath(library.filepath)).resolve())
+                    == str(Path(receipt['path']).resolve()) and library not in libraries):
+                libraries.append(library)
+        library = _live_id(receipt.get('library'), bpy.data.libraries)
+        if (library is not None and library not in plan['before_libraries']
+                and str(Path(bpy.path.abspath(library.filepath)).resolve())
+                == str(Path(receipt['path']).resolve()) and library not in libraries):
+            libraries.append(library)
+    for action in actions:
+        _require(action not in plan['before_actions'], 'A preserved Action entered the Hair cleanup inventory.')
+        attempt(lambda action=action: revision._remove_action(action))
+    for library in libraries:
+        expected_path = next(receipt['path'] for receipt in plan['source_receipts']
+            if receipt.get('path') and Path(bpy.path.abspath(library.filepath)).resolve()
+            == Path(receipt['path']).resolve())
+        attempt(lambda library=library, expected_path=expected_path:
+                _remove_owned_library(library, plan, expected_path))
+    # A foreign native user keeps its cache, including a partial native load.
+    if not errors:
+        for receipt in plan['source_receipts']:
+            if not receipt.get('path'):
+                continue
+            path = Path(receipt['path']).resolve()
+            def remove_cache(path=path, receipt=receipt):
+                _require(path.name == receipt['owned_filename'], 'The owned Hair Source cache path changed.')
+                _require(not any(str(Path(bpy.path.abspath(library.filepath)).resolve()) == str(path)
+                                 for library in bpy.data.libraries),
+                         'A Source Library still uses the new Hair cache; it was kept for recovery.')
+                path.unlink(missing_ok=True)
+            attempt(remove_cache)
+    if errors:
+        raise RuntimeError('Hair Source/checkpoint cleanup needs review: ' + '; '.join(errors))
+    plan['created_actions'].clear()
+    plan['source_receipts'].clear()
+
+
 def commit(plan, new_names, new_action=None, new_slot=None):
     """Commit only proven selected Hair delta and a caller-owned local Action."""
+    _require(isinstance(plan, dict) and plan.get('kind') == 'hair_replace.authority_plan',
+             'An eligibility summary cannot commit Hair authority; prepare a fresh transaction.')
     _require(not plan.get('committed') and not plan.get('written'), 'This Hair authority plan was already committed.')
     new_names = _names(new_names)
     rig, api, revision = plan['rig'], plan['api'], plan['revision']
@@ -487,7 +656,9 @@ def commit(plan, new_names, new_action=None, new_slot=None):
         plan['committed'] = True
         return dict(managed=False, item_id=None)
     _history_unchanged(plan)
-    _verify_actions(plan)
+    # Supported writers touch only newly owned Actions. Old Action identity,
+    # slot, metadata and checkpoints are checked again after publication;
+    # unrelated historical clip curves are not scanned by this Hair operation.
     _require([revision._row(item) for item in plan['saved'].items] == plan['rows'],
              'The worklist changed after Hair replacement was prepared.')
     action = new_action if new_action is not None else plan.get('replacement_action')
@@ -506,6 +677,33 @@ def commit(plan, new_names, new_action=None, new_slot=None):
     revision._no_action_ID_properties(dict(action.items()))
     token, item_id, work_id = (uuid.uuid4().hex for _ in range(3))
     try:
+        # This is a fresh baseline for the new topology, not permission to run
+        # the old Source on missing Hair bones. Keep all old rows in checkpoint.
+        temporary = action.copy()
+        plan['created_actions'].append(temporary)
+        temporary.use_fake_user = False
+        revision._no_action_ID_properties(dict(temporary.items()))
+        revision._no_native_dependencies(temporary)
+        receipt = {}
+        plan['source_receipts'].append(receipt)
+        try:
+            source, source_path, source_sha = api.worklist._linked_baseline(
+                plan['saved'], temporary, item_id, plan['selected_row']['name'] + ' · Hair',
+                _ownership=receipt)
+        finally:
+            # The utility admits only an initially empty ownership receipt.
+            # This filename is ours even if its native writer/load raised.
+            receipt['owned_filename'] = item_id + '.blend'
+        _require(source not in plan['before_actions'] and source.library is not None
+                 and source.library not in plan['before_libraries'],
+                 'The new Hair Source unexpectedly reused a pre-existing native ID.')
+        plan['created_actions'].append(source)
+        source_slot = api.worklist._slot(source, slot.handle)
+        # Native Action.copy and .blend serialization create this independent
+        # baseline. Attest the new Source once; the unchanged current-revision
+        # validator checks its saved fingerprint again on the installed row.
+        curve_hash = revision._action_hash(source, source_slot.handle, api)
+        revision._remove_action(temporary)
         plan['written'] = True
         adoption = _modules()[3]
         audit = json.loads(plan['audit_raw'])
@@ -513,7 +711,10 @@ def commit(plan, new_names, new_action=None, new_slot=None):
         audit_raw = adoption._canonical(audit)
         proof = json.loads(plan['owner_raw'])
         proof.update(rest=full_rest,
-            bone_properties=api.body._bone_ownership_hashes(rig.data.bones),
+            # Match complete164 Body's own _finish_owner_revision schema;
+            # do not depend on helpers present only in unrelated candidates.
+            bone_properties={bone.name: api.body._hash(api.body._bone_ownership(bone))
+                             for bone in rig.data.bones},
             audit_sha256=api.body._hash(audit_raw))
         owner_raw = adoption._canonical(proof)
         rig.data[adoption.AUDIT_KEY] = audit_raw
@@ -554,6 +755,8 @@ def commit(plan, new_names, new_action=None, new_slot=None):
         row = dict(plan['selected_row'])
         row.update(item_id=item_id, work_item_id=work_id, clip_key='local-current:' + item_id,
             current_rig_revision=token, custom_action=action, custom_slot=slot.handle, side='CUSTOM',
+            source_action=source, source_slot=source_slot.handle, source_file=source_path,
+            source_hash=source_sha,
             manifest_path='', new_animation=False, new_action_id='',
             link_identity=revision._json(dict(schema=revision.SCHEMA, token=token, local_only=True,
                 historical_item_id=plan['selected_id'], hair_topology_revision=True)))
@@ -574,17 +777,14 @@ def commit(plan, new_names, new_action=None, new_slot=None):
             history_raw=plan['history_raw'], history_refs=plan['history_refs'], historical_owners=plan['owners'],
             capture=capture, current_rest=full_rest, current_structure=value['current_structure'],
             old_rows=plan['rows'], previous_index=plan['previous_index'],
-            source_curve_hashes={item_id: revision._action_hash(row['source_action'], row['source_slot'], api)},
-            rows=[row], semantic_scope='selected Hair topology; old Source Hair channels require matching topology')
+            source_curve_hashes={item_id: curve_hash}, rows=[row],
+            semantic_scope='selected Hair topology; fresh read-only Source matches new Custom; historical drafts retained')
         checkpoint_refs = {}
         encoded = revision._encode(payload, checkpoint_refs, plan['history_refs'], rig)
         revision._store(checkpoint, encoded, checkpoint_refs)
         value['checkpoint_sha256'] = revision._digest(encoded)
         rig[RECORD] = revision._json(dict(payload=value, sha256=revision._digest(value)))
         action[revision.TOKEN], action[revision.CHECKPOINT] = token, checkpoint
-        probe = SimpleNamespace(**row)
-        probe.bl_rna = plan['row_rna']
-        revision._read(plan['context'], probe, api)
         # Keep other rows visible and untouched; strict old revision readers
         # refuse their stale full-Rest captures instead of dropping curves.
         rows = [row if old['item_id'] == plan['selected_id'] else old for old in plan['rows']]
@@ -596,7 +796,8 @@ def commit(plan, new_names, new_action=None, new_slot=None):
         _history_unchanged(plan)
         _verify_actions(plan)
         plan['committed'], plan['item_id'] = True, item_id
-        return dict(managed=True, item_id=item_id, action=action, checkpoint=checkpoint)
+        return dict(managed=True, item_id=item_id, action=action, checkpoint=checkpoint,
+                    source_action=source, source_file=source_path, source_hash=source_sha)
     except Exception:
         _undo_metadata(plan)
         raise
@@ -608,6 +809,8 @@ def commit(plan, new_names, new_action=None, new_slot=None):
 
 def rollback(plan):
     """Undo owned authority after the caller restores native bones/Action."""
+    _require(isinstance(plan, dict) and plan.get('kind') == 'hair_replace.authority_plan',
+             'An eligibility summary owns no Hair authority transaction to roll back.')
     api, rig, revision = plan['api'], plan['rig'], plan['revision']
     _require(rig.data is plan['data'] and api.ua._rest_state(rig.data) == plan['old_rest']
              and _graph(rig, plan['old_names'], api) == plan['graph'],
@@ -616,14 +819,11 @@ def rollback(plan):
         _undo_metadata(plan)
         _history_unchanged(plan)
         _verify_actions(plan)
-    for checkpoint in reversed(plan['created_actions']):
-        checkpoint.pop(revision.REFS, None)
-        revision._remove_action(checkpoint)
+    _cleanup_created_actions(plan)
     for backup in reversed(plan['created_armatures']):
         _require(backup.users - int(backup.use_fake_user) == 0,
                  'A passive Hair backup gained a foreign user; it was kept for recovery.')
         backup.use_fake_user = False
         bpy.data.armatures.remove(backup, do_unlink=False)
-    plan['created_actions'].clear()
     plan['created_armatures'].clear()
     plan['committed'] = False

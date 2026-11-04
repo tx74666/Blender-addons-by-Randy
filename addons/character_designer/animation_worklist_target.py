@@ -669,9 +669,16 @@ def control_rest_view(rig):
     names = record['mapped_names']
     _validated_names(names)
     original = record['capture']['targets'][0]['data']
-    if (not set(names).issubset(original.bones.keys())
-            or not set(names).issubset(rig.data.bones.keys())):
-        raise ValueError('The saved Main Rig mapped bones no longer belong to its protected/current data.')
+    missing = ((set(names) - set(original.bones.keys()))
+               | (set(names) - set(rig.data.bones.keys())))
+    if missing:
+        current_hair = False
+        if (original is rig.data and record['motion_data'] is rig.data
+                and rig.get('character_designer_hair_current_topology_v1') is not None):
+            from . import hair_replace_authority
+            current_hair = hair_replace_authority.prove_missing_mapped(rig, missing)
+        if not current_hair:
+            raise ValueError('The saved Main Rig mapped bones no longer belong to its protected/current data.')
     return _validation_rest_view(rig, names, record)
 
 

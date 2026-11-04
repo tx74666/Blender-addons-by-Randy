@@ -983,9 +983,8 @@ def replace_selected(context, source, *, bone_count=6, frame_start=None, frame_e
     sampled, result = None, None
     try:
         # Refuse unsupported recovery/animation contexts before sampling frames.
-        admission = hair_replace_authority.prepare(context, rig,
+        hair_replace_authority.admit(context, rig,
             tuple(name for chain in _selected_chains(record, signatures) for name in chain['bones']))
-        hair_replace_authority.rollback(admission)
         witness = hair_replace.capture_input(source)
         sampled = create(context, source, bone_count=bone_count, frame_start=frame_start,
                          frame_end=frame_end, activate=False, strand_signatures=signatures)
