@@ -90,6 +90,19 @@ def base_clip_identity(item):
     return clip_identity({'clipGuid': guid, 'clipLocalId': local_id})
 
 
+def target_slot_id(item):
+    """An optional semantic destination; never infer it from motion names."""
+    if not isinstance(item, dict):
+        raise AnimationWorkspaceError('Animation routing must be a JSON object.')
+    value = item.get('targetSlotId')
+    if value is None or value == '':
+        return ''
+    if (not isinstance(value, str) or len(value) > 96
+            or re.fullmatch(r'[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*', value) is None):
+        raise AnimationWorkspaceError('targetSlotId must be a lowercase semantic key of at most 96 characters.')
+    return value
+
+
 def row_key(item):
     identity = work_item_id(item)
     guid, local_id = clip_identity(item)
@@ -99,6 +112,10 @@ def row_key(item):
 def route_identity(item):
     """Frozen row/source/slot/scope provenance, excluding revision and names."""
     source_clip = clip_identity(item)
+    slot = target_slot_id(item)
+    # Keep legacy receipts byte-for-byte comparable. A bound semantic slot adds
+    # identity instead of silently falling back to the legacy clip destination.
+    slot_route = ('targetSlotId', slot) if slot else ()
     source_character = item.get('sourceCharacterGuid') or ''
     if source_character:
         source_character = _hex(source_character, 32, 'sourceCharacterGuid')
@@ -131,7 +148,7 @@ def route_identity(item):
                 or item.get('baseClipGuid') not in (None, '')
                 or not (local_id is None or type(local_id) is int and local_id == 0)):
             raise AnimationWorkspaceError('A prepared source-only reference requires All scope, no composition and no invented Base Clip slot.')
-        return (work_item_id(item), source_clip, ('prepared-source-only', source_clip), source_character, *scope, *reference_route)
+        return (work_item_id(item), source_clip, ('prepared-source-only', source_clip), source_character, *scope, *reference_route, *slot_route)
     if composition is not None:
         from . import animation_composition_contract as contract
         prepared = bool(item.get('sourcePackage') or item.get('linkManifest') and not item.get('needsRebuild'))
@@ -139,10 +156,10 @@ def route_identity(item):
         if scope[1] != contract.SCOPE or work_item_id(item) != uuid.UUID(spec['editWorkItemId']).hex:
             raise AnimationWorkspaceError('Composition belongs to another B work item or scope.')
         return (work_item_id(item), source_clip, ('armed-composition', spec['compositionId']),
-                source_character, *scope, contract.digest(spec))
+                source_character, *scope, contract.digest(spec), *slot_route)
     if scope[1] == 'UpperBodyOverride':
         raise AnimationWorkspaceError('UpperBodyOverride requires its explicit composition record.')
-    return (work_item_id(item), source_clip, base_clip_identity(item), source_character, *scope, *reference_route)
+    return (work_item_id(item), source_clip, base_clip_identity(item), source_character, *scope, *reference_route, *slot_route)
 
 
 def prepare_request(record):

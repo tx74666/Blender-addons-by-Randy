@@ -74,6 +74,16 @@ class Layout:
     def template_list(self, *args, **kwargs):
         self.records.append(('list', (args, kwargs), self.enabled))
 
+    def template_action(self, animated_id, *, new='', unlink='', text=''):
+        self.records.append(('action', (animated_id, dict(new=new, unlink=unlink, text=text)), self.enabled))
+
+    def template_search(self, data, prop, search_data, search_prop, *, new='', unlink=''):
+        self.records.append(('search', (data, prop, search_data, search_prop,
+                                        dict(new=new, unlink=unlink)), self.enabled))
+
+    def context_pointer_set(self, name, value):
+        self.records.append(('context_pointer', (name, value), self.enabled))
+
 
 class WorklistUI(unittest.TestCase):
     def setUp(self):
@@ -562,13 +572,13 @@ class WorklistUI(unittest.TestCase):
         self.assertTrue(operator.poll(self.context))
 
     def test_failed_refresh_sync_keeps_previous_connection_and_saved_work(self):
-        reconcile = SimpleNamespace(plan=Mock(side_effect=ValueError('Workspace identity changed.')),
+        reconcile = SimpleNamespace(start_or_review=Mock(side_effect=ValueError('Workspace identity changed.')),
                                     begin=Mock())
         before = self.state.workspace_path, self.state.workspace_identity, self.state.items[:]
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_refresh()
         with patch.object(self.ui, '_reconcile', return_value=reconcile):
             self.assertEqual(operator.execute(self.context), {'FINISHED'})
-            reconcile.plan.assert_not_called()
+            reconcile.start_or_review.assert_not_called()
             self.ui._poll_list_sync()
         self.assertTrue(self.state.has_error)
         self.assertEqual(self.state.status, 'Workspace identity changed.')
@@ -577,16 +587,18 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual((self.state.workspace_path, self.state.workspace_identity, self.state.items), before)
         reconcile.begin.assert_not_called()
         self.backend.refresh.assert_not_called()
-        reconcile.plan.side_effect = None
-        reconcile.plan.return_value = dict(blocked=[], extras=[], token='retry-token', workspace_path=before[0])
+        reconcile.start_or_review.side_effect = None
+        reconcile.start_or_review.return_value = dict(blocked=[], extras=[], token='retry-token', workspace_path=before[0])
+        reconcile.start_or_review.reset_mock()
         with patch.object(self.ui, '_reconcile', return_value=reconcile):
             self.assertEqual(operator.execute(self.context), {'FINISHED'})
             self.ui._poll_list_sync()
-        reconcile.begin.assert_called_once_with(self.context, 'retry-token', workspace_path=before[0])
+        reconcile.start_or_review.assert_called_once_with(self.context, None)
+        reconcile.begin.assert_not_called()
 
     def test_rejected_replacement_keeps_previous_connection_check(self):
         reconcile = SimpleNamespace(
-            plan=Mock(side_effect=ValueError('Another character workspace cannot replace this worklist.')),
+            start_or_review=Mock(side_effect=ValueError('Another character workspace cannot replace this worklist.')),
             begin=Mock())
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect()
         operator.filepath = 'different-workspace.json'
@@ -598,7 +610,7 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(self.ui._workspace_connection_display(self.state), ('Connected', 'CHECKMARK'))
         self.assertEqual((self.state.workspace_path, self.state.workspace_identity, self.state.items), before)
         self.assertTrue(self.state.has_error)
-        reconcile.plan.assert_called_once_with(self.context, 'different-workspace.json')
+        reconcile.start_or_review.assert_called_once_with(self.context, 'different-workspace.json')
         reconcile.begin.assert_not_called()
         self.backend.connect.assert_not_called()
 
@@ -911,8 +923,8 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(args, ('CHARACTERDESIGNER_UL_animation_worklist', 'actions', self.state,
                                 'items', self.state, 'list_cursor'))
         self.assertEqual((options['rows'], options['maxrows']), (5, 5))
-        self.assertIn('Source', labels)
-        self.assertIn('Custom', labels)
+        self.assertNotIn('Source', labels)
+        self.assertNotIn('Custom', labels)
         self.assertIn(self.ui.CHARACTERDESIGNER_UL_animation_worklist, self.ui.WORKLIST_CLASSES)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
@@ -920,12 +932,63 @@ class WorklistUI(unittest.TestCase):
             ('character_designer.worklist_refresh', ''),
             ('character_designer.worklist_sync_list', 'Sync List'),
             ('character_designer.worklist_sync_changed', 'Export Changes'),
-            ('character_designer.make_controller_animation', 'Make Controller Animation'),
-            ('character_designer.worklist_simplify_keys', 'Simplify Keys')])
+            ('character_designer.make_controller_animation', 'Generate Controller Custom')])
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
                                                    for item in self.state.items]), before)
         self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
                              for kind, value, _enabled in layout.records))
+
+    def test_active_custom_action_requires_current_slot_and_editable_context(self):
+        item = self.state.items[0]
+        animation = item.rig.animation_data
+        for mode in ('OBJECT', 'POSE'):
+            with self.subTest(mode=mode), patch.object(self.context, 'mode', mode):
+                self.assertTrue(self.ui._active_custom_action(self.context))
+        cases = ((item, 'side', 'SOURCE'),
+                 (self.context, 'mode', 'EDIT_ARMATURE'),
+                 (item, 'rig', None),
+                 (item.rig, 'animation_data', None),
+                 (item, 'custom_action', None),
+                 (item, 'custom_slot', None),
+                 (animation, 'action', Action('Other Action')),
+                 (animation, 'action_slot_handle', 77))
+        for owner, field, value in cases:
+            with self.subTest(field=field, value=value), patch.object(owner, field, value):
+                self.assertFalse(self.ui._active_custom_action(self.context))
+        with patch.object(self.ui, '_idle', return_value=False):
+            self.assertFalse(self.ui._active_custom_action(self.context))
+        with patch.object(self.state, 'active_index', -1):
+            self.assertFalse(self.ui._active_custom_action(self.context))
+
+    def test_export_base_pose_keeps_action_and_slot_eligibility(self):
+        self.state.show_advanced = True
+        animation = self.state.items[0].rig.animation_data
+        def enabled():
+            layout = Layout()
+            self.ui.draw_worklist(layout, self.context)
+            return [allowed for kind, value, allowed in layout.records
+                    if kind == 'operator' and value[0] == 'character_designer.animation_export_base_pose'
+                    and value[1]['text'] == 'Capture Export Base Pose']
+        self.assertEqual(enabled(), [True])
+        for field, value in (('action', Action('Other Action')), ('action_slot_handle', 77)):
+            with self.subTest(field=field), patch.object(animation, field, value):
+                self.assertEqual(enabled(), [False])
+        with patch.object(self.ui, '_idle', return_value=False):
+            self.assertEqual(enabled(), [False])
+
+    def test_removed_custom_reduction_has_no_registered_or_drawn_entry(self):
+        removed = {'character_designer.worklist_simplify_keys',
+                   'character_designer.worklist_compare_keys'}
+        identifiers = {getattr(cls, 'bl_idname', '') for cls in self.ui.WORKLIST_CLASSES}
+        self.assertTrue(removed.isdisjoint(identifiers))
+        for name in ('CHARACTERDESIGNER_OT_worklist_simplify_keys',
+                     'CHARACTERDESIGNER_OT_worklist_compare_keys'):
+            self.assertFalse(hasattr(self.ui, name))
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        buttons = {value[0] for kind, value, _enabled in layout.records if kind == 'operator'}
+        self.assertTrue(removed.isdisjoint(buttons))
+        self.assertIn('character_designer.make_controller_animation', buttons)
 
     def test_search_filters_name_and_source_without_reordering(self):
         ui_list = self.ui.CHARACTERDESIGNER_UL_animation_catalog()
@@ -949,9 +1012,7 @@ class WorklistUI(unittest.TestCase):
                    for kind, value, _enabled in self.draw_action_row(item).records
                    if kind == 'operator' and value[0] == 'character_designer.worklist_activate']
         self.assertEqual([(payload.item_id, payload.side) for payload in actions], [
-            ('id-Walk', 'SOURCE'), ('id-Walk', 'CUSTOM'),
-            ('id-Run', 'SOURCE'), ('id-Run', 'CUSTOM'),
-            ('id-Idle', 'SOURCE'), ('id-Idle', 'CUSTOM')])
+            ('id-Walk', 'CUSTOM'), ('id-Run', 'CUSTOM'), ('id-Idle', 'CUSTOM')])
 
     def test_worklist_search_uses_native_names_without_reordering_or_scene_mutation(self):
         ui_list = self.ui.CHARACTERDESIGNER_UL_animation_worklist()
@@ -969,19 +1030,17 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(props, ['filter_name'])
         self.assertFalse(any(kind == 'operator' for kind, _value, _enabled in layout.records))
 
-    def test_row_actions_use_stable_item_ids_and_correct_sides(self):
+    def test_row_activates_the_local_action_by_stable_item_id(self):
         item = self.state.items[1]
         layout = self.draw_action_row(item)
-        buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
-        for _name, _options, payload in buttons:
-            self.assertEqual(payload.item_id, 'id-Run')
-        sides = [payload.side for name, _options, payload in buttons if name.endswith('worklist_activate')]
-        self.assertEqual(sides, ['SOURCE', 'CUSTOM'])
+        [(name, _options, payload)] = [value for kind, value, _enabled in layout.records if kind == 'operator']
+        self.assertEqual(name, 'character_designer.worklist_activate')
+        self.assertEqual((payload.item_id, payload.side), ('id-Run', 'CUSTOM'))
         activate = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
-        activate.item_id, activate.side = 'id-Run', 'SOURCE'
+        activate.item_id, activate.side = payload.item_id, payload.side
         self.state.items.reverse()
         self.assertEqual(activate.execute(self.context), {'FINISHED'})
-        self.backend.activate.assert_called_once_with(self.context, 'id-Run', side='SOURCE')
+        self.backend.activate.assert_called_once_with(self.context, 'id-Run', side='CUSTOM')
 
     def test_restored_character_action_buttons_resume_both_sides_without_selection_guessing(self):
         for restored in (True, 1):
@@ -1009,37 +1068,36 @@ class WorklistUI(unittest.TestCase):
                 self.backend.activate.assert_called_once_with(self.context, 'id-Walk', side='CUSTOM')
                 self.backend.resume_and_activate.assert_not_called()
 
-    def test_row_names_both_actions_with_distinct_icons_without_remove(self):
-        layout = self.draw_action_row(self.state.items[0])
-        buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
-        self.assertEqual([name for name, _options, _payload in buttons], [
-            'character_designer.worklist_activate', 'character_designer.worklist_activate'])
-        self.assertEqual([payload.side for name, _options, payload in buttons
-                          if name.endswith('worklist_activate')], ['SOURCE', 'CUSTOM'])
-        self.assertEqual([options['text'] for _name, options, _payload in buttons], ['Walk', 'Walk'])
-        self.assertEqual([options['icon'] for _name, options, _payload in buttons], ['LINKED', 'EDITMODE_HLT'])
-        self.assertEqual([options['depress'] for name, options, _payload in buttons
-                          if name.endswith('worklist_activate')], [False, True])
-        # Approved144 already uses raised action cells and a separate passive
-        # list cursor. Keep that accepted presentation; controller integration
-        # changes neither source function (byte-exact comparison recorded).
-        self.assertTrue(all(options.get('emboss') is True for _name, options, _payload in buttons))
-        self.assertTrue(any(kind == 'split' and value.get('factor') == .5
-                            for kind, value, _enabled in layout.records))
+    def test_row_shows_one_editable_motion_and_only_highlights_its_active_action(self):
+        item = self.state.items[0]
+        for side, action, active in (('CUSTOM', item.custom_action, True), ('SOURCE', item.source_action, False)):
+            with self.subTest(saved_side=side):
+                item.side, item.rig.animation_data.action = side, action
+                layout = self.draw_action_row(item)
+                [(kind, (name, options, payload), enabled)] = layout.records
+                self.assertEqual((kind, name, payload.side, enabled),
+                                 ('operator', 'character_designer.worklist_activate', 'CUSTOM', True))
+                self.assertEqual(options, dict(text='Walk', icon='EDITMODE_HLT', emboss=True, depress=active))
+                self.assertEqual(item.side, side)
+                self.assertIs(item.rig.animation_data.action, action)
+        self.backend.activate.assert_not_called()
         self.assertIn('INTERNAL', self.ui.CHARACTERDESIGNER_OT_worklist_drag.bl_options)
         self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_remove, self.ui.WORKLIST_CLASSES)
 
-    def test_action_cells_require_their_action_and_an_idle_worklist(self):
+    def test_action_row_requires_a_local_action_and_an_idle_worklist(self):
         item = self.state.items[0]
+        local = item.custom_action
+        item.source_action = None
         for busy in (False, True):
             for mode in ('OBJECT', 'POSE', 'EDIT_ARMATURE'):
-                with self.subTest(busy=busy, mode=mode):
-                    self.animation._link_idle.return_value = not busy
-                    self.context.mode = mode
-                    item.source_action = None
-                    layout = self.draw_action_row(item)
-                    self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
-                                     [False, not busy and mode in {'OBJECT', 'POSE'}])
+                for name, action in (('local', local), ('missing', None), ('linked', Action('Linked', linked=True))):
+                    with self.subTest(busy=busy, mode=mode, action=name):
+                        self.animation._link_idle.return_value = not busy
+                        self.context.mode = mode
+                        item.custom_action = action
+                        layout = self.draw_action_row(item)
+                        self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
+                                         [action is local and not busy and mode in {'OBJECT', 'POSE'}])
 
     def test_new_action_is_available_only_in_closed_by_default_advanced_fold(self):
         for opened in (False, True):

@@ -506,12 +506,13 @@ class CHARACTERDESIGNER_OT_finger_roll(Operator):
 
 
 class CHARACTERDESIGNER_PT_fingers(Panel):
-    bl_label = "Fingers"
+    bl_label = 'Finger Controls'
     bl_idname = "CHARACTERDESIGNER_PT_fingers"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
-    bl_order = 20
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 30
 
     @classmethod
     def poll(cls, context):

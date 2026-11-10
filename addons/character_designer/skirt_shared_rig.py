@@ -558,6 +558,7 @@ def unify(context, source, armature=None, parent_bone=''):
     active_bone = main.data.bones.active.name if main.data.bones.active else None
     selected_bones = {pb.name: pb.select for pb in main.pose.bones}
     active_collection = main.data.collections.active.name if main.data.collections.active else None
+    collection_order = tuple(main.data.collections)
     raw = source[skirt.RECORD_KEY]
     registry = dict(main.get(skirt.SHARED_SOURCES_KEY, {}))
     created = False
@@ -603,6 +604,8 @@ def unify(context, source, armature=None, parent_bone=''):
         # Last fallible validation occurs while the old rig is still available.
         skirt.read_record(source)
         skirt.select_controls(context, source)
+        from . import bone_collections
+        bone_collections.sort_managed_collections(main)
         from . import bone_color_palette
         bone_color_palette.migrate_rig_reference(main, old)
     except Exception as exc:
@@ -625,6 +628,10 @@ def unify(context, source, armature=None, parent_bone=''):
         collection = plan.get('collection')
         if collection is not None:
             main.data.collections.remove(collection)
+        for index, collection in enumerate(collection_order):
+            current = tuple(main.data.collections).index(collection)
+            if current != index:
+                main.data.collections.move(current, index)
         _restore_body_channels(main, plan['body_channels'])
         main.matrix_basis = plan['main_basis']
         old.matrix_basis = plan['old_basis']
@@ -634,6 +641,8 @@ def unify(context, source, armature=None, parent_bone=''):
         main.data.bones.active = main.data.bones.get(active_bone) if active_bone else None
         if active_collection is not None:
             main.data.collections.active = main.data.collections_all.get(active_collection)
+        else:
+            main.data.collections.active = None
         skirt._restore_context(context, saved_context)
         context.view_layer.update()
         if isinstance(exc, skirt.SkirtRigError):

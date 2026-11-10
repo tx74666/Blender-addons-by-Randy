@@ -252,6 +252,31 @@ def plan(context, workspace_path=None):
     return _plan(context, workspace_path)[0]
 
 
+def start_or_review(context, workspace_path=None):
+    """Start a clean sync in this callback, or return the review without changes."""
+    checked = _plan(context, workspace_path)
+    preview, record, prepared, _, pins = checked
+    if preview['blocked'] or preview['extras']:
+        return preview
+
+    # Unity can publish between reading an input and recording its file pin.
+    # Compare the small parsed records as well as the pinned bytes. The large
+    # packet already carries the digest of the exact bytes it parsed.
+    selected_path = workspace_path or worklist.state(context).workspace_path
+    if workspace.load_workspace(bpy.path.abspath(selected_path)) != record:
+        raise ValueError('A Unity input changed. Review Sync List again.')
+    for _, link, packet in prepared.values():
+        packet_path = str(Path(packet['_path']).resolve())
+        if (links.load_link(link['_manifest_path']) != link
+                or pins.get(packet_path) != packet['_sha256']):
+            raise ValueError('A Unity input changed. Review Sync List again.')
+    for path, digest in pins.items():
+        if _pin(path)[1] != digest:
+            raise ValueError('A Unity input changed. Review Sync List again.')
+    _begin_plan(context, checked)
+    return preview
+
+
 def _set_workspace(saved, record):
     saved.workspace_path, saved.workspace_identity = record['_manifest_path'], worklist._identity(record)
     saved.workspace_id, saved.target_guid = record['workspaceId'], record['targetGuid'].lower()
@@ -284,7 +309,8 @@ def begin(context, token, *, workspace_path=None, deprecate_extras=False, discar
     """
     if deprecate_extras and discard_extras:
         raise ValueError('Choose either Retire or Discard for the extra animations.')
-    preview, record, prepared, rig, pins = _plan(context, workspace_path)
+    checked = _plan(context, workspace_path)
+    preview = checked[0]
     if not isinstance(token, str) or token != preview['token']:
         raise ValueError('The Unity list or local animations changed. Review Sync List again before confirming.')
     if preview['blocked']:
@@ -292,6 +318,11 @@ def begin(context, token, *, workspace_path=None, deprecate_extras=False, discar
             row['name'] + ': ' + row['reason'] for row in preview['blocked']))
     if preview['extras'] and not (deprecate_extras or discard_extras):
         raise ValueError('Review the extra animations and choose Retire or Back. No list changes were made.')
+    return _begin_plan(context, checked, discard_extras=discard_extras)
+
+
+def _begin_plan(context, checked, *, discard_extras=False):
+    preview, record, prepared, rig, pins = checked
     saved = worklist.state(context)
     # _plan just checked current Custom contents for the confirmation token.
     # Rollback restores membership/session inputs and never consumes that proof.

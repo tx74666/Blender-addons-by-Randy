@@ -27,7 +27,7 @@ IDENTITY_FIELDS = ('schema', 'linkId', 'targetGuid', 'clipGuid', 'clipLocalId',
 OPTIONAL_IDENTITY_FIELDS = ('modelFile', 'modelSha256', 'workItemId', 'baseClipGuid',
                             'baseClipLocalId', 'sourceCharacterGuid', 'purpose', 'editScope',
                             'composition', 'sourceOnly', 'compositionReferenceSource',
-                            'compositionOwnerLinkGuid')
+                            'compositionOwnerLinkGuid', 'targetSlotId')
 OUTPUT_FIELDS = frozenset(('blendFile', 'sourceAction', 'fbxFile', 'fbxSha256',
                            'metadataFile', 'metadataSha256'))
 
@@ -285,6 +285,14 @@ def _revision_result(path, expected_identity, result, *, blend_file, source_acti
     if fbx_hash != result.get('fbx_sha256'):
         raise AnimationLinkError('The completed FBX changed before Link publication.')
     report = _json(metadata.read_bytes(), 'Export metadata')
+    from .animation_workspace import target_slot_id
+    try:
+        expected_slot, returned_slot = target_slot_id(expected_identity), target_slot_id(report)
+    except ValueError as exc:
+        raise AnimationLinkError('The completed export has invalid targetSlotId routing: ' + str(exc)) from exc
+    if (returned_slot != expected_slot or expected_slot and
+            report.get('targetGuid') != expected_identity['targetGuid']):
+        raise AnimationLinkError('The completed export targetSlotId or target character differs from the linked destination.')
     if (report.get('fbx_sha256') != fbx_hash
             or report.get('source_package_sha256', '').lower() != expected_identity['sourcePackageSha256'].lower()
             or _absolute(report.get('source_package'), 'Export source packet') !=
@@ -399,6 +407,8 @@ def _begin_linked_export(context, rig, *, rigging_export=None):
 
         options = dict(frame_start=start, frame_end=end, loop=bool(action.get('unity_loop_time', False)),
             sample_rate=float(rate), export_rig_name=saved['export_rig_name'])
+        if manifest.get('targetSlotId'):
+            options['link_identity'] = manifest
         if rigging_export is not None:
             options['rigging_export'] = rigging_export
         job = animation_export.begin_export(context, rig, action, destination, **options)

@@ -289,13 +289,22 @@ def _check_mesh(obj):
     return mod.object
 
 
-def _forearm_inventory(obj, armature, sides):
+def _forearm_inventory(obj, armature, sides, *, scene=None):
     """Read the actual calibrated support before scoping Original Rest proof."""
     from . import body_original_mode
     try:
         return forearm_original_inventory.validate(armature)
     except ValueError:
         if not body_original_mode.active(armature):
+            # Healthy complete inventories, including authenticated motion Rest
+            # views and ordinary rig reconstruction, retain their old path.
+            # Existing paired outputs can independently prove their actual ARM
+            # inputs when unrelated historical/display admission is unavailable.
+            from . import forearm_current_inventory
+            current = forearm_current_inventory.validate_current_native(
+                obj, armature, scene=scene, sides=sides)
+            if current is not None:
+                return current
             raise
     records = _records(obj)
     required = set(sides) | set(records)
@@ -509,7 +518,8 @@ def _calculate_object(obj, depsgraph, *, _playback_scene=None):
         # A miss or an explicit tool call retires this object's Play admission.
         # Only the next playback_pre may grant it again, after full success.
         _PLAYBACK_PREPARED.pop(obj.as_pointer(), None)
-        records = _prepare_runtime_records(obj)
+        graph_scene = getattr(depsgraph.scene, 'original', depsgraph.scene)
+        records = _prepare_runtime_records(obj, scene=graph_scene)
         if records != _records(obj):
             _apply_runtime_records(obj, records, depsgraph)
         else:
@@ -1315,7 +1325,7 @@ def _current_record(obj, arm, rig, side, record, records):
     return fresh
 
 
-def _prepare_runtime_records(obj):
+def _prepare_runtime_records(obj, *, scene=None):
     """Read-only migration: profiles persist, current rig frames are recaptured."""
     records = _records(obj)
     if not records or PREVIEW_KEY in obj or (_SESSION and _SESSION.get("mesh") == obj):
@@ -1328,7 +1338,7 @@ def _prepare_runtime_records(obj):
     # All calls below are read-only until the resulting records are committed.
     # Every call to this preparation retains the complete safety check, including
     # direct constraint edits. Prepared Play callbacks deliberately bypass it.
-    inventory = _forearm_inventory(obj, arm, set(records))
+    inventory = _forearm_inventory(obj, arm, set(records), scene=scene)
     resolved = {}
     for side in tuple(records):
         _arm, rig = _resolve_rig(obj, side, _inventory=inventory)
@@ -2221,11 +2231,13 @@ class CHARACTERDESIGNER_OT_forearm_twist_toggle(Operator):
 
 
 class CHARACTERDESIGNER_PT_forearm_twist(Panel):
-    bl_label = "Forearm Twist (Prototype)"
+    bl_label = 'Forearm Twist Correction'
     bl_idname = "CHARACTERDESIGNER_PT_forearm_twist"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 40
     bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
@@ -2234,6 +2246,7 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.label(text='Experimental forearm shape correction.', icon='INFO')
         settings = context.window_manager.character_designer_forearm_twist
         try:
             obj = _SESSION["mesh"] if _SESSION is not None else context_mesh(context)

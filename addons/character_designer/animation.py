@@ -116,14 +116,26 @@ def _animation_load_pre(_unused):
 
 
 def register_animation_runtime():
-    if _animation_load_pre not in bpy.app.handlers.load_pre:
+    added_handler = _animation_load_pre not in bpy.app.handlers.load_pre
+    if added_handler:
         bpy.app.handlers.load_pre.append(_animation_load_pre)
+    try:
+        from . import animation_action_browser
+        animation_action_browser.register()
+    except Exception:
+        if added_handler and _animation_load_pre in bpy.app.handlers.load_pre:
+            bpy.app.handlers.load_pre.remove(_animation_load_pre)
+        raise
 
 
 def unregister_animation_runtime():
     stop_animation_runtime()
     if _animation_load_pre in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(_animation_load_pre)
+    import sys
+    browser = sys.modules.get(__package__ + '.animation_action_browser')
+    if browser is not None:
+        browser.unregister()
 
 
 def _can_restore(context):
@@ -870,66 +882,89 @@ class CHARACTERDESIGNER_PT_animation(Panel):
             from .unity_animation import active_preview, preview_time_seconds
             target = _target(context)
             preview = active_preview(target) if target else None
-            unity = layout.box()
-            unity.label(text="Unity Animation", icon="ACTION")
-            from .animation_link import get_link
-            try:
-                linked = get_link(target) if target else None
-            except Exception as exc:
-                linked = None
-                unity.label(text='Link needs attention: ' + str(exc), icon='ERROR')
-            if linked:
-                unity.label(text='Linked Action: ' + linked.get('action_name', 'Walk'), icon='LINKED')
-                if active_preview(target) is None:
-                    unity.label(text='Select the linked Action to continue editing.')
-                if _link_idle():
-                    unity.operator('character_designer.animation_link_sync', icon='EXPORT')
-                else:
-                    unity.label(text='Syncing…')
-                unity.label(text='Save the .blend to keep this Link.')
-            else:
-                unity.operator('character_designer.animation_link_import', icon='LINKED')
-            row = unity.row(align=True)
-            row.enabled = not preview and _job is None
-            row.operator("character_designer.animation_unity_import", text="Import Latest from Unity", icon="IMPORT").use_latest = True
-            row.operator("character_designer.animation_unity_import", text="", icon="FILE_FOLDER").use_latest = False
-            if preview:
-                unity.label(text=preview.name, icon="ACTION")
-                playing = context.screen and context.screen.is_animation_playing
-                unity.operator("character_designer.animation_play_pause", text="Pause" if playing else "Play", icon="PAUSE" if playing else "PLAY")
-                row = unity.row(align=True)
-                row.prop(context.scene, "frame_current", text="Frame")
-                row.prop(context.scene, "frame_subframe", text="Subframe")
-                unity.label(text=f"Time: {preview_time_seconds(context, target):.3f} s")
-                unity.operator("character_designer.animation_restore", icon="LOOP_BACK")
-                unity.operator("character_designer.animation_unity_cancel", icon="CANCEL")
-                from .forearm_twist import _ERRORS as forearm_errors
-                import textwrap
-                for name, error in forearm_errors.items():
-                    mesh = context.scene.objects.get(name)
-                    if mesh and any(mod.type == "ARMATURE" and mod.object == target for mod in mesh.modifiers):
-                        warning = unity.box()
-                        warning.alert = True
-                        warning.label(text=f"{name}: Forearm Correction", icon="ERROR")
-                        for line in textwrap.wrap(error, width=38):
-                            warning.label(text=line)
-            else:
-                unity.prop(settings, "start_frame")
-            unity.prop(settings, "show_unity_files", icon="TRIA_DOWN" if settings.show_unity_files else "TRIA_RIGHT", emboss=False)
-            if settings.show_unity_files:
-                unity.prop(settings, "unity_directory", text="Folder")
-                if not settings.unity_directory:
-                    unity.label(text=str(unity_exchange_folder(context)))
+            if target is not None:
+                actions = layout.column(align=True)
+                actions.enabled = (not preview and _job is None
+                                   and not (target.animation_data
+                                            and target.animation_data.use_tweak_mode))
+                import sys
+                browser = sys.modules.get(__package__ + '.animation_action_browser')
+                if browser is None or not browser.draw_selector(actions, context, target):
+                    actions.template_action(target, new="action.new", unlink="action.unlink",
+                                            text="Action")
+                    animation_data = target.animation_data
+                    if animation_data and animation_data.action:
+                        actions.context_pointer_set("animated_id", target)
+                        actions.template_search(animation_data, "action_slot",
+                                                animation_data, "action_suitable_slots",
+                                                new="anim.slot_new_for_id",
+                                                unlink="anim.slot_unassign_from_id")
             from .animation_export import active_job
-            export = layout.box()
-            export.label(text='Return Action to Unity', icon='EXPORT')
-            action = target.animation_data.action if target and target.animation_data else None
-            export.label(text='Action: ' + (action.name if action else 'Select in Action Editor'))
             if active_job():
-                export.label(text='Exporting…')
-                export.operator('character_designer.animation_export_cancel', icon='CANCEL')
-            else:
-                export.operator('character_designer.animation_export', icon='EXPORT')
+                layout.operator('character_designer.animation_export_cancel', icon='CANCEL')
+            if preview:
+                layout.operator('character_designer.animation_unity_cancel', icon='CANCEL')
+            unity = section(layout, "character_designer_animation_unity_exchange",
+                            "Unity", icon="IMPORT", default_closed=True)
+            if unity is not None:
+                from .animation_link import get_link
+                try:
+                    linked = get_link(target) if target else None
+                except Exception as exc:
+                    linked = None
+                    unity.label(text='Link needs attention: ' + str(exc), icon='ERROR')
+                if linked:
+                    unity.label(text='Linked Action: ' + linked.get('action_name', 'Walk'), icon='LINKED')
+                    if active_preview(target) is None:
+                        unity.label(text='Select the linked Action to continue editing.')
+                    if _link_idle():
+                        unity.operator('character_designer.animation_link_sync', icon='EXPORT')
+                    else:
+                        unity.label(text='Syncing…')
+                    unity.label(text='Save the .blend to keep this Link.')
+                else:
+                    unity.operator('character_designer.animation_link_import', icon='LINKED')
+                row = unity.row(align=True)
+                row.enabled = not preview and _job is None
+                row.operator("character_designer.animation_unity_import", text="Import Latest from Unity", icon="IMPORT").use_latest = True
+                row.operator("character_designer.animation_unity_import", text="", icon="FILE_FOLDER").use_latest = False
+                if preview:
+                    unity.label(text=preview.name, icon="ACTION")
+                    playing = context.screen and context.screen.is_animation_playing
+                    unity.operator("character_designer.animation_play_pause", text="Pause" if playing else "Play", icon="PAUSE" if playing else "PLAY")
+                    row = unity.row(align=True)
+                    row.prop(context.scene, "frame_current", text="Frame")
+                    row.prop(context.scene, "frame_subframe", text="Subframe")
+                    unity.label(text=f"Time: {preview_time_seconds(context, target):.3f} s")
+                    unity.operator("character_designer.animation_restore", icon="LOOP_BACK")
+                    unity.operator("character_designer.animation_unity_cancel", icon="CANCEL")
+                    from .forearm_twist import _ERRORS as forearm_errors
+                    import textwrap
+                    for name, error in forearm_errors.items():
+                        mesh = context.scene.objects.get(name)
+                        if mesh and any(mod.type == "ARMATURE" and mod.object == target for mod in mesh.modifiers):
+                            warning = unity.box()
+                            warning.alert = True
+                            warning.label(text=f"{name}: Forearm Correction", icon="ERROR")
+                            for line in textwrap.wrap(error, width=38):
+                                warning.label(text=line)
+                else:
+                    unity.prop(settings, "start_frame")
+                unity.prop(settings, "show_unity_files", icon="TRIA_DOWN" if settings.show_unity_files else "TRIA_RIGHT", emboss=False)
+                if settings.show_unity_files:
+                    unity.prop(settings, "unity_directory", text="Folder")
+                    if not settings.unity_directory:
+                        unity.label(text=str(unity_exchange_folder(context)))
+                from .animation_export import active_job
+                export = unity.box()
+                export.label(text='Return Action to Unity', icon='EXPORT')
+                action = target.animation_data.action if target and target.animation_data else None
+                export.label(text='Action: ' + (action.name if action else 'Select in Action Editor'))
+                if active_job():
+                    export.label(text='Exporting…')
+                    export.operator('character_designer.animation_export_cancel', icon='CANCEL')
+                else:
+                    export.operator('character_designer.animation_export', icon='EXPORT')
             if settings.status:
                 box = layout.box()
                 box.alert = settings.has_error

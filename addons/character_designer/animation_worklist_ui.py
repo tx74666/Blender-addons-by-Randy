@@ -3,7 +3,6 @@
 from pathlib import Path
 import json
 import math
-import sys
 import textwrap
 
 import bpy
@@ -49,23 +48,7 @@ def _reconcile():
     return animation_worklist_reconcile
 
 
-def _key_reduce():
-    from . import animation_key_reduce
-    return animation_key_reduce
-
-
-def _key_reduce_status(context):
-    """Read only the loaded backend's bounded pair metadata during drawing."""
-    backend = sys.modules.get(__package__ + '.animation_key_reduce')
-    if backend is None:
-        return None
-    try:
-        return backend.status(context)
-    except (ValueError, RuntimeError, ReferenceError, AttributeError, KeyError):
-        return None
-
-
-def _key_reduce_custom(context):
+def _active_custom_action(context):
     """Display eligibility only; execution reauthenticates the complete Action."""
     item = _selected(_state(context))
     if (item is None or item.side != 'CUSTOM' or not _idle(context)
@@ -164,7 +147,7 @@ def _poll_list_sync():
                 _reconcile().begin(bpy.context, pending['plan_token'],
                     workspace_path=pending['workspace_path'], deprecate_extras=True)
             else:
-                plan = _reconcile().plan(bpy.context, pending['workspace_path'] or None)
+                plan = _reconcile().start_or_review(bpy.context, pending['workspace_path'] or None)
                 if plan['blocked']:
                     raise ValueError('List sync stopped. ' + ' '.join(
                         entry['name'] + ': ' + entry['reason'] for entry in plan['blocked']))
@@ -176,8 +159,6 @@ def _poll_list_sync():
                     bpy.ops.character_designer.worklist_sync_review('INVOKE_DEFAULT',
                         plan_token=plan['token'], workspace_path=plan['workspace_path'],
                         extras_json=json.dumps(plan['extras'], ensure_ascii=False))
-                else:
-                    _reconcile().begin(bpy.context, plan['token'], workspace_path=plan['workspace_path'])
             _redraw(bpy.context)
     except Exception as exc:
         _scan_feedback(pending, str(exc), error=True)
@@ -715,6 +696,13 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     rig: PointerProperty(type=bpy.types.Object, poll=_armature)
     show_catalog: BoolProperty(name='Clip Browser', default=True)
     show_advanced: BoolProperty(name='Advanced', default=False, options={'SKIP_SAVE'})
+    controller_auto_reduce: BoolProperty(name='Automatically Simplify Keys', default=True,
+        options={'SKIP_SAVE'}, description='Remove extra controller keys after playback verification; turn off to keep all editable samples')
+    controller_show_advanced: BoolProperty(name='Playback Tolerance', default=False, options={'SKIP_SAVE'})
+    controller_position_tolerance_mm: FloatProperty(name='Position (mm)', default=1., min=.001, max=1.,
+        precision=3, options={'SKIP_SAVE'}, description='Maximum playback position error in millimeters; smaller values keep more detail')
+    controller_rotation_tolerance_degrees: FloatProperty(name='Rotation (degrees)', default=.25, min=.001, max=.25,
+        precision=3, options={'SKIP_SAVE'}, description='Maximum playback rotation error in degrees; smaller values keep more detail')
     status: StringProperty(options={'SKIP_SAVE'})
     has_error: BoolProperty(options={'SKIP_SAVE'})
     collection_status: StringProperty(options={'SKIP_SAVE'})
@@ -1406,89 +1394,6 @@ class CHARACTERDESIGNER_OT_worklist_sync(Operator):
         return _run(self, context, 'sync')
 
 
-class CHARACTERDESIGNER_OT_worklist_simplify_keys(Operator):
-    bl_idname = 'character_designer.worklist_simplify_keys'
-    bl_label = 'Simplify Keys'
-    bl_description = 'Create a reduced-key Custom version and keep the current version for comparison'
-    bl_options = {'REGISTER', 'UNDO'}
-
-    position_error: FloatProperty(name='Position Error', default=.0005, min=0.0,
-                                  precision=5, unit='LENGTH',
-                                  description='Maximum position error in scene units')
-    rotation_error: FloatProperty(name='Rotation Error (degrees)', default=.1, min=0.0,
-                                  precision=3,
-                                  description='Maximum rotation error in degrees')
-    scale_error: FloatProperty(name='Scale Error', default=.001, min=0.0, precision=4,
-                               description='Maximum scale error as a fraction; 0.001 means 0.1 percent')
-
-    @classmethod
-    def poll(cls, context):
-        if not _key_reduce_custom(context):
-            return False
-        info = _key_reduce_status(context)
-        return not (info and info['active_before'])
-
-    def invoke(self, context, _event):
-        return context.window_manager.invoke_props_dialog(self, width=360)
-
-    def draw(self, _context):
-        self.layout.label(text='Create a new Custom version.', icon='ACTION')
-        self.layout.prop(self, 'position_error')
-        self.layout.prop(self, 'rotation_error')
-        self.layout.prop(self, 'scale_error')
-
-    def execute(self, context):
-        try:
-            backend = _key_reduce()
-            plan = backend.prepare(context, position_error=self.position_error,
-                                   rotation_error=self.rotation_error, scale_error=self.scale_error)
-            backend.apply(context, plan)
-        except (ValueError, RuntimeError, OSError, ReferenceError, AttributeError, KeyError) as exc:
-            settings = _state(context)
-            if settings is not None:
-                settings.status, settings.has_error = str(exc), True
-            self.report({'ERROR'}, str(exc))
-            _redraw(context)
-            return {'CANCELLED'}
-        info = _key_reduce_status(context)
-        message = ('Keys: ' + str(info['before_keys']) + ' → ' + str(info['after_keys'])
-                   if info is not None else 'Created a simplified Custom version.')
-        settings = _state(context)
-        if settings is not None:
-            settings.status, settings.has_error = message, False
-        self.report({'INFO'}, message)
-        _redraw(context)
-        return {'FINISHED'}
-
-
-class CHARACTERDESIGNER_OT_worklist_compare_keys(Operator):
-    bl_idname = 'character_designer.worklist_compare_keys'
-    bl_label = 'Compare Simplified Keys'
-    bl_description = 'View the retained Before or After Custom version of this simplification'
-    bl_options = {'REGISTER', 'UNDO'}
-    original: BoolProperty(default=False, options={'HIDDEN'})
-
-    @classmethod
-    def poll(cls, context):
-        item = _selected(_state(context))
-        return bool(item is not None and item.side == 'CUSTOM' and _idle(context)
-                    and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
-                    and _key_reduce_status(context) is not None)
-
-    def execute(self, context):
-        try:
-            _key_reduce().compare(context, original=self.original)
-        except (ValueError, RuntimeError, OSError, ReferenceError, AttributeError, KeyError) as exc:
-            settings = _state(context)
-            if settings is not None:
-                settings.status, settings.has_error = str(exc), True
-            self.report({'ERROR'}, str(exc))
-            _redraw(context)
-            return {'CANCELLED'}
-        _redraw(context)
-        return {'FINISHED'}
-
-
 class CHARACTERDESIGNER_OT_worklist_rigging_edit(Operator):
     bl_idname = 'character_designer.worklist_rigging_edit'
     bl_label = 'Edit Rigging Action'
@@ -1567,45 +1472,21 @@ class CHARACTERDESIGNER_UL_animation_worklist(UIList):
 
     def draw_item(self, context, layout, _data, item, _icon, _active_data,
                   _active_propname, _index=0, _flt_flag=0):
-        columns = layout.split(factor=.5, align=True)
-        columns.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
-        for side, icon, action in (('SOURCE', 'LINKED', item.source_action),
-                                   ('CUSTOM', 'EDITMODE_HLT', item.custom_action)):
-            cell = columns.row(align=True)
-            cell.enabled = action is not None
-            activate = cell.operator('character_designer.worklist_activate', text=item.name, icon=icon,
-                                     emboss=True, depress=(_active_data.active_index == _index
-                                                           and _active_side(item, side)))
-            activate.item_id, activate.side = item.item_id, side
+        row = layout.row(align=True)
+        action = item.custom_action
+        row.enabled = (_idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
+                       and action is not None and action.library is None)
+        activate = row.operator('character_designer.worklist_activate', text=item.name, icon='EDITMODE_HLT',
+                                emboss=True, depress=(_active_data.active_index == _index
+                                                      and _active_side(item, 'CUSTOM')))
+        activate.item_id, activate.side = item.item_id, 'CUSTOM'
 
 
 def _draw_worklist_actions(layout, context, settings):
     column = layout.column(align=True)
     column.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
-    header = column.split(factor=.5, align=True)
-    header.label(text='Source', icon='LINKED')
-    header.label(text='Custom', icon='EDITMODE_HLT')
     column.template_list('CHARACTERDESIGNER_UL_animation_worklist', 'actions',
                          settings, 'items', settings, 'list_cursor', rows=5, maxrows=5)
-
-
-def _draw_key_reduce(layout, context, item):
-    if item is None or item.side != 'CUSTOM':
-        return
-    info = _key_reduce_status(context)
-    row = layout.row()
-    row.enabled = _key_reduce_custom(context) and not (info and info['active_before'])
-    row.operator_context = 'INVOKE_DEFAULT'
-    row.operator('character_designer.worklist_simplify_keys', text='Simplify Keys', icon='KEY_HLT')
-    if info is not None:
-        layout.label(text='Keys: ' + str(info['before_keys']) + ' → ' + str(info['after_keys']))
-        compare = layout.row(align=True)
-        compare.enabled = (_idle(context)
-                           and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'})
-        for original, label in ((True, 'Before'), (False, 'After')):
-            operator = compare.operator('character_designer.worklist_compare_keys', text=label,
-                                        depress=bool(info['active_before']) == original)
-            operator.original = original
 
 
 def _draw_rigging(layout, context, item):
@@ -1715,7 +1596,6 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
             draw_controller_animation(box, context)
         else:
             box.label(text='Add motions in Unity, then click Sync List.', icon='INFO')
-        _draw_key_reduce(box, context, _selected(settings))
         _draw_rigging(box, context, _selected(settings))
         advanced = box.row()
         advanced.prop(settings, 'show_advanced', text='Advanced', emboss=False,
@@ -1729,7 +1609,7 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
             if (selected is not None and selected.side == 'CUSTOM'
                     and selected.rig is not None and selected.custom_action is not None):
                 export_base = box.row()
-                export_base.enabled = _idle(context) and _key_reduce_custom(context)
+                export_base.enabled = _idle(context) and _active_custom_action(context)
                 capture = export_base.operator('character_designer.animation_export_base_pose',
                                                text='Capture Export Base Pose', icon='POSE_HLT')
                 capture.rig_name = selected.rig.name
@@ -1821,8 +1701,6 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_drag_handle,
     CHARACTERDESIGNER_OT_worklist_drag,
     CHARACTERDESIGNER_OT_worklist_sync,
-    CHARACTERDESIGNER_OT_worklist_simplify_keys,
-    CHARACTERDESIGNER_OT_worklist_compare_keys,
     CHARACTERDESIGNER_OT_worklist_rigging_edit,
     CHARACTERDESIGNER_OT_worklist_save_controls,
     CHARACTERDESIGNER_UL_animation_catalog,

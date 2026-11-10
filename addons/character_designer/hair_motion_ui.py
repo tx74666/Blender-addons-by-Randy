@@ -298,11 +298,13 @@ class CHARACTERDESIGNER_OT_hair_motion_pair(Operator):
 
 
 class CHARACTERDESIGNER_PT_hair_motion(Panel):
-    bl_label = 'Physics'
+    bl_label = 'Hair Motion Settings'
     bl_idname = 'CHARACTERDESIGNER_PT_hair_motion'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 20
 
     @classmethod
     def poll(cls, context):

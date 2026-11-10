@@ -630,6 +630,9 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         from . import hair_bones_mirror
         plans = hair_bones_mirror.prepare_plans(obj, plans)
     owned = _validate_owned(obj, armature, record, snapshot)
+    if armature is not None and sum(collection.get(OWNER_KEY) == OWNER_VALUE
+                                   for collection in armature.data.collections_all) > 1:
+        raise HairBonesRigError("The Hair Bone Collection ownership is ambiguous.")
     new, selected_chains = [], []
     source_id = motion_lifecycle.source_uid_for_bind(obj, record)
     reserved_names = set(armature.data.bones.keys()) if armature else set()
@@ -660,14 +663,24 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
         new.append(plan)
         selected_chains.append({"signature": plan["signature"], "bones": names, "created": True})
     state = _context_snapshot(context, obj, armature)
+    collection_state = tuple((collection, collection.name, collection.is_visible)
+                             for collection in armature.data.collections_all) if armature else ()
+    active_collection = armature.data.collections.active if armature else None
     if not new:
         try:
             _select_chains(context, armature, tuple(name for chain in selected_chains for name in chain["bones"]))
             for collection in armature.data.collections_all:
                 if collection.get(OWNER_KEY) == OWNER_VALUE:
                     collection.name = COLLECTION_NAME
+            from . import bone_collections
+            bone_collections.sort_managed_collections(armature)
         except Exception:
+            for collection, name, visible in collection_state:
+                if collection.name != name:
+                    collection.name = name
+                collection.is_visible = visible
             _restore_context(context, obj, state)
+            armature.data.collections.active = active_collection
             raise
         return {"armature": armature, "chains": tuple(selected_chains), "created": 0, "reused": len(plans),
                 "parent_bone": parent_bone, "rig_created": False, "modifier_created": False}
@@ -803,6 +816,8 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
             for name in plan['names']:
                 control_colors.style(armature.pose.bones[name])
         motion_lifecycle.claim_bound(obj)
+        from . import bone_collections
+        bone_collections.sort_managed_collections(armature)
         return {"armature": armature, "chains": tuple(selected_chains), "created": len(new),
                 "reused": len(plans) - len(new), "parent_bone": parent_bone,
                 "rig_created": created_rig is not None, "modifier_created": created_modifier is not None}
@@ -849,6 +864,11 @@ def build_hair_bones(context, obj, plans, *, bone_count=4, armature=None, parent
                 bpy.data.armatures.remove(created_data)
             if armature is not None and created_rig is None:
                 armature.show_in_front = armature_in_front
+                for collection, name, visible in collection_state:
+                    if collection.name != name:
+                        collection.name = name
+                    collection.is_visible = visible
+                armature.data.collections.active = active_collection
         except Exception as rollback_exc:
             rollback_errors.append(str(rollback_exc))
         for name, value in ((RECORD_KEY, old_json), (RIG_KEY, old_rig), (MIRROR_KEY, old_mirror)):

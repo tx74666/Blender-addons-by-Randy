@@ -89,6 +89,61 @@ class WorkspaceTests(unittest.TestCase):
         clips = self.parse()['clips']
         self.assertNotEqual(workspace.clip_identity(clips[0]), workspace.clip_identity(clips[1]))
 
+    def test_target_slot_is_preserved_per_row_without_header_or_name_inference(self):
+        first, second = self.manifest['clips']
+        self.manifest['targetSlotId'] = 'header.mustnotbind'
+        first.update(targetSlotId='locomotion.walk', clipName='Unrelated display label')
+        second['clipName'] = 'locomotion.walk'
+        actual = self.parse()
+        self.assertEqual(actual, self.manifest)
+        self.assertEqual(workspace.target_slot_id(actual['clips'][0]), 'locomotion.walk')
+        self.assertEqual(workspace.route_identity(actual['clips'][0])[-2:],
+                         ('targetSlotId', 'locomotion.walk'))
+        self.assertNotIn('targetSlotId', actual['clips'][1])
+        self.assertEqual(workspace.target_slot_id(actual['clips'][1]), '')
+        self.assertEqual(workspace.route_identity(actual['clips'][1]),
+                         ('', ('d' * 32, -1657602633327794031),
+                          ('d' * 32, -1657602633327794031), '', '', ''))
+
+    def test_target_slot_exact_syntax_and_length_boundaries(self):
+        first = self.manifest['clips'][0]
+        for value in ('a', 'a0', 'locomotion.walk', 'action01.idle2', 'a' * 96):
+            with self.subTest(valid=value):
+                first['targetSlotId'] = value
+                self.assertEqual(self.parse()['clips'][0]['targetSlotId'], value)
+                self.assertEqual(workspace.target_slot_id(first), value)
+        for value in (False, True, 0, 1, [], {}, ' ', ' walk', 'walk ', 'walk\n',
+                      'Walk', 'walk.Run', 'walk_run', 'walk-run', 'walk/run',
+                      '1walk', '.walk', 'walk.', 'walk..run', 'walk.1run',
+                      'walk.\u8dd1', 'a' * 97):
+            with self.subTest(invalid=value):
+                first['targetSlotId'] = value
+                with self.assertRaisesRegex(workspace.AnimationWorkspaceError, 'targetSlotId'):
+                    self.parse()
+
+    def test_only_absent_null_and_empty_target_slots_keep_exact_legacy_route(self):
+        first = self.manifest['clips'][0]
+        legacy = ('', ('c' * 32, 1657602633327794031),
+                  ('c' * 32, 1657602633327794031), '', '', '')
+        self.assertEqual(workspace.route_identity(first), legacy)
+        for value in (None, ''):
+            with self.subTest(legacy=value):
+                first['targetSlotId'] = value
+                parsed = self.parse()['clips'][0]
+                self.assertEqual(parsed['targetSlotId'], value)
+                self.assertEqual(workspace.target_slot_id(parsed), '')
+                self.assertEqual(workspace.route_identity(parsed), legacy)
+        first['targetSlotId'] = 'locomotion.walk'
+        bound = workspace.route_identity(first)
+        self.assertEqual(bound, legacy + ('targetSlotId', 'locomotion.walk'))
+        self.assertNotEqual(bound, legacy)
+        first['targetSlotId'] = 'locomotion.idle'
+        self.assertNotEqual(workspace.route_identity(first), bound)
+        for value in (None, [], 'locomotion.walk'):
+            with self.subTest(non_object=value):
+                with self.assertRaises(workspace.AnimationWorkspaceError):
+                    workspace.target_slot_id(value)
+
     def test_variants_share_source_but_keep_distinct_work_items_and_destinations(self):
         first, second = self.manifest['clips']
         first.update(workItemId=uuid.uuid4().hex, baseClipGuid='e' * 32, baseClipLocalId=13,

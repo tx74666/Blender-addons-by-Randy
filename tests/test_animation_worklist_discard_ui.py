@@ -85,7 +85,7 @@ class DiscardUI(unittest.TestCase):
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         self.assertIn('Discarding old entries', self.state.status)
         self.reconcile.begin.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.discard_retired.assert_not_called()
         self.timers.register.assert_called_once_with(self.ui._poll_list_sync, first_interval=.05)
         self.ui._poll_list_sync()

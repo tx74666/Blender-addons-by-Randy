@@ -99,11 +99,12 @@ class CHARACTERDESIGNER_OT_spine_ik_fk(Operator):
 
 class CHARACTERDESIGNER_PT_torso_controls(Panel):
     bl_idname = 'CHARACTERDESIGNER_PT_torso_controls'
-    bl_label = 'Spine Controls'
+    bl_label = 'Back & Chest'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
-    bl_order = 1
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 20
 
     @classmethod
     def poll(cls, context):
@@ -112,6 +113,7 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.label(text='Bend the back and move the chest.', icon='CON_ROTLIKE')
         rig = context.active_object
         from .body_setup_ui import advanced
         show_advanced = advanced(context)

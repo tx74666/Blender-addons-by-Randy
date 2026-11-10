@@ -1,38 +1,43 @@
 # Add-on source and deployment
 
-<!-- cd164-controller-custom-20261103 -->
-Source/package/disk164 **0.77.164**:262files/230py;6changed4new252exact
-complete Main163; Hair161/Main163/HAND/native matcher and CurrentRig retained.
-Approved projection `validation/controller_authoring_design_20261102/stage164_01/projection.json`,
-SHA `1d9381986e6c3c2d23d0ee334924ccae9de231c1b770f3e87ea149f3a4c52830`;
-complete parent163 SHA `26f676232bf264f3f443d1fca0ace1b366fda02d463a86be2e739479ea3a34e8`.
-Supported ordinary imports create controller Customs; old Customs use Make.
-Installed limbs use full-clip IK trajectories; current-frame IK/FK is separate.
-AutoKeyOff WholeMove applies constant target-local motion to a new Custom;
-ordinary Insert edits the current time. Source/oldCustom/history/Rest retained.
-Reverse complete editable bone-curve synchronization and time-faded correction
-are not implemented. Matched/sample native2e-4 gates retained; interval probes
-use world1mm/.25deg, relative scale/stretch guards. No continuous-time bound.
-Focused243/static-math reuse/genuine Controller->Main163 pending-right-arm pass.
-Worker28:217bones/60samples+2FBXreadbacks passed unchanged gates, consuming
-retained15/17 snapshot evidence with0newsolver/Make/hostlease. Prior failures stay.
-OfficialZIP SHA `40028c220f85fd99430e6a27bad86d20a6066106c5cd153135ea9e097bfda863`;
-CRC/exact262/dual5.2-X check0diff; package receipt a6481431db289994c7bfafbc0af7d4dfbe440009a274424d7f74f2a01189820a.
-Artist36008 scoped09 adopted5function bodies+2operators+1exact156doc.
-Validator code/default objects and Main163 leaf45/14/22/9 identities/state kept.
-Native20 twofault/unknown-doc0writes passed;08 actual refusal and automatic
-rollback retained. Independent post02 ALREADY0allwrites; witness98052420... equal.
-Pose/f15/Hair4/AutoKeyOff/dirtytrue/currentAction+slot retained DURING code adoption;
-no scene/preferences save, pose/frame/Action operation or fullreload in that scope.
-No whole-runtime refresh/deep artist author-array/physical-I/GUIUndo/FPS/Unity claim.
-Code acceptance `validation/controller_authoring_design_20261102/acceptance164_01.json`,
-SHA `31725c0183622672d129e5c0e62eea5f15a0c75afe35aceea4975e87d14f3ff6`.
-Current Walk only passed separate readonly readiness at this checkpoint;
-any later Make/conversion/save is distinct evidence, never inferred from code.
-Release note `docs/releases/CharacterDesigner_0.77.164_controller_animation_20261103.md`.
-Prior163 full entry points backed up as canonical_AGENTS_before164.md and
-X_AGENTS_before164.md under controller_authoring_design_20261102.
-Reobserve fresh scene/code authority before further artist work; extend complete164.
+<!-- cd182-character-owned-animation-slots-20261111 -->
+Approved complete source/ZIP/dual disk **0.77.182**:268files/236py,
+8changed/260exact181. Projection
+`validation/owned_animation_slots_20261111/stage182_02/projection.json`, SHA
+`1147451a58b8cf966c61c097d1c07bca156847d59641dd54c44cd74b82bfada6`.
+Ordinary Work Items retain strict row-level targetSlotId through Link/packet/
+frozen job/actual sidecar and publication. Only absent/null/empty are legacy;
+no name guessing, borrowed state, scanner, new reducer or solver change.
+Ordinary Add copies relax only authenticated mapped/nondelegated connections;
+Stable helpers retain structure. The populate helper relocation is AST-exact181.
+Frozen223 initial and116 affected executions passed; overlap is not added.
+Private real Cosha-derived clone: generated Arms CONTROLLER, Source/Custom
+independent, actual L wrist edit18.4729deg, loop endpoints0diff, revision1 same
+slot/WorkID; native06 main+worker exited. Original/native01-04 failures andp05
+pose diagnosis retained. New Motion Rig preparation is not arbitrary legacy
+connected-data switching/Restore Main Rig repair. Scan remains UNKNOWN for
+drivers; explicit current-motion export/Capture Base Pose used, not automatic
+changed-only certification. Unity owner final33native checks passed (28private/
+5formal), including both real lock recoveries. FormalCosha Walk is an independent
+Filled working clip; old7queue rows+new1, donor/Blaster/other motions preserved.
+OfficialZIP SHA `4140bcd827aaef990b9983cd7ac2bacc087d5ef6035bb0ef862f9896ba44c1d6`;
+CRC/payload268;Roaming5.2/X deploy+matchingcheck0diff: `disk182_01.json` in this
+validation directory. Private delivery `private_roundtrip_delivery01.json`. Final protocol/Unity/re-edit
+acceptance `acceptance182_01.json`, SHA
+`3b253633f9134c6428ece14f466c7166b90d0c9c9695818de71af3b67032617b`.
+X subsequently built/deployed complete183: projection
+`validation/forearm_restore_20261111/stage183_01/projection.json`, SHA
+`839fd7030e6f19a443fcca2182f7cccd962387719814c96d7aa3117409053d84`;
+269files/officialdualcheck0diff, six protocol files byte-exact182. Do not silently
+drop its Forearm delta by replaying182. X paused before final183 owner receipts.
+Artist live182/183 NOT adopted: user explicitly said not to operate Blender.
+Last X-reported RAM version181; no cross-chat override or automatic resume.
+No agent artist/PrefsSave/restart/fullreload/Restore Main Rig/Unity scene/Git.
+Inherit complete181 Body/Hair/Colors/paint/daily actions and all prior limits;
+181 artist palette is RAM-only until independently saved, dirtyFalse is not proof.
+No whole-geometry/weights/all-key arrays/FPS/global-handler certification.
+Release: `D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.182_character_owned_animation_slots_20261111.md`.
+Prior181 entry files: `validation/owned_animation_slots_20261111/entries_before182_01`.
 
 <!-- cd114-compact-physics-20261029 -->
 Current complete225/193py **0.77.114** extends approved113 by6changed/219exact.

@@ -282,8 +282,12 @@ def _times(action, curves, start, end, sample_step):
     return tuple(sorted(times))
 
 
-def _source_plan(context, rig, action, handle, start, end, sample_step, quality='EDITABLE'):
-    policy = _quality_policy(context, quality)
+def _source_plan(context, rig, action, handle, start, end, sample_step, quality='EDITABLE', *,
+                 auto_reduce=True, position_tolerance_meters=.001,
+                 rotation_tolerance_radians=.004363323129985824):
+    options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
+    policy = _quality_policy(context, quality, position_tolerance_meters=options['position_tolerance_meters'],
+                             rotation_tolerance_radians=options['rotation_tolerance_radians'])
     offset, api, match, limb, inputs = _api()
     _require(rig is not None and rig.type == 'ARMATURE' and not rig.library and not rig.data.library
              and rig.mode != 'EDIT' and rig.data.pose_position == 'POSE',
@@ -303,7 +307,7 @@ def _source_plan(context, rig, action, handle, start, end, sample_step, quality=
     if not inventory['rigs']:
         return dict(conversion_state='NATIVE_FK', source_action=action, source_slot=handle,
                     channels={}, frame_times=times, native_names=(), metadata=None,
-                    quality=quality, playback_policy=policy,
+                    quality=quality, playback_policy=policy, conversion_options=options,
                     diagnostics={'reason': 'No installed limb controls; native FK was retained.'})
     _require(action.is_action_layered, 'Controller conversion needs a layered Action with an explicit Object slot.')
     _require('character_designer_rigging_session_v1' not in rig
@@ -330,7 +334,8 @@ def _source_plan(context, rig, action, handle, start, end, sample_step, quality=
     return dict(conversion_state='CONTROLLER', context=context, rig=rig, action=action, slot=handle,
                 inventory=inventory, native_names=native, closure=closure, drivers=drivers,
                 secondary=tuple(sorted(secondary)), frame_times=times,
-                source_hash=offset._action_hash(api, action, handle), quality=quality, playback_policy=policy)
+                source_hash=offset._action_hash(api, action, handle), quality=quality,
+                playback_policy=policy, conversion_options=options)
 
 
 def _required_inputs(plan):
@@ -665,9 +670,41 @@ def _acceptable(errors):
             and errors['rotation'] <= 2.e-3 and errors['scale'] <= 2.e-4)
 
 
-def _quality_policy(context, quality):
+def _conversion_options(auto_reduce=True, position_tolerance_meters=.001,
+                        rotation_tolerance_radians=.004363323129985824):
+    _require(type(auto_reduce) is bool, 'Automatic controller key reduction must be on or off.')
+    for value, maximum, label in ((position_tolerance_meters, .001, 'Position'),
+                                  (rotation_tolerance_radians, .004363323129985824, 'Rotation')):
+        _require(type(value) in (int, float) and 0. < value <= maximum and math.isfinite(value),
+                 label + ' playback tolerance must be finite, positive and no greater than the supported limit.')
+    return dict(auto_reduce=auto_reduce, position_tolerance_meters=float(position_tolerance_meters),
+                rotation_tolerance_radians=float(rotation_tolerance_radians))
+
+
+def _conversion_kwargs(options):
+    """Keep default internal call shapes while forwarding every changed option."""
+    defaults = _conversion_options()
+    _require(isinstance(options, dict) and set(options) == set(defaults), 'Invalid controller conversion options.')
+    checked = _conversion_options(**options)
+    return {key: value for key, value in checked.items() if value != defaults[key]}
+
+
+def _policy_from_source(source):
+    options = source.get('conversion_options', _conversion_options())
+    _conversion_kwargs(options)
+    return _quality_policy(source['context'], source['quality'],
+        position_tolerance_meters=options['position_tolerance_meters'],
+        rotation_tolerance_radians=options['rotation_tolerance_radians'])
+
+
+def _quality_policy(context, quality, *, position_tolerance_meters=.001,
+                    rotation_tolerance_radians=.004363323129985824):
     _require(type(quality) is str and quality in {'EDITABLE', 'STRICT'},
              'Choose EDITABLE or STRICT controller playback quality.')
+    options = _conversion_options(True, position_tolerance_meters, rotation_tolerance_radians)
+    _require(quality != 'STRICT' or (options['position_tolerance_meters'] == .001
+             and options['rotation_tolerance_radians'] == .004363323129985824),
+             'Custom world playback budgets apply to EDITABLE quality; STRICT keeps its original native gates.')
     try:
         scale_length = context.scene.unit_settings.scale_length
     except (AttributeError, ReferenceError) as error:
@@ -680,8 +717,8 @@ def _quality_policy(context, quality):
                    native_position='Blender units', native_absolute_scale='raw scale components'),
         matched_sample_gate=dict(matrix=MATRIX_TOLERANCE, position=2.e-4, rotation=2.e-3, scale=2.e-4),
         interval_policy='world playback budget only' if quality == 'EDITABLE' else 'historical native matrix and TRS gate',
-        position_tolerance_meters=.001 if quality == 'EDITABLE' else None,
-        rotation_tolerance_radians=.004363323129985824 if quality == 'EDITABLE' else 2.e-3,
+        position_tolerance_meters=options['position_tolerance_meters'] if quality == 'EDITABLE' else None,
+        rotation_tolerance_radians=options['rotation_tolerance_radians'] if quality == 'EDITABLE' else 2.e-3,
         scale_relative_tolerance=2.e-4 if quality == 'EDITABLE' else None,
         shape_relative_tolerance=2.e-4 if quality == 'EDITABLE' else None,
         native_matrix_tolerance=MATRIX_TOLERANCE if quality == 'STRICT' else None,
@@ -952,7 +989,8 @@ def _verify(context, scene, source, playback, raw, plan, times):
 
 
 def build_controller_channels(context, rig, action, slot_handle=None, *, frame_start=None, frame_end=None, sample_step=1.0,
-                              quality='EDITABLE'):
+                              quality='EDITABLE', auto_reduce=True, position_tolerance_meters=.001,
+                              rotation_tolerance_radians=.004363323129985824):
     """Return validated IK overlay channels; never bind or modify an author Action.
 
     Caller-owned import copies can use apply_to_action after their immutable
@@ -961,9 +999,11 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
     """
     _require_private_evaluation_idle()
     import bpy
-    from . import forearm_twist, controller_animation_curves
+    from . import forearm_twist, controller_animation_curves, controller_animation_sampling
     offset, api, match, limb, inputs = _api()
-    plan = _source_plan(context, rig, action, slot_handle, frame_start, frame_end, sample_step, quality=quality)
+    options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
+    plan = _source_plan(context, rig, action, slot_handle, frame_start, frame_end, sample_step,
+                        quality=quality, **_conversion_kwargs(options))
     if plan['conversion_state'] == 'NATIVE_FK':
         return plan
     source_proof = plan['source_hash']
@@ -1038,7 +1078,8 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                     owned['actions'].remove(candidate)
                     bpy.data.actions.remove(candidate)
                     times = tuple(sorted(set(times) | set(failed)))
-                compressed = controller_animation_curves.compress(channels, times)
+                compressed = controller_animation_sampling.compress_legal(channels, times, controller_animation_curves,
+                                                                          auto_reduce=options['auto_reduce'])
                 reduced = action.copy()
                 owned['actions'].append(reduced)
                 reduced.use_fake_user = False
@@ -1046,12 +1087,27 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                 playback.animation_data.action = reduced
                 playback.animation_data.action_slot = next(slot for slot in reduced.slots if slot.handle == plan['slot'])
                 reduced_error, reduced_failed = _verify(context, scene, source, playback, raw, plan, times)
-                result['retained_indices'] = None if reduced_failed else compressed['indices']
+                if reduced_failed:
+                    # A fallback is still an editable grid. Full V remains the
+                    # verification domain, including every omitted sample.
+                    _write_channels(reduced, plan['slot'], result, compressed['fallback_indices'])
+                    fallback_error, fallback_failed = _verify(context, scene, source, playback, raw, plan, times)
+                    _require(not fallback_failed,
+                             'Editable controller keys cannot reproduce this clip within tolerance; original motion was kept.')
+                else:
+                    fallback_error = None
+                result['retained_indices'] = compressed['fallback_indices'] if reduced_failed else compressed['indices']
                 result['diagnostics'] = dict(solve_matrix_error=solve_worst, full_error=full_error,
-                    reduced_error=reduced_error, compression_accepted=not reduced_failed,
-                    compression_fallback='Reduced body playback exceeded tolerance.' if reduced_failed else '',
+                    reduced_error=reduced_error, compression_accepted=options['auto_reduce'] and not reduced_failed,
+                    compression_attempted=options['auto_reduce'], auto_reduce_requested=options['auto_reduce'],
+                    compression_fallback='Reduced playback exceeded tolerance; complete legal grid verified.' if reduced_failed else '',
+                    fallback_error=fallback_error,
                     before_points=sum(len(values) for values in channels.values()),
-                    after_points=sum(len(compressed['indices'][key]) for key in channels) if not reduced_failed else sum(len(v) for v in channels.values()),
+                    after_points=sum(len(result['retained_indices'][key]) for key in channels),
+                    legal_points=compressed['legal_points'],
+                    reduction_ratio=1.-sum(len(result['retained_indices'][key]) for key in channels)/sum(len(values) for values in channels.values()),
+                    legal_sample_count=compressed['legal_sample_count'],
+                    legal_key_time_range=list(compressed['legal_key_time_range']),
                     sample_count=len(times), probe_count=len(_probes(times)), refinement_passes=refinement,
                     isolated_secondary_bones=len(plan['secondary']), filled_input_channels=len(filled_keys))
                 result['diagnostics']['solve_work'] = dict(work)
@@ -1068,7 +1124,7 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
             filled_inputs=dict(count=len(filled_keys), channels_sha256=_digest(filled_keys),
                                sampling='raw RNA transforms and numeric controls before constraints'),
             verification='written Action strict native gate at every matched sample including removed keys; interval quarters use selected playback quality; no continuous-time guarantee',
-            quality=quality, playback_budget=dict(plan['playback_policy']),
+            quality=quality, playback_budget=dict(plan['playback_policy']), conversion_options=dict(options),
             world_playback_metrics='computed for EDITABLE' if quality == 'EDITABLE' else 'not computed; STRICT retains the historical replay contract',
             matrix_tolerance=MATRIX_TOLERANCE, matrix_tolerance_scope='sample solve and all written-Action matched samples; STRICT also all interval probes',
             error_metrics=dict(matrix='raw object-world and native bone-pose component differences; diagnostic only for EDITABLE interval probes',
@@ -1078,11 +1134,17 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                 rotation_radians='world double-normalized quaternion shortest angle', scale_relative='world scale difference/reference axis scale',
                 shape_relative='difference of each rotation-free R-transpose times world 3x3 stretch/reference axis scale',
                 sample_prefix='legacy native errors at every written-Action matched sample, including samples omitted by key reduction'),
-            diagnostics=result['diagnostics'], export_base_recapture_required=True)
+            diagnostics=result['diagnostics'], export_base_recapture_required=True,
+            editable_key_policy=dict(schema='character-designer.editable-key-grid/1',
+                minimum_native_gap_exclusive=.01, integer_edit_zone=.01,
+                validation_range=[times[0], times[-1]],
+                key_range=result['diagnostics']['legal_key_time_range'],
+                endpoint_extension='CONSTANT; at most .01 frame; original matched endpoints verified',
+                verification='all original samples and quarter probes retained'))
         _require(len(_json(result['metadata'])) <= MAX_RECORD, 'Controller metadata exceeds its bounded record size.')
         _require(offset._action_hash(api, action, plan['slot']) == source_proof,
                  'The source animation changed during controller conversion; no result was published.')
-        _require(_quality_policy(context, quality) == plan['playback_policy'],
+        _require(_policy_from_source(plan) == plan['playback_policy'],
                  'The original scene length units changed during controller conversion; no result was published.')
         return result
     finally:
@@ -1194,16 +1256,20 @@ def _restore_display_checkpoint(rig, saved):
             table.pop(saved['cache_key'], None)
 
 
-def prepare(context, rig=None, *, frame_start=None, frame_end=None, quality='EDITABLE'):
+def prepare(context, rig=None, *, frame_start=None, frame_end=None, quality='EDITABLE', auto_reduce=True,
+            position_tolerance_meters=.001, rotation_tolerance_radians=.004363323129985824):
     """Read-only current-Custom admission; no hidden Source-to-Custom switch."""
     _require_private_evaluation_idle()
-    _quality_policy(context, quality)
+    options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
+    _quality_policy(context, quality, position_tolerance_meters=options['position_tolerance_meters'],
+                    rotation_tolerance_radians=options['rotation_tolerance_radians'])
     offset, api, match, limb, inputs = _api()
     item = api.worklist.current(context)
     _require(item is not None and item.side == 'CUSTOM', 'Select Custom to convert.')
     rig = item.rig if rig is None else rig
     variant = offset.prepare_variant(context, rig, label='Controller Animation')
-    source = _source_plan(context, rig, variant['original'], variant['slot'], frame_start, frame_end, 1., quality=quality)
+    source = _source_plan(context, rig, variant['original'], variant['slot'], frame_start, frame_end, 1.,
+                          quality=quality, **_conversion_kwargs(options))
     _require(source['conversion_state'] == 'CONTROLLER', 'Install body limb controls first; native FK was kept.')
     pending = _pending_keyed_inputs(source, variant['frame'])
     _require(not pending, 'Unkeyed changes on ' + ', '.join(pending[:5])
@@ -1233,10 +1299,11 @@ def build(plan):
     offset, api, match, limb, inputs = _api()
     offset._variant_owner(plan['variant'], final=True)
     source = plan['source']
-    _require(_quality_policy(source['context'], source['quality']) == source['playback_policy'],
+    _require(_policy_from_source(source) == source['playback_policy'],
              'The original scene length units changed after preparing controller conversion.')
     result = build_controller_channels(source['context'], source['rig'], source['action'], source['slot'],
-                                       quality=source['quality'])
+                                       quality=source['quality'],
+                                       **_conversion_kwargs(source.get('conversion_options', _conversion_options())))
     action = offset.new_variant_action(plan['variant'])
     plan['phase'] = 'built'
     try:
@@ -1251,7 +1318,7 @@ def build(plan):
 def publish(plan, built, *, activate=True):
     _require(plan.get('phase') == 'built' and built['action'] is plan['variant'].get('staged_action')
              and built['result'] is plan.get('result'), 'Only the owned controller result can be published.')
-    _require(_quality_policy(plan['source']['context'], plan['source']['quality']) == plan['source']['playback_policy'],
+    _require(_policy_from_source(plan['source']) == plan['source']['playback_policy'],
              'The original scene length units changed after building controller conversion; discard this result and convert again.')
     from . import control_pose_offset as offset, bone_collections, limb_ik, limb_ik_fk
     rig, context = plan['variant']['rig'], plan['variant']['context']
@@ -1281,8 +1348,12 @@ def discard(plan, built=None):
         _rollback(plan)
 
 
-def convert_current_action(context, rig=None, *, frame_start=None, frame_end=None, activate=True, quality='EDITABLE'):
-    plan = prepare(context, rig, frame_start=frame_start, frame_end=frame_end, quality=quality)
+def convert_current_action(context, rig=None, *, frame_start=None, frame_end=None, activate=True, quality='EDITABLE',
+                           auto_reduce=True, position_tolerance_meters=.001,
+                           rotation_tolerance_radians=.004363323129985824):
+    options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
+    plan = prepare(context, rig, frame_start=frame_start, frame_end=frame_end, quality=quality,
+                   **_conversion_kwargs(options))
     try:
         return publish(plan, build(plan), activate=activate)
     except Exception:
@@ -1291,5 +1362,8 @@ def convert_current_action(context, rig=None, *, frame_start=None, frame_end=Non
         raise
 
 
-def convert(context, rig=None, *, activate=True, quality='EDITABLE'):
-    return convert_current_action(context, rig, activate=activate, quality=quality)
+def convert(context, rig=None, *, activate=True, quality='EDITABLE', auto_reduce=True,
+            position_tolerance_meters=.001, rotation_tolerance_radians=.004363323129985824):
+    options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
+    return convert_current_action(context, rig, activate=activate, quality=quality,
+                                  **_conversion_kwargs(options))

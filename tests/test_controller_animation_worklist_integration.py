@@ -26,10 +26,9 @@ class ControllerWorklistUI(ui_fixture.WorklistUI):
         calls = []
         with patch.object(self.ui, '_draw_worklist_actions', side_effect=lambda *_:calls.append('list')), \
                 patch.object(self.ui, 'draw_controller_animation', side_effect=lambda *_:calls.append('controller')), \
-                patch.object(self.ui, '_draw_key_reduce', side_effect=lambda *_:calls.append('keys')), \
                 patch.object(self.ui, '_draw_rigging', side_effect=lambda *_:calls.append('rigging')):
             self.ui.draw_worklist(ui_fixture.Layout(), self.context)
-        self.assertEqual(calls, ['list', 'controller', 'keys', 'rigging'])
+        self.assertEqual(calls, ['list', 'controller', 'rigging'])
 
     def test_controller_draw_not_offered_for_empty_list(self):
         self.state.items = []

@@ -8766,7 +8766,7 @@ def _has_active_limb_target(context):
 
 
 def _active_limb_target(context, *, strict=False):
-    """Resolve the selected visible Hand/Foot Target and its owned rig."""
+    """Read display targets cheaply; modifying callers request strict admission."""
 
     resolved = _active_control_visual(context, strict=strict)
     if resolved is None:
@@ -8779,7 +8779,11 @@ def _active_limb_target(context, *, strict=False):
             )
         return None
     try:
-        inventory = _validate_inventory(armature)
+        if strict:
+            inventory = _validate_inventory(armature)
+        else:
+            from . import limb_ik_ui_state
+            inventory = limb_ik_ui_state.inventory(armature)
         matching = [
             rig
             for rig in inventory["rigs"].values()
@@ -9079,45 +9083,27 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_control_visual(Operator):
 
 
 def _draw_body_limb_modes(layout, context, armature):
-    from . import limb_ik_fk_batch, limb_ik_fk, body_original_mode
+    from . import controller_animation_ui, body_original_mode, limb_ik_ui_state
     if armature is None or armature.type != "ARMATURE":
         layout.label(text="Select the main armature.", icon="INFO")
         return None
-    layout.label(text="All Arms / Legs · Current Frame")
-    row = layout.row(align=True)
-    row.enabled = context.active_object == armature and context.mode in {"OBJECT", "POSE"}
     inventory = None
     try:
-        if not body_original_mode.active(armature):
-            inventory = _validate_inventory(armature)
-        mode = limb_ik_fk_batch.mode_for_keys(armature, inventory=inventory)
+        original = body_original_mode.active(armature)
+        if not original:
+            inventory = limb_ik_ui_state.inventory(armature)
+        controller_animation_ui.draw_current_frame_modes(layout, context, armature, inventory,
+            original=original, enabled=context.active_object == armature and context.mode in {"OBJECT", "POSE"})
     except (LimbIKError, ReferenceError, RuntimeError, ValueError) as exc:
-        row.enabled = False
-        mode = None
         layout.label(text=str(exc), icon="ERROR")
-    for choice in ("IK", "FK"):
-        row.operator("character_designer.body_ik_fk_switch", text=choice,
-                     depress=mode == choice).mode = choice
-    if mode == "MIXED":
-        for part, label in (("ARM", "Arms"), ("LEG", "Legs")):
-            states = []
-            for side in ("L", "R"):
-                entry = inventory['rigs'].get((part, side)) if inventory is not None else None
-                if entry is None:
-                    continue
-                state = limb_ik_fk.mode_for_rig(armature, entry)
-                if state == "BLEND":
-                    target = armature.pose.bones[entry['target'].name]
-                    state = f"Blend {float(target.get(limb_ik_fk.PROPERTY, 1.0)):.0%}"
-                states.append(f"{side}: {state}")
-            if states:
-                layout.label(text=label + " · " + " / ".join(states), icon="INFO")
     return inventory
 
 
 class CHARACTERDESIGNER_PT_limb_ik(Panel):
-    bl_label = "Bone Setup"
+    bl_label = "Body Controls"
     bl_idname = "CHARACTERDESIGNER_PT_limb_ik"
+    bl_parent_id = "CHARACTERDESIGNER_PT_rig_sections"
+    bl_order = 10
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
@@ -9132,7 +9118,7 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if settings is None:
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
-        from . import body_setup_ui, body_calibration_ui, body_original_mode
+        from . import body_setup_ui, body_calibration_ui, body_original_mode, limb_ik_ui_state
         armature = body_original_mode.display.character_rig(context)
         from .control_pose_capture import draw as draw_pose_capture
         draw_pose_capture(layout, context)
@@ -9142,7 +9128,7 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         if body_calibration_ui.draw(layout, context):
             # Native mapping remains reachable before Generate. The stored old
             # Setup/Controls choice no longer gates this workflow.
-            layout.prop(settings, "show_body_setup_advanced", text="Advanced",
+            layout.prop(settings, "show_body_setup_advanced", text="Body Setup & Recovery",
                         icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
             if settings.show_body_setup_advanced:
                 mapping = layout.box()
@@ -9158,8 +9144,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                 kind, side = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
                 _draw_limb_fields(fields, settings, armature, kind, side)
             return
-        daily_inventory = _draw_body_limb_modes(layout, context, armature)
-        layout.prop(settings, "show_body_setup_advanced", text="Advanced",
+        _draw_body_limb_modes(layout, context, armature)
+        layout.prop(settings, "show_body_setup_advanced", text="Body Setup & Recovery",
                     icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
         if not settings.show_body_setup_advanced:
             return
@@ -9170,10 +9156,17 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         active = context.object
         if active is not None and active.type == "ARMATURE":
             try:
-                inventory = daily_inventory if active == armature and daily_inventory is not None else _validate_inventory(active)
+                # Presentation data never substitutes for an operator's fresh
+                # ownership/Rest/constraint validation. Re-read the small fields
+                # here instead of reusing the daily display as an authority.
+                display = limb_ik_ui_state.inventory(active, include_foot=True)
                 selected_key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
-                rig = inventory["rigs"].get(selected_key)
+                rig = display["rigs"].get(selected_key)
                 if rig is not None:
+                    raw_weight = active.pose.bones[rig["target"].name].get(limb_ik_fk.PROPERTY, 1.0)
+                    if (type(raw_weight) not in (int, float) or not math.isfinite(raw_weight)
+                            or not 0.0 <= raw_weight <= 1.0):
+                        raise LimbIKError("The selected limb IK/FK weight is outside its supported range.")
                     mode = limb_ik_fk.mode_for_rig(active, rig)
                     row = layout.row(align=True)
                     for choice in ("IK", "FK"):
@@ -9228,8 +9221,8 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                             foot_box.operator("character_designer.foot_controls", text="Add Foot Controls", icon="CON_KINEMATIC").action = "BUILD"
                         else:
                             foot_box.label(text="Included in Body Setup", icon="INFO")
-            except (LimbIKError, ReferenceError, RuntimeError, ValueError):
-                pass
+            except (LimbIKError, ReferenceError, RuntimeError, ValueError) as exc:
+                layout.label(text=str(exc), icon="ERROR")
         auto_available, auto_enabled = _global_auto_align_ui_state(context, settings)
         if auto_available:
             auto_row = layout.row()
@@ -9268,7 +9261,6 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         remove = row.row(align=True)
         remove.alert = _active_has_owned_side_rig(context)
         remove.operator("character_designer.limb_ik_remove", text="Remove Generated Rig", icon="TRASH")
-        layout.operator("character_designer.simplify_bone_collections", icon="GROUP_BONE")
         if active is not None and active.type == "ARMATURE" and bone_groups.has_layout_backup(active):
             layout.operator("character_designer.restore_bone_collections", icon="LOOP_BACK")
         colors = layout.row(align=True)

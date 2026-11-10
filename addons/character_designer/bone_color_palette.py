@@ -1,10 +1,11 @@
-"""Character-owned bone display colors, changed only by explicit operators.
+"""Character-owned bone display colors, changed only by explicit user edits.
 
-Pose colors override native Bone colors without changing them. Preferences and
-the first recovery point live in the .blend; drawing and frame changes never
+Pose colors override native Bone colors without changing them. Character choices
+and the first recovery point live in the .blend; drawing and frame changes never
 reapply a scheme or replace an artist's later color edits.
 """
 import copy
+import importlib
 import json
 import math
 import re
@@ -20,15 +21,21 @@ BACKUP_KEY = '_cd_bone_palette_before_v1'
 REFS_KEY = '_cd_bone_palette_rigs_v1'
 MAIN_KEY = '_cd_bone_palette_main_v1'
 DISPLAY_KEY = '_cd_bone_palette_display_before_v1'
-GROUPS = ('BODY', 'ARMS', 'LEGS', 'HAIR', 'DRESS')
+LEGACY_GROUPS = ('BODY', 'ARMS', 'LEGS', 'HAIR', 'DRESS')
+HAIR_GROUPS = ('HAIR_FRONT', 'HAIR_SIDE', 'HAIR_BACK')
+GROUPS = ('BODY', 'ARMS', 'LEGS', *HAIR_GROUPS, 'HAIR', 'DRESS')
 CHANNELS = ('normal', 'select', 'active')
 LABELS = {'BODY': 'Body', 'ARMS': 'Arms', 'LEGS': 'Legs',
-          'HAIR': 'Hair', 'DRESS': 'Dress'}
+          'HAIR_FRONT': 'Hair Front', 'HAIR_SIDE': 'Hair Side', 'HAIR_BACK': 'Hair Back',
+          'HAIR': 'Hair Unassigned', 'DRESS': 'Skirt'}
 DEFAULTS = {
     'BODY': ((.66, .56, .34), (.85, .73, .47), (1.00, .90, .68)),
     'ARMS': ((.35, .51, .65), (.52, .73, .88), (.76, .89, 1.00)),
     'LEGS': ((.30, .57, .53), (.46, .78, .69), (.72, .94, .83)),
     'HAIR': ((.53, .44, .68), (.72, .62, .88), (.89, .81, 1.00)),
+    'HAIR_FRONT': ((.35, .65, .80), (.53, .80, .92), (.78, .94, 1.00)),
+    'HAIR_SIDE': ((.30, .66, .52), (.48, .82, .68), (.74, .96, .85)),
+    'HAIR_BACK': ((.76, .43, .42), (.92, .63, .60), (1.00, .84, .80)),
     'DRESS': ((.68, .43, .55), (.88, .61, .74), (1.00, .81, .90)),
 }
 _HELPER = re.compile(r'^(?:MCH|ORG|ORI|VIS|WGT|HELPER)[_\-]', re.I)
@@ -53,9 +60,29 @@ def _colors(value):
     return result
 
 
-def _default_config():
-    return {'version': 1, 'id': uuid.uuid4().hex, 'enabled': True,
-            'groups': {group: _colors(colors) for group, colors in DEFAULTS.items()}}
+def read_default_colors(context=None):
+    """Read the global proposal without creating character or preference data."""
+    colors = {group: _colors(DEFAULTS[group]) for group in GROUPS}
+    module_name = __package__ + '.color_center'
+    try:
+        center = importlib.import_module(module_name)
+    except ModuleNotFoundError as error:
+        if error.name != module_name:
+            raise
+        return colors
+    reader = getattr(center, 'default_colors', None)
+    if reader is None:
+        return colors
+    proposed = reader(context if context is not None else bpy.context)
+    if not isinstance(proposed, dict) or set(proposed) - set(GROUPS):
+        raise ValueError('Global color defaults contain an unknown color group.')
+    colors.update({group: _colors(value) for group, value in proposed.items()})
+    return colors
+
+
+def _default_config(context=None):
+    return {'version': 2, 'id': uuid.uuid4().hex, 'enabled': True,
+            'groups': read_default_colors(context)}
 
 
 def _read(main):
@@ -63,23 +90,33 @@ def _read(main):
         return None
     try:
         saved = json.loads(main[CONFIG_KEY])
-        if (not isinstance(saved, dict) or saved.get('version') != 1
+        if (not isinstance(saved, dict) or type(saved.get('version')) is not int
+                or saved['version'] not in {1, 2}
                 or not isinstance(saved.get('id'), str) or not saved['id']
                 or not isinstance(saved.get('enabled'), bool)
-                or not isinstance(saved.get('groups'), dict) or set(saved['groups']) != set(GROUPS)):
+                or not isinstance(saved.get('groups'), dict)):
             raise ValueError()
-        saved['groups'] = {group: _colors(saved['groups'][group]) for group in GROUPS}
+        expected = LEGACY_GROUPS if saved['version'] == 1 else GROUPS
+        if set(saved['groups']) != set(expected):
+            raise ValueError()
+        saved['groups'] = {group: _colors(saved['groups'][group]) for group in expected}
+        if saved['version'] == 1:
+            # Keep the UUID and every first-color recovery record. Migration is
+            # detached until the user explicitly edits or applies this palette.
+            for group in HAIR_GROUPS:
+                saved['groups'][group] = copy.deepcopy(saved['groups']['HAIR'])
+            saved['version'] = 2
         return saved
     except (ValueError, TypeError, KeyError):
         raise ValueError('The saved Bone Display Color Palette is invalid; recover a saved copy before changing colors.') from None
 
 
-def group_colors(main, group):
+def group_colors(main, group, context=None):
     """Read a saved scheme, or the proposed defaults, without creating settings."""
     if group not in GROUPS:
         raise ValueError('Choose a Bone Display color group.')
     saved = _read(main)
-    return copy.deepcopy(saved['groups'][group] if saved else _colors(DEFAULTS[group]))
+    return copy.deepcopy(saved['groups'][group] if saved else read_default_colors(context)[group])
 
 
 def main_for(rig):
@@ -101,6 +138,30 @@ def main_for(rig):
         return rig
     owner = rig.get(MAIN_KEY)
     return owner if isinstance(owner, bpy.types.Object) and owner.type == 'ARMATURE' else rig
+
+
+def context_main(context):
+    """Resolve the Properties pin before the active character selection."""
+    from . import bone_display
+    space = getattr(context, 'space_data', None)
+    pinned = getattr(space, 'pin_id', None) if getattr(space, 'type', None) == 'PROPERTIES' else None
+    if pinned is None:
+        return main_for(bone_display.character_rig(context))
+    if isinstance(pinned, bpy.types.Armature):
+        owners = [obj for obj in bpy.data.objects if obj.type == 'ARMATURE' and obj.data == pinned]
+        if len(owners) != 1:
+            raise ValueError('The pinned Armature data needs exactly one character object.')
+        return main_for(owners[0])
+    if isinstance(pinned, bpy.types.Object):
+        if pinned.type == 'ARMATURE':
+            return main_for(pinned)
+        if pinned.type == 'MESH':
+            rigs = {modifier.object for modifier in pinned.modifiers
+                    if modifier.type == 'ARMATURE' and modifier.object is not None}
+            if len(rigs) != 1:
+                raise ValueError('The pinned mesh needs exactly one character armature.')
+            return main_for(rigs.pop())
+    raise ValueError('Pin the character armature or one of its bound meshes for Colors.')
 
 
 def _helper(pb):
@@ -196,13 +257,16 @@ def _source_groups(main):
     return result
 
 
-def _control_group(pb, sources=None):
+def _control_group(pb, sources=None, hair_groups=None):
     from . import control_colors, limb_ik, hair_bones_rig, skirt_rig, limb_fk_visuals
     bone, shape = pb.bone, pb.custom_shape
     if _helper(pb):
         return None
     if bone.get(hair_bones_rig.OWNER_KEY) == hair_bones_rig.OWNER_VALUE:
-        return 'HAIR'
+        groups = _hair_sources(pb.id_data) if hair_groups is None else hair_groups
+        if pb.name not in groups:
+            raise ValueError('The Hair control is outside its owned source record.')
+        return groups[pb.name]
     if bone.get(skirt_rig.OWNER_KEY):
         return 'DRESS' if shape is not None else None
     # Dedicated legacy/new separate Dress rigs put exact ownership on their
@@ -236,12 +300,36 @@ def _control_group(pb, sources=None):
     return (sources or {}).get(pb.name, _semantic(pb) if owner is None else 'BODY')
 
 
+def _hair_categories(source, record):
+    """Read saved categories after matching their exact native binding names."""
+    from . import hair_motion_profiles, hair_strand_registry
+    data = hair_strand_registry.read(source, validate=False)
+    if data is None:
+        if hair_motion_profiles.PROFILE_KEY in source:
+            raise ValueError('Hair color categories have a profile without its strand registry.')
+        return {}
+    chains = {chain['signature']: chain for chain in record['chains']}
+    if (data['source_uid'] != hair_strand_registry._uid(record['source_id'])
+            or data['topology'] != record['topology']
+            or set(chains) != {strand['signature'] for strand in data['strands']}
+            or any(strand['bones'] != chains[strand['signature']]['bones'] for strand in data['strands'])):
+        raise ValueError('Hair color categories no longer match their owned source chains.')
+    # Color membership needs current native ownership and saved categories.
+    # It does not authenticate or reconstruct removed Main/Rest history refs.
+    profile = hair_motion_profiles.read(source, registry=data)
+    if profile is None:
+        return {}
+    return {strand['signature']: ('HAIR' if profile['strands'][strand['strand_id']]['group'] == 'UNASSIGNED'
+                                  else 'HAIR_' + profile['strands'][strand['strand_id']]['group'])
+            for strand in data['strands']}
+
+
 def _hair_sources(main):
-    """Validate generated hair names against source records without mesh scans."""
+    """Map exact owned Hair bone names to saved display categories."""
     from . import hair_bones_rig as hair
     sources = {pb.bone.get(hair.SOURCE_KEY) for pb in main.pose.bones
                if pb.bone.get(hair.OWNER_KEY) == hair.OWNER_VALUE and not _helper(pb)}
-    allowed = set()
+    allowed = {}
     for source in sources:
         if (not isinstance(source, bpy.types.Object) or source.type != 'MESH'
                 or source.get(hair.RIG_KEY) != main):
@@ -249,6 +337,7 @@ def _hair_sources(main):
         record = hair._read_records(source)
         if record is None:
             raise ValueError('Hair bone source records are missing; recover them before changing colors.')
+        categories = _hair_categories(source, record)
         for chain in record['chains']:
             for name in chain['bones']:
                 bone = main.data.bones.get(name)
@@ -256,7 +345,9 @@ def _hair_sources(main):
                         or bone.get(hair.SOURCE_KEY) != source or not bone.use_deform
                         or bone.get(hair.SIGNATURE_KEY) != chain['signature']):
                     raise ValueError('Hair source records do not match their owned bones.')
-                allowed.add(name)
+                if name in allowed:
+                    raise ValueError('A Hair bone is assigned to more than one owned source chain.')
+                allowed[name] = categories.get(chain['signature'], 'HAIR')
     for pb in main.pose.bones:
         if pb.bone.get(hair.OWNER_KEY) == hair.OWNER_VALUE and not _helper(pb) and pb.name not in allowed:
             raise ValueError('An owned Hair bone is missing from its source record.')
@@ -283,12 +374,12 @@ def members(main, context):
                 return
             if owner and owner not in {'limb_fk_visuals', 'head_neck_visuals', 'body_detail_visuals'}:
                 return
-            if group not in {'HAIR', 'DRESS'} and (pb.bone.get(hair_bones_rig.OWNER_KEY) or pb.bone.get(skirt_rig.OWNER_KEY)):
+            if group not in {'HAIR', *HAIR_GROUPS, 'DRESS'} and (pb.bone.get(hair_bones_rig.OWNER_KEY) or pb.bone.get(skirt_rig.OWNER_KEY)):
                 return
         key = rig.as_pointer(), name
         previous = assigned.get(key)
         if previous is not None and previous != group:
-            if group in {'HAIR', 'DRESS'}:
+            if group in {'HAIR', *HAIR_GROUPS, 'DRESS'}:
                 result[previous].remove(pb)
             else:
                 return
@@ -330,10 +421,12 @@ def members(main, context):
                     if name not in hair_allowed and not (rig == main and managed_hair and not pb.bone.get(limb_ik.OWNER_KEY)):
                         raise ValueError('Saved Hair display membership does not match its owned source bones.')
                 group = source_groups.get(name, _semantic(pb)) if role == 'BODY' else role
+                if role == 'HAIR':
+                    group = hair_allowed.get(name, 'HAIR')
                 add(rig, name, group, native=True)
     # Hair owner tags also work before compact Bone Collections are organized.
     for pb in main.pose.bones:
-        group = _control_group(pb, source_groups)
+        group = _control_group(pb, source_groups, hair_allowed)
         if group and group != 'DRESS':
             add(main, pb.name, group)
     for rig, record in dress_records:
@@ -461,15 +554,25 @@ def _rollback(main, checkpoint):
     _property(main, REFS_KEY, checkpoint['refs'] or None)
 
 
+def _editable(rig):
+    """Action references may use Armature data without sharing its Pose owner."""
+    if (rig is None or rig.type != 'ARMATURE' or rig.mode == 'EDIT'
+            or rig.library or rig.data.library or not rig.is_editable):
+        raise ValueError('Choose a local, single-user character armature outside Edit Mode.')
+    owners = [obj for obj in bpy.data.objects if obj.type == 'ARMATURE' and obj.data == rig.data]
+    if len(owners) != 1 or owners[0] != rig:
+        raise ValueError('Choose a local, single-user character armature outside Edit Mode.')
+
+
 def _apply(main, context, saved, groups):
-    from . import bone_display, control_colors
-    bone_display._editable(main)
+    from . import control_colors
+    _editable(main)
     existing = _read(main)
     membership = members(main, context)
     targets = [pb for group in groups for pb in membership[group]]
     rigs = list(dict.fromkeys(pb.id_data for pb in targets))
     for rig in rigs:
-        bone_display._editable(rig)
+        _editable(rig)
     # Validate every retained recovery point, even if this operation changes
     # just one group. A corrupt unrelated group must not become half-restorable.
     saved_refs = _refs(main)
@@ -517,7 +620,7 @@ def _apply(main, context, saved, groups):
 
 def apply_palette(main, context):
     main = main_for(main)
-    saved = _read(main) or _default_config()
+    saved = _read(main) or _default_config(context)
     return _apply(main, context, saved, GROUPS)
 
 
@@ -525,22 +628,22 @@ def edit_group(main, group, colors, context):
     main = main_for(main)
     if group not in GROUPS:
         raise ValueError('Choose a Bone Display color group.')
-    saved = _read(main) or _default_config()
+    saved = _read(main) or _default_config(context)
     saved['groups'][group] = _colors(colors)
     return _apply(main, context, saved, (group,))
 
 
 def restore_palette(main, context):
-    from . import bone_display, control_colors
+    from . import control_colors
     main = main_for(main)
-    bone_display._editable(main)
+    _editable(main)
     saved = _read(main)
     if saved is None:
         return 0
     rigs = list(dict.fromkeys([main, *_refs(main).values()]))
     targets = []
     for rig in rigs:
-        bone_display._editable(rig)
+        _editable(rig)
         if rig != main and rig.get(MAIN_KEY) != main:
             raise ValueError('A palette recovery armature belongs to another character.')
         if DISPLAY_KEY in rig.data and not isinstance(rig.data[DISPLAY_KEY], bool):
@@ -586,8 +689,10 @@ def style_control(pb):
     """Called by generator styling; never called by a draw/frame callback."""
     main = main_for(pb.id_data)
     saved = _read(main)
+    if not saved or not saved['enabled']:
+        return False
     group = _control_group(pb)
-    if not saved or not saved['enabled'] or not group:
+    if not group:
         return False
     if pb.id_data != main and pb.id_data.get(MAIN_KEY) not in (None, main):
         raise ValueError('An attached armature is assigned to another character palette.')
@@ -709,38 +814,37 @@ def group_status(main, context):
         signature = lambda value: tuple(round(v, 5) for name in CHANNELS for v in value[name]) if value else None
         mixed = len({signature(value) for value in values}) > 1
         result[group] = {'count': len(bones), 'mixed': mixed, 'pb': bones[0] if bones else None,
-                         'colors': values[0] if values and values[0] else group_colors(main, group),
+                         'colors': values[0] if values and values[0] else group_colors(main, group, context),
                          'default': bool(values and values[0] is None)}
     return result
 
 
 def _poll(context):
-    from . import bone_display
     try:
-        main = bone_display.character_rig(context)
-        bone_display._editable(main)
+        main = context_main(context)
+        _editable(main)
         return True
     except (ValueError, TypeError, ReferenceError):
         return False
 
 
 def _operator_main(context, name):
-    from . import bone_display
-    main = bone_display.character_rig(context)
+    main = context_main(context)
     if main is None or (name and main.name != name):
         raise ValueError('Select the same character used to open the Color Palette.')
     return main
 
 
 def _redraw(context):
-    for area in context.screen.areas if context.screen else ():
-        area.tag_redraw()
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
 
 
 class CHARACTERDESIGNER_OT_bone_color_palette(Operator):
     bl_idname = 'character_designer.bone_color_palette'
     bl_label = 'Bone Display Color Palette'
-    bl_description = 'Apply this character\'s five color groups to original bones and owned controls, or restore their saved colors'
+    bl_description = 'Apply this character\'s color groups to original bones and owned controls, or restore their saved colors'
     bl_options = {'REGISTER', 'UNDO'}
     action: EnumProperty(items=(('APPLY', 'Apply Palette', ''), ('RESTORE', 'Restore Previous Colors', '')))
     rig_name: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
@@ -781,7 +885,7 @@ class CHARACTERDESIGNER_OT_bone_color_group(Operator):
             main = _operator_main(context, self.rig_name)
             self.rig_name = main.name
             status = group_status(main, context)[self.group]
-            colors = status['colors'] if status['count'] else group_colors(main, self.group)
+            colors = status['colors'] if status['count'] else group_colors(main, self.group, context)
             for name, color in colors.items():
                 setattr(self, name, color)
         except (ValueError, RuntimeError, TypeError, ReferenceError) as exc:
@@ -844,7 +948,7 @@ def draw(layout, context, main):
     button = restore.operator('character_designer.bone_color_palette', text='Restore', icon='LOOP_BACK')
     button.action, button.rig_name = 'RESTORE', main.name
     if not saved:
-        layout.label(text='Apply to save this character\'s five-color scheme.', icon='INFO')
+        layout.label(text='Apply to save this character\'s color scheme.', icon='INFO')
 
 
 BONE_COLOR_PALETTE_CLASSES = (CHARACTERDESIGNER_OT_bone_color_palette, CHARACTERDESIGNER_OT_bone_color_group)

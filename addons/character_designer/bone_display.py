@@ -551,20 +551,18 @@ class CHARACTERDESIGNER_PT_bone_display(Panel):
                     depress=visible).action = role
             if not original and mode:
                 layout.operator('character_designer.bone_display', text='Restore Display').action = 'RESTORE'
-            elif not original and main == context.object and main.mode != 'EDIT':
-                layout.operator('character_designer.simplify_bone_collections', text='Organize Bone Collections')
         except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
             layout.label(text=str(exc), icon='ERROR')
 
 
 class CHARACTERDESIGNER_PT_bone_color_palette(Panel):
     bl_idname = 'CHARACTERDESIGNER_PT_bone_color_palette'
-    bl_label = 'Color Palette'
+    bl_label = 'Colors'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
     bl_parent_id = 'CHARACTERDESIGNER_PT_bone_display'
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = set()
     bl_order = 0
 
     @classmethod
@@ -578,8 +576,9 @@ class CHARACTERDESIGNER_PT_bone_color_palette(Panel):
             if main is None:
                 layout.label(text='Select the character or set Main Rig.', icon='INFO')
                 return
-            from . import bone_color_palette
-            bone_color_palette.draw(layout, context, main)
+            row = layout.row(align=True)
+            row.operator_context = 'INVOKE_DEFAULT'
+            row.operator('character_designer.open_colors', text='Open Colors', icon='COLOR')
         except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
             layout.label(text=str(exc), icon='ERROR')
 

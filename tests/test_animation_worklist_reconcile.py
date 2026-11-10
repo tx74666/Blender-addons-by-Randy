@@ -207,6 +207,60 @@ class ReconcileTests(unittest.TestCase):
             rollback = self.core._snapshot(self.context, self.saved, self.rig, include_custom_contents=False)
         self.assertEqual(rollback, {key: value for key, value in full.items() if key != 'custom_contents'})
 
+    def test_clean_sync_reuses_one_plan_and_keeps_custom_action(self):
+        row = self.row()
+        custom = row.custom_action
+        with patch.object(self.core, '_prepared', wraps=self.core._prepared) as prepare:
+            preview = self.core.start_or_review(self.context)
+        self.assertEqual(preview['retained_ids'], [row.item_id])
+        prepare.assert_called_once()
+        self.assertIs(self.saved.items[0].custom_action, custom)
+
+    def test_clean_sync_rejects_a_file_change_before_commit(self):
+        row = self.row()
+        plan = self.core._plan
+
+        def change_after_plan(*args):
+            result = plan(*args)
+            self.packet.write_text('changed after preparation', encoding='utf-8')
+            return result
+
+        with patch.object(self.core, '_plan', side_effect=change_after_plan):
+            with self.assertRaisesRegex(ValueError, 'A Unity input changed'):
+                self.core.start_or_review(self.context)
+        self.assertIs(self.saved.items[0], row)
+        self.assertEqual(self.saved.retired_items, [])
+
+    def test_clean_sync_rejects_a_workspace_publish_between_parse_and_pin(self):
+        row = self.row()
+        prepare = self.core._prepared
+
+        def publish_during_prepare(*args):
+            self.record['clips'] = []
+            self.manifest.write_text('new published workspace', encoding='utf-8')
+            return prepare(*args)
+
+        with patch.object(self.core, '_prepared', side_effect=publish_during_prepare):
+            with self.assertRaisesRegex(ValueError, 'A Unity input changed'):
+                self.core.start_or_review(self.context)
+        self.assertIs(self.saved.items[0], row)
+        self.assertEqual(self.saved.retired_items, [])
+
+    def test_clean_sync_rejects_a_packet_publish_between_parse_and_pin(self):
+        row = self.row()
+        parsed = self.source._packet
+
+        def publish_after_parse(*args):
+            result = parsed(*args)
+            self.packet.write_text('new published packet', encoding='utf-8')
+            return result
+
+        with patch.object(self.source, '_packet', side_effect=publish_after_parse):
+            with self.assertRaisesRegex(ValueError, 'A Unity input changed'):
+                self.core.start_or_review(self.context)
+        self.assertIs(self.saved.items[0], row)
+        self.assertEqual(self.saved.retired_items, [])
+
     def test_preview_and_confirmation_each_fingerprint_custom_once(self):
         row = self.row('extra')
         with patch.object(self.core, 'fingerprint_action', wraps=self.core.fingerprint_action) as proof:
@@ -232,7 +286,7 @@ class ReconcileTests(unittest.TestCase):
     def test_back_has_no_membership_or_native_action_side_effects(self):
         row = self.row('extra')
         before = self.core._digest(self.core._snapshot(self.context, self.saved, self.rig))
-        preview = self.core.plan(self.context)
+        preview = self.core.start_or_review(self.context)
         with self.assertRaisesRegex(ValueError, 'Retire or Back'):
             self.core.begin(self.context, preview['token'])
         self.assertEqual(before, self.core._digest(self.core._snapshot(self.context, self.saved, self.rig)))

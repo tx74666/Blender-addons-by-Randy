@@ -117,6 +117,10 @@ def _source_bone(bone, source_rest):
 
 
 def _live(source, *, check_layers=False):
+    return _live_with_rest(source, check_layers=check_layers, native_selection=False)
+
+
+def _live_with_rest(source, *, check_layers, native_selection):
     points, edges, faces, topology = _geometry(source)
     record = hair._read_records(source)
     armature = source.get(hair.RIG_KEY)
@@ -140,7 +144,9 @@ def _live(source, *, check_layers=False):
                     or bone.get(hair.SIGNATURE_KEY) not in signatures or not bone.use_deform):
                 raise HairStrandRegistryError('Hair bone source ownership changed; restore it before reconciling.')
             owned.setdefault(bone.get(hair.SIGNATURE_KEY), []).append(bone)
-    source_rest = _source_rest_view(armature)
+    # Transported selection verifies the current bones as they are. It cannot
+    # project a connected flag from a historical or managed Rest view.
+    source_rest = None if native_selection else _source_rest_view(armature)
     strands = []
     for order, chain in enumerate(record['chains']):
         if chain.get('members'):
@@ -534,7 +540,33 @@ def read(source, validate=True):
     data = _saved(source)
     if data is None or not validate:
         return data
-    live, record, geometry = _live(source)
+    return _compare_saved(source, data, _live(source))
+
+
+def _read_transported_selection(source):
+    """Prove current native Hair for selection after the reviewed reference trim."""
+    if not isinstance(source, bpy.types.Object) or source.type != 'MESH':
+        return None
+    rig = source.get(hair.RIG_KEY)
+    if not isinstance(rig, bpy.types.Object) or rig.type != 'ARMATURE':
+        return None
+    from . import animation_worklist_target, hair_bones_binding, hair_replace_authority
+    if (type(rig.get(hair_replace_authority.RECORD)) is not str
+            or type(rig.get(animation_worklist_target.SESSION)) is not str
+            or hair_replace_authority.REFS in rig or animation_worklist_target.REFS in rig
+            or not hair_bones_binding.is_bound(source)
+            or any(item.library is not None or item.override_library is not None or not item.is_editable
+                   for item in (source, source.data, rig, rig.data))):
+        return None
+    data = _saved(source)
+    if data is None:
+        raise HairStrandRegistryError('Transported Hair selection needs its saved strand registry.')
+    return _compare_saved(source, data,
+                          _live_with_rest(source, check_layers=False, native_selection=True))
+
+
+def _compare_saved(source, data, current_state):
+    live, record, geometry = current_state
     if live['source_uid'] != data['source_uid'] or live['topology'] != data['topology']:
         raise HairStrandRegistryError('Hair identity or topology changed; explicitly reconcile its strand registry.')
     old = {strand['signature']: strand for strand in data['strands']}

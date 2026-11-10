@@ -30,8 +30,14 @@ class Layout:
         self.events = events if events is not None else []
         self.enabled = True
 
-    def row(self):
+    def row(self, **_options):
         return Layout(self.events)
+
+    def column(self, **_options):
+        return Layout(self.events)
+
+    def prop(self, owner, name, **options):
+        self.events.append(('prop', owner, name, options))
 
     def label(self, **options):
         self.events.append(('label', options))
@@ -48,7 +54,7 @@ class ControllerUI(unittest.TestCase):
         package = ModuleType(self.package_name)
         package.__path__ = [str(SOURCE)]
         props = ModuleType('bpy.props')
-        props.StringProperty = props.IntProperty = lambda **_options: None
+        props.StringProperty = props.IntProperty = props.BoolProperty = props.FloatProperty = lambda **_options: None
         types = ModuleType('bpy.types')
         types.Operator = type('Operator', (), {})
         animation = ModuleType(self.package_name + '.animation')
@@ -75,9 +81,12 @@ class ControllerUI(unittest.TestCase):
                       animation_data=NS(action=self.action, action_slot_handle=7))
         self.item = NS(item_id='current-row', side='CUSTOM', rig=self.rig,
                        custom_action=self.action, custom_slot=7)
-        self.saved = NS(active_index=0, items=[self.item])
+        self.saved = NS(active_index=0, items=[self.item], controller_auto_reduce=True,
+            controller_show_advanced=False, controller_position_tolerance_mm=1.,
+            controller_rotation_tolerance_degrees=.25)
         self.context = NS(mode='POSE', area=NS(tag_redraw=Mock()),
-            scene=NS(character_designer_animation_worklist=self.saved, objects={self.rig.name:self.rig}),
+            scene=NS(character_designer_animation_worklist=self.saved, objects={self.rig.name:self.rig},
+                     tool_settings=NS(use_keyframe_insert_auto=False)),
             view_layer=NS(objects={self.rig.name:self.rig}))
         self.target = NS(id_data=self.rig, bone={'character_designer_limb_ik_role':'HAND_IK'})
         self.context.object = self.rig
@@ -99,7 +108,9 @@ class ControllerUI(unittest.TestCase):
 
     def test_execution_converts_once_full_clip_without_extra_controls(self):
         self.assertEqual(self.operator().execute(self.context), {'FINISHED'})
-        self.backend.convert.assert_called_once_with(self.context, rig=self.rig, activate=True)
+        self.backend.convert.assert_called_once_with(self.context, rig=self.rig, activate=True,
+            auto_reduce=True, position_tolerance_meters=.001,
+            rotation_tolerance_radians=.004363323129985824)
 
     def test_Source_refuses_without_backend_import_or_conversion(self):
         self.item.side = 'SOURCE'
@@ -129,7 +140,7 @@ class ControllerUI(unittest.TestCase):
         with patch.object(self.ui, '_backend', side_effect=AssertionError('draw imported backend')):
             self.ui.draw_controller_animation(layout, self.context)
         self.assertEqual([event[2]['text'] for event in layout.events if event[0]=='operator'],
-                         ['Make Controller Animation'])
+                         ['Generate Controller Custom'])
         self.backend.status.assert_not_called()
         self.backend.convert.assert_not_called()
 
@@ -140,7 +151,7 @@ class ControllerUI(unittest.TestCase):
         self.ui.draw_controller_animation(layout, self.context)
         self.assertIn('Controller Animation',[event[1]['text'] for event in layout.events if event[0]=='label'])
         self.assertEqual([event[2]['text'] for event in layout.events if event[0]=='operator'],
-                         ['Rebuild Controller Motion','Apply Move Across Clip'])
+                         ['Generate New Controller Custom','Apply Pending Move to Whole Clip'])
         self.assertEqual(self.operator().execute(self.context),{'FINISHED'})
         self.backend.convert.assert_called_once()
 

@@ -7,7 +7,7 @@ case in the converter.
 
 The worklist Source remains the read-only comparison baseline. Ordinary new
 imports populate an independent controller Custom after the Source is fixed.
-For an existing editable Custom, **Make Controller Animation** creates another
+For an existing editable Custom, **Generate Controller Custom** creates another
 retained Custom and keeps the previous version.
 
 Installed arms and legs receive complete IK target, pole, orientation and switch
@@ -19,14 +19,21 @@ Dress branches stay in the Action and are isolated from the private body solve.
 
 1. Select the motion's **Custom** and return to Animation, Controls and Pose
    Position. Finish and key any pending pose edits. For an older Custom, click
-   **Make Controller Animation** first. Pause any running Hair Physics preview
+   **Generate Controller Custom** first. Pause any running Hair Physics preview
    before conversion.
 2. Select an IK hand or foot target in Pose Mode. Its location curves now
    describe the complete motion, including frames where the source used FK.
 3. Edit and insert ordinary keys when the change should be local in time.
 
+**Automatically Simplify Keys** starts enabled. It removes extra controller
+keys only after playback verification. Disabling it keeps the dense editable
+grid; it does not bypass playback checks. **Playback Tolerance** exposes limits
+that can only be stricter than the default 1 mm and 0.25 degrees. The panel shows
+the actual generated key count and reduction afterward, rather than asking for
+a target percentage.
+
 To move a hand slightly outward throughout a walk, leave Auto Key off, move the
-selected target, then click **Apply Move Across Clip** before inserting a key.
+selected target, then click **Apply Pending Move to Whole Clip** before inserting a key.
 The operation measures that unkeyed move in the target's local channel space and
 applies it to the complete location curves. It preserves their times,
 interpolation and handles and publishes another Custom. Select both targets for
@@ -38,14 +45,31 @@ single-frame Insert remains a normal keyframe operation.
 
 ## IK/FK display
 
-The daily buttons explicitly describe **All Arms / Legs · Current Frame**. They
-switch all installed limbs at the current time. Mixed states list the left and
-right arm/leg states, including intermediate blend weights. The Body Part
+The daily **All IK / All FK** buttons switch all installed limbs at the current
+time. The current-frame status describes the selected limb or limbs; without a
+limb selection it describes all installed limbs. Mixed states list the relevant
+left/right arm/leg states, including intermediate blend weights. The Body Part
 dropdown controls the separate build/rebuild operation.
 
 The new controller Custom begins with full-clip IK mode curves. A current-frame
 mode switch is not a full-clip conversion and does not create missing target
 trajectories by itself.
+
+## Saving and continuing
+
+Record intended pose changes with ordinary Insert or Auto Key, then save the
+editing blend normally. A moved but unkeyed target is not a recorded timeline
+edit. The generated Custom belongs to this character and retains its Action,
+slot, worklist row and recovery/checkpoint data; the Source and previous Custom
+remain available. Keep any packaged editing dependencies alongside the blend.
+
+The four generation-panel preferences are transient and reset when reopening.
+Each generated Action separately stores the options actually used, its playback
+budget and key-reduction result. Resetting a panel preference does not discard
+that Action or its keys. Clip duration follows its actual frame range and FPS;
+an export sampling rate of 60 Hz does not imply 60 frames. A compatible Unity
+target must be established explicitly before a local Custom can replace a Unity
+animation through the existing return workflow.
 
 ## Representation and preservation
 

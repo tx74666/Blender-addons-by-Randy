@@ -22,6 +22,7 @@ from character_designer import (
     finger_bones,
     forearm_twist,
     hair_bones,
+    hair_motion_ui,
     limb_ik,
     reference_views,
     rig_fix_ui,
@@ -29,6 +30,7 @@ from character_designer import (
     shape_key_tools,
     skirt,
     spline_ik_setup,
+    torso_ui,
     unity_export_ui,
     weight_symmetry,
 )
@@ -44,6 +46,23 @@ from character_designer.ui_constants import (
     active_ui_page,
     rig_page_active,
 )
+
+
+def native_navigation_state():
+    """Native data/context headers, excluding intentionally changed WM tabs."""
+    return (
+        bpy.data.is_dirty, bpy.context.mode,
+        bpy.context.view_layer.objects.active, tuple(bpy.context.selected_objects),
+        bpy.context.scene.frame_current, bpy.context.scene.frame_subframe,
+        tuple((obj.as_pointer(), obj.name, obj.mode,
+               obj.data.as_pointer() if obj.data else None,
+               tuple(tuple(row) for row in obj.matrix_world),
+               obj.animation_data.action if obj.animation_data else None,
+               obj.animation_data.action_slot_handle if obj.animation_data else None)
+              for obj in bpy.data.objects),
+        tuple((scene.as_pointer(), scene.name, repr(dict(scene.items())))
+              for scene in bpy.data.scenes),
+    )
 
 
 def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference=False,
@@ -69,6 +88,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "unity_export": unity_export_ui.CHARACTERDESIGNER_PT_unity_export.poll(bpy.context),
         "quick_bind": character_setup.CHARACTERDESIGNER_PT_quick_bind.poll(bpy.context),
         "character_setup": character_setup.CHARACTERDESIGNER_PT_character_setup.poll(bpy.context),
+        "rig_setup": character_designer.CHARACTERDESIGNER_PT_rig_sections.poll(bpy.context),
         "animation": animation.CHARACTERDESIGNER_PT_animation.poll(bpy.context),
         "weight_tools": selected_bone_weights.CHARACTERDESIGNER_PT_weight_tools.poll(
             bpy.context
@@ -82,6 +102,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "rig": spline_ik_setup.CHARACTERDESIGNER_PT_spline_ik_setup.poll(bpy.context),
         "limb_ik": limb_ik.CHARACTERDESIGNER_PT_limb_ik.poll(bpy.context),
         "forearm_twist": forearm_twist.CHARACTERDESIGNER_PT_forearm_twist.poll(bpy.context),
+        "back_chest": torso_ui.CHARACTERDESIGNER_PT_torso_controls.poll(bpy.context),
         "fingers": finger_bones.CHARACTERDESIGNER_PT_fingers.poll(bpy.context),
         "limb_preroll": limb_ik.CHARACTERDESIGNER_PT_limb_ik_direct_preroll.poll(
             bpy.context
@@ -91,6 +112,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         ),
         "clothing": skirt.CHARACTERDESIGNER_PT_skirt_setup.poll(bpy.context),
         "hair_rig": hair_bones.CHARACTERDESIGNER_PT_hair_bones.poll(bpy.context),
+        "hair_motion": hair_motion_ui.CHARACTERDESIGNER_PT_hair_motion.poll(bpy.context),
         "rig_fix": rig_fix_ui.CHARACTERDESIGNER_PT_rig_fix.poll(bpy.context),
     }
     expected = {
@@ -99,6 +121,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "unity_export": expected_page == UI_PAGE_MISC,
         "quick_bind": weight,
         "character_setup": expected_page == UI_PAGE_RIG,
+        "rig_setup": expected_page == UI_PAGE_RIG,
         "animation": motion,
         "weight_tools": weight,
         "weight_symmetry": weight,
@@ -106,11 +129,13 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
         "rig": rig,
         "limb_ik": rig,
         "forearm_twist": rig,
+        "back_chest": rig,
         "fingers": rig,
         "limb_preroll": rig and limb_settings.show_body_setup_advanced and limb_settings.build_method == "DIRECT_PREROLL",
         "reference": reference,
         "clothing": clothing,
         "hair_rig": hair_rig,
+        "hair_motion": hair_rig,
         "rig_fix": False,
     }
     if actual != expected:
@@ -118,6 +143,7 @@ def assert_only_page(page, *, weight=False, modeling=False, rig=False, reference
 
 
 def assert_rig_subroutes():
+    native_before = native_navigation_state()
     settings = bpy.context.window_manager.character_designer
     section_property = character_designer.CharacterDesignerState.bl_rna.properties["rig_section"]
     if section_property.default != "BODY" or not section_property.is_skip_save:
@@ -154,6 +180,41 @@ def assert_rig_subroutes():
     assert_only_page(UI_PAGE_RIG, section="FIX", rig=True)
     assert_only_page(UI_PAGE_CLOTHING, clothing=True)
     settings.rig_section = "BODY"
+    if native_navigation_state() != native_before:
+        raise AssertionError("Rig navigation/polls changed native Scene data, Action binding or editing context")
+
+
+def assert_body_setup_recovery_entry():
+    """The clearer heading retains the existing transient Advanced setting."""
+    settings = bpy.context.window_manager.character_designer_limb_ik
+    prop = limb_ik.CharacterDesignerLimbIKState.bl_rna.properties["show_body_setup_advanced"]
+    if prop.name != "Advanced" or prop.default is not False or not prop.is_skip_save:
+        raise AssertionError("The Body Setup heading changed the existing Advanced RNA contract")
+    if bpy.context.object is not None and bpy.context.object.type == "ARMATURE":
+        raise AssertionError("This entry regression requires the neutral factory object, not a rig")
+
+    class LayoutProxy:
+        def __init__(self):
+            self.properties = []
+        def row(self, **_kwargs): return self
+        def label(self, **_kwargs): return None
+        def operator(self, *_args, **_kwargs): return SimpleNamespace()
+        def prop(self, data, name, **kwargs):
+            self.properties.append((data, name, kwargs.get("text")))
+
+    before = native_navigation_state()
+    previous = (settings.armature, settings.show_body_setup_advanced)
+    try:
+        settings.armature = None
+        settings.show_body_setup_advanced = False
+        layout = LayoutProxy()
+        limb_ik.CHARACTERDESIGNER_PT_limb_ik.draw(SimpleNamespace(layout=layout), bpy.context)
+        if layout.properties != [(settings, "show_body_setup_advanced", "Body Setup & Recovery")]:
+            raise AssertionError(f"Unexpected collapsed Body Setup entry: {layout.properties}")
+    finally:
+        settings.armature, settings.show_body_setup_advanced = previous
+    if native_navigation_state() != before:
+        raise AssertionError("Drawing the collapsed Body Setup entry changed native data/context")
 
 
 def assert_curve_tool_routes():
@@ -547,6 +608,37 @@ def assert_compact_limb_ik_panel():
             setattr(settings, property_name, expected_default)
 
 
+def main_rig_layout_routes():
+    """Focused native entry for Rig Setup changes; no unrelated draw goldens."""
+    character_designer.register()
+    try:
+        settings = bpy.context.window_manager.character_designer
+        # Re-registration retains the WM's session-only backing values. Check
+        # the RNA defaults independently and initialize only those UI tabs.
+        for name, expected in (("ui_page", UI_PAGE_MODELING), ("curve_tools_mode", "GENERAL"), ("rig_section", "BODY")):
+            prop = character_designer.CharacterDesignerState.bl_rna.properties[name]
+            if prop.default != expected or not prop.is_skip_save:
+                raise AssertionError(f"Transient navigation RNA contract changed: {name}")
+            setattr(settings, name, expected)
+        before = native_navigation_state()
+        assert_only_page(UI_PAGE_WEIGHT, weight=True)
+        assert_only_page(UI_PAGE_HAIR, modeling=True, reference=True)
+        assert_only_page(UI_PAGE_RIG, rig=True)
+        assert_only_page(UI_PAGE_CLOTHING, clothing=True)
+        assert_only_page(UI_PAGE_ANIMATION, motion=True)
+        assert_only_page(UI_PAGE_MODELING, modeling=True, reference=True)
+        assert_only_page(UI_PAGE_MISC)
+        assert_rig_subroutes()
+        assert_curve_tool_routes()
+        assert_modeling_panel_hierarchy()
+        assert_body_setup_recovery_entry()
+        if native_navigation_state() != before:
+            raise AssertionError("Page routing/draw changed native data, Action binding or editing context")
+        print("PASS Rig Setup page/category routes and transient recovery entry")
+    finally:
+        character_designer.unregister()
+
+
 def main():
     character_designer.register()
     try:
@@ -643,6 +735,7 @@ def main():
         assert_rig_subroutes()
         assert_curve_tool_routes()
         assert_modeling_panel_hierarchy()
+        assert_body_setup_recovery_entry()
         print("PASS CDesigner UI Pages 6 tests")
     finally:
         character_designer.unregister()

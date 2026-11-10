@@ -64,6 +64,11 @@ def load_package(filepath):
         raise UnityAnimationError(f"Cannot read Unity animation: {exc}") from exc
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise UnityAnimationError("This is not a Character Designer Unity animation package.")
+    from .animation_workspace import target_slot_id
+    try:
+        target_slot_id(data)
+    except ValueError as exc:
+        raise UnityAnimationError("The animation package has an invalid targetSlotId: " + str(exc)) from exc
     if "loopTime" in data and not isinstance(data["loopTime"], bool):
         raise UnityAnimationError("The animation loop setting must be true or false.")
     if (data.get("units") != "metres" or data.get("coordinate") != "unity-lh-y-up"

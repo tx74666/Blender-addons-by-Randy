@@ -954,11 +954,13 @@ class CHARACTERDESIGNER_OT_remove_skirt_setup(Operator):
 
 
 class CHARACTERDESIGNER_PT_skirt_setup(Panel):
-    bl_label = "Skirt Setup"
+    bl_label = 'Skirt Controls & Binding'
     bl_idname = "CHARACTERDESIGNER_PT_skirt_setup"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 10
 
     @classmethod
     def poll(cls, context):

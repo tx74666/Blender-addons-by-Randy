@@ -165,6 +165,8 @@ def _motion_snapshot(context):
 
 
 def _load_motion_selection(context, snapshot, signatures, active_key='', *, active_signature=''):
+    if snapshot['fingerprint'].get('selection_only'):
+        return
     state = _state(context)
     if not signatures:
         return
@@ -252,7 +254,7 @@ def refresh_ui(context, source=None, checked_signatures=None):
     state = _state(context)
     try:
         source = _hair()._source(context) if source is None else source
-        snapshot = _service().strict_snapshot(source)
+        snapshot = _service().selection_snapshot(source)
         rows = snapshot['rows']
         entries = _entries().build_entries(rows)
         old = json.loads(state.list_pin) if state.list_pin else {}
@@ -270,7 +272,8 @@ def refresh_ui(context, source=None, checked_signatures=None):
         # member is stale scope, never an implicit all-strands request.
         chosen = set(_entries().normalize_signatures(entries, chosen))
         from . import hair_strand_registry as registry, hair_motion_profiles as profiles
-        data = registry.read(source, validate=True)
+        data = (None if snapshot['fingerprint'].get('selection_only')
+                else registry.read(source, validate=True))
         motion = getattr(context.window_manager, 'character_designer_hair_motion', None)
         # Existing profiles are loaded, never initialized or given a preset.
         if data is not None and motion is not None and profiles.read(source, registry=data) is not None:
@@ -345,6 +348,10 @@ def _resolve(identity):
 
 
 def _authenticate(operator, context, *, require_checked=False):
+    return _authenticate_action(operator, context, require_checked=require_checked)
+
+
+def _authenticate_action(operator, context, *, require_checked=False, allow_selection_only=False):
     if not operator.action_pin:
         operator.action_pin = _capture(context)
     try:
@@ -365,7 +372,12 @@ def _authenticate(operator, context, *, require_checked=False):
         raise ValueError('The saved Hair list action is unreadable; refresh its strand list.') from error
     if _hair()._source(context) is not source:
         raise ValueError('The active Hair changed; refresh its strand list and choose again.')
-    snapshot = _service().strict_snapshot(source)
+    if fingerprint.get('selection_only') is True:
+        if not allow_selection_only:
+            raise ValueError('This transferred Hair supports strand selection only.')
+        snapshot = _service().selection_snapshot(source)
+    else:
+        snapshot = _service().strict_snapshot(source)
     if snapshot['fingerprint'] != fingerprint:
         raise ValueError('The Hair binding or settings changed; refresh its strand list and choose again.')
     # Native Redo restores source data, but WindowManager cache is not undone.
@@ -524,7 +536,8 @@ class CHARACTERDESIGNER_OT_hair_strand_list_click(Operator):
 
     def execute(self, context):
         try:
-            unused_source, armature, unused_signatures, snapshot = _authenticate(self, context)
+            unused_source, armature, unused_signatures, snapshot = _authenticate_action(
+                self, context, allow_selection_only=True)
             state = _state(context)
             if self.filter_pin != state.list_filter:
                 raise ValueError('The category filter changed; select the Hair row again.')
@@ -568,22 +581,30 @@ class CharacterDesignerHairStrandListItem(PropertyGroup):
 
 class CHARACTERDESIGNER_UL_hair_strand_list(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        row = layout.row(align=True)
+        layout.alignment = 'EXPAND'
+        row = layout.split(factor=1.0, align=True).row(align=True)
+        row.alignment = 'EXPAND'
         row.operator_context = 'INVOKE_DEFAULT'
         try:
             pin = _capture(context)
-            label = (_display_labels(data)[item.entry_key] + '   ·   ' +
-                     _cached_count_label(item) + '   ·   ' + item.group.title() + ' / ' + item.side)
+            label = (_display_labels(data)[item.entry_key] + ' · ' +
+                     _cached_count_label(item) + ' · ' + item.group.title() + ' / ' + item.side)
         except (ValueError, KeyError, TypeError):
             pin = ''
             label = 'Refresh strand list'
             row.enabled = False
-        op = row.operator('character_designer.hair_strand_list_click',
-                          text=label,
-                          icon='BONE_DATA', depress=item.checked)
-        op.entry_key = item.entry_key
-        op.action_pin = pin
-        op.filter_pin = data.list_filter
+        title = row.row(align=True)
+        title.alignment = 'LEFT'
+        fill = row.split(factor=1.0, align=True)
+        mark = row.row(align=True)
+        mark.alignment = 'LEFT'
+        for cell, text, icon in ((title, label, 'BONE_DATA'), (fill, '', 'NONE'),
+                                 (mark, '', 'CHECKMARK' if item.checked else 'BLANK1')):
+            op = cell.operator('character_designer.hair_strand_list_click',
+                               text=text, icon=icon, emboss=False)
+            op.entry_key = item.entry_key
+            op.action_pin = pin
+            op.filter_pin = data.list_filter
 
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
@@ -620,7 +641,8 @@ class CHARACTERDESIGNER_OT_hair_strand_list_check(Operator):
 
     def execute(self, context):
         try:
-            source, armature, unused_signatures, snapshot = _authenticate(self, context)
+            source, armature, unused_signatures, snapshot = _authenticate_action(
+                self, context, allow_selection_only=True)
             state = _state(context)
             if self.action == 'SELECT_VISIBLE':
                 if self.filter_pin and self.filter_pin != state.list_filter:
@@ -739,22 +761,26 @@ class CHARACTERDESIGNER_OT_hair_strand_list_rebuild(Operator):
 def draw_browser(layout, context, source, bound):
     """Render cached RNA only; native proof is explicit in Refresh/actions."""
     state = _state(context)
-    box = layout.box()
-    row = box.row(align=True)
+    row = layout.row(align=True)
     if not bound:
         row.label(text='Strands', icon='BONE_DATA')
-        box.label(text='Bind Hair before using the strand list.', icon='INFO')
+        layout.label(text='Bind Hair before using the strand list.', icon='INFO')
+        return
+    if not state.list_pin:
+        row.label(text='Strands', icon='BONE_DATA')
+        row.operator('character_designer.hair_strand_list_refresh', text='Refresh', icon='FILE_REFRESH')
         return
     rows = tuple(state.list_items)
     try:
         visible = tuple(item for item in rows if _visible(item, state.list_filter))
         checked = _checked(state)
-        pin = _capture(context) if state.list_pin else ''
+        pin = _capture(context)
+        selection_only = json.loads(state.list_pin).get('selection_only') is True
         labels = _display_labels(state)
     except (ValueError, KeyError, TypeError):
         row.label(text='Strands', icon='BONE_DATA')
         row.operator('character_designer.hair_strand_list_refresh', text='', icon='FILE_REFRESH')
-        box.label(text='Refresh the Hair strand list.', icon='ERROR')
+        layout.label(text='Refresh the Hair strand list.', icon='ERROR')
         return
     title = 'Strands'
     motion = getattr(context.window_manager, 'character_designer_hair_motion', None)
@@ -770,25 +796,28 @@ def draw_browser(layout, context, source, bound):
     row.operator('character_designer.hair_strand_list_refresh', text='', icon='FILE_REFRESH')
     visible_checked = sum(item.checked for item in visible)
     checked_count = sum(item.checked for item in rows)
-    column = box.column()
-    column.enabled = bool(state.list_pin)
+    column = layout.column(align=True)
     navigation = column.row(align=True)
-    navigation.operator('character_designer.hair_motion_navigate', text='Previous').direction = -1
-    navigation.operator('character_designer.hair_motion_navigate', text='Next').direction = 1
+    if not selection_only:
+        navigation.operator('character_designer.hair_motion_navigate', text='Previous').direction = -1
+        navigation.operator('character_designer.hair_motion_navigate', text='Next').direction = 1
     selected = navigation.operator('character_designer.hair_strand_list_check', text='Selected')
     selected.action = 'IMPORT_POSE'
     selected.action_pin = pin
     column.prop(state, 'list_filter', text='Category')
-    column.template_list('CHARACTERDESIGNER_UL_hair_strand_list', '', state, 'list_items',
-                         state, 'list_active_index', rows=8, maxrows=12)
-    if not state.list_pin:
-        box.label(text='Refresh to validate the current Hair source/version.', icon='INFO')
-        return
+    if visible:
+        column.template_list('CHARACTERDESIGNER_UL_hair_strand_list', '', state, 'list_items',
+                             state, 'list_active_index', rows=min(5, len(visible)), maxrows=5)
+    else:
+        column.label(text='No strands in this category.', icon='INFO')
     row = column.row(align=True)
     op = row.operator('character_designer.hair_strand_list_check', text='Select Visible')
     op.action, op.action_pin, op.filter_pin = 'SELECT_VISIBLE', pin, state.list_filter
     op = row.operator('character_designer.hair_strand_list_check', text='Deselect All')
     op.action, op.action_pin = 'CLEAR', pin
+    if selection_only:
+        layout.label(text='Transferred Hair: selection only', icon='INFO')
+        return
     actions = column.column()
     actions.enabled = bool(checked)
     count_row = actions.row(align=True)
@@ -801,9 +830,9 @@ def draw_browser(layout, context, source, bound):
     op = row.operator('character_designer.hair_strand_list_assign_category', text='Assign Category')
     op.action_pin, op.group = pin, state.list_assign_group
     if state.list_pose_position == 'REST':
-        box.label(text='Use Pose Position to rebuild.', icon='INFO')
+        layout.label(text='Use Pose Position to rebuild.', icon='INFO')
     if checked_count > visible_checked:
-        box.label(text=str(checked_count - visible_checked) + ' selected entries hidden by category.', icon='INFO')
+        layout.label(text=str(checked_count - visible_checked) + ' selected entries hidden by category.', icon='INFO')
 
 
 ITEM_CLASSES = (CharacterDesignerHairStrandListItem,)

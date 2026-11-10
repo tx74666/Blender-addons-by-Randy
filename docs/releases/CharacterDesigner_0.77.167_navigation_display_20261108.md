@@ -69,8 +69,36 @@ the passing native result and is not relabelled.
 Code/disk delivery receipt:
 `validation/viewport_orbit_20261108/navigation167_code_disk_acceptance01.json`,
 SHA256 `abfe72054e31802eb585aa3e6f32920c1e05333b82aeadb54d674660d598453c`.
-Actual runtime adoption and the user's real middle-button orbit remain pending
-Animation's fresh identity/state check and usable existing window. Historical
-frame14/Pose, dirty flags or OS `Responding=True` are not renewed Scene authority.
+Actual runtime loading is now confirmed in Animation's new normal Blender5.2
+artist process36936. The user confirmed that only view/UI changes followed the
+last saved file. After verified disk backups, Animation recovered only the old
+unresponsive instance; its forced exit1 remains recorded. The new process used
+the original5.2 profile and original X.blend, with no05 updater or refresh.
+Three named runtime UI code/default/owner checks match frozen167; real Rig and
+Target Rotation clicks displayed the panels. The small model-to-Rig comparison
+kept its bounded pose/selected-target curves and bindings exact, not all author
+arrays or unsaved-RAM equivalence. Current dirty=true has not been saved.
+
+Runtime proof `validation/viewport_orbit_20261108/runtime167_artist36936_01.json`,
+SHA256 `4cc8ebd2872d4c36375a17f9018f3a92301bf0ab1949fc4b68f77fd40043843b`.
+Recovery/status `validation/viewport_orbit_20261108/runtime_recovery167_status01.json`,
+SHA256 `dbe57b3ca105f9f1f21c41d3b6de91bd341d3f62863da9d93e129acfe901c221`.
+The actual human middle-button answer is now “立即转动，松开即停止”:
+HUMAN_USABILITY_PASS. Receipt
+`validation/viewport_orbit_20261108/physical_mmb_human_result20261108_01.json`,
+SHA256 `677ad33d1d87e9ec7344f3d999a75b6007501887eb511f9477418860bd791ba5`.
+This records the single user's experience, not measured latency/FPS, a sole-cause
+claim, whole-runtime certification or animation preservation across processes.
+
+The prior artist36936 subsequently closed and a new25968 opened the original X.
+The save/close/open actor is not attributed here. The reported later disk save is
+57,489,913 bytes, mtime14:47:05Z; its SHA was not read by that receipt and the old
+a9 fingerprint is historical. The old36936 BEFORE was not paired with a new
+process AFTER; AFTER was not taken. Do not restore old IDs, pose, preferences or
+file bytes from these historical proofs. The wrist-drag delay stays separate
+and incomplete. The earlier direction-preview/Rigging/bridge flags were inactive;
+an active Forearm record by itself is not cost/causality. New work on that issue
+belongs to Animation and does not expand this MMB receipt.
+Historical frame14/Pose, dirty flags or OS `Responding=True` are not renewed Scene authority.
 No Scene/preferences save, restart, Unity, Git or closed playback-FPS work was
 performed by X in this incident.

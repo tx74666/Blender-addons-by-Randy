@@ -526,14 +526,6 @@ class CHARACTERDESIGNER_UL_custom_vertex_groups(UIList):
         row_selection.draw_row_pick(layout, 'character_designer.custom_vertex_group_pick',
             'group_name', attribute.name, _get_label(attribute), 'GROUP_VERTEX', item.selected,
             row_selection.visible_names(self, context, data, VIEW_PROPERTY))
-        try:
-            locked = is_locked(attribute)
-        except ValueError:
-            locked = True
-        controls = layout.row(align=True)
-        controls.alignment = 'LEFT'
-        controls.operator('character_designer.custom_vertex_group_lock', text='', emboss=False,
-                        icon='LOCKED' if locked else 'UNLOCKED').group_name = attribute.name
 
     def filter_items(self, context, data, property):
         attributes = getattr(data, property)
@@ -821,9 +813,14 @@ class CHARACTERDESIGNER_MT_custom_vertex_groups(Menu):
         for key, label in (('DELETE_EMPTY_UNLOCKED', 'Delete Empty Unlocked Groups'),
                            ('DELETE_UNLOCKED', 'Delete All Unlocked Groups'), ('DELETE_ALL', 'Delete All Groups')):
             layout.operator('character_designer.custom_vertex_group_action', text=label).action = key
-        layout.separator()
-        for key, label in (('LOCK_ALL', 'Lock All'), ('UNLOCK_ALL', 'Unlock All'), ('INVERT_LOCKS', 'Invert Locks')):
-            layout.operator('character_designer.custom_vertex_group_action', text=label).action = key
+        try:
+            mesh = _mesh(context)
+            has_locks = any(is_locked(attribute) for attribute in group_attributes(mesh))
+        except (ValueError, ReferenceError):
+            return
+        if has_locks:
+            layout.separator()
+            layout.operator('character_designer.custom_vertex_group_action', text='Unlock All').action = 'UNLOCK_ALL'
 
 
 def draw(layout, context):

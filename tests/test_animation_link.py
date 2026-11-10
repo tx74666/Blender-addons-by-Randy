@@ -75,7 +75,7 @@ class LinkTests(unittest.TestCase):
     def bind(self):
         link.bind_action(self.rig, self.action, self.path, 'CoshaRig', self.model)
 
-    def revision(self, destination=None):
+    def revision(self, destination=None, **metadata_fields):
         directory = self.root / 'blender_revisions' / uuid.UUID(self.manifest['linkId']).hex
         fbx = destination or directory / (uuid.uuid4().hex + '.fbx')
         fbx.parent.mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,8 @@ class LinkTests(unittest.TestCase):
         metadata = fbx.with_suffix('.animation.json')
         digest = link._sha256(fbx)
         metadata.write_text(json.dumps({'fbx_sha256': digest, 'source_package': str(self.packet),
-            'source_package_sha256': self.manifest['sourcePackageSha256'], 'action': self.action.name}), encoding='utf8')
+            'source_package_sha256': self.manifest['sourcePackageSha256'],
+            'action': self.action.name, **metadata_fields}), encoding='utf8')
         return {'filepath': str(fbx), 'metadata': str(metadata), 'fbx_sha256': digest}
 
     def finalize(self, result):
@@ -154,6 +155,114 @@ class LinkTests(unittest.TestCase):
                     self.finalize(result)
                 self.assertEqual(self.path.read_bytes(), before)
                 self.assertFalse(Path(str(self.path) + '.blender.lock').exists())
+
+    def test_target_slot_validation_and_legacy_binding_remain_explicit(self):
+        legacy = link._identity(self.manifest)
+        for value in (None, ''):
+            with self.subTest(legacy=value):
+                self.write_manifest({**self.manifest, 'targetSlotId': value})
+                self.bind()
+                identity = link.get_link(self.rig)['identity']
+                self.assertEqual(identity['targetSlotId'], value)
+                self.assertEqual(link._identity(identity), legacy)
+        for value in (False, 0, [], ' ', ' locomotion.walk', 'locomotion.walk ',
+                      'Locomotion.walk', 'locomotion..walk', 'a' * 97):
+            with self.subTest(invalid=value):
+                self.write_manifest({**self.manifest, 'targetSlotId': value})
+                before = dict(self.rig)
+                with self.assertRaisesRegex(link.AnimationLinkError, 'targetSlotId'):
+                    self.bind()
+                self.assertEqual(dict(self.rig), before)
+
+    def test_bound_target_slot_survives_binding_worker_handoff_and_publication(self):
+        self.manifest['targetSlotId'] = 'locomotion.walk'
+        self.write_manifest(self.manifest)
+        self.bind()
+        saved = link.get_link(self.rig)
+        self.assertEqual(saved['identity']['targetSlotId'], 'locomotion.walk')
+        self.assertEqual(saved['identity']['targetGuid'], self.manifest['targetGuid'])
+        captured = {}
+        job = {'temporary': SimpleNamespace(cleanup=lambda: None)}
+        def begin(context, rig, action, destination, **options):
+            captured.update(destination=destination, options=options)
+            return job
+        with patch.object(self.exporter, 'begin_export', side_effect=begin):
+            self.assertIs(link.begin_linked_export(self.context, self.rig), job)
+        self.addCleanup(self.exporter._dispose, job)
+        frozen = captured['options']['link_identity']
+        self.assertEqual(frozen['targetSlotId'], 'locomotion.walk')
+        self.assertEqual(frozen['targetGuid'], self.manifest['targetGuid'])
+        result = self.revision(captured['destination'], targetSlotId=frozen['targetSlotId'],
+                               targetGuid=frozen['targetGuid'])
+        published = job['_publish_callback'](job, result)
+        self.exporter._dispose(job)
+        record = link.load_link(self.path)
+        self.assertEqual(record['targetSlotId'], 'locomotion.walk')
+        self.assertEqual(record['targetGuid'], self.manifest['targetGuid'])
+        self.assertEqual(record['fbxFile'], result['filepath'])
+        self.assertEqual(record['metadataSha256'], link._sha256(result['metadata']))
+        self.assertEqual(record['revision'], 1)
+        self.assertEqual(published['revision'], 1)
+        self.assertFalse(Path(str(self.path) + '.blender.lock').exists())
+
+    def test_bound_target_slot_change_or_dropout_cannot_start_or_publish(self):
+        self.manifest['targetSlotId'] = 'locomotion.walk'
+        self.write_manifest(self.manifest)
+        self.bind()
+        result = self.revision(targetSlotId='locomotion.walk', targetGuid=self.manifest['targetGuid'])
+        absent = {key: value for key, value in self.manifest.items() if key != 'targetSlotId'}
+        for current in (absent, {**self.manifest, 'targetSlotId': None},
+                        {**self.manifest, 'targetSlotId': ''},
+                        {**self.manifest, 'targetSlotId': 'locomotion.idle'}):
+            with self.subTest(slot=current.get('targetSlotId', '<absent>')):
+                self.write_manifest(current)
+                before = self.path.read_bytes()
+                with patch.object(self.exporter, 'begin_export') as begin:
+                    with self.assertRaisesRegex(link.AnimationLinkError, 'identifies another'):
+                        link.begin_linked_export(self.context, self.rig)
+                    begin.assert_not_called()
+                with self.assertRaisesRegex(link.AnimationLinkError, 'identity changed'):
+                    self.finalize(result)
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertEqual(link.get_link(self.rig)['identity']['targetSlotId'], 'locomotion.walk')
+                self.assertTrue(Path(result['filepath']).is_file())
+                self.assertFalse(Path(str(self.path) + '.blender.lock').exists())
+
+    def test_actual_sidecar_slot_and_target_must_match_without_revision_advance(self):
+        self.manifest['targetSlotId'] = 'locomotion.walk'
+        self.write_manifest(self.manifest)
+        route = {'targetSlotId': 'locomotion.walk', 'targetGuid': self.manifest['targetGuid']}
+        self.assertEqual(self.finalize(self.revision(**route))['revision'], 1)
+        before = self.path.read_bytes()
+        variants = (
+            {'targetGuid': self.manifest['targetGuid']},
+            {**route, 'targetSlotId': None}, {**route, 'targetSlotId': ''},
+            {**route, 'targetSlotId': 'locomotion.idle'},
+            {**route, 'targetSlotId': ' locomotion.walk'},
+            {'targetSlotId': 'locomotion.walk'},
+            {**route, 'targetGuid': None}, {**route, 'targetGuid': 'f' * 32},
+        )
+        for fields in variants:
+            with self.subTest(sidecar=fields):
+                result = self.revision(**fields)
+                # A correct result envelope cannot repair the actual sidecar.
+                result.update(route)
+                with self.assertRaisesRegex(link.AnimationLinkError, 'targetSlotId'):
+                    self.finalize(result)
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertEqual(json.loads(before)['revision'], 1)
+                self.assertTrue(Path(result['filepath']).is_file())
+                self.assertTrue(Path(result['metadata']).is_file())
+                self.assertFalse(Path(str(self.path) + '.blender.lock').exists())
+
+    def test_legacy_link_cannot_adopt_a_sidecar_target_slot(self):
+        before = self.path.read_bytes()
+        result = self.revision(targetSlotId='locomotion.walk', targetGuid=self.manifest['targetGuid'])
+        with self.assertRaisesRegex(link.AnimationLinkError, 'targetSlotId'):
+            self.finalize(result)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertNotIn('revision', json.loads(before))
+        self.assertFalse(Path(str(self.path) + '.blender.lock').exists())
 
     def test_revision_commit_preserves_unknown_current_fields(self):
         result = self.revision()

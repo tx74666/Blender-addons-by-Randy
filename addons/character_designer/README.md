@@ -1,10 +1,141 @@
-# Character Designer 0.77.164
+# Character Designer 0.77.183
 
-## Complete controller animation (0.77.164)
+## Existing forearm twist correction (0.77.183)
+
+Existing paired forearm calibrations can resume from their current native arm
+graphs when historical animation recovery or an unrelated control display is
+unavailable. Both arms retain strict Rest, controller, constraint and driver
+checks, followed by the existing mesh, captured-loop and corrective-key checks.
+Healthy complete inventories and Original mode retain their existing routes.
+
+Longitudinal wrist rotation uses the existing swing/twist separation and loop
+distribution. Wrist bending keeps its existing motion. This update adds no
+playback handler, timer, deformation bone or weight transfer. The correction
+continues to use its existing managed Shape Keys and playback admission cache.
+
+## Focused Bone Colors and Hair color inheritance (0.77.181)
+
+Open Colors opens one focused Bone Colors dialog with Body, Hair and Skirt
+swatches. Changing a color also derives its Selected and Active highlights.
+The separate Properties-window shortcut is removed.
+
+Hair segment versions inherit the current strand's native Bone and Pose colors
+and raw restoration records. Equal counts preserve each segment; changed counts
+use its corresponding old Rest interval. Replacing from an older version keeps
+the current character's latest display colors and leaves retained versions intact.
+Failed selected-Hair replacement also restores the captured raw author channels.
+No weight, sampling or solver algorithm changes are introduced.
+
+
+## Automatic bone collection order (0.77.180)
+
+Body setup, Hair binding and shared Dress creation place their managed bone
+collections in daily order automatically. Original remains last. This runs at
+the end of the relevant operation, without a new playback handler or timer.
+Artist-created groups retain their relative order, hierarchy, membership and
+visibility; names alone never identify a managed group. Existing rig creation
+and recovery checks remain in place.
+
+The Organize Bone Collections button is removed from Bone Display and the
+detailed Body setup panel. Ordinary display toggles and recovery remain available.
+
+## Colors on transferred characters (0.77.176)
+
+Colors checks actual Armature Object.data owners. Extra Action or history
+references do not make a single character a shared skeleton. Real shared data,
+linked rigs and Edit Mode remain protected. This correction applies only to
+palette display colors; body generation and recovery checks are unchanged.
+
+## Working motions (0.77.179)
+
+The Action Editor and Animation panel show a compact working-motion selector.
+Continue editing the current Action with Blender's ordinary transforms, keys
+and curves. Explicitly archived stages, linked Sources, Inputs and checkpoints
+stay outside this daily list. The current Action remains visible; unknown new
+local motions remain available. **All** opens Blender's complete native Action
+and slot controls when needed.
+
+Short display names do not rename the underlying Actions or their records.
+Explicit working-motion groups prefer the current version, then a motion chosen
+in this session; ambiguous groups stay visible. Switching with the daily list
+retains the old and new local working motions for the next save, without copying
+them, and preserves the frame, native Rest/Pose setting and NLA configuration.
+Owned transient editing sessions keep their existing selection checks.
+
+Detached editing files may retain old Main Rig session records. When no
+connected worklist is active, these files can show the compact list and
+its display classifications. The daily menu is browse-only in this case;
+**All** retains the native selector. Legacy session records remain intact,
+and custom managed-action switching remains guarded.
+
+## Unified colors (0.77.173)
+
+Bone Display > Colors opens a single editor in Properties > Armature Data.
+The window button opens the same editor separately, pinned to the character.
+Body, Hair and Skirt share reversible character palettes. Hair has Front, Side,
+Back and Other colors. Normal colors edit directly; Advanced reveals Selected
+and Active colors. Presets apply global defaults or the built-in soft scheme,
+or restore the colors from before the palette was first applied.
+
+Character choices and their recovery colors stay in the blend. Add-on
+Preferences supplies defaults only for unconfigured character palettes; changing
+these defaults does not recolor existing characters. Earlier five-group palettes
+retain their colors and first recovery point when explicitly edited.
+
+## Grouped rig setup (0.77.172)
+
+Rig > Rig Setup keeps Body, Hair and Skirt navigation and their tools together.
+Body Controls sets up and poses the body. Back & Chest bends the torso; Curve
+Chain Controls bends a selected chain with a curve. Forearm Twist Correction
+changes the local forearm shape as the wrist turns and remains experimental.
+Body Setup & Recovery contains the existing detailed fitting and repair tools.
+Character & Bone Mapping supplies the shared rig and bone roles. Bone Display
+remains available on both Rig and Weight pages. This layout change does not
+generate controls, change weights or switch IK/FK by itself.
+
+## Direct animation editing (0.77.171)
+
+Animation Worklist shows one editable action name per row. Click the name to
+open its local Custom, align the preview range and edit. Existing Unity Source
+references remain available to the older import/export validation path.
+
+Without a connected worklist, Animation uses the working-motion selector above.
+Its **All** view retains Blender's native create, rename, unlink, slot and
+retention controls. Unity import and return controls are under the closed Unity
+section. Active previews and exports keep their cancel controls visible.
+
+Sync List prepares a clean import once and checks its file pins before commit.
+Conflicting or extra rows still open the explicit review flow.
+
+## Paint existing weights (0.77.169)
+
+Select one bound mesh, then use **Weight > Weight Tools > Paint Weights**.
+The entry shows that mesh's existing Deform bones and enters native Weight
+Paint with the armature in Pose Mode. Select a bone to activate its existing
+vertex group; the standard Blender keymap uses Alt-click. The entry does not
+calculate or replace weights, create groups, or rebuild the rig.
+Single-user checks count actual Objects using the mesh and armature data;
+metadata references from Actions do not count as another rig or mesh instance.
+
+Use **Finish Painting** in the same open scene to restore the preceding display
+and return to armature Pose Mode. Newly painted weights and their locks remain.
+This temporary display is held only for the current session; finish it before
+closing or reopening the file. **Auto Weight Selected Bones** remains a separate
+operation that recalculates weights.
+
+## Responsive limb status display (0.77.167)
+
+Bone Setup and Target Rotation display now read the current control tags and
+already evaluated IK/FK values. Redrawing these panels no longer repeats the
+complete Hair replacement, Rest and recovery-owner checks. Missing or ambiguous
+control data is shown as unavailable. Character Designer switch, reset and update
+operations retain their complete execution-time checks.
+
+## Editable controller animation (0.77.166)
 
 New ordinary imported motions populate a separate controller Custom when the
 character has supported body limb controls. Source stays available for comparison.
-For an older Custom, use **Make Controller Animation** below the animation list.
+For an older Custom, use **Generate Controller Custom** below the animation list.
 Installed arms and legs receive controller trajectories and IK weights across
 the whole clip; the previous Custom remains available. Key pending pose edits
 and pause any running Hair Physics preview before conversion. Existing Rigging
@@ -12,15 +143,28 @@ Inputs keep their dedicated workflow.
 
 Matched key poses retain strict checks. The default interval playback budget is
 1 mm for body-bone world positions and 0.25 degrees for orientations, with scale
-and shape protection retained. Source and previous Customs stay available.
+and shape protection retained. **Automatically Simplify Keys** is enabled by
+default. It reduces keys within the playback budget, rather than targeting a
+percentage. Playback Tolerance exposes stricter position and rotation settings;
+the resulting key count and reduction are reported after generation. Turning
+simplification off retains the dense editable key grid. Both choices verify the
+original samples and intermediate probes; these checks are not a continuous-time
+error guarantee. Source and previous Customs stay available.
 
 To move a hand slightly outward for a whole walk, turn Auto Key off, move its IK
 target, then use **Apply Move Across Clip** before inserting a key. This offsets
 the complete target-local trajectory while preserving timing and handles.
 The world direction follows the target parent. A normal Insert still edits
 the current time. Conversion and Apply Move Across Clip retain an earlier
-Custom. The IK/FK buttons now describe all arms/legs at the current frame and
-show each limb when their modes differ.
+Custom. **All IK / All FK** describe the existing whole-body switch. The current
+frame status separately reports the selected limb, including blended weights.
+
+Insert or use Auto Key to record pose changes into the active Custom, then save
+the blend file normally to continue editing later. A moved but unkeyed control
+is not a persistent timeline edit. Clip duration follows its actual frame range
+and FPS; an export sampling rate of 60 Hz does not mean a 60-frame animation.
+Current-Rig Customs remain local to their character until an explicit compatible
+Unity target is established; they do not silently replace the imported Source.
 
 This release provides complete controller authoring. Automatic reverse editing
 between a second complete bone-curve projection and controller curves remains
@@ -123,28 +267,13 @@ Source, Original, FK/blended limbs, mixed selections, active
 Keying Sets, locks, drivers and unsupported graphs refuse with a message.
 Other bones retain Blender's normal Alt+R. Foot Reset retains its prior behavior.
 
-## Reversible Custom key reduction (0.77.138)
+## Native keyframe reduction
 
-Use **Simplify Keys** below the Source/Custom list while editing Custom. A new
-retained Custom version shares the same Source; the previous Custom is kept.
-Key counts and **Before** / **After** compare the two versions at the current
-frame. Source remains the independent original comparison. Both Custom versions
-remain in the worklist and support its normal save/reopen behavior.
-
-The first version reduces complete synchronized LINEAR transform groups in
-supported FK animation. It keeps original key times/values, seam neighbors and
-marker segments. Bezier, modified, sparse, partial or mismatched groups are
-copied exactly. Finite-vector error bounds precede a full-rig native check of
-world heads/tails, rotations and scale at authored knots and quarter intervals.
-The native bound is sampled, not a continuous world-space guarantee. The fresh
-pre-operation raw inputs are restored before publishing the new Action.
-
-Tolerances default to .0005 position units, .1 rotation degrees and .001 relative
-scale. Pause playback and Hair/Dress physics, finish temporary editing sessions,
-and select Custom first. Ownership/Rest/FK/driver and sample-budget guards remain
-authoritative. Comparison refuses edited or replaced pair content, preserving
-both Actions. Key pending pose edits before comparing. This tool changes editing keys; the existing per-frame FBX bake
-and Unity compression policy are unchanged. No runtime/FPS gain is claimed.
+Duplicate the editable Action before reducing keys. In Blender's Graph Editor,
+select the curves/keys to edit and use **Key > Density > Decimate (Allowed
+Change)** to limit curve error, or **Decimate (Ratio)** to remove a chosen
+percentage. **Clean Keyframes** removes redundant same-value keys. Review the
+motion after reduction; curve-value error is not a whole-rig pose guarantee.
 
 ## Native mirrored Pose application (0.77.137)
 
@@ -734,6 +863,26 @@ The confirmation check remains synchronous; cancel is available before it
 starts and between complete animation imports. An older **Back** button
 cannot replace a started or completed sync result with a cancellation message.
 
+## Character-owned action slots (0.77.182)
+
+Prepared character-owned motions keep their fixed Unity destination through
+the Source/Custom editing workflow. Renaming an Action or its exported file
+does not select another destination. Edit the Custom controller Action and
+use **Sync Current to Unity** (F3); the matching Unity **Update** validates and applies the
+complete return to that character's slot. Filling a slot creates an independent
+character working clip and applies it immediately, preserving the donor clip.
+
+The slot binding is checked in the prepared list, Link, source packet and
+returned metadata. A changed or missing binding stops the return and keeps
+the previous usable motion. This adds no background scanner or live whole-clip
+synchronization. Legacy unbound returns retain collect, preview and Apply.
+Constrained controller rigs can report **Unknown** in the plain-FK change scan;
+use the explicit current-motion export rather than treating it as unchanged.
+If export asks for a base pose, use **Advanced > Capture Export Base Pose** for
+that Custom Action before retrying.
+The first supported route is an ordinary complete-motion Work Item; separate
+Composition and New Action application workflows retain their existing rules.
+
 ## Sync the Unity animation list (0.77.86)
 
 Use **Sync List** to reconcile the complete prepared Unity list with the
@@ -749,8 +898,9 @@ provides Restore. Unrelated project Actions are kept. A changed list,
 file or Custom draft invalidates an earlier confirmation. Cancellation
 keeps completed additions and retired work recoverable for retry.
 
-**Export Changes** remains the explicit return to Unity. Unity still
-collects, previews and explicitly applies the result.
+**Export Changes** remains the explicit return to Unity. Legacy unbound
+motions still use Unity collect, preview and Apply; a character-owned slot
+uses its explicit **Update** transaction described above.
 
 ## Stable Move to Floor (0.77.85)
 

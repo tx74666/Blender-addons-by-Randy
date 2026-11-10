@@ -546,20 +546,13 @@ class CHARACTERDESIGNER_UL_vertex_parts(UIList):
             'part_name', attribute.name, _get_label(attribute), 'RESTRICT_SELECT_OFF', item.selected,
             selection_rows.visible_names(self, context, data, VIEW_PROPERTY))
         try:
-            locked = is_locked(attribute)
-        except ValueError:
-            locked = True
-        actions = layout.row(align=True)
-        actions.alignment = 'LEFT'
-        actions.operator('character_designer.vertex_part_lock', text='', emboss=False,
-                        icon='LOCKED' if locked else 'UNLOCKED').part_name = attribute.name
-        try:
             hidden = visibility.is_hidden(attribute.id_data, attribute.name)
             solo = visibility.is_solo(attribute.id_data, attribute.name)
         except ValueError:
             layout.label(text='', icon='ERROR')
             return
-        controls = actions.row(align=True)
+        controls = layout.row(align=True)
+        controls.alignment = 'LEFT'
         controls.enabled = context.mode == 'EDIT_MESH'
         op = controls.operator('character_designer.vertex_part_visibility', text='', emboss=False,
                                icon='SOLO_ON' if solo else 'SOLO_OFF', depress=solo)
@@ -852,9 +845,14 @@ class CHARACTERDESIGNER_MT_vertex_parts(Menu):
         for key, label in (('DELETE_EMPTY_UNLOCKED', 'Delete Empty Unlocked Parts'),
                            ('DELETE_UNLOCKED', 'Delete All Unlocked Parts'), ('DELETE_ALL', 'Delete All Parts')):
             layout.operator('character_designer.vertex_part_action', text=label).action = key
-        layout.separator()
-        for key, label in (('LOCK_ALL', 'Lock All'), ('UNLOCK_ALL', 'Unlock All'), ('INVERT_LOCKS', 'Invert Locks')):
-            layout.operator('character_designer.vertex_part_action', text=label).action = key
+        try:
+            mesh = _mesh(context)
+            has_locks = any(is_locked(attribute) for attribute in part_attributes(mesh))
+        except (ValueError, ReferenceError):
+            return
+        if has_locks:
+            layout.separator()
+            layout.operator('character_designer.vertex_part_action', text='Unlock All').action = 'UNLOCK_ALL'
 
 
 def draw(layout, context):

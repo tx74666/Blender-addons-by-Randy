@@ -3995,11 +3995,13 @@ def _draw_status(layout, settings):
 
 
 class CHARACTERDESIGNER_PT_spline_ik_setup(Panel):
-    bl_label = "Spline IK Setup"
+    bl_label = 'Curve Chain Controls'
     bl_idname = "CHARACTERDESIGNER_PT_spline_ik_setup"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 50
     bl_options = {"DEFAULT_CLOSED"}
 
     @classmethod
@@ -4008,6 +4010,7 @@ class CHARACTERDESIGNER_PT_spline_ik_setup(Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.label(text='Bend a selected bone chain with a curve.', icon='CURVE_DATA')
         settings = _settings(context)
         if settings is None:
             layout.label(text="Spline IK state is unavailable.", icon="ERROR")

@@ -22,34 +22,13 @@ button borders. Five visible rows keep long worklists inside their own scroll
 area. Expand the list's filter to search animation names; saved order is retained.
 Selecting list padding or reopening the file does not switch Actions.
 
-## Simplify Keys (0.77.138 candidate)
+## Native keyframe reduction
 
-While editing the current **Custom**, click **Simplify Keys** below the animation
-list. Set the allowed position error in scene units, rotation error in degrees,
-and scale error as a fraction. The defaults are `0.0005`, `0.1` degrees and
-`0.001` (0.1%). The operation considers the whole current Custom Action.
-
-The reduced result becomes a new retained Custom version in the existing
-two-column list, sharing the same Source. The previous Custom remains available.
-The displayed key counts are recorded when the result is created. **Before** /
-**After** compare those two Custom versions; they do not replace the Source
-comparison column. Return to **After** before starting another simplification.
-Native Undo is available.
-
-Reduction uses eligible complete transform groups with synchronized LINEAR keys.
-Exactly constant raw groups can be reduced in any supported rig mode;
-approximate reductions require supported FK groups. Unsupported groups are
-copied exactly into the new version. The native rig check measures the chosen
-errors at every authored key time and at the quarter, half and three-quarter
-points between adjacent times. This sampled check does not guarantee a
-continuous world-space error bound between those samples.
-
-Key pending manual pose edits before using **Before** / **After**. The unchanged
-current pose intentionally preserved when creating the result is accepted as
-the initial comparison state if it had no pending edits. Editing either retained
-Action invalidates this fixed comparison; select the desired Custom directly
-to continue working. Source and active editing/session guards remain in force;
-a refusal reports its reason in the panel.
+Duplicate the editable Action before reducing keys. In Blender's Graph Editor,
+select the curves/keys to edit and use **Key > Density > Decimate (Allowed
+Change)** to limit curve error, or **Decimate (Ratio)** to remove a chosen
+percentage. **Clean Keyframes** removes redundant same-value keys. Review the
+motion after reduction; curve-value error is not a whole-rig pose guarantee.
 
 ## Rest Pose (0.77.44)
 
@@ -154,23 +133,20 @@ loaded R8 code, and the artist's X file was saved under a later explicit user
 instruction. The post-save diagnosis and private Unity acceptance are
 recorded in the release evidence.
 
-## Compare and edit
+## Edit an animation
 
-| Control | Behavior |
-| --- | --- |
-| **Source** | Views the original Unity-evaluated motion on this character. The Action is linked from a separate baseline `.blend` and is read-only. |
-| **Custom** | Activates the local editable Action. A new entry starts from a copy of Source, except when adopting an existing matching edit. |
-| **Play / Pause** and **Frame** | Play or scrub the active worklist Action. |
-| **Sync Current to Unity** | Exports the selected entry's active Custom Action as a new candidate revision. |
-
-Click **Source** or **Custom** to switch Actions. Clicking elsewhere in a row only
-changes the highlighted selection. Switching stops playback, selects the shared
+The worklist shows one editable action name per row. Click the name to activate
+its local Custom Action and slot. Switching stops playback, selects the shared
 rig, sets the clip's preview range and moves to its first frame. Auto Keying is
-turned off; enable it deliberately when editing Custom if needed.
+turned off. Enable it deliberately when editing if needed.
 
-To see the keyframes, open a **Dope Sheet** area and choose **Action Editor** once.
-Each subsequent **Source** or **Custom** click selects the shared rig and its
-corresponding Action and slot, so that editor follows the selected motion.
+The retained Source is the imported Unity baseline used by existing validation
+and recovery. The daily list opens the local edit directly. Sync Current to
+Unity exports that active local edit as a new candidate revision.
+
+To see the keyframes, open a Dope Sheet area and choose Action Editor once.
+Each subsequent action-name click selects the shared rig and corresponding
+Action and slot, so that editor follows the selected motion.
 Existing Action Editor and Graph Editor areas refresh without changing the
 layout. Their channel filters remain in place; clear a search or **Only Show
 Selected** filter if it hides the keys you want to inspect.

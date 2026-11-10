@@ -52,7 +52,15 @@ def _source(context):
         except ValueError:
             pass
     settings = _settings(context)
-    return (settings.source if settings else None) or _setup().role_source(context, "HAIR")
+    source = (settings.source if settings else None) or _setup().role_source(context, "HAIR")
+    if source is not None or obj is None or obj.type != "ARMATURE":
+        return source
+    # A reopened character can have a Body control active and no saved HAIR
+    # role. Resolve only a unique visible Hair mesh owned by this rig.
+    candidates = [candidate for candidate in context.view_layer.objects
+                  if candidate.type == "MESH" and candidate.get(rig.RIG_KEY) == obj
+                  and rig.RECORD_KEY in candidate and candidate.visible_get()]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _settings(context):
@@ -294,11 +302,13 @@ class CHARACTERDESIGNER_OT_generate_hair_bones(Operator):
 
 
 class CHARACTERDESIGNER_PT_hair_bones(Panel):
-    bl_label = "Hair"
+    bl_label = 'Hair Strands & Binding'
     bl_idname = "CHARACTERDESIGNER_PT_hair_bones"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = SIDEBAR_CATEGORY
+    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_order = 10
 
     @classmethod
     def poll(cls, context):

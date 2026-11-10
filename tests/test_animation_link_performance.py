@@ -78,6 +78,32 @@ class PublicationTests(IsolatedModules):
         }
         self.worker_result = {'ok': True, 'duration': 0.9666666667, 'sample_rate': 60.0}
 
+    def test_semantic_destination_is_frozen_in_host_sidecar(self):
+        identity = {'targetGuid': 'b' * 32, 'targetSlotId': 'locomotion.walk.forward'}
+        frozen = self.exporter._target_route(identity)
+        self.job.update(frozen)
+        identity['targetSlotId'] = 'locomotion.run.forward'
+        self.source.write_bytes(b'Completed skeletal animation')
+        result = self.exporter._publish(self.job, self.worker_result)
+        report = json.loads(self.metadata.read_text(encoding='utf-8'))
+        for record in (result, report):
+            self.assertEqual(record['targetSlotId'], 'locomotion.walk.forward')
+            self.assertEqual(record['targetGuid'], 'b' * 32)
+
+    def test_worker_cannot_reroute_a_bound_or_legacy_export(self):
+        self.source.write_bytes(b'Completed skeletal animation')
+        route = {'targetGuid': 'b' * 32, 'targetSlotId': 'locomotion.walk.forward'}
+        for job_route, worker_route in ((route, {**route, 'targetSlotId': 'locomotion.idle'}),
+                                        (route, {**route, 'targetGuid': 'c' * 32}), ({}, route)):
+            with self.subTest(job=job_route, worker=worker_route):
+                self.job.pop('targetGuid', None)
+                self.job.pop('targetSlotId', None)
+                self.job.update(job_route)
+                with self.assertRaisesRegex(self.exporter.AnimationExportError, 'routing differs'):
+                    self.exporter._publish(self.job, {**self.worker_result, **worker_route})
+                self.assertFalse(self.metadata.exists())
+                self.assertFalse(self.destination.exists())
+
     def test_multiblock_publication_hashes_one_bounded_source_stream(self):
         payload = bytes(range(256)) * 8192 + b'partial final block'
         self.assertGreater(len(payload), 2 * BLOCK_SIZE)
@@ -292,6 +318,87 @@ class PreparedSourceTests(IsolatedModules):
         return self.source._import_prepared_source(self.context, self.link, self.packet,
             'CoshaRig', self.model, self.model_hash, start_frame=7)
 
+    def packet_boundary(self):
+        return {**self.packet,
+                **{key: self.link[key] for key in ('targetGuid', 'clipGuid', 'clipLocalId')},
+                'bones': [{'name': 'CoshaRig', 'path': 'CoshaRig', 'parent': -1,
+                           'restSource': 'hierarchy'},
+                          {'name': 'Hips', 'parent': 0}]}
+
+    def test_packet_slot_roundtrip_retains_exact_identity_and_reuses_loaded_dictionary(self):
+        packet = {**self.packet_boundary(), 'targetSlotId': 'locomotion.walk.forward'}
+        link = {**self.link, 'targetSlotId': packet['targetSlotId']}
+        with patch.object(self.unity, 'load_package', return_value=packet) as load:
+            actual, root = self.source._packet(link)
+        self.assertIs(actual, packet)
+        self.assertEqual(actual['targetSlotId'], 'locomotion.walk.forward')
+        self.assertEqual(root, 'CoshaRig')
+        load.assert_called_once_with(link['sourcePackage'])
+
+    def test_packet_slot_mismatch_or_dropped_field_rejects_without_downgrading(self):
+        slot = 'locomotion.walk.forward'
+        cases = [({'targetSlotId': slot}, {'targetSlotId': 'locomotion.run.forward'})]
+        for legacy in ({}, {'targetSlotId': None}, {'targetSlotId': ''}):
+            cases.extend([({'targetSlotId': slot}, legacy), (legacy, {'targetSlotId': slot})])
+        for packet_fields, link_fields in cases:
+            with self.subTest(packet=packet_fields, link=link_fields):
+                packet = {**self.packet_boundary(), **packet_fields}
+                with patch.object(self.unity, 'load_package', return_value=packet):
+                    with self.assertRaisesRegex(self.unity.UnityAnimationError, 'targetSlotId'):
+                        self.source._packet({**self.link, **link_fields})
+
+    def test_packet_slot_legacy_absent_null_and_empty_remain_equivalent(self):
+        for packet_fields in ({}, {'targetSlotId': None}, {'targetSlotId': ''}):
+            for link_fields in ({}, {'targetSlotId': None}, {'targetSlotId': ''}):
+                with self.subTest(packet=packet_fields, link=link_fields):
+                    packet = {**self.packet_boundary(), **packet_fields}
+                    with patch.object(self.unity, 'load_package', return_value=packet):
+                        actual, root = self.source._packet({**self.link, **link_fields})
+                    self.assertIs(actual, packet)
+                    self.assertEqual(root, 'CoshaRig')
+
+    def test_packet_slot_invalid_on_either_side_is_rejected(self):
+        for value in (False, 0, [], {}, 'Walk', ' locomotion.walk', 'locomotion.walk ',
+                      'locomotion..walk', 'locomotion.walk\n', '1walk', 'a' * 97):
+            for side in ('packet', 'link'):
+                with self.subTest(value=value, side=side):
+                    packet, link = self.packet_boundary(), dict(self.link)
+                    (packet if side == 'packet' else link)['targetSlotId'] = value
+                    with patch.object(self.unity, 'load_package', return_value=packet):
+                        with self.assertRaisesRegex(self.unity.UnityAnimationError, 'targetSlotId'):
+                            self.source._packet(link)
+
+    def test_package_parser_validates_optional_slot_and_preserves_original_metadata(self):
+        bones = [{'name': name, 'parent': parent, 'rest': [0] * 16,
+                  'restSource': 'hierarchy'}
+                 for name, parent in (('CoshaRig', -1), ('Hips', 0), ('Spine', 1), ('Head', 2))]
+        packet = {'schema': self.unity.SCHEMA, 'units': 'metres', 'coordinate': 'unity-lh-y-up',
+                  'matrixLayout': 'row-major', 'bones': bones, 'sampleRate': 60, 'duration': 0,
+                  'frames': [{'time': 0, 'root': [0] * 16,
+                              'poses': [{'matrix': [0] * 16} for _bone in bones]}],
+                  'unityOnly': {'retain': [1, 'metadata']}}
+        sys.modules['bpy'].path = SimpleNamespace(abspath=lambda value: value)
+        accepted = ({}, {'targetSlotId': None}, {'targetSlotId': ''},
+                    {'targetSlotId': 'locomotion.walk.forward'}, {'targetSlotId': 'a' * 96})
+        for fields in accepted:
+            with self.subTest(fields=fields):
+                payload = json.dumps({**packet, **fields}).encode('utf-8')
+                self.packet_path.write_bytes(payload)
+                with patch.object(self.unity, '_matrix'):
+                    actual = self.unity.load_package(self.packet_path)
+                self.assertEqual(actual.get('targetSlotId'), fields.get('targetSlotId'))
+                self.assertEqual('targetSlotId' in actual, 'targetSlotId' in fields)
+                self.assertEqual(actual['unityOnly'], packet['unityOnly'])
+                self.assertEqual(actual['_sha256'], hashlib.sha256(payload).hexdigest())
+        for value in (False, 0, [], {}, 'Walk', ' locomotion.walk', 'locomotion.walk ',
+                      'locomotion..walk', 'locomotion.walk\n', '1walk', 'a' * 97):
+            with self.subTest(value=value):
+                self.packet_path.write_text(json.dumps({**packet, 'targetSlotId': value}), encoding='utf-8')
+                with patch.object(self.unity, '_matrix') as matrix:
+                    with self.assertRaisesRegex(self.unity.UnityAnimationError, 'targetSlotId'):
+                        self.unity.load_package(self.packet_path)
+                matrix.assert_not_called()
+
     def test_public_source_prepares_once_and_passes_identical_packet(self):
         expected = object()
         with patch.object(self.source, '_packet', return_value=(self.packet, 'CoshaRig')) as packet, \
@@ -322,6 +429,7 @@ class PreparedSourceTests(IsolatedModules):
         for current_module in (True, False):
             with self.subTest(current_module=current_module):
                 with patch.object(worklist, '_idle'), patch.object(worklist, 'state', return_value=saved), \
+                        patch.object(worklist, '_composition_add_route', return_value=(False, None)), \
                         patch.object(worklist, '_prepared', return_value=prepared), \
                         patch.object(worklist, '_find_owned_rig', return_value=None), \
                         patch.object(self.source, '_import_prepared_source') as internal, \

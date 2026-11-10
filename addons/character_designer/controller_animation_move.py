@@ -111,7 +111,35 @@ def _idle_physics(context, physics):
              'Pause physics and finish its recovery before moving a controller clip.')
 
 
-def _curve_ready(curve, *, location=False, start=None, end=None):
+def _editable_key_policy(record, start, end):
+    """Recognize one generated-key contract; it grants no Action ownership."""
+    if 'editable_key_policy' not in record:
+        return None
+    policy = record['editable_key_policy']
+    fields = {'schema', 'minimum_native_gap_exclusive', 'integer_edit_zone',
+              'validation_range', 'key_range', 'endpoint_extension', 'verification'}
+    _require(type(policy) is dict and set(policy) == fields
+             and policy['schema'] == 'character-designer.editable-key-grid/1'
+             and type(policy['minimum_native_gap_exclusive']) in (int, float)
+             and policy['minimum_native_gap_exclusive'] == .01
+             and type(policy['integer_edit_zone']) in (int, float)
+             and policy['integer_edit_zone'] == .01
+             and policy['endpoint_extension'] == 'CONSTANT; at most .01 frame; original matched endpoints verified'
+             and policy['verification'] == 'all original samples and quarter probes retained',
+             'The controller editable-key policy is unknown; keep the current Custom.')
+    validation, keys = policy['validation_range'], policy['key_range']
+    _require(type(validation) is list and type(keys) is list
+             and len(validation) == len(keys) == 2
+             and all(type(value) in (int, float) and math.isfinite(value)
+                     for value in (*validation, *keys))
+             and validation == [start, end]
+             and start <= keys[0] < keys[1] <= end
+             and keys[0] - start <= .01 and end - keys[1] <= .01,
+             'The controller legal-key bounds differ from its original clip.')
+    return policy
+
+
+def _curve_ready(curve, *, location=False, start=None, end=None, key_policy=None):
     _require(not curve.modifiers and not curve.sampled_points and not curve.mute and not curve.lock
              and not (curve.group and (curve.group.lock or getattr(curve.group, 'mute', False)))
              and not getattr(curve, 'is_driver', False),
@@ -128,8 +156,15 @@ def _curve_ready(curve, *, location=False, start=None, end=None):
                  'The target needs ordered finite Constant, Linear or Bezier keys.')
         previous = time
     if location:
-        _require(float(points[0].co[0]) == start and float(points[-1].co[0]) == end,
-                 'Each target location curve must cover the complete controller clip.')
+        bounds = (float(points[0].co[0]), float(points[-1].co[0]))
+        if bounds != (start, end):
+            _require(key_policy is not None and curve.extrapolation == 'CONSTANT'
+                     and bounds == tuple(key_policy['key_range'])
+                     and all(math.isfinite(value) and math.isfinite(original)
+                             and (value == original or
+                                  value == float(round(original)) and abs(value-original) < .01)
+                             for value, original in zip(bounds, (start, end))),
+                     'Each target location curve must cover the complete controller clip.')
     else:
         _require(all(float(point.co[1]) == 1. and
                      (point.interpolation != 'BEZIER' or
@@ -218,6 +253,7 @@ def prepare(context, rig=None, *, targets=None):
     _require(end > start and tuple(map(float, action.frame_range)) == (start, end)
              and start <= variant['frame'] <= end,
              'Use a frame inside the unchanged complete controller clip.')
+    key_policy = _editable_key_policy(record, start, end)
     _idle_physics(context, physics)
     inventory = api.limb._validate_inventory(rig)
     supported = {entry['target'].name:(key, entry) for key, entry in inventory['rigs'].items()
@@ -249,7 +285,7 @@ def prepare(context, rig=None, *, targets=None):
         location = [channels.get((path, index)) for index in range(3)]
         _require(all(curve is not None for curve in location), 'The target needs all three location curves.')
         for curve in location:
-            _curve_ready(curve, location=True, start=start, end=end)
+            _curve_ready(curve, location=True, start=start, end=end, key_policy=key_policy)
         baseline = tuple(float(curve.evaluate(variant['frame'])) for curve in location)
         current = tuple(float(value) for value in pb.location)
         delta = pending_delta(current, baseline)

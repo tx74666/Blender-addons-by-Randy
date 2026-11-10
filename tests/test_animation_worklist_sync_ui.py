@@ -20,7 +20,7 @@ class WorklistSyncUI(unittest.TestCase):
         fixtures.WorklistUI.setUp(self)
         self.state.rig = None
         self.state.retired_items = []
-        self.reconcile = SimpleNamespace(plan=Mock(return_value=self.plan()), begin=Mock(), restore_retired=Mock())
+        self.reconcile = SimpleNamespace(start_or_review=Mock(return_value=self.plan()), begin=Mock(), restore_retired=Mock())
         backend = patch.object(self.ui, '_reconcile', return_value=self.reconcile)
         backend.start()
         self.addCleanup(backend.stop)
@@ -54,11 +54,11 @@ class WorklistSyncUI(unittest.TestCase):
     def open_review(self, *, token='checked-plan-token', workspace_path='checked-workspace.json'):
         plan = self.plan(extras=[dict(item_id='draft-id', name='Draft', reason='Outside Unity.')])
         plan.update(token=token, workspace_path=workspace_path)
-        self.reconcile.plan.return_value = plan
+        self.reconcile.start_or_review.return_value = plan
         self.queue()
         self.ui._poll_list_sync()
         self.assertIsNotNone(self.ui._LIST_SYNC_REVIEW)
-        self.reconcile.plan.reset_mock()
+        self.reconcile.start_or_review.reset_mock()
         self.reconcile.begin.reset_mock()
         self.review.reset_mock()
         self.timers.register.reset_mock()
@@ -75,24 +75,23 @@ class WorklistSyncUI(unittest.TestCase):
             self.assertEqual(self.state.collection_status, self.state.status)
             self.assertFalse(self.state.has_error)
             area.tag_redraw.assert_called_once_with()
-            self.reconcile.plan.assert_not_called()
+            self.reconcile.start_or_review.assert_not_called()
             self.reconcile.begin.assert_not_called()
 
         self.timers.register.side_effect = register
         self.queue()
         self.assertTrue(self.ui.scan_pending())
         self.assertEqual(self.snapshot(), before)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
 
-    def test_no_extra_entries_begin_only_from_timer_with_checked_token_and_path(self):
+    def test_no_extra_entries_start_from_timer_without_a_second_plan(self):
         self.queue()
         self.reconcile.begin.assert_not_called()
         self.assertIsNone(self.ui._poll_list_sync())
         self.assertFalse(self.ui.scan_pending())
-        self.reconcile.plan.assert_called_once_with(self.context, None)
-        self.reconcile.begin.assert_called_once_with(
-            self.context, 'checked-plan-token', workspace_path='checked-workspace.json')
+        self.reconcile.start_or_review.assert_called_once_with(self.context, None)
+        self.reconcile.begin.assert_not_called()
         self.review.assert_not_called()
         self.backend.connect.assert_not_called()
         self.collection.begin_add_ready.assert_not_called()
@@ -105,10 +104,10 @@ class WorklistSyncUI(unittest.TestCase):
             self.assertTrue(self.ui._idle(context))
             return self.plan()
 
-        self.reconcile.plan.side_effect = plan
+        self.reconcile.start_or_review.side_effect = plan
         self.queue()
         self.ui._poll_list_sync()
-        self.reconcile.begin.assert_called_once()
+        self.reconcile.begin.assert_not_called()
 
     def test_pending_list_sync_blocks_duplicate_click_and_other_worklist_entry_points(self):
         operator = self.queue()
@@ -125,7 +124,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertEqual(operator.execute(self.context), {'CANCELLED'})
         self.assertEqual(self.state.status, message)
         self.timers.register.assert_called_once()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
 
     def test_pending_export_scan_blocks_list_sync_without_replacing_its_timer(self):
         self.assertEqual(self.ui.CHARACTERDESIGNER_OT_worklist_scan_changes().execute(self.context), {'FINISHED'})
@@ -133,7 +132,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertEqual(self.ui.CHARACTERDESIGNER_OT_worklist_sync_list().execute(self.context), {'CANCELLED'})
         self.assertEqual(self.state.status, status)
         self.timers.register.assert_called_once_with(self.ui._poll_scan, first_interval=.05)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
 
     def test_cancel_pending_removes_only_list_timer_without_cancelling_another_export(self):
         before = self.snapshot()
@@ -147,7 +146,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertFalse(self.ui.scan_pending())
         self.assertIn('cancelled before it started', self.state.status)
         self.assertIsNone(self.ui._poll_list_sync())
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
@@ -159,7 +158,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertFalse(self.ui.scan_pending())
         self.assertIn('owning scene changed', self.state.status)
         self.assertEqual(other.status, 'Other scene unchanged')
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
 
     def test_removed_window_or_scene_cancels_before_plan(self):
@@ -174,7 +173,7 @@ class WorklistSyncUI(unittest.TestCase):
                     sys.modules['bpy'].data.scenes = []
                 self.ui._poll_list_sync()
                 self.assertFalse(self.ui.scan_pending())
-                self.reconcile.plan.assert_not_called()
+                self.reconcile.start_or_review.assert_not_called()
                 self.reconcile.begin.assert_not_called()
 
     def test_late_animation_job_blocks_preflight_without_cancelling_that_job(self):
@@ -184,7 +183,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertFalse(self.ui.scan_pending())
         self.assertTrue(self.state.has_error)
         self.assertIn('current animation operation', self.state.status)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.collection.cancel.assert_not_called()
 
     def test_lost_nonpersistent_timer_unlocks_without_writing_new_scene(self):
@@ -195,7 +194,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertTrue(self.ui._idle(self.context))
         self.assertEqual(self.state.status, previous)
         self.timers.unregister.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
 
     def test_reload_stop_clears_pending_list_sync_without_starting_it(self):
         self.queue()
@@ -204,7 +203,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.timers.unregister.assert_called_once_with(self.ui._poll_list_sync)
         self.collection.stop.assert_called_once_with()
         self.assertIsNone(self.ui._poll_list_sync())
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
 
     def test_timer_registration_failure_reports_error_and_preserves_items(self):
         before = self.snapshot()
@@ -215,7 +214,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertTrue(self.state.has_error)
         self.assertEqual(operator.last_report, ({'ERROR'}, 'Timer registration failed'))
         self.timers.unregister.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
     def test_missing_owning_window_reports_error_before_registering_timer(self):
@@ -227,12 +226,12 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertTrue(self.state.has_error)
         self.assertIn('owning Blender window', operator.last_report[1])
         self.timers.register.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
     def test_plan_failure_stops_sync_and_keeps_all_existing_records(self):
         before = self.snapshot()
-        self.reconcile.plan.side_effect = ValueError('Workspace revision is no longer current.')
+        self.reconcile.start_or_review.side_effect = ValueError('Workspace revision is no longer current.')
         self.queue()
         self.ui._poll_list_sync()
         self.assertTrue(self.state.has_error)
@@ -245,7 +244,7 @@ class WorklistSyncUI(unittest.TestCase):
 
     def test_blocked_plan_reports_names_and_reasons_without_review_or_begin(self):
         before = self.snapshot()
-        self.reconcile.plan.return_value = self.plan(
+        self.reconcile.start_or_review.return_value = self.plan(
             blocked=[dict(name='Walk', reason='Source proof is unavailable.')],
             extras=[dict(name='Draft', reason='Outside the Unity list.')])
         self.queue()
@@ -258,7 +257,7 @@ class WorklistSyncUI(unittest.TestCase):
 
     def test_begin_failure_releases_pending_state_and_keeps_existing_work(self):
         before = self.snapshot()
-        self.reconcile.begin.side_effect = RuntimeError('A source changed after preflight; retry Sync List.')
+        self.reconcile.start_or_review.side_effect = RuntimeError('A source changed after preflight; retry Sync List.')
         self.queue()
         self.ui._poll_list_sync()
         self.assertFalse(self.ui.scan_pending())
@@ -271,7 +270,7 @@ class WorklistSyncUI(unittest.TestCase):
     def test_extra_entries_open_review_with_original_plan_without_beginning_sync(self):
         before = self.snapshot()
         extras = [dict(item_id='draft-id', name='Custom 測試', reason='No longer in Unity.')]
-        self.reconcile.plan.return_value = self.plan(extras=extras)
+        self.reconcile.start_or_review.return_value = self.plan(extras=extras)
         self.queue()
         self.ui._poll_list_sync()
         self.assertFalse(self.ui.scan_pending())
@@ -288,17 +287,16 @@ class WorklistSyncUI(unittest.TestCase):
     def test_refresh_and_connected_workspace_choice_use_deferred_reconciliation(self):
         for kind, path in (('refresh', None), ('connect', 'selected-workspace.json')):
             with self.subTest(kind=kind):
-                self.reconcile.plan.reset_mock()
+                self.reconcile.start_or_review.reset_mock()
                 self.reconcile.begin.reset_mock()
                 operator = getattr(self.ui, 'CHARACTERDESIGNER_OT_worklist_' + kind)()
                 if kind == 'connect':
                     operator.filepath = path
                 self.assertEqual(operator.execute(self.context), {'FINISHED'})
-                self.reconcile.plan.assert_not_called()
+                self.reconcile.start_or_review.assert_not_called()
                 self.ui._poll_list_sync()
-                self.reconcile.plan.assert_called_once_with(self.context, path)
-                self.reconcile.begin.assert_called_once_with(
-                    self.context, 'checked-plan-token', workspace_path='checked-workspace.json')
+                self.reconcile.start_or_review.assert_called_once_with(self.context, path)
+                self.reconcile.begin.assert_not_called()
         self.backend.connect.assert_not_called()
         self.backend.refresh.assert_not_called()
 
@@ -310,7 +308,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         self.backend.connect.assert_called_once_with(self.context, 'first-workspace.json')
         self.timers.register.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.assertFalse(self.state.connection_check_failed)
 
     def test_existing_rig_alone_routes_connection_through_preserving_sync(self):
@@ -321,7 +319,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         self.backend.connect.assert_not_called()
         self.ui._poll_list_sync()
-        self.reconcile.plan.assert_called_once_with(self.context, 'next-workspace.json')
+        self.reconcile.start_or_review.assert_called_once_with(self.context, 'next-workspace.json')
 
     def test_review_popup_has_explicit_retire_and_back_controls_with_pinned_token(self):
         before = self.snapshot()
@@ -372,7 +370,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertFalse(self.state.has_error)
         self.assertIn('Existing animations were kept', self.state.status)
         self.assertEqual(self.state.status, self.state.collection_status)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
         self.backend.remove.assert_not_called()
         self.assertIsNone(self.ui._LIST_SYNC_REVIEW)
@@ -395,7 +393,7 @@ class WorklistSyncUI(unittest.TestCase):
             self.assertTrue(self.ui.scan_pending())
             self.assertIsNone(self.ui._LIST_SYNC_REVIEW)
             area.tag_redraw.assert_called_once_with()
-            self.reconcile.plan.assert_not_called()
+            self.reconcile.start_or_review.assert_not_called()
             self.reconcile.begin.assert_not_called()
             self.assertEqual(self.snapshot(), before)
             actions.new.assert_not_called()
@@ -404,7 +402,7 @@ class WorklistSyncUI(unittest.TestCase):
         operator = self.confirm(token='token-from-review')
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         self.reconcile.begin.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         actions.new.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
@@ -419,7 +417,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertIsNone(self.ui._poll_list_sync())
         self.reconcile.begin.assert_called_once_with(
             self.context, 'token-from-review', workspace_path='checked-workspace.json', deprecate_extras=True)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
     def test_confirm_callback_rechecks_stale_backend_token_and_preserves_error_from_back(self):
@@ -439,7 +437,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertTrue(self.state.has_error)
         self.assertEqual(self.state.status, status)
         self.assertEqual(self.snapshot(), before)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
 
     def test_confirm_rejects_wrong_review_token_or_path_before_timer_or_backend(self):
         self.open_review()
@@ -454,7 +452,7 @@ class WorklistSyncUI(unittest.TestCase):
                 self.assertEqual(self.state.status, status)
                 self.assertIsNotNone(self.ui._LIST_SYNC_REVIEW)
         self.timers.register.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
@@ -478,7 +476,7 @@ class WorklistSyncUI(unittest.TestCase):
                 self.assertIs(self.ui._LIST_SYNC_REVIEW, lease)
                 self.assertEqual(self.state.status, status)
                 self.timers.register.assert_not_called()
-                self.reconcile.plan.assert_not_called()
+                self.reconcile.start_or_review.assert_not_called()
                 self.reconcile.begin.assert_not_called()
         self.context.window = self.window
 
@@ -499,7 +497,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertIsNone(self.ui._poll_list_sync())
         self.assertIn('cancelled before it started', self.state.status)
         self.assertEqual(self.snapshot(), before)
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
 
     def test_confirm_owner_scene_or_window_loss_cancels_before_fresh_begin(self):
@@ -520,7 +518,7 @@ class WorklistSyncUI(unittest.TestCase):
                 self.ui._poll_list_sync()
                 self.assertFalse(self.ui.scan_pending())
                 self.assertEqual(other.status, 'Other scene unchanged')
-                self.reconcile.plan.assert_not_called()
+                self.reconcile.start_or_review.assert_not_called()
                 self.reconcile.begin.assert_not_called()
 
     def test_confirm_timer_registration_failure_keeps_data_and_cannot_be_hidden_by_back(self):
@@ -538,7 +536,7 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertEqual(self.state.status, 'Timer registration failed')
         self.assertTrue(self.state.has_error)
         self.timers.unregister.assert_not_called()
-        self.reconcile.plan.assert_not_called()
+        self.reconcile.start_or_review.assert_not_called()
         self.reconcile.begin.assert_not_called()
         self.assertEqual(self.snapshot(), before)
 
@@ -557,7 +555,7 @@ class WorklistSyncUI(unittest.TestCase):
                     self.timers.is_registered.return_value = False
                     self.assertFalse(self.ui.scan_pending())
                     self.assertIsNone(self.ui._poll_list_sync())
-                self.reconcile.plan.assert_not_called()
+                self.reconcile.start_or_review.assert_not_called()
                 self.reconcile.begin.assert_not_called()
 
     def test_back_cannot_overwrite_started_or_completed_confirm_result(self):

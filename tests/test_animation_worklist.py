@@ -94,7 +94,8 @@ class WorklistTests(unittest.TestCase):
         return item
 
     def populated(self):
-        rig = ID(animation_data=SimpleNamespace(action=None))
+        rig = ID(animation_data=SimpleNamespace(action=None,
+            action_slot=SimpleNamespace(handle=2, target_id_type='OBJECT')))
         self.saved.rig = rig
         first, second = self.item(0), self.item(1)
         self.saved.active_index = 0
@@ -163,6 +164,24 @@ class WorklistTests(unittest.TestCase):
                              ('targetGuid', 'e' * 32)):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'another work item'):
                 self.worklist._validate_route(self.saved, row, {**link, field: value})
+
+    def test_route_requires_the_same_target_slot_on_both_row_and_link(self):
+        row = {**self.record['clips'][0], 'targetSlotId': 'locomotion.walk'}
+        link = {**row, 'targetGuid': self.saved.target_guid}
+        self.assertIsNone(self.worklist._validate_route(self.saved, row, link))
+        for side in ('row', 'link'):
+            original = row if side == 'row' else link
+            missing = {key: value for key, value in original.items() if key != 'targetSlotId'}
+            for changed in (missing, {**original, 'targetSlotId': None},
+                            {**original, 'targetSlotId': ''},
+                            {**original, 'targetSlotId': 'locomotion.idle'}):
+                with self.subTest(side=side, slot=changed.get('targetSlotId', '<absent>')):
+                    current_row = changed if side == 'row' else row
+                    current_link = changed if side == 'link' else link
+                    before = json.dumps([current_row, current_link], sort_keys=True)
+                    with self.assertRaisesRegex(ValueError, 'destination slot'):
+                        self.worklist._validate_route(self.saved, current_row, current_link)
+                    self.assertEqual(json.dumps([current_row, current_link], sort_keys=True), before)
 
     def test_changed_workspace_identity_does_not_replace_local_membership(self):
         rig, first, second = self.populated()

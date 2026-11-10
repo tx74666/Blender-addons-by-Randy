@@ -274,6 +274,20 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(self.collection.export_finished(self.ordinary_job(), self.publication()), '')
         self.assertTrue(self.item.last_synced_receipt)
 
+    def use_production_link_identity(self):
+        # These routing tests need the real identity guard, rather than the
+        # deliberately small legacy identity used by other lifecycle fixtures.
+        name = self.collection.__package__ + '._real_animation_link'
+        spec = importlib.util.spec_from_file_location(name, SOURCE / 'animation_link.py')
+        native_link = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native_link)
+        self.links._identity = native_link._identity
+        self.link.update(schema=native_link.SCHEMA, linkId=str(uuid.uuid4()),
+                         sourcePackage=str(self.folder / 'Source.cdanim.json'),
+                         sourcePackageSha256='c' * 64, targetSlotId='locomotion.walk')
+        self.item.link_identity = json.dumps(self.link)
+        self.catalog['clips'][0]['targetSlotId'] = 'locomotion.walk'
+
     def begin_sync(self):
         self.item.scan_state, self.item.sync_selected = 'CHANGED', True
         self.saved.scan_completed = True
@@ -446,6 +460,28 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(self.item.last_synced_receipt, previous)
         self.assertEqual(second.last_synced_receipt, 'artist existing receipt')
 
+    def test_partial_return_cannot_replace_a_receipt_after_target_slot_change_or_dropout(self):
+        self.use_production_link_identity()
+        second = self.make_item('turn')
+        second.last_synced_receipt = 'artist existing receipt'
+        self.saved.items.append(second)
+        self.publish_receipt()
+        previous = self.item.last_synced_receipt
+        self.assertEqual(json.loads(previous)['identity'][-2:],
+                         ['targetSlotId', 'locomotion.walk'])
+        self.assertIsNotNone(self.collection._receipt(self.item, self.link, self.implementation))
+        bound = deepcopy(self.link)
+        missing = {key: value for key, value in bound.items() if key != 'targetSlotId'}
+        for changed in (missing, {**bound, 'targetSlotId': None},
+                        {**bound, 'targetSlotId': ''},
+                        {**bound, 'targetSlotId': 'locomotion.idle'}):
+            with self.subTest(slot=changed.get('targetSlotId', '<absent>')):
+                self.link = changed
+                self.assertIsNone(self.collection._receipt(self.item, self.link, self.implementation))
+                self.assertIn('differs', self.collection.export_finished(self.ordinary_job(), self.publication()))
+                self.assertEqual(self.item.last_synced_receipt, previous)
+                self.assertEqual(second.last_synced_receipt, 'artist existing receipt')
+
     def test_scan_does_not_switch_action_or_evaluate_an_export(self):
         action = self.rig.animation_data.action
         self.collection.scan_changes(self.context)
@@ -469,6 +505,41 @@ class CollectionTests(unittest.TestCase):
         self.item.sync_selected = False
         self.collection.scan_changes(self.context)
         self.assertFalse(self.item.sync_selected)
+
+    def test_successful_receipt_cannot_claim_unchanged_for_a_changed_or_missing_target_slot(self):
+        self.use_production_link_identity()
+        self.publish_receipt()
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'UNCHANGED')
+        previous = self.item.last_synced_receipt
+        action = self.rig.animation_data.action
+        bound = deepcopy(self.link)
+        missing = {key: value for key, value in bound.items() if key != 'targetSlotId'}
+        for changed in (missing, {**bound, 'targetSlotId': None},
+                        {**bound, 'targetSlotId': ''},
+                        {**bound, 'targetSlotId': 'locomotion.idle'}):
+            with self.subTest(slot=changed.get('targetSlotId', '<absent>')):
+                self.link = changed
+                # Keep the current row, Link and saved binding coherent, so
+                # rejection must come from the old publication receipt itself.
+                self.item.link_identity = json.dumps(changed)
+                self.catalog['clips'][0] = self.clip('walk')
+                if 'targetSlotId' in changed:
+                    self.catalog['clips'][0]['targetSlotId'] = changed['targetSlotId']
+                self.collection.scan_changes(self.context)
+                self.assertEqual(self.item.scan_state, 'UNKNOWN')
+                self.assertFalse(self.item.sync_selected)
+                self.assertFalse(self.collection.unchanged_proof(
+                    self.item, self.link, self.implementation, self.proof))
+                self.assertEqual(self.item.last_synced_receipt, previous)
+                self.assertIs(self.rig.animation_data.action, action)
+        self.link = bound
+        self.item.link_identity = json.dumps(bound)
+        self.catalog['clips'][0]['targetSlotId'] = 'locomotion.walk'
+        self.collection.scan_changes(self.context)
+        self.assertEqual(self.item.scan_state, 'UNCHANGED')
+        self.worklist.activate.assert_not_called()
+        self.worklist.sync.assert_not_called()
 
     def test_prepared_baseline_skips_unchanged_a_and_selects_only_edited_b(self):
         second = self.make_item('turn')

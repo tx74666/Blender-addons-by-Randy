@@ -49,6 +49,80 @@ def _dress_collections(armature):
     return tuple(c for c in armature.data.collections_all if c.get(skirt_rig.OWNER_KEY))
 
 
+def sort_managed_collections(armature):
+    """Order owned root groups once, without changing their contents or display.
+
+    Artist roots retain their relative order and managed groups use the existing
+    managed slots. Original alone moves to the end. Nested collections stay in
+    their existing parent, including artist children of a managed group.
+    """
+    from . import hair_bones_rig as hair, skirt_rig as skirt
+
+    if armature is None or armature.type != 'ARMATURE':
+        raise ValueError('Choose a character armature before ordering Bone Collections.')
+    data = armature.data
+    if armature.mode == 'EDIT' or armature.library or data.library or not armature.is_editable:
+        raise ValueError('Choose a local editable armature outside Edit Mode.')
+    roots = tuple(data.collections)
+    active = data.collections.active
+    dress_owners = set()
+    sources = list(armature.get(skirt.SHARED_SOURCES_KEY, {}).items())
+    if armature.get(skirt.OWNER_KEY):
+        sources.append((armature.get(skirt.OWNER_KEY), armature.get(skirt.SOURCE_KEY)))
+    for owner, source in sources:
+        if (owner and getattr(source, 'type', None) == 'MESH'
+                and source.get(skirt.OWNER_KEY) == owner and source.get(skirt.RIG_KEY) == armature):
+            dress_owners.add(owner)
+    managed = []
+    for index, collection in enumerate(roots):
+        role = collection.get(GROUP_KEY)
+        ranks = ([0] if role in {'Body', 'Animation'} else [])
+        if role == 'Hair' or collection.get(hair.OWNER_KEY) == hair.OWNER_VALUE:
+            ranks.append(1)
+        if collection.get(skirt.OWNER_KEY) in dress_owners:
+            ranks.append(2)
+        if role == 'Original':
+            ranks.append(3)
+        if len(ranks) > 1:
+            raise ValueError('A Bone Collection has conflicting display ownership.')
+        if ranks:
+            managed.append((index, ranks[0], collection))
+    if any(sum(rank == wanted for _index, rank, _group in managed) > 1 for wanted in (0, 1, 3)):
+        raise ValueError('The managed Bone Collections have ambiguous display ownership.')
+    desired = list(roots)
+    for (index, _rank, _group), (_old_index, _new_rank, group) in zip(
+            managed, sorted(managed, key=lambda entry: entry[1])):
+        desired[index] = group
+    original = next((group for _index, rank, group in managed if rank == 3), None)
+    if original is not None:
+        desired.remove(original)
+        desired.append(original)
+    if tuple(desired) == roots:
+        return 0
+
+    def apply(order):
+        moved = 0
+        for index, collection in enumerate(order):
+            previous = list(data.collections).index(collection)
+            if previous != index:
+                data.collections.move(previous, index)
+                moved += 1
+        if tuple(data.collections) != tuple(order):
+            raise RuntimeError('Bone Collections did not retain their requested root order.')
+        if data.collections.active != active:
+            data.collections.active = active
+        return moved
+
+    try:
+        return apply(desired)
+    except Exception:
+        try:
+            apply(roots)
+        except Exception as rollback_error:
+            raise RuntimeError('Bone Collection ordering failed and its original order could not be restored.') from rollback_error
+        raise
+
+
 def _structural_edit_guard(armature):
     if 'character_designer_body_original_mode_v1' in armature:
         raise ValueError('Choose Controls in Bone Display before changing Bone Collections or rebuilding controls.')
@@ -716,11 +790,7 @@ def simplify_body_collections(armature, *, compact=True, visibility=None, origin
             _assign_exact(hair_group, data, hair_names)
             if compact:
                 hair_group.is_visible, hair_group.is_solo = True, False
-        front = [body] + ([hair_group] if hair_group is not None else []) + [c for c in dress_groups if c.parent is None]
-        for index, collection in enumerate(front):
-            data.collections.move(list(data.collections).index(collection), index)
-        # Original stays last, including when later artist groups are retained.
-        data.collections.move(list(data.collections).index(original), len(data.collections)-1)
+        sort_managed_collections(armature)
         if compact:
             data.collections.active = body
         data[PROFILE_KEY] = 2
@@ -797,7 +867,10 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
             return
     from time import monotonic
     from . import limb_fk_visuals, limb_ik, spine_ik_fk
+    from . import weight_paint_entry
     for armature in scene.objects if objects is None else objects:
+        if weight_paint_entry.active(scene=scene, rig=armature):
+            continue
         if 'character_designer_body_original_mode_v1' in armature:
             continue
         if scene.get('character_designer_weight_workspace_v1', {}).get('rig') == armature:

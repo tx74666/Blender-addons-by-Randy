@@ -78,6 +78,10 @@ def _rows(data, profile):
 
 
 def _state(source):
+    return _state_with_registry(source, selection_data=None)
+
+
+def _state_with_registry(source, *, selection_data):
     root = resegment.root_source(source)
     # Reject malformed raw properties before native validation. Explicit absence
     # differs from an invalid present value; no reader repairs either case.
@@ -87,7 +91,7 @@ def _state(source):
     if record is None:
         raise HairStrandBrowserError('Choose an existing bound Hair mesh.')
     source_uid = lifecycle.source_uid_for_bind(source, record)
-    data = registry.read(source, validate=True)
+    data = registry.read(source, validate=True) if selection_data is None else selection_data
     if data is None:
         data, live_record, _geometry = registry._live(source, check_layers=True)
         if live_record != record:
@@ -107,12 +111,23 @@ def _state(source):
     fingerprint = _fingerprint(source, rig, root, data)
     if raw_before != tuple(fingerprint[key] for key in ('binding', 'registry', 'profile')):
         raise HairStrandBrowserError('Hair metadata changed while reading its strands.')
+    if selection_data is not None:
+        fingerprint['selection_only'] = True
     return {'rows': _rows(data, profile), 'fingerprint': fingerprint}, data, profile
 
 
 def strict_snapshot(source):
     """Validate native ownership and return detached rows without any writes."""
     snapshot, _data, _profile = _state(source)
+    return snapshot
+
+
+def selection_snapshot(source):
+    """Browse native chains after transport, without granting managed operations."""
+    data = registry._read_transported_selection(source)
+    if data is None:
+        return strict_snapshot(source)
+    snapshot, _data, _profile = _state_with_registry(source, selection_data=data)
     return snapshot
 
 

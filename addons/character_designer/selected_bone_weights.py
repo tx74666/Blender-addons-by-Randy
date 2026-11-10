@@ -1453,6 +1453,9 @@ class CHARACTERDESIGNER_PT_weight_tools(Panel):
 
     def draw(self, context):
         layout = self.layout
+        from . import weight_paint_entry
+        weight_paint_entry.draw(layout, context)
+        layout.separator()
         layout.label(text="Select one bound Mesh and Pose bones.", icon="INFO")
         settings = getattr(context.window_manager, "character_designer", None)
         normalize = bool(
@@ -1472,7 +1475,11 @@ class CHARACTERDESIGNER_PT_weight_tools(Panel):
         action.normalize_affected_deform_weights = normalize
 
 
+from .weight_paint_entry import CLASSES as WEIGHT_PAINT_ENTRY_CLASSES
+
+
 SELECTED_BONE_WEIGHT_CLASSES = (
+    *WEIGHT_PAINT_ENTRY_CLASSES,
     CHARACTERDESIGNER_OT_auto_weight_selected_bones,
     CHARACTERDESIGNER_PT_weight_tools,
 )

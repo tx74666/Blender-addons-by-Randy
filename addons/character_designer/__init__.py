@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 165),
+    "version": (0, 77, 183),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -84,6 +84,8 @@ from .character_ground import CHARACTER_GROUND_CLASSES, CharacterDesignerGroundS
 from .rig_fix_ui import RIG_FIX_UI_CLASSES
 from .control_colors import CONTROL_COLOR_CLASSES
 from .bone_color_palette import BONE_COLOR_PALETTE_CLASSES
+from . import color_center
+from .color_center import COLOR_CENTER_CLASSES
 from .hair_bones import HAIR_BONES_CLASSES, CharacterDesignerHairBonesState
 from .hair_motion_ui import HAIR_MOTION_CLASSES, CharacterDesignerHairMotionState
 from .hair_wiggle_adapter import register_guards as register_hair_motion_guards, unregister_guards as unregister_hair_motion_guards
@@ -8692,13 +8694,12 @@ class CHARACTERDESIGNER_PT_curve_tools(Panel):
 
 class CHARACTERDESIGNER_PT_rig_sections(Panel):
     """Subcategory navigation follows the shared character context, not vice versa."""
-    bl_label = 'Rig Sections'
+    bl_label = 'Rig Setup'
     bl_idname = 'CHARACTERDESIGNER_PT_rig_sections'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
     bl_parent_id = 'CHARACTERDESIGNER_PT_main'
-    bl_options = {'HIDE_HEADER'}
     bl_order = 2
 
     @classmethod
@@ -8706,6 +8707,7 @@ class CHARACTERDESIGNER_PT_rig_sections(Panel):
         return active_ui_page(context) == UI_PAGE_RIG
 
     def draw(self, context):
+        self.layout.label(text='Create and adjust character controls.', icon='ARMATURE_DATA')
         row = self.layout.row(align=True)
         section = active_rig_section(context)
         for value, label, _description in UI_RIG_SECTION_ITEMS:
@@ -8731,6 +8733,7 @@ CLASSES = (
     CHARACTERDESIGNER_OT_set_ui_page,
     CHARACTERDESIGNER_OT_set_rig_section,
     CHARACTERDESIGNER_PT_main,
+    CHARACTERDESIGNER_PT_rig_sections,
     *custom_vertex_groups.CLASSES,
     *custom_vertex_parts.CLASSES,
     CHARACTERDESIGNER_PT_custom_vertex_groups,
@@ -8752,7 +8755,6 @@ CLASSES = (
     *WEIGHT_CLEANUP_CLASSES,
     *BONE_COLLECTION_CLASSES,
     *BONE_DISPLAY_CLASSES,
-    CHARACTERDESIGNER_PT_rig_sections,
     *WIDGET_COLLECTION_CLASSES,
     *WEIGHT_SYMMETRY_CLASSES,
     *TOPOLOGY_SYMMETRY_CLASSES,
@@ -8769,6 +8771,7 @@ CLASSES = (
     *RIG_FIX_UI_CLASSES,
     *CONTROL_COLOR_CLASSES,
     *BONE_COLOR_PALETTE_CLASSES,
+    *COLOR_CENTER_CLASSES,
     *FOREARM_TWIST_CLASSES,
     *SPLINE_IK_SETUP_CLASSES,
     *REFERENCE_VIEW_CLASSES,
@@ -8804,7 +8807,7 @@ def _expected_rna_identifier(cls):
         return cls.__name__
     if issubclass(cls, bpy.types.Menu):
         return getattr(cls, "bl_idname", "") or cls.__name__
-    if issubclass(cls, bpy.types.PropertyGroup):
+    if issubclass(cls, (bpy.types.PropertyGroup, bpy.types.AddonPreferences)):
         return cls.__name__
     raise RuntimeError(f"Unsupported Character Designer RNA class: {cls.__name__}.")
 
@@ -8813,7 +8816,7 @@ def _registered_rna_class(cls):
     """Resolve the live Python class behind an expected Blender RNA identifier."""
 
     identifier = _expected_rna_identifier(cls)
-    for base in (bpy.types.Operator, bpy.types.Panel, bpy.types.PropertyGroup, bpy.types.UIList, bpy.types.Menu):
+    for base in (bpy.types.Operator, bpy.types.Panel, bpy.types.PropertyGroup, bpy.types.UIList, bpy.types.Menu, bpy.types.AddonPreferences):
         if issubclass(cls, base):
             return base.bl_rna_get_subclass_py(identifier)
     return None
@@ -8881,6 +8884,15 @@ def _validate_registration_integrity():
             or update_views_property.fixed_type != unity_update_selection_ui.CharacterDesignerUnityUpdateView.bl_rna):
         errors.append("missing or stale WindowManager Unity update selection view")
 
+    colors_property = bpy.types.Object.bl_rna.properties.get(color_center.COLORS_PROPERTY)
+    if (colors_property is None or colors_property.type != 'POINTER'
+            or colors_property.fixed_type != color_center.CharacterDesignerColors.bl_rna):
+        errors.append('missing or stale Object color editor')
+    for name, kind in ((color_center.ADVANCED_PROPERTY, 'BOOLEAN'), (color_center.ERROR_PROPERTY, 'STRING')):
+        prop = window_manager_properties.get(name)
+        if prop is None or prop.type != kind:
+            errors.append('missing WindowManager color editor property ' + name)
+
     if errors:
         details = "; ".join(errors)
         raise RuntimeError(f"Character Designer registration is inconsistent: {details}.")
@@ -8947,6 +8959,9 @@ def register():
     unity_export_registered = hasattr(bpy.types.Object, "character_designer_unity_export")
     unity_update_selection_registered = hasattr(bpy.types.Object, unity_update_selection_ui.SETTINGS_PROPERTY)
     unity_update_views_registered = hasattr(bpy.types.WindowManager, unity_update_selection_ui.VIEW_PROPERTY)
+    colors_registered = hasattr(bpy.types.Object, color_center.COLORS_PROPERTY)
+    colors_advanced_registered = hasattr(bpy.types.WindowManager, color_center.ADVANCED_PROPERTY)
+    colors_error_registered = hasattr(bpy.types.WindowManager, color_center.ERROR_PROPERTY)
     registration_state = (
         centerline_registered,
         delta_registered,
@@ -8966,6 +8981,9 @@ def register():
         unity_export_registered,
         unity_update_selection_registered,
         unity_update_views_registered,
+        colors_registered,
+        colors_advanced_registered,
+        colors_error_registered,
     )
     if all(registration_state):
         _validate_registration_integrity()
@@ -8987,10 +9005,13 @@ def register():
     added_custom_groups = False
     added_vertex_parts = False
     added_unity_update_selection = False
+    added_colors = False
     try:
         for cls in CLASSES:
             bpy.utils.register_class(cls)
             registered.append(cls)
+        added_colors = True
+        color_center.register_properties()
         custom_vertex_groups.register_properties()
         added_custom_groups = True
         custom_vertex_parts.register_properties()
@@ -9064,6 +9085,8 @@ def register():
         added_properties.append("character_designer_references")
         _register_runtime_hooks()
     except Exception:
+        if added_colors:
+            color_center.unregister_properties()
         limb_ik_wrist_rotation_ui.unregister()
         playback_normal_bridge.unregister(recover_pending=False)
         if added_unity_update_selection:
@@ -9119,6 +9142,7 @@ def register():
 
 def unregister():
     from . import body_calibration_ui, control_pose_assets, control_pose_capture, control_weight_paint as legacy_weights, generated_names, playback_normal_bridge, limb_ik_wrist_rotation_ui
+    color_center.unregister_properties()
     limb_ik_wrist_rotation_ui.unregister()
     playback_normal_bridge.unregister()
     unity_update_selection_ui.unregister_properties()

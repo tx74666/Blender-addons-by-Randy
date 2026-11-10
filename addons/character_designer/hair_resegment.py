@@ -617,6 +617,54 @@ def _copy(context, source, rig, root, count, actions, owned, strand_signatures=N
     return collection, clone, copy_rig, index
 
 
+def _chain_color_states(rig, names, count):
+    """Inherit current display colors along one authenticated ordered strand.
+
+    Equal counts keep each segment's exact colors. Changed counts use the old
+    Rest interval containing each new segment's sampling midpoint. Only colors
+    and their restoration records migrate; this never initializes a palette or
+    imports the sampled version's older color choices.
+    """
+    from . import control_colors, bone_color_palette as palette
+    names = tuple(names)
+    if (type(count) is not int or count < 1 or not names
+            or len(set(names)) != len(names) or any(name not in rig.pose.bones for name in names)):
+        raise HairResegmentError('Hair color inheritance needs one complete ordered source chain.')
+    saved = palette._read(palette.main_for(rig))
+    states = []
+    for name in names:
+        pose = rig.pose.bones[name]
+        if control_colors.BACKUP_KEY in pose:
+            control_colors._saved_color(pose)
+        if palette.BACKUP_KEY in pose:
+            backup = palette._backup(pose)
+            if saved is None or backup['owner'] != saved['id']:
+                raise HairResegmentError('Hair color restoration belongs to another character palette.')
+        color = pose.bone.color
+        states.append(dict(color=color.palette,
+            color_custom=tuple(tuple(getattr(color.custom, field)) for field in palette.CHANNELS),
+            color_constraints=bool(color.custom.show_colored_constraints),
+            pose_color_state=control_colors.capture_bone(pose)))
+    if len(names) == count:
+        return states
+    bones = [rig.data.bones[name] for name in names]
+    points = [tuple(bone.head_local) for bone in bones] + [tuple(bones[-1].tail_local)]
+    distances = maths.cumulative_lengths(points)
+    return [copy.deepcopy(states[min(len(states) - 1,
+            max(0, bisect.bisect_right(distances, (index + .5) / count * distances[-1]) - 1))])
+            for index in range(count)]
+
+
+def _restore_chain_color(pose, state):
+    from . import control_colors
+    color = pose.bone.color
+    color.palette = state['color']
+    color.custom.normal, color.custom.select, color.custom.active = state['color_custom']
+    if 'color_constraints' in state:
+        color.custom.show_colored_constraints = state['color_constraints']
+    control_colors.restore_bone_state(pose, state['pose_color_state'])
+
+
 def _chains(context, source, rig, clone, copy_rig, record, count, strand_signatures=None):
     selected = _selected_chains(record, strand_signatures)
     old_names = {name for chain in selected for name in chain['bones']}
@@ -632,7 +680,8 @@ def _chains(context, source, rig, clone, copy_rig, record, count, strand_signatu
         side = '.' + chain['mirror_side'] if record.get('mirror_layout') else ''
         names = [f'Hair {chain_index+1:03d} Segment {i+1:02d}{side}' for i in range(count)]
         plans.append(dict(old=chain, points=points, distances=distances, names=names,
-                          samples=samples, lengths=[math.dist(a,b) for a,b in zip(samples,samples[1:])]))
+                          samples=samples, lengths=[math.dist(a,b) for a,b in zip(samples,samples[1:])],
+                          colors=_chain_color_states(rig, chain['bones'], count)))
     reserved = set(copy_rig.data.bones.keys()) - old_names
     generated = [name for plan in plans for name in plan['names']]
     if (len(generated) != len(set(generated)) or reserved.intersection(generated)
@@ -667,12 +716,13 @@ def _chains(context, source, rig, clone, copy_rig, record, count, strand_signatu
             continue
         chain.update(bones=plan['names'], count=count, requested_count=count,
                      rest=[hair._bone_state(copy_rig.data.bones[name]) for name in plan['names']])
-        for name in plan['names']:
+        for name, colors in zip(plan['names'], plan['colors']):
             bone = copy_rig.data.bones[name]
             bone[hair.OWNER_KEY] = hair.OWNER_VALUE
             bone[hair.SOURCE_KEY] = clone
             bone[hair.SIGNATURE_KEY] = chain['signature']
             copy_rig.pose.bones[name].rotation_mode = 'QUATERNION'
+            _restore_chain_color(copy_rig.pose.bones[name], colors)
     clone[hair.RECORD_KEY] = json.dumps(updated, sort_keys=True, separators=(',', ':'))
     clone[hair.RIG_KEY] = copy_rig
     return plans, updated

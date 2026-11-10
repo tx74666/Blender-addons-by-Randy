@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -63,7 +64,7 @@ def _freeze_rigging_export(rig, action, value, session):
 
 
 def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
-                 export_rig_name=None, rigging_export=None):
+                 export_rig_name=None, rigging_export=None, link_identity=None):
     """Export the independent base, alongside explicitly owned Target inputs."""
     session = None
     if rig is not None and 'character_designer_rigging_session_v1' in rig:
@@ -89,7 +90,22 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
     boundary = rigging.base_only(context, rig, action=action) if session is not None else nullcontext()
     with boundary:
         return _begin_export(context, rig, action, filepath, frame_start=frame_start, frame_end=frame_end,
-            loop=loop, sample_rate=sample_rate, export_rig_name=export_rig_name, rigging_export=frozen)
+            loop=loop, sample_rate=sample_rate, export_rig_name=export_rig_name, rigging_export=frozen,
+            link_identity=link_identity)
+
+
+def _target_route(record):
+    from .animation_workspace import target_slot_id
+    try:
+        slot = target_slot_id(record)
+    except ValueError as exc:
+        raise AnimationExportError(str(exc)) from exc
+    if not slot:
+        return {}
+    target = record.get('targetGuid')
+    if not isinstance(target, str) or re.fullmatch(r'[0-9a-fA-F]{32}', target) is None:
+        raise AnimationExportError('A semantic animation slot requires its exact targetGuid.')
+    return {'targetGuid': target, 'targetSlotId': slot}
 
 
 def _authenticated_dress_export(rig, action, slot, admission, surfaces, worker):
@@ -256,9 +272,10 @@ it is neither an arbitrary-external-target exception nor a determinism claim.
 
 
 def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
-                  export_rig_name=None, rigging_export=None):
+                  export_rig_name=None, rigging_export=None, link_identity=None):
     global _ACTIVE_JOB
     from . import unity_export
+    target_route = _target_route({} if link_identity is None else link_identity)
     if _ACTIVE_JOB or unity_export._ACTIVE_JOB:
         raise AnimationExportError('Wait for the current character export to finish.')
     if rig is None or rig.type != 'ARMATURE' or rig.name not in context.scene.objects:
@@ -333,6 +350,7 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         'loop': bool(loop), 'name': action.name, 'stage': str(stage), 'filename': filename,
         'unsupported_channels': omitted,
         'dress_surfaces': dress_surfaces,
+        **target_route,
     }
     if export_rig_name is not None:
         spec['export_rig_name'] = export_rig_name
@@ -341,6 +359,7 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
            'source_package_sha256': source_hash,
            'source_blend': bpy.data.filepath, 'action': action.name, 'action_slot': slot,
            'process': None, 'log': None}
+    job.update(target_route)
     if export_inputs is not None:
         spec[animation_export_inputs.JOB_KEY] = export_inputs
         job[animation_export_inputs.JOB_KEY] = export_inputs
@@ -402,6 +421,10 @@ def _dispose(job):
 
 def _publish(job, result):
     from . import animation_export_inputs
+    target_route = _target_route(job)
+    returned_route = _target_route(result)
+    if returned_route and returned_route != target_route:
+        raise AnimationExportError('Worker animation routing differs from the frozen destination.')
     sealed = job.get(animation_export_inputs.JOB_KEY)
     if sealed is not None:
         expected = {'schema': animation_export_inputs.SCHEMA, 'sha256': sealed['sha256'],
@@ -422,6 +445,7 @@ def _publish(job, result):
               'source_package_sha256': job['source_package_sha256'],
               'channels': 'skeletal-only',
               'limitations': 'No Shape Key, material, camera, audio or animation-event export.'}
+    report.update(target_route)
     if job.get('authenticated_dress_export') is not None:
         report['export_input_policy'] = job['authenticated_dress_export']
     if job.get('rigging_export') is not None:

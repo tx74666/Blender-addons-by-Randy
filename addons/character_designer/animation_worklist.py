@@ -424,11 +424,14 @@ def _editing_data(context, rig, *, packet=None):
     if ua.active_preview(rig):
         ua.restore_preview(context, rig)
     translated = None
-    if packet is not None and 'rigging' in packet:
+    if packet is not None:
         mapping = ua._mapping(rig, packet, context.scene.unit_settings.scale_length)
-        if mapping.controls is None:
+        if mapping.controls is not None:
+            translated = mapping.controls.mapped_names - mapping.controls.delegated_names
+        elif 'rigging' in packet:
             raise ValueError('Rigging motion editing needs its validated native control plan.')
-        translated = mapping.controls.mapped_names - mapping.controls.delegated_names
+        else:
+            translated = frozenset(mapping.indices)
     data = rig.data.copy()
     data.name = rig.data.name + ' · Motion Worklist'
     if translated is None:
@@ -685,10 +688,7 @@ def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_co
             if target.managed(rig):
                 target.ensure_active(context, rig)
             else:
-                if 'rigging' in packet:
-                    _editing_data(context, rig, packet=packet)
-                else:
-                    _editing_data(context, rig)
+                _editing_data(context, rig, packet=packet)
         if rig.name not in context.scene.objects or rig.type != 'ARMATURE' or rig.library:
             raise ValueError('Return to this worklist\'s independent editing scene.')
         if baseline is None:

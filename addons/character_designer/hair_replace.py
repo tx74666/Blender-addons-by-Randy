@@ -220,6 +220,7 @@ def _bone_states(rig, names, *, destination=None, source=None):
         state['pose_property_ui'] = _property_ui(pose)
         state['all_bone_fields'] = _rna_fields(bone)
         state['all_pose_fields'] = _rna_fields(pose)
+        state['color_constraints'] = bool(bone.color.custom.show_colored_constraints)
         # The binding snapshot's raw PoseBone pointer can become invalid after
         # deleting a selected bone. The name-based native field snapshot owns it.
         state['pose_fields'].pop('custom_shape_transform', None)
@@ -268,11 +269,29 @@ def _restore_bones(context, rig, states):
         for collection in state['collections']:
             collection.assign(bone)
         pose.matrix_basis = state['pose']
-        bone.color.palette = state['color']
-        bone.color.custom.normal, bone.color.custom.select, bone.color.custom.active = state['color_custom']
-        control_colors.restore_bone_state(pose, state['pose_color_state'])
+        versions._restore_chain_color(pose, state)
         _restore_fields(bone, state['all_bone_fields'], rig)
         _restore_fields(pose, state['all_pose_fields'], rig)
+
+
+def _restore_reconstructed_authors(rig, states):
+    """Reapply selected raw authors after rollback's native context evaluation.
+
+    These selected bones were explicitly reconstructed by this transaction.
+    Their old native pointers are gone, so the general identity-checked author
+    checkpoint remains reserved for surviving, unselected properties.
+    """
+    for state in states:
+        bone, pose = rig.data.bones.get(state['name']), rig.pose.bones.get(state['name'])
+        _require(bone is not None and pose is not None,
+                 'An original Hair bone could not be reconstructed for author recovery.')
+        _restore_fields(bone, state['all_bone_fields'], rig)
+        _restore_fields(pose, state['all_pose_fields'], rig)
+        for key, value in state['properties'].items():
+            bone[key] = value
+        for key, value in state['pose_properties'].items():
+            pose[key] = value
+        versions._restore_chain_color(pose, state)
 
 
 def _all_curves(owner):
@@ -594,6 +613,15 @@ def replace_from_version(context, source, version, signatures, activate=True, *,
              'The sampled Hair belongs to different unchanged animation; sample the current clip again.')
     old_bones = _bone_states(rig, old_names)
     new_bones = _bone_states(version_rig, new_names, destination=rig, source=source)
+    # A retained version owns its sampled geometry/motion, not the character's
+    # latest display edits. Keep those colors and raw restoration records from
+    # each exact selected current strand, without modifying the saved version.
+    new_by_name = {state['name']: state for state in new_bones}
+    for chain in selected:
+        replacement_names = sampled[chain['signature']]['bones']
+        colors = versions._chain_color_states(rig, chain['bones'], len(replacement_names))
+        for name, state in zip(replacement_names, colors):
+            new_by_name[name].update(state)
     old_groups, new_groups = _paint(source, mesh, record, sampled_record, signatures)
     sampled_registry = registry.read(mesh)
     _require(sampled_registry is not None, 'The sampled Hair has no strict strand registry.')
@@ -727,7 +755,6 @@ def replace_from_version(context, source, version, signatures, activate=True, *,
         recover('binding and motion records', lambda: _restore_saved(source, saved_props, saved_props))
         recover('display backup records', lambda: _restore_saved(rig.data, saved_backup,
                 (collections.BACKUP_KEY, collections.BACKUP_REFS_KEY)))
-        recover('author channels', lambda: channels.restore(author_channels))
         recover('Hair authority', lambda: authority.rollback(plan))
         recover('native collection display', lambda: _restore_display(display))
         recover('original UI context', lambda: variants._restore_context(context, source, snapshot))
@@ -736,6 +763,9 @@ def replace_from_version(context, source, version, signatures, activate=True, *,
                 recover('owned replacement Action', lambda: bpy.data.actions.remove(action, do_unlink=False))
             else:
                 failures.append('The replacement Action gained a user and was retained for recovery.')
+        if wrote_bones:
+            recover('reconstructed Hair author fields', lambda: _restore_reconstructed_authors(rig, old_bones))
+        recover('author channels', lambda: channels.restore(author_channels))
         suffix = ' Recovery needs attention: ' + '; '.join(failures) if failures else ''
         failure = HairReplaceError(str(error) + suffix)
         failure.recovery = dict(values_restored=not failures, failures=tuple(failures),

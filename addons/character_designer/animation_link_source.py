@@ -87,6 +87,13 @@ def _packet(link):
             raise _error('The linked animation package has a different ' + key + '.')
     if type(packet.get('clipLocalId')) is not int or packet['clipLocalId'] != link['clipLocalId']:
         raise _error('The linked animation package identifies a different animation clip.')
+    from .animation_workspace import target_slot_id
+    try:
+        packet_slot, link_slot = target_slot_id(packet), target_slot_id(link)
+    except ValueError as exc:
+        raise _error('The linked animation package has an invalid targetSlotId: ' + str(exc)) from exc
+    if packet_slot != link_slot:
+        raise _error('The linked animation package identifies a different targetSlotId.')
     roots = [bone for bone in packet['bones'] if bone['parent'] == -1]
     if (len(roots) != 1 or roots[0]['restSource'] != 'hierarchy'
             or roots[0].get('weighted') or roots[0]['name'] != roots[0].get('path')):

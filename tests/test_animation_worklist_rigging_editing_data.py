@@ -196,11 +196,45 @@ class RiggingEditingDataTests(unittest.TestCase):
         self.assertTrue(all(not bone.use_connect for bone in env.rig.data.bones.values()))
         self.assertEqual(structure(env.original_data), before)
 
-    def test_non_rigging_packet_keeps_the_ordinary_default(self):
-        env = Environment()
-        env.editing(env.context, env.rig, packet={'bones': []})
-        self.assertNotIn('mapping', env.events)
-        self.assertTrue(all(not bone.use_connect for bone in env.rig.data.bones.values()))
+    def test_ordinary_controls_keep_helper_and_delegated_connections_and_rest(self):
+        env = Environment(); del env.packet['rigging']
+        original = structure(env.original_data)
+        env.editing(env.context, env.rig, packet=env.packet)
+        expected = deepcopy(original)
+        for name in ('Hips', 'Spine'):
+            row = list(expected[name]); row[1] = False; expected[name] = tuple(row)
+        self.assertEqual(structure(env.rig.data), expected)
+        self.assertEqual(structure(env.original_data), original)
+        self.assertTrue(env.rig.data.bones['Opaque 92'].use_connect)
+        self.assertTrue(env.rig.data.bones['DressFollow'].use_connect)
+        self.assertLess(env.events.index('mapping'), env.events.index('copy'))
+        self.assertEqual(env.rig.mode, 'POSE')
+        self.assertEqual(env.context.selected_objects, (env.rig,))
+
+    def test_ordinary_plain_fk_relaxes_only_the_mapped_bone_indices(self):
+        env = Environment(); del env.packet['rigging']; env.controls_missing = True
+        original = structure(env.original_data)
+        env.editing(env.context, env.rig, packet=env.packet)
+        expected = deepcopy(original)
+        for name in ('Hips', 'Spine', 'DressFollow'):
+            row = list(expected[name]); row[1] = False; expected[name] = tuple(row)
+        self.assertEqual(structure(env.rig.data), expected)
+        self.assertEqual(structure(env.original_data), original)
+        self.assertTrue(env.rig.data.bones['Opaque 71'].use_connect)
+        self.assertTrue(env.rig.data.bones['Opaque 92'].use_connect)
+        self.assertLess(env.events.index('mapping'), env.events.index('copy'))
+
+    def test_invalid_ordinary_mapping_rejects_before_copy_or_rest_mutation(self):
+        env = Environment(); del env.packet['rigging']
+        env.mapping_error = ValueError('Invalid ordinary packet mapping')
+        original, original_ids = structure(env.original_data), set(env.ids)
+        with self.assertRaisesRegex(ValueError, 'ordinary packet mapping'):
+            env.editing(env.context, env.rig, packet=env.packet)
+        self.assertEqual(env.events, ['mapping'])
+        self.assertFalse(env.copies)
+        self.assertEqual(env.ids, original_ids)
+        self.assertIs(env.rig.data, env.original_data)
+        self.assertEqual(structure(env.original_data), original)
 
     def test_restore_preview_precedes_authentication_of_original_rest(self):
         env = Environment(); env.preview = True
@@ -210,7 +244,15 @@ class RiggingEditingDataTests(unittest.TestCase):
         self.assertTrue(env.original_data.bones['Opaque 92'].use_connect)
 
     def test_actual_add_failure_cleans_only_new_ids_and_restores_original_context(self):
+        self.check_actual_add_failure_cleanup(typed_rigging=True)
+
+    def test_actual_ordinary_add_passes_its_packet_for_authentication_before_copy(self):
+        self.check_actual_add_failure_cleanup(typed_rigging=False)
+
+    def check_actual_add_failure_cleanup(self, *, typed_rigging):
         env = Environment(); ctx = env.context
+        if not typed_rigging:
+            del env.packet['rigging']
         original_ids, old_scene, old_active = set(env.ids), ctx.scene, ctx.view_layer.objects.active
         original_rest, original_selected = structure(env.original_data), ctx.selected_objects
         saved = SimpleNamespace(items=[], rig=None, active_index=-1, model_sha256='f' * 64,
@@ -225,7 +267,7 @@ class RiggingEditingDataTests(unittest.TestCase):
         new_scene.unit_settings = SimpleNamespace(scale_length=.01)
         ctx.scene.saved, new_scene.saved = saved, new_saved
         def import_prepared(context, *_args, **kwargs):
-            self.assertIs(kwargs.get('native_timebase'), True)
+            self.assertIs(kwargs.get('native_timebase', False), typed_rigging)
             env.ids.update((new_rig, new_data, new_scene, baseline))
             env.objects.append(new_rig)
             context.scene, context.window.scene = new_scene, new_scene
@@ -241,6 +283,8 @@ class RiggingEditingDataTests(unittest.TestCase):
             context.view_layer.objects.active = before['active']
         package = ModuleType('_editing_data_boundary'); package.__path__ = []
         composition = ModuleType(package.__name__ + '.animation_composition'); composition.active = lambda _rig: False
+        controller = ModuleType(package.__name__ + '.controller_animation')
+        controller._require_private_evaluation_idle = lambda: None
         target = ModuleType(package.__name__ + '.animation_worklist_target')
         target.is_adopted = target.managed = lambda _rig: False
         source = SimpleNamespace(_context_state=lambda context: {'scene': context.scene,
@@ -252,12 +296,14 @@ class RiggingEditingDataTests(unittest.TestCase):
             _composition_add_route=lambda *_args, **_kwargs: (False, None),
             _prepared=lambda *_args, **_kwargs: (None, {'clipName': 'Walk'}, {'_manifest_path': 'actual prepared'},
                                                 env.packet, 'Cosha', 'actual model'),
-            _rigging_module=lambda *_args, **_kwargs: native, _find_owned_rig=lambda *_args: None,
+            _rigging_module=lambda *_args, **_kwargs: native if typed_rigging else None,
+            _find_owned_rig=lambda *_args: None,
             _copy_workspace=lambda *_args: None)
         add = function(SOURCE / 'animation_worklist.py', 'add', env.namespace)
         env.fail_edit_once = True
         with patch.dict(sys.modules, {package.__name__: package,
-                composition.__name__: composition, target.__name__: target}):
+                composition.__name__: composition, target.__name__: target,
+                controller.__name__: controller}):
             with self.assertRaisesRegex(RuntimeError, 'Injected native edit-entry failure'):
                 add(ctx, 'actual prepared row', activate_new=False)
         self.assertEqual(env.ids, original_ids)
