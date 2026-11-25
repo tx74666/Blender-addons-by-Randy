@@ -49,10 +49,12 @@ def collection_members(armature):
             "always": visible, "visible": visible}
 
 
-def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None, pose_only=False):
     """Validate only this optional module, without entering limb inventory again."""
     from . import spine_ik_fk
-    if original_mutes is None:
+    if type(pose_only) is not bool or pose_only and (original_mutes is not None or source_rest is not None):
+        raise _error('Current torso posing requires the live Rest and constraint state.')
+    if original_mutes is None and not pose_only:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     if record is None:
@@ -91,9 +93,12 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
                     or obj.data.name != entry['mesh'] or not _owned(obj.data, record, 'WIDGET_MESH')
                     or armature.pose.bones[record['bones'][role]].custom_shape != obj):
                 raise _error('A Torso Controls widget was replaced or removed.')
-        collection = bpy.data.collections.get(record['widget_collection'])
-        if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
-            raise _error('The Torso Controls widget collection is missing.')
+        # Pose matching retains each authenticated shape. Asset-container
+        # ownership is additionally needed when removing or rebuilding controls.
+        if not pose_only:
+            collection = bpy.data.collections.get(record['widget_collection'])
+            if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
+                raise _error('The Torso Controls widget collection is missing.')
     except (KeyError, TypeError, AttributeError) as exc:
         raise _error('Torso Controls recovery data no longer matches this rig.') from exc
     return record

@@ -17,6 +17,35 @@ spec.loader.exec_module(curves)
 
 
 class ControllerCurvesTest(unittest.TestCase):
+    def test_ik_native_angle_seam_holds_only_when_linear_interpolation_would_take_the_long_arc(self):
+        for first, last, expected in ((3.13, -3.12, 'CONSTANT'), (-3.13, 3.12, 'CONSTANT'),
+                                      (-.02, .01, 'LINEAR'), (2.8, 3.1, 'LINEAR')):
+            with self.subTest(first=first, last=last):
+                self.assertEqual(curves.pole_angle_interpolation(first, last), expected)
+
+    def test_large_signed_ik_angle_changes_insert_short_arc_editable_guards(self):
+        import math
+        cases = ((1., 5., 145., -135.), (1., 2., -170., 140.),
+                 (10., 11., 179.99, -177.), (-2., 2., -140., 140.))
+        for a, b, u, v in cases:
+            with self.subTest(a=a, b=b, u=u, v=v):
+                u, v = math.radians(u), math.radians(v)
+                keys = curves.pole_angle_keys(((a, u), (b, v)))
+                self.assertEqual(keys[0][:2], (a, u))
+                self.assertEqual(keys[-1][:2], (b, v))
+                self.assertTrue(all(y[0] - x[0] > .01 for x, y in zip(keys, keys[1:])))
+                self.assertTrue(all(t == round(t) or abs(t-round(t)) > .01 for t, _, _ in keys))
+                hold, = [(x, y) for x, y in zip(keys, keys[1:]) if x[2] == 'CONSTANT']
+                self.assertLess(hold[1][0] - hold[0][0], .032)
+                step = math.remainder(v - u, math.tau)
+                for i in range(1001):
+                    t = a + (b - a) * i/1000
+                    left, right = next((x,y) for x,y in zip(keys,keys[1:]) if x[0] <= t <= y[0])
+                    real = (left[1] if left[2] == 'CONSTANT' and t < right[0] else
+                            left[1]+(right[1]-left[1])*(t-left[0])/(right[0]-left[0]))
+                    expected = u + step * (t-a)/(b-a)
+                    self.assertLess(abs(math.remainder(real-expected, math.tau)), math.radians(.5))
+
     def test_corner_in_one_axis_preserves_whole_target(self):
         path = 'pose.bones["hand\\\".L"].location'
         values = [0., 0., 0., 1., 0., 0., 0., 0., 0.]

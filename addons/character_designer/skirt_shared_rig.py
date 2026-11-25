@@ -603,7 +603,7 @@ def unify(context, source, armature=None, parent_bone=''):
         skirt.write_record(source, updated)
         # Last fallible validation occurs while the old rig is still available.
         skirt.read_record(source)
-        skirt.select_controls(context, source)
+        skirt.select_controls(context, source, level="DEFAULT")
         from . import bone_collections
         bone_collections.sort_managed_collections(main)
         from . import bone_color_palette
@@ -627,7 +627,8 @@ def unify(context, source, armature=None, parent_bone=''):
             _remove_bones(context, main, plan['names'])
         collection = plan.get('collection')
         if collection is not None:
-            main.data.collections.remove(collection)
+            from . import skirt_bone_display
+            skirt_bone_display.remove_groups(main, collection)
         for index, collection in enumerate(collection_order):
             current = tuple(main.data.collections).index(collection)
             if current != index:
@@ -752,7 +753,8 @@ def remove(context, source, *, allow_animation=False):
     _remove_bones(context, main, names)
     group = main.data.collections_all.get(record['shared']['collection'])
     if group and group.get(skirt.OWNER_KEY) == record['owner']:
-        main.data.collections.remove(group)
+        from . import skirt_bone_display
+        skirt_bone_display.remove_groups(main, group)
     registry = dict(main.get(skirt.SHARED_SOURCES_KEY, {}))
     registry.pop(record['owner'], None)
     if registry:

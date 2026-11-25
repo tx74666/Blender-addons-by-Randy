@@ -341,6 +341,8 @@ def _draw_skirts(layout, context, state, editable):
                    "Automatic uses Wiggle 2. Manual keeps the current skirt shape.",
                    "Automatic is stopped. Choose Automatic to start.",
                    "Automatic is paused. Choose Automatic to resume."}
+        if not enabled or not state.get("skirt_enabled", True):
+            routine.add("Character Designer stopped automatic Dress motion; the current shape is kept.")
         if dress.get("pending_recovery"):
             column.label(text="Skirt physics needs review.", icon="ERROR")
         if dress.get("message") and dress["message"] not in routine:

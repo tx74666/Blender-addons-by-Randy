@@ -67,7 +67,7 @@ class SkirtPeerRecoveryTests(unittest.TestCase):
 
     def test_explicit_skirt_on_recovers_own_history_without_enabling_hair(self):
         peer = self.hair()
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['hair_enabled'] = False
         physics._write(self.f.rig, state)
         raw_permission = self.f.rig[physics.STATE_KEY]
@@ -139,7 +139,7 @@ class SkirtPeerRecoveryTests(unittest.TestCase):
 
     def test_later_skirt_start_failure_keeps_completed_peer_recovery_stopped(self):
         peer = self.hair()
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['hair_enabled'] = False
         physics._write(self.f.rig, state)
         permission = self.f.rig[physics.STATE_KEY]
@@ -173,7 +173,7 @@ class SkirtPeerRecoveryTests(unittest.TestCase):
 
     def test_permission_off_deferred_choice_does_not_recover_peer(self):
         peer = self.hair()
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['enabled'] = False
         physics._write(self.f.rig, state)
         before = dict(peer)

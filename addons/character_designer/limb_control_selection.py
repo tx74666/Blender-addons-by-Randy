@@ -128,7 +128,7 @@ def _selected_rigs(armature, poses, api):
                         or record.get('armature_id') != armature_id
                         or role not in {'IK', 'END_ROTATION', 'SOURCE_UPPER_ROTATION',
                                         'SOURCE_LOWER_ROTATION'}
-                        or constraint_name != api._constraint_name(rig_id, role)
+                        or not api._constraint_name_matches(constraint_name, record)
                         or not chain or candidate.name not in chain
                         or (expected is not None and expected != (rig_id, key, chain))
                         or pose.name not in {*chain, record.get('target'), record.get('pole')}):

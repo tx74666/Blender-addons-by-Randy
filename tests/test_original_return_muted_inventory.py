@@ -84,6 +84,7 @@ class OriginalReturnMutedInventory(unittest.TestCase):
         package.validation_json = package.validation_native = NS(read_scope=read_scope)
         package.body_original_mode, package.limb_ik = self.original, self.limb
         package.body_original_owner, package.body_rest_resync = self.owner, self.resync
+        package.animation_pose_test = NS(natural_active=lambda rig: False)
         for name in ('torso_controls', 'spine_ik_fk', 'eye_controls', 'root_control'):
             setattr(package, name, NS(get_record=lambda rig: None))
         package.foot_controls = NS(records=lambda rig: {})

@@ -64,6 +64,13 @@ def _pose_history(value, refs, *, add=False, seen=None):
         return {key: _pose_history(value[key], refs, add=add, seen=seen) for key in sorted(value)}
     if not isinstance(value, (str, bytes)) and hasattr(value, '__iter__'):
         return [_pose_history(item, refs, add=add, seen=seen) for item in value]
+    if type(value).__name__ == 'IDPropertyArray':
+        from idprop.types import IDPropertyArray
+        if isinstance(value, IDPropertyArray):
+            _pose_require(value.typecode in {'i', 'f', 'd'}, 'Unsupported Original history array storage.')
+            return {'idproperty_array': value.typecode,
+                    'items': [_pose_history(value[index], refs, add=add, seen=seen)
+                              for index in range(len(value))]}
     raise ValueError('Unsupported Original history carrier value: ' + type(value).__name__)
 
 

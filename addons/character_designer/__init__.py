@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 183),
+    "version": (0, 77, 246),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -98,6 +98,8 @@ from .animation import (
     unregister_animation_runtime,
 )
 from .animation_physics_ui import PHYSICS_CLASSES
+from .animation_local_motion_pins import CLASSES as LOCAL_MOTION_PIN_CLASSES
+from .animation_worklist_header import CD_PT_motion_picker
 from .animation_worklist_ui import (
     WORKLIST_CLASSES,
     CharacterDesignerAnimationWorklistState,
@@ -486,9 +488,15 @@ def _reload_addon_deferred():
             old_modules[module_name] = old_main
     persistent = bool(getattr(old_main, "__addon_persistent__", False)) if old_main else False
 
+    bind = old_modules.get(module_name + ".natural_bind_mode")
+    if bind is not None and not bind.refresh_ready():
+        return 0.1
+    current_pose = None
     try:
         _stop_live_preview(settings=_settings(bpy.context), clear_capture=True)
         stop_delta_symmetry_runtime(clear_capture=True)
+        if bind is not None:
+            current_pose = bind.detach_for_refresh()
         # disable() silently skips unregister when __addon_enabled__ is stale.
         # Call the registered runtime's teardown and let failures propagate.
         if registered_panel is not None and old_main is not None:
@@ -521,6 +529,8 @@ def _reload_addon_deferred():
         from . import finger_loop_marks_ui, finger_definition_ui
         finger_definition_ui._resume()
         finger_loop_marks_ui.refresh(bpy.context)
+        if current_pose is not None:
+            importlib.import_module(module_name + ".natural_bind_mode").resume_after_refresh(current_pose)
         print("[Character Designer] Add-on refreshed successfully.")
     except Exception as exc:
         traceback.print_exc()
@@ -545,6 +555,8 @@ def _reload_addon_deferred():
                 # successful disable it restores the old, known-good classes.
                 old_main.register()
                 old_main.__addon_enabled__ = True
+                if current_pose is not None:
+                    bind.resume_after_refresh(current_pose)
             except Exception:
                 traceback.print_exc()
         ADDON_REFRESH_PENDING = False
@@ -8748,6 +8760,8 @@ CLASSES = (
     *HAIR_MOTION_CLASSES,
     *SKIRT_CLASSES,
     *WORKLIST_CLASSES,
+    *LOCAL_MOTION_PIN_CLASSES,
+    CD_PT_motion_picker,
     *COMPOSITION_CLASSES,
     *PHYSICS_CLASSES,
     *ANIMATION_CLASSES,

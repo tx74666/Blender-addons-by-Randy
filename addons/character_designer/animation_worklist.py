@@ -103,6 +103,7 @@ def _fill_catalog(saved, record):
         entry = saved.catalog.add()
         entry.clip_key, entry.name = _clip_key(clip), clip['clipName']
         entry.work_item_id = workspace.work_item_id(clip)
+        entry.target_slot_id = workspace.target_slot_id(clip)
         entry.source_name = clip.get('sourceName') or clip.get('sourceAsset') or ''
         entry.link_path = clip.get('linkManifest') or ''
         entry.ready = bool(not clip.get('needsRebuild') and entry.link_path and Path(entry.link_path).is_file())
@@ -340,7 +341,7 @@ def _slot(action, handle=None):
     return slots[0]
 
 
-def _populate_controller_custom(context, rig, source_action, custom):
+def _populate_controller_custom(context, rig, source_action, custom, *, prepare_controls=True):
     """Populate only this import's unbound copy, never its retained input.
 
     The caller's add transaction owns disposal if native writing fails. Source
@@ -348,6 +349,8 @@ def _populate_controller_custom(context, rig, source_action, custom):
     """
     if custom is source_action or custom.library is not None:
         raise ValueError('Controller import needs its own local Custom copy.')
+    if not prepare_controls:
+        return 'NATIVE_SOURCE'
     from . import controller_animation
     built = controller_animation.build_controller_channels(
         context, rig, source_action, _slot(source_action).handle)
@@ -588,7 +591,8 @@ def _composition_add_route(context, saved, clip_key, existing, *, activate_new, 
         activate_new=activate_new, _collection=_collection)
 
 
-def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_context=None):
+def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_context=None,
+        prepare_controls=True):
     from . import animation_composition as composition
     if composition.active(state(context).rig):
         raise ValueError('Close Composition before switching or removing worklist Actions; both drafts are retained.')
@@ -712,7 +716,7 @@ def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_co
         controller_state = None
         if 'rigging' not in packet:
             controller_state = _populate_controller_custom(
-                context, rig, existing_edit or linked, custom)
+                context, rig, existing_edit or linked, custom, prepare_controls=prepare_controls)
         # Re-check inputs before publishing a row; preparation may have changed
         # while the synchronous native bake was running.
         latest = links.load_link(link['_manifest_path'])
@@ -757,6 +761,8 @@ def add(context, clip_key, *, activate_new=True, _collection=False, _prepared_co
             message = 'Added ' + item.name + '. Controller animation is ready.'
         elif controller_state == 'NATIVE_FK':
             message = 'Added ' + item.name + '. Native FK controls are retained; this rig has no generated IK limbs.'
+        elif controller_state == 'NATIVE_SOURCE':
+            message = 'Added ' + item.name + '. Original bone animation is ready to open.'
         else:
             message = 'Added ' + item.name + '. Rigging input editing is retained.'
         saved.status, saved.has_error = message, False

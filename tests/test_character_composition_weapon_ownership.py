@@ -142,6 +142,63 @@ class WeaponOwnershipTests(unittest.TestCase):
         self.assertEqual(self.bpy.data.collections.removed, [self.collection])
         self.scene.user_of_id.assert_called_once_with(self.obj)
 
+    def test_composition_remove_leaves_rigging_preview_to_its_owner(self):
+        composition = self.load('animation_composition')
+        saved = SimpleNamespace(rig=self.rig)
+        worklist = SimpleNamespace(state=lambda _context: saved)
+        record = self.rig[self.weapon.RECORD]
+        self.scene_bases([True])
+        with patch.object(composition, '_host', return_value=worklist):
+            for owner in ('active rigging session', ''):
+                with self.subTest(owner=owner):
+                    record['rigging_session_owner'] = owner
+                    with self.assertRaisesRegex(ValueError, 'owning Rigging'):
+                        composition.remove_weapon(None)
+                    self.assertIs(self.rig[self.weapon.RECORD], record)
+                    self.assertFalse(self.bpy.data.objects.removed or self.bpy.data.collections.removed)
+            del record['rigging_session_owner']
+            composition.remove_weapon(None)
+        self.assertNotIn(self.weapon.RECORD, self.rig)
+        self.assertEqual(self.bpy.data.objects.removed, [self.obj])
+
+    def test_composition_only_draws_the_available_attachment_operation(self):
+        props = SimpleNamespace(BoolProperty=Mock(), EnumProperty=Mock(), StringProperty=Mock())
+        with patch.dict(sys.modules, {'bpy.props': props, 'bpy.types': SimpleNamespace(Operator=object, UIList=object)}):
+            ui = self.load('animation_composition_ui')
+        composition = self.load('animation_composition')
+        saved = SimpleNamespace(rig=self.rig, workspace_path='workspace', items=[], active_index=-1,
+                                composition_catalog=[])
+        context = SimpleNamespace(scene=SimpleNamespace(character_designer_animation_worklist=saved))
+        self.rig.animation_data = SimpleNamespace(use_tweak_mode=True)
+        action = SimpleNamespace(name='Action')
+        session = dict(base_action=action, custom_action=action, edit_target='B', solo=False,
+                       spec={'timeMode': 'HoldPose', 'weaponContextFile': 'context.json'})
+        cases = (
+            (True, True, None, 'Load Attachment'),
+            (True, False, None, None),
+            (False, True, None, None),
+            (True, True, {'proof_json': '{}'}, 'Remove Attachment'),
+            (False, True, {'proof_json': '{}'}, 'Remove Attachment'),
+            (True, True, {'rigging_session_owner': 'other'}, None),
+            (False, True, {'rigging_session_owner': 'other'}, None),
+        )
+        with patch.object(ui, '_backend', return_value=composition), patch.object(composition, '_load', return_value=session), \
+                patch.object(composition, '_host', return_value=SimpleNamespace(active_job=lambda: None)):
+            for active, captured, record, expected in cases:
+                with self.subTest(active=active, captured=captured, record=record):
+                    self.rig.pop(composition.SESSION, None)
+                    self.rig.pop(self.weapon.RECORD, None)
+                    if active:
+                        self.rig[composition.SESSION] = 'session'
+                    if record is not None:
+                        self.rig[self.weapon.RECORD] = record
+                    session['spec']['weaponModelFile'] = 'weapon.fbx' if captured else ''
+                    layout = Mock()
+                    ui.draw_composition(layout, context)
+                    buttons = [call.kwargs['text'] for call in layout.mock_calls
+                               if call.args == ('character_designer.composition_weapon',)]
+                    self.assertEqual(buttons, [expected] if expected else [])
+
     def test_multiple_and_excluded_view_layers_use_exact_membership_count(self):
         for included in ([True, True], [True, False]):
             with self.subTest(included=included):

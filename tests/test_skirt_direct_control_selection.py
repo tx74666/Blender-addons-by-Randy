@@ -143,10 +143,11 @@ class SelectionFixture:
         self.skirt.update(RECORD_KEY="record", physics_control=lambda *_args: (self.rig, self.rig, "influence"))
         real_select, real_context_restore = self.skirt["select_controls"], self.skirt["_restore_context"]
 
-        def select(context, source):
+        def select(context, source, **kwargs):
             self.calls.append(("select", self.direct["_state"](source, self.record), self.socket.value,
                                self.cloth.show_viewport, self.cloth.show_render))
-            result = real_select(context, source)
+            with patch.dict(sys.modules, {self.package.__name__: self.package}):
+                result = real_select(context, source, **kwargs)
             if self.fail_selection:
                 self.source["record"] = "selection wrote temporary record"
                 self.source[PROFILES.PROFILE_KEY] = "selection wrote temporary profile"
@@ -197,6 +198,22 @@ class SelectionFixture:
         self.display_module = ModuleType("selection_test.bone_display")
         self.display_module._set_hidden = load("bone_display.py", {"_set_hidden"}, {})["_set_hidden"]
         self.package.bone_display = self.display_module
+        self.role_groups = {role: NS(is_visible=role=="DEF", is_solo=False, bones=[], parent=collection)
+                            for role in ("CTRL", "DEF", "MCH", "PHYS")}
+        self.rig.data.collections_all.extend(self.role_groups.values())
+
+        def fixture_groups(rig, record, manual):
+            control, deform, _ = self.skirt["_bone_collection_layout"](record)
+            members = {"CTRL": control, "DEF": deform | {record["controls"]["waist"]},
+                       "MCH": {n for ch in record["chains"] for n in ch["manual"]},
+                       "PHYS": {n for ch in record["chains"] for n in ch["phys"]}}
+            for role, group in self.role_groups.items():
+                group.bones = [rig.data.bones[n] for n in members[role]]
+            return self.role_groups
+
+        layer_fn = load("skirt_bone_display.py", {"inspect_layer"},
+                        {"__package__": "selection_test", "ensure": fixture_groups})["inspect_layer"]
+        self.package.skirt_bone_display = NS(sync=lambda *_args: None, inspect_layer=layer_fn)
         public = load("skirt.py", {"_restore_preview", "CHARACTERDESIGNER_OT_skirt_select_controls"},
             dict(Operator=object, json=json, __package__="selection_test", _rig=lambda: NS(**self.skirt),
                  _physics=lambda: self.physics, _source=lambda _context: self.source,
@@ -312,8 +329,11 @@ class DirectSelectionTests(unittest.TestCase):
         self.assertTrue(f.rig.data.show_bone_custom_shapes)
         self.assertFalse(f.rig.data.bones['Hem'].hide)
         self.assertFalse(f.rig.pose.bones['Hem'].hide)
-        self.assertTrue(f.rig.data.bones['MCH'].hide)
-        self.assertTrue(f.rig.pose.bones['PHYS'].hide)
+        self.assertFalse(f.rig.data.bones['MCH'].hide)
+        self.assertFalse(f.rig.pose.bones['PHYS'].hide)
+        self.assertFalse(f.role_groups['MCH'].is_visible)
+        self.assertFalse(f.role_groups['PHYS'].is_visible)
+        self.assertTrue(f.role_groups['CTRL'].is_visible)
 
     def test_late_failure_restores_unselected_rig_pose_with_an_object_active(self):
         f = self.display_fixture()

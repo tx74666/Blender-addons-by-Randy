@@ -254,6 +254,11 @@ def plan(context, workspace_path=None):
 
 def start_or_review(context, workspace_path=None):
     """Start a clean sync in this callback, or return the review without changes."""
+    if target.uses_current_character(context):
+        saved = worklist.state(context)
+        worklist.connect(context, workspace_path or saved.workspace_path)
+        saved.status = 'Animation list refreshed for the current character.'
+        return {'workspace_path': saved.workspace_path, 'blocked': [], 'extras': []}
     checked = _plan(context, workspace_path)
     preview, record, prepared, _, pins = checked
     if preview['blocked'] or preview['extras']:

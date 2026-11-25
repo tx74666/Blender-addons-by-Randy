@@ -19,6 +19,7 @@ class Action(dict):
     def __init__(self, name, *, linked=False):
         super().__init__()
         self.name = name
+        self.session_uid = id(self)
         self.library = SimpleNamespace(filepath='source.blend') if linked else None
         self.asset_data = None
         self.is_action_layered = True
@@ -41,6 +42,7 @@ class Layout:
         self._parent_enabled = enabled
         self._enabled = True
         self.operator_context = None
+        self.children = []
 
     @property
     def enabled(self):
@@ -51,7 +53,9 @@ class Layout:
         self._enabled = value
 
     def row(self, **_kwargs):
-        return Layout(self.records, self.enabled)
+        child = Layout(self.records, self.enabled)
+        self.children.append(child)
+        return child
 
     column = box = row
 
@@ -70,6 +74,9 @@ class Layout:
         payload = SimpleNamespace()
         self.records.append(('operator', (name, kwargs, payload), self.enabled))
         return payload
+
+    def menu(self, name, **kwargs):
+        self.records.append(('menu', (name, kwargs), self.enabled))
 
     def template_list(self, *args, **kwargs):
         self.records.append(('list', (args, kwargs), self.enabled))
@@ -105,6 +112,18 @@ class WorklistUI(unittest.TestCase):
             bitflag_filter_item = 1 << 30
             filter_name = ''
 
+        class Scene(dict):
+            library = override_library = None
+
+            def __bool__(self):
+                return True
+
+            @property
+            def session_uid(self):
+                return id(self)
+
+        types.Scene = Scene
+        types.Menu = object
         types.Operator, types.UIList, types.PropertyGroup = Operator, UIList, object
         types.Action, types.Object, types.Armature = object, object, object
         bpy.props, bpy.types = props, types
@@ -126,12 +145,15 @@ class WorklistUI(unittest.TestCase):
         # on the actual Worklist drawing, operators and callback guards.
         composition_ui = ModuleType(package_name + '.animation_composition_ui')
         composition_ui.draw_composition = Mock()
+        composition = ModuleType(package_name + '.animation_composition')
+        composition.SESSION = 'character_designer_composition_session_v1'
+        composition.active = Mock(return_value=False)
         modules = patch.dict(sys.modules, {
             package_name: package, 'bpy': bpy, 'bpy.props': props, 'bpy.types': types,
             animation.__name__: animation, self.backend.__name__: self.backend,
             self.collection.__name__: self.collection,
             pose_capture.__name__: pose_capture,
-            composition_ui.__name__: composition_ui,
+            composition_ui.__name__: composition_ui, composition.__name__: composition,
         })
         modules.start()
         self.addCleanup(modules.stop)
@@ -147,7 +169,7 @@ class WorklistUI(unittest.TestCase):
         # Controller-UI integration derivative: native Source/Custom copies have
         # explicit Object slots. Model that existing admission field instead of
         # weakening the product's active Action/slot identity guard.
-        rig = SimpleNamespace(name='Fixture Rig',
+        rig = SimpleNamespace(name='Fixture Rig', session_uid=1,
                               animation_data=SimpleNamespace(action=None, action_slot_handle=1))
         items = [SimpleNamespace(item_id='id-' + name, clip_key='clip-' + name, name=name,
                                  source_action=Action(name+' Source', linked=True),
@@ -161,13 +183,20 @@ class WorklistUI(unittest.TestCase):
                                    link_path='link.json' if ready else '', ready=ready)
                    for name, source, ready in (('Walk', 'Soldier', True), ('Dance', 'Civilian', False))]
         self.state = SimpleNamespace(items=items, catalog=catalog, active_index=0, list_cursor=0, catalog_index=1,
+                                     selected_motion_clip='',
                                      search='', workspace_path='character_animation_workspace.json',
                                      workspace_identity='validated-workspace-identity',
                                      connection_check_failed=False,
                                      target_name='Cosha', show_catalog=True, status='', has_error=False,
                                      collection_status='', scan_completed=False, show_advanced=False)
+        scene = Scene()
+        scene.name = 'Animation Worklist · Cosha'
+        scene.character_designer_animation_worklist = self.state
+        scene.character_designer_setup = SimpleNamespace(rig=None)
+        scene.character_designer_local_motion_pins = []
+        scene.objects = {}
         self.context = SimpleNamespace(
-            scene=SimpleNamespace(name='Animation Worklist · Cosha', character_designer_animation_worklist=self.state),
+            scene=scene,
             mode='OBJECT',
             screen=SimpleNamespace(areas=[]), region=SimpleNamespace(width=360),
             preferences=SimpleNamespace(system=SimpleNamespace(ui_scale=1.0)),
@@ -275,6 +304,7 @@ class WorklistUI(unittest.TestCase):
                         self.assertIs(buttons['Return to Animation'].finish, True)
 
     def test_native_rest_and_pose_buttons_pin_and_execute_opposite_display_routes(self):
+        self.state.show_advanced = True
         with self.base_pose_modules() as (pose, state):
             rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
             rig = rest.get_rig(self.context)
@@ -304,6 +334,7 @@ class WorklistUI(unittest.TestCase):
             self.assertFalse(state['active'])
 
     def test_native_display_remains_available_when_base_pose_admission_refuses(self):
+        self.state.show_advanced = True
         with self.base_pose_modules() as (pose, _state):
             pose.can_start.return_value = False
             self.assertFalse(self.ui.CHARACTERDESIGNER_OT_worklist_base_pose.poll(self.context))
@@ -317,6 +348,7 @@ class WorklistUI(unittest.TestCase):
             pose.start_or_reset.assert_not_called()
 
     def test_native_display_keeps_its_own_admission_and_busy_guards(self):
+        self.state.show_advanced = True
         with self.base_pose_modules():
             rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
             for admitted, idle in ((True, True), (False, True), (True, False)):
@@ -337,6 +369,7 @@ class WorklistUI(unittest.TestCase):
             rest.show_pose.assert_not_called()
 
     def test_live_original_inputs_still_disable_native_display_controls(self):
+        self.state.show_advanced = True
         with self.base_pose_modules(), patch.object(self.ui, 'original_inputs_live', return_value=True):
             layout = Layout()
             self.ui.draw_worklist(layout, self.context)
@@ -539,11 +572,12 @@ class WorklistUI(unittest.TestCase):
         self.backend.connect.assert_not_called()
 
     def test_connection_header_distinguishes_saved_path_from_validated_workspace(self):
+        self.state.show_advanced = True
         for path, identity, failed, text, icon in (
-                ('', '', False, 'Connect', 'FILE_FOLDER'),
-                ('', 'old-identity', False, 'Connect', 'FILE_FOLDER'),
+                ('', '', False, 'Connect Unity Action List', 'FILE_FOLDER'),
+                ('', 'old-identity', False, 'Connect Unity Action List', 'FILE_FOLDER'),
                 ('workspace.json', '', False, 'Check Connection', 'QUESTION'),
-                ('workspace.json', 'validated-identity', False, 'Connected', 'CHECKMARK'),
+                ('workspace.json', 'validated-identity', False, 'Cosha', 'CHECKMARK'),
                 ('workspace.json', 'validated-identity', True, 'Check Failed', 'ERROR')):
             with self.subTest(path=path, identity=identity, failed=failed):
                 self.state.workspace_path = path
@@ -560,11 +594,35 @@ class WorklistUI(unittest.TestCase):
                 self.assertEqual(len(buttons), 1)
                 self.assertEqual((buttons[0][1]['text'], buttons[0][1]['icon']), (text, icon))
 
+    def test_initial_empty_and_failed_setup_stay_reachable_without_requiring_a_daily_refresh(self):
+        self.state.rig = None
+        self.context.scene.objects = []
+        saved = self.state.items
+        for path, amount, failed, advanced, expected in (
+                ('', 0, False, False, []),
+                ('', 0, False, True, ['Connect Unity Action List']),
+                ('list.json', 0, False, False, ['Cosha', 'Sync List']),
+                ('list.json', 0, False, True, ['Cosha', 'Sync List']),
+                ('list.json', 1, False, False, []),
+                ('list.json', 1, False, True, ['Cosha', 'Sync List']),
+                ('list.json', 1, True, False, ['Check Failed', 'Sync List'])):
+            with self.subTest(path=path, amount=amount, failed=failed, advanced=advanced):
+                self.state.workspace_path, self.state.items = path, saved[:amount]
+                self.state.connection_check_failed, self.state.show_advanced = failed, advanced
+                layout = Layout()
+                self.ui.draw_worklist(layout, self.context)
+                buttons = [value[1]['text'] for kind, value, _ in layout.records if kind == 'operator'
+                           and value[0] in ('character_designer.worklist_connect', 'character_designer.worklist_sync_list')]
+                self.assertEqual(buttons, expected)
+                if path and not amount:
+                    self.assertTrue(any(kind == 'label' and value['text'] == '1 prepared in Unity · 0 local actions'
+                                        for kind, value, _ in layout.records))
+
     def test_connection_tooltip_identifies_saved_check_and_keeps_workspace_change_available(self):
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect
         description = operator.description(self.context, None)
         self.assertIn('last successful Connect or Refresh', description)
-        self.assertIn('Use Refresh', description)
+        self.assertIn('Sync List', description)
         self.assertIn('choose another workspace', description)
         self.assertIn(self.state.workspace_path, description)
         self.state.has_error = True  # An unrelated animation error is not disconnection evidence.
@@ -879,7 +937,8 @@ class WorklistUI(unittest.TestCase):
                 selections = [active for kind, value, active in layout.records
                               if kind == 'prop' and value[0] == 'sync_selected']
                 self.assertEqual(selections, [])
-                self.assertFalse(any(kind == 'label' for kind, _value, _active in layout.records))
+                self.assertEqual([value for kind, value, _active in layout.records if kind == 'label'],
+                                 [{'text': 'Ready', 'icon': 'CHECKMARK'}])
 
     def test_drawing_saved_scan_results_never_rescans_or_reads_fingerprint_inputs(self):
         self.state.items[0].scan_state = 'CHANGED'
@@ -928,11 +987,10 @@ class WorklistUI(unittest.TestCase):
         self.assertIn(self.ui.CHARACTERDESIGNER_UL_animation_worklist, self.ui.WORKLIST_CLASSES)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
-            ('character_designer.worklist_connect', 'Connected'),
-            ('character_designer.worklist_refresh', ''),
-            ('character_designer.worklist_sync_list', 'Sync List'),
-            ('character_designer.worklist_sync_changed', 'Export Changes'),
-            ('character_designer.make_controller_animation', 'Generate Controller Custom')])
+            ('character_designer.motion_category_create', ''),
+            ('character_designer.worklist_sync', 'Send Selected to Unity')])
+        self.assertIn(('menu', ('CHARACTERDESIGNER_MT_motion_categories',
+                                {'text': 'Uncategorized', 'icon': 'FILE_FOLDER'}), True), layout.records)
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
                                                    for item in self.state.items]), before)
         self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
@@ -977,6 +1035,7 @@ class WorklistUI(unittest.TestCase):
             self.assertEqual(enabled(), [False])
 
     def test_removed_custom_reduction_has_no_registered_or_drawn_entry(self):
+        self.state.show_advanced = True
         removed = {'character_designer.worklist_simplify_keys',
                    'character_designer.worklist_compare_keys'}
         identifiers = {getattr(cls, 'bl_idname', '') for cls in self.ui.WORKLIST_CLASSES}
@@ -1033,7 +1092,8 @@ class WorklistUI(unittest.TestCase):
     def test_row_activates_the_local_action_by_stable_item_id(self):
         item = self.state.items[1]
         layout = self.draw_action_row(item)
-        [(name, _options, payload)] = [value for kind, value, _enabled in layout.records if kind == 'operator']
+        [(name, _options, payload)] = [
+            value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual(name, 'character_designer.worklist_activate')
         self.assertEqual((payload.item_id, payload.side), ('id-Run', 'CUSTOM'))
         activate = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
@@ -1074,15 +1134,55 @@ class WorklistUI(unittest.TestCase):
             with self.subTest(saved_side=side):
                 item.side, item.rig.animation_data.action = side, action
                 layout = self.draw_action_row(item)
-                [(kind, (name, options, payload), enabled)] = layout.records
+                [(kind, (name, options, payload), enabled)] = [
+                    record for record in layout.records if record[0] == 'operator']
                 self.assertEqual((kind, name, payload.side, enabled),
                                  ('operator', 'character_designer.worklist_activate', 'CUSTOM', True))
-                self.assertEqual(options, dict(text='Walk', icon='EDITMODE_HLT', emboss=True, depress=active))
+                self.assertEqual(options, dict(text='Walk', icon='ACTION', emboss=False, depress=active))
                 self.assertEqual(item.side, side)
                 self.assertIs(item.rig.animation_data.action, action)
         self.backend.activate.assert_not_called()
         self.assertIn('INTERNAL', self.ui.CHARACTERDESIGNER_OT_worklist_drag.bl_options)
         self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_remove, self.ui.WORKLIST_CLASSES)
+
+    def test_category_row_menu_moves_motion_without_activating_it(self):
+        categories = self.ui.categories
+        scene = self.context.scene
+        create = categories.CHARACTERDESIGNER_OT_motion_category_create()
+        create.name, create.target = 'Locomotion', ''
+        self.assertEqual(create.execute(self.context), {'FINISHED'})
+        self.assertEqual(categories.category_label(scene), 'Uncategorized')
+        item = self.state.items[1]
+        original = self.state.active_index, item.rig.animation_data.action
+        row = self.draw_action_row(item)
+        move_name, move_options, move_payload = [value for kind, value, _enabled in row.records
+                                                 if kind == 'operator'][-1]
+        self.assertEqual((move_name, move_options['icon'], move_payload.key),
+                         ('character_designer.motion_category_move', 'FILE_FOLDER', item.clip_key))
+        popup = Layout()
+
+        def draw_popup(draw, **_kwargs):
+            draw(SimpleNamespace(layout=popup), self.context)
+
+        self.context.window_manager.popup_menu = draw_popup
+        move = categories.CHARACTERDESIGNER_OT_motion_category_move()
+        move.key = move_payload.key
+        self.assertEqual(move.invoke(self.context, None), {'FINISHED'})
+        destinations = [(value[1]['text'], value[2]) for kind, value, _enabled in popup.records
+                        if kind == 'operator' and value[0] == 'character_designer.motion_category_assign']
+        self.assertEqual([label for label, _payload in destinations], ['Uncategorized', 'Locomotion'])
+        assign = categories.CHARACTERDESIGNER_OT_motion_category_assign()
+        vars(assign).update(vars(destinations[1][1]))
+        self.assertEqual(assign.execute(self.context), {'FINISHED'})
+        ui_list = self.ui.CHARACTERDESIGNER_UL_animation_worklist()
+        visible = ui_list.bitflag_filter_item
+        self.assertEqual(ui_list.filter_items(self.context, self.state, 'items'), ([visible, 0, visible], []))
+        select = categories.CHARACTERDESIGNER_OT_motion_category_select()
+        select.category_id, select.target = assign.category_id, assign.target
+        self.assertEqual(select.execute(self.context), {'FINISHED'})
+        self.assertEqual(ui_list.filter_items(self.context, self.state, 'items'), ([0, visible, 0], []))
+        self.assertEqual((self.state.active_index, item.rig.animation_data.action), original)
+        self.backend.activate.assert_not_called()
 
     def test_action_row_requires_a_local_action_and_an_idle_worklist(self):
         item = self.state.items[0]
@@ -1096,7 +1196,8 @@ class WorklistUI(unittest.TestCase):
                         self.context.mode = mode
                         item.custom_action = action
                         layout = self.draw_action_row(item)
-                        self.assertEqual([enabled for kind, _value, enabled in layout.records if kind == 'operator'],
+                        self.assertEqual([enabled for kind, value, enabled in layout.records
+                                          if kind == 'operator' and value[0] == 'character_designer.worklist_activate'],
                                          [action is local and not busy and mode in {'OBJECT', 'POSE'}])
 
     def test_new_action_is_available_only_in_closed_by_default_advanced_fold(self):
@@ -1108,7 +1209,8 @@ class WorklistUI(unittest.TestCase):
                 buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
                 self.assertEqual('character_designer.worklist_register_new' in buttons, opened)
                 self.assertNotIn('character_designer.worklist_scan_changes', buttons)
-                self.assertNotIn('character_designer.worklist_sync', buttons)
+                self.assertEqual(buttons.count('character_designer.worklist_sync'), 1)
+                self.assertEqual('character_designer.worklist_sync_changed' in buttons, opened)
         self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_register_new, self.ui.WORKLIST_CLASSES)
 
     def test_idle_success_feedback_is_hidden_and_errors_remain_visible(self):
@@ -1128,10 +1230,12 @@ class WorklistUI(unittest.TestCase):
                       [value for kind, value, _enabled in layout.records if kind == 'label'])
 
     def test_adopted_rig_omits_identity_labels_but_keeps_export_warning_and_error(self):
+        self.state.show_advanced = True
         class Rig(dict):
             pass
 
         rig = Rig(character_designer_worklist_main_session_v1='owned-session')
+        rig.override_library = None
         rig.name, rig.type, rig.library = 'CoshaRig', 'ARMATURE', None
         rig.data = SimpleNamespace()
         self.state.rig = rig
@@ -1423,6 +1527,7 @@ class WorklistUI(unittest.TestCase):
         unity.active_preview = Mock(return_value=None)
         unity.preview_time_seconds = Mock(return_value=0)
         link = ModuleType(package_name + '.animation_link')
+        link.ACTION_KEY = 'character_designer_animation_link_action'
         link.get_link = Mock(return_value=None)
         self.exporter.active_job.return_value = None
         layout = Layout()
@@ -1450,8 +1555,13 @@ class WorklistUI(unittest.TestCase):
                 labels = [value['text'] for kind, value, _ in records if kind == 'label']
                 self.assertFalse(any(text.startswith('Using:') for text in labels))
                 self.assertEqual(any('Rig > Character Setup' in text for text in labels), not valid)
+                self.assertNotIn('character_designer.animation_unity_import',
+                                 [value[0] for kind, value, _ in records if kind == 'operator'])
+                self.state.show_advanced = True
+                advanced = self.draw_legacy_panel(animation)
+                self.state.show_advanced = False
                 self.assertIn('character_designer.animation_unity_import',
-                              [value[0] for kind, value, _ in records if kind == 'operator'])
+                              [value[0] for kind, value, _ in advanced if kind == 'operator'])
                 self.assertEqual((dict(vars(setup)), dict(vars(settings)), self.context.object, self.state.rig), before)
 
     def test_unset_main_rig_keeps_legacy_selector_and_automatic_target_label(self):
@@ -1566,6 +1676,7 @@ class WorklistUI(unittest.TestCase):
     def test_main_rig_adoption_button_dispatches_existing_scene_backend(self):
         main = SimpleNamespace(name='CoshaRig', get=lambda _key: None)
         self.context.scene.character_designer_setup = SimpleNamespace(rig=main)
+        main.library = main.override_library = None
         self.state.rig = None
         self.backend.adopt_main_rig = Mock()
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_use_main_rig()
@@ -1585,6 +1696,7 @@ class WorklistUI(unittest.TestCase):
         main = SimpleNamespace(name='CoshaRig', get=lambda key:
                                'saved record' if key == 'character_designer_worklist_main_session_v1' else None)
         self.context.scene.character_designer_setup = SimpleNamespace(rig=main)
+        main.library = main.override_library = None
         self.state.rig = main
         self.backend.restore_main_rig = Mock()
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_restore_main_rig()
@@ -1616,6 +1728,450 @@ class WorklistUI(unittest.TestCase):
         self.assertNotIn('character_designer.animation_link_import', buttons)
         self.assertNotIn('character_designer.animation_unity_import', buttons)
         self.assertNotIn('character_designer.animation_export', buttons)
+
+
+    def test_controller_open_preference_is_saved_and_defaults_on_without_callback(self):
+        prop = self.ui.CharacterDesignerAnimationWorklistState.__annotations__['convert_imported_to_controls']
+        self.assertIs(prop['default'], True)
+        self.assertNotIn('SKIP_SAVE', prop.get('options', ()))
+        self.assertNotIn('update', prop)
+
+    def test_both_motion_entry_points_use_controller_edit_service(self):
+        service = ModuleType(self.ui.__package__ + '.animation_controller_edit')
+        service.open_motion = Mock(return_value={'state': 'MAPPING_NEEDED', 'message': 'Rest mapping needs review.'})
+        service._authored_row = Mock(return_value=False)
+        home = SimpleNamespace(character_designer_animation_worklist=self.state)
+        editor = self.context.scene
+        with patch.dict(sys.modules, {service.__name__: service}), \
+                patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
+                patch.object(self.ui.edit_scene, 'editing_scene', return_value=editor):
+            operator = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
+            operator.item_id, operator.side = self.state.items[0].item_id, 'CUSTOM'
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            service.open_motion.assert_called_once_with(self.context, home, 'clip-Walk', prepare_on_open=True)
+            self.assertEqual(operator.last_report, ({'WARNING'}, 'Rest mapping needs review.'))
+            self.backend.activate.assert_not_called()
+
+            service.open_motion.reset_mock()
+            self.context.scene = home
+            operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_edit_prepared_motion()
+            operator.clip_key = 'clip-Walk'
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            service.open_motion.assert_called_once_with(self.context, home, 'clip-Walk', prepare_on_open=True)
+            self.assertEqual(operator.last_report[0], {'WARNING'})
+
+    def test_source_action_click_keeps_native_activation_route(self):
+        service = ModuleType(self.ui.__package__ + '.animation_controller_edit')
+        service.open_motion = Mock()
+        with patch.dict(sys.modules, {service.__name__: service}), \
+                patch.object(self.ui.edit_scene, 'mapping_home', return_value=SimpleNamespace()):
+            operator = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
+            operator.item_id, operator.side = self.state.items[0].item_id, 'SOURCE'
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            service.open_motion.assert_not_called()
+            self.backend.activate.assert_called_once_with(self.context, 'id-Walk', side='SOURCE')
+
+    def test_mapping_record_uses_workspace_work_identity_and_target(self):
+        target = object()
+        row = SimpleNamespace(work_item_id='work-walk', clip_key='clip-Walk', name='Renamed walk')
+        record = SimpleNamespace(workspace_identity='workspace', work_item_id='work-walk',
+                                 clip_key='old-clip-name', target=target)
+        home = SimpleNamespace(character_designer_animation_worklist=SimpleNamespace(workspace_identity='workspace'),
+                               character_designer_setup=SimpleNamespace(rig=target),
+                               character_designer_controller_motions=[record])
+        self.assertIs(self.ui.edit_scene.mapping_record(home, row), record)
+        for field, value in (('workspace_identity', 'different'), ('target', object()), ('work_item_id', 'other')):
+            previous = getattr(record, field)
+            setattr(record, field, value)
+            self.assertIsNone(self.ui.edit_scene.mapping_record(home, row))
+            setattr(record, field, previous)
+        home.character_designer_controller_motions.append(record)
+        self.assertIsNone(self.ui.edit_scene.mapping_record(home, row))
+
+    def test_ready_check_is_neutral_and_shared_by_fk_and_ik(self):
+        service = self.prepare_service()
+        settings = SimpleNamespace(convert_imported_to_controls=False)
+        home = SimpleNamespace(character_designer_animation_worklist=settings)
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
+                patch.object(self.ui.edit_scene, 'mapping_record') as mapping_record:
+            for fk in (False, True):
+                with self.subTest(fk=fk):
+                    action = Action('Walk Controller')
+                    service._is_fk.return_value = fk
+                    record = SimpleNamespace(state='READY', controller_action=action)
+                    mapping_record.return_value = record
+                    settings.convert_imported_to_controls = fk
+                    layout = Layout()
+                    self.ui.edit_scene.draw_mapping_state(layout, self.context, self.state.items[0])
+                    self.assertEqual(layout.records, [('label', {'text': 'Ready', 'icon': 'CHECKMARK'}, True)])
+                    self.assertIs(record.controller_action, action)
+        service.prepare_motion.assert_not_called()
+
+    def prepare_service(self):
+        service = ModuleType(self.ui.__package__ + '.animation_controller_edit')
+        service.pending = Mock(return_value=None)
+        service._is_fk = Mock(return_value=False)
+        service.missing_motions = Mock(return_value=tuple(self.state.items))
+        service._authored_row = Mock(return_value=False)
+        service.prepare_motion = Mock(return_value={'state': 'PENDING', 'message': 'Queued'})
+        service.prepare_missing = Mock(return_value={'state': 'PENDING', 'message': 'Queued'})
+        service.open_motion = Mock()
+        patched = patch.dict(sys.modules, {service.__name__: service})
+        patched.start()
+        self.addCleanup(patched.stop)
+        return service
+
+    def test_prepare_row_is_a_neutral_explicit_action_with_stable_key(self):
+        service = self.prepare_service()
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=object()), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=None):
+            layout = Layout()
+            self.ui.edit_scene.draw_mapping_state(layout, self.context, self.state.items[0])
+        kind, (name, options, payload), enabled = layout.records[0]
+        self.assertEqual((kind, name, enabled), ('operator', 'character_designer.prepare_controller_motion', True))
+        self.assertEqual(options, {'text': 'Prepare', 'icon': 'POSE_HLT'})
+        self.assertEqual(payload.clip_key, 'clip-Walk')
+        service.prepare_motion.assert_not_called()
+        service.open_motion.assert_not_called()
+
+    def test_prepare_header_omits_legacy_checkbox_and_counts_all_candidates(self):
+        service = self.prepare_service()
+        self.state.search = 'nothing matches'
+        home = SimpleNamespace(character_designer_animation_worklist=self.state)
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=None):
+            layout = Layout()
+            self.ui.edit_scene.draw_mapping_options(layout, self.context)
+        self.assertFalse(any(kind == 'prop' and value[0] == 'convert_imported_to_controls' for kind, value, _ in layout.records))
+        operator = next(value for kind, value, _ in layout.records if kind == 'operator')
+        self.assertEqual(operator[0], 'character_designer.prepare_missing_controller_motions')
+        self.assertEqual(operator[1]['text'], 'Prepare Missing FK (3)')
+        service.missing_motions.assert_called_once_with(home)
+        service.prepare_missing.assert_not_called()
+
+    def test_shared_pending_block_keeps_cancel_visible_before_child_launch(self):
+        service = self.prepare_service()
+        service.pending.return_value = dict(job_id='queue', phase='Preparing inputs', elapsed=2,
+            cancelling=False, completed=1, failed=0, skipped=1, total=5, name='Walk')
+        home = SimpleNamespace(character_designer_animation_worklist=self.state)
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=None):
+            layout = Layout()
+            self.ui.edit_scene.draw_mapping_options(layout, self.context)
+        labels = [value['text'] for kind, value, _ in layout.records if kind == 'label']
+        self.assertEqual(labels, ['Preparing controls · 2 / 5', 'Walk', 'Preparing inputs · 0:02'])
+        buttons = [value for kind, value, _ in layout.records if kind == 'operator']
+        self.assertEqual(len(buttons), 1)
+        self.assertEqual(buttons[0][0], 'character_designer.cancel_controller_motion')
+        self.assertEqual(buttons[0][2].job_id, 'queue')
+        self.assertIn('queued motions', self.ui.edit_scene.CHARACTERDESIGNER_OT_cancel_controller_motion.bl_description)
+        service.missing_motions.assert_not_called()
+
+    def test_running_motion_shows_current_sample_and_adaptive_pass(self):
+        service = self.prepare_service()
+        service.pending.return_value = dict(job_id='queue', phase='Solving controller poses', elapsed=62,
+            cancelling=False, completed=0, failed=0, skipped=0, total=29, name='Wall Jump',
+            progress_detail=dict(sample=17, total=72, round=1))
+        home = SimpleNamespace(character_designer_animation_worklist=self.state)
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=None):
+            layout = Layout()
+            self.ui.edit_scene.draw_mapping_options(layout, self.context)
+        labels = [value['text'] for kind, value, _ in layout.records if kind == 'label']
+        self.assertEqual(labels[-2:], ['Solving controller poses · 1:02', 'Sample 17 / 72 · Pass 1'])
+
+    def test_cancel_stays_in_first_progress_row_before_name_and_phase_appear(self):
+        service = self.prepare_service()
+        home = SimpleNamespace(character_designer_animation_worklist=self.state)
+        positions = []
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=None):
+            for name, phase in (('', 'Queued'), ('Walk Forward', 'Reading source inputs'), ('Walk Forward', 'Cancelling')):
+                service.pending.return_value = dict(job_id='queue', phase=phase, elapsed=2,
+                    cancelling=phase == 'Cancelling', completed=0, failed=0, skipped=0, total=5, name=name)
+                layout = Layout()
+                self.ui.edit_scene.draw_mapping_options(layout, self.context)
+                self.assertEqual(layout.records[0], ('label', {'text': 'Preparing controls · 0 / 5', 'icon': 'POSE_HLT'}, True))
+                self.assertEqual(layout.records[1][0], 'operator')
+                self.assertEqual(layout.records[1][1][0], 'character_designer.cancel_controller_motion')
+                self.assertEqual(layout.records[2][1]['text'], name or 'Waiting to start')
+                self.assertEqual(layout.records[3][1]['text'], phase + ' · 0:02')
+                box = layout.children[0]
+                first_row = box.children[0]
+                cancel_column = first_row.children[0]
+                positions.append((len(box.children), len(first_row.children), cancel_column.ui_units_x))
+        self.assertEqual(positions, [(1, 1, 3.8)] * 3)
+
+    def test_explicit_prepare_operators_are_registered_once_and_never_open_motion(self):
+        service = self.prepare_service()
+        home = SimpleNamespace(character_designer_animation_worklist=self.state)
+        classes = (self.ui.edit_scene.CHARACTERDESIGNER_OT_prepare_controller_motion,
+                   self.ui.edit_scene.CHARACTERDESIGNER_OT_prepare_missing_controller_motions)
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home):
+            for cls in classes:
+                self.assertEqual(self.ui.WORKLIST_CLASSES.count(cls), 1)
+                operator = cls()
+                operator.clip_key = 'clip-Walk'
+                self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        service.prepare_motion.assert_called_once_with(self.context, home, 'clip-Walk')
+        service.prepare_missing.assert_called_once_with(self.context, home)
+        service.open_motion.assert_not_called()
+        self.backend.activate.assert_not_called()
+
+    def test_retry_has_reason_in_tooltip_and_never_retries_from_draw(self):
+        service = self.prepare_service()
+        record = SimpleNamespace(state='MAPPING_NEEDED', error='Missing spine mapping', controller_action=None)
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=object()), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=record), \
+                patch.object(self.ui.edit_scene, 'editing_scene', return_value=self.context.scene), \
+                patch.object(self.ui.edit_scene, '_local_row', return_value=self.state.items[0]):
+            layout = Layout()
+            self.ui.edit_scene.draw_mapping_state(layout, self.context, self.state.items[0])
+            description = self.ui.edit_scene.CHARACTERDESIGNER_OT_prepare_controller_motion.description(
+                self.context, SimpleNamespace(clip_key='clip-Walk'))
+        self.assertEqual(layout.records[0][1][1]['text'], 'Retry')
+        self.assertIn('Missing spine mapping', description)
+        service.prepare_motion.assert_not_called()
+
+    def test_authored_row_has_no_conversion_affordance(self):
+        service = self.prepare_service()
+        service._authored_row.return_value = True
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=object()):
+            layout = Layout()
+            self.ui.edit_scene.draw_mapping_state(layout, self.context, self.state.items[0])
+        self.assertEqual(layout.records, [('label', {'text': 'Ready', 'icon': 'CHECKMARK'}, True)])
+        service.pending.assert_not_called()
+
+    def test_catalog_and_imported_rows_share_fixed_action_columns_without_import_label(self):
+        self.prepare_service()
+        name = 'Great Sword Long Imported Animation'
+        catalog = SimpleNamespace(clip_key='clip-Walk', name=name, ready=True)
+        imported = SimpleNamespace(**vars(self.state.items[0]))
+        imported.name = name
+        widths = []
+        with patch.object(self.ui.edit_scene, 'mapping_home', return_value=object()), \
+                patch.object(self.ui.edit_scene, 'mapping_record', return_value=None), \
+                patch.object(self.ui.edit_scene, 'editing_scene', return_value=self.context.scene):
+            for local in (None, imported):
+                with patch.object(self.ui.edit_scene, '_local_row', return_value=local):
+                    layout = Layout()
+                    self.ui.edit_scene.CHARACTERDESIGNER_UL_prepared_motions().draw_item(
+                        self.context, layout, self.state, catalog, 0, self.state, 'catalog_index')
+                columns = layout.children[0].children
+                self.assertEqual(len(columns), 3)
+                self.assertFalse(hasattr(columns[0], 'ui_units_x'))
+                widths.append((columns[1].ui_units_x, columns[2].ui_units_x))
+                labels = [value['text'] for kind, value, _ in layout.records if kind == 'label']
+                self.assertNotIn('Import', labels)
+                buttons = [value for kind, value, _ in layout.records if kind == 'operator']
+                self.assertEqual(buttons[0][1]['text'], name)
+                self.assertEqual(buttons[0][1]['icon'], 'ACTION')
+                self.assertFalse(any(value[1].get('depress') for value in buttons))
+            layout = Layout()
+            self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+                self.context, layout, self.state, imported, 0, self.state, 'list_cursor')
+            columns = layout.children[0].children
+            widths.append((columns[1].ui_units_x, columns[2].ui_units_x))
+        self.assertEqual(widths, [(5.5, 1.3)] * 3)
+
+    def test_motion_rows_reserve_the_same_status_and_category_columns(self):
+        layout = Layout()
+        name, status, manage = self.ui.edit_scene.motion_row(layout)
+        self.assertFalse(hasattr(name, 'ui_units_x'))
+        self.assertEqual(status.ui_units_x, 5.5)
+        self.assertEqual(manage.ui_units_x, 1.3)
+
+    def mapped_motion_home(self):
+        editor = self.context.scene
+        self.state.rig = self.state.items[0].rig
+        editor.objects = {self.state.rig.name: self.state.rig}
+        home = type(editor)()
+        home.name = 'X'
+        target = SimpleNamespace(name='CoshaRig', data=SimpleNamespace(pose_position='POSE'),
+            animation_data=SimpleNamespace(action=Action('Current character edit'), action_slot_handle=4))
+        home.character_designer_setup = SimpleNamespace(rig=target)
+        home.character_designer_controller_motions = []
+        home.character_designer_animation_worklist = SimpleNamespace(**vars(self.state))
+        settings = home.character_designer_animation_worklist
+        settings.rig, settings.items, settings.catalog_index = target, [], 0
+        settings.catalog = [SimpleNamespace(clip_key=row.clip_key, name=row.name, ready=True, work_item_id='')
+                            for row in self.state.items]
+        home[self.ui.edit_scene.EDIT_SCENE] = editor
+        sys.modules['bpy'].data.scenes.append(home)
+        return home, editor
+
+    def test_unprepared_main_entries_select_clicked_clip_without_rebinding_active_work(self):
+        service = self.prepare_service()
+        service.open_motion.return_value = {'state': 'PREPARE_REQUIRED', 'message': 'Click Prepare for Run.'}
+        home, editor = self.mapped_motion_home()
+        held = self.state.active_index, self.state.list_cursor, self.state.rig.animation_data.action
+        for route in ('catalog', 'source_worklist', 'home_worklist'):
+            with self.subTest(route=route):
+                self.context.scene = editor if route == 'source_worklist' else home
+                self.context.window.scene = self.context.scene
+                if route == 'home_worklist':
+                    home.character_designer_animation_worklist.items = self.state.items
+                if route == 'catalog':
+                    operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_edit_prepared_motion()
+                    operator.clip_key = 'clip-Run'
+                else:
+                    operator = self.ui.CHARACTERDESIGNER_OT_worklist_activate()
+                    operator.item_id, operator.side = 'id-Run', 'CUSTOM'
+                before_scene = self.context.scene
+                self.assertEqual(operator.execute(self.context), {'FINISHED'})
+                self.assertEqual(operator.last_report, ({'INFO'}, 'Click Prepare for Run.'))
+                service.open_motion.assert_called_with(self.context, home, 'clip-Run', prepare_on_open=True)
+                self.assertIs(self.context.scene, before_scene)
+                self.assertEqual((self.state.active_index, self.state.list_cursor,
+                                  self.state.rig.animation_data.action), held)
+                self.assertEqual(home.character_designer_animation_worklist.selected_motion_clip, 'clip-Run')
+                self.assertEqual(home.character_designer_animation_worklist.catalog_index, 1)
+        self.backend.activate.assert_not_called()
+        self.backend.add.assert_not_called()
+        service.prepare_motion.assert_not_called()
+
+    def test_explicit_choice_is_ephemeral_and_invalid_clip_cannot_replace_it(self):
+        home, editor = self.mapped_motion_home()
+        field = self.ui.CharacterDesignerAnimationWorklistState.__annotations__['selected_motion_clip']
+        self.assertEqual(field['options'], {'HIDDEN', 'SKIP_SAVE'})
+        self.assertNotIn('update', field)
+        self.ui.edit_scene.select_motion(home, 'clip-Run')
+        self.ui.edit_scene.select_motion(home, 'missing')
+        self.assertEqual(home.character_designer_animation_worklist.selected_motion_clip, 'clip-Run')
+        self.assertEqual(self.state.active_index, 0)
+        self.assertEqual(self.ui._worklist_cursor(self.state), -1)
+        self.context.scene = editor
+        self.assertIs(self.ui.edit_scene.selected_motion(self.context)[1], self.state.items[1])
+        self.context.scene = home
+        home.character_designer_animation_worklist.catalog_index = 2
+        self.assertIs(self.ui.edit_scene.selected_motion(self.context)[1], self.state.items[2])
+
+    def test_prepare_selection_uses_its_explicit_clip_and_keeps_binding_cursor(self):
+        service = self.prepare_service()
+        home, _editor = self.mapped_motion_home()
+        self.context.scene = home
+        operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_prepare_controller_motion()
+        operator.clip_key = 'clip-Run'
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        service.prepare_motion.assert_called_once_with(self.context, home, 'clip-Run')
+        self.assertEqual(home.character_designer_animation_worklist.selected_motion_clip, 'clip-Run')
+        self.assertEqual(self.state.active_index, 0)
+        service.open_motion.assert_not_called()
+
+    def test_advanced_source_button_names_and_keeps_the_drawn_clip_after_reorder(self):
+        service = self.prepare_service()
+        service.open_source_motion = Mock(return_value={'state': 'NATIVE'})
+        home, _editor = self.mapped_motion_home()
+        self.context.scene = home
+        settings = home.character_designer_animation_worklist
+        settings.catalog_index = 1
+        layout = Layout()
+        self.ui.edit_scene.draw_source_motion(layout, self.context)
+        self.assertEqual(layout.records[0], ('label', {'text': 'Run', 'icon': 'ACTION'}, True))
+        name, options, payload = layout.records[1][1]
+        self.assertEqual((name, options['text'], payload.clip_key),
+                         ('character_designer.open_source_motion', 'Open Source Motion', 'clip-Run'))
+        self.assertTrue(layout.records[1][2])
+        settings.catalog.reverse()
+        operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
+        operator.clip_key = payload.clip_key
+        self.assertIn('Run', operator.description(self.context, operator))
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        service.open_source_motion.assert_called_once_with(self.context, home, 'clip-Run')
+        service.open_motion.assert_not_called()
+        service.prepare_motion.assert_not_called()
+
+    def test_advanced_source_allows_ready_catalog_without_preparing_or_importing_from_draw(self):
+        service = self.prepare_service()
+        service.open_source_motion = Mock(return_value={'state': 'NATIVE'})
+        home, _editor = self.mapped_motion_home()
+        self.context.scene = home
+        settings = home.character_designer_animation_worklist
+        settings.catalog.append(SimpleNamespace(clip_key='catalog-only', name='In Air', ready=True))
+        settings.catalog_index = len(settings.catalog) - 1
+        layout = Layout()
+        self.ui.edit_scene.draw_source_motion(layout, self.context)
+        payload = next(value[2] for kind, value, _ in layout.records if kind == 'operator')
+        self.assertEqual(payload.clip_key, 'catalog-only')
+        service.open_source_motion.assert_not_called()
+        self.backend.add.assert_not_called()
+        operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
+        operator.clip_key = payload.clip_key
+        self.assertEqual(operator.execute(self.context), {'FINISHED'})
+        service.open_source_motion.assert_called_once_with(self.context, home, 'catalog-only')
+        service.prepare_motion.assert_not_called()
+
+    def test_source_entry_does_not_fall_back_to_old_action_for_ineligible_selection(self):
+        service = self.prepare_service()
+        service.open_source_motion = Mock()
+        home, _editor = self.mapped_motion_home()
+        self.context.scene = home
+        settings = home.character_designer_animation_worklist
+        settings.selected_motion_clip = 'clip-Walk'
+        settings.catalog.append(SimpleNamespace(clip_key='blocked', name='Blocked', ready=False))
+        settings.catalog_index = len(settings.catalog) - 1
+        layout = Layout()
+        self.ui.edit_scene.draw_source_motion(layout, self.context)
+        buttons = [(value, enabled) for kind, value, enabled in layout.records if kind == 'operator']
+        self.assertFalse(buttons[0][1])
+        self.assertEqual(buttons[0][0][2].clip_key, '')
+        operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
+        operator.clip_key = 'blocked'
+        self.assertEqual(operator.execute(self.context), {'CANCELLED'})
+        service.open_source_motion.assert_not_called()
+        self.assertEqual(settings.selected_motion_clip, 'clip-Walk')
+        self.assertEqual(self.state.active_index, 0)
+
+    def test_source_entry_rejects_authored_or_ambiguous_rows(self):
+        service = self.prepare_service()
+        home, _editor = self.mapped_motion_home()
+        service._authored_row.return_value = True
+        self.assertIsNone(self.ui.edit_scene._source_motion_row(home, 'clip-Walk'))
+        service._authored_row.return_value = False
+        self.state.items.append(SimpleNamespace(**vars(self.state.items[0])))
+        self.assertIsNone(self.ui.edit_scene._source_motion_row(home, 'clip-Walk'))
+        self.ui.edit_scene.select_motion(home, 'clip-Walk')
+        self.assertEqual(home.character_designer_animation_worklist.selected_motion_clip, '')
+
+    def test_ready_row_highlight_follows_character_slot_not_the_source_binding(self):
+        self.prepare_service()
+        home, _editor = self.mapped_motion_home()
+        item = self.state.items[0]
+        action = Action('Walk Controllers')
+        target = home.character_designer_setup.rig
+        record = SimpleNamespace(workspace_identity=self.state.workspace_identity, work_item_id=item.clip_key,
+                                 target=target, state='READY', controller_action=action, controller_slot=8)
+        home.character_designer_controller_motions.append(record)
+        target.animation_data.action, target.animation_data.action_slot_handle = action, 8
+        self.assertTrue(self.ui.edit_scene.controller_motion_active(home, item))
+        target.animation_data.action_slot_handle = 9
+        self.assertFalse(self.ui.edit_scene.controller_motion_active(home, item))
+        target.animation_data.action_slot_handle, target.data.pose_position = 8, 'REST'
+        self.assertFalse(self.ui.edit_scene.controller_motion_active(home, item))
+        target.data.pose_position = 'POSE'
+        item.custom_action = None  # Retained controller edits are independently available.
+        layout = Layout()
+        self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
+            self.context, layout, self.state, item, 0, self.state, 'list_cursor')
+        button = next((value, enabled) for kind, value, enabled in layout.records
+                      if kind == 'operator' and value[0] == 'character_designer.worklist_activate')
+        self.assertTrue(button[1])
+        self.assertTrue(button[0][1]['depress'])
+
+    def test_source_operator_is_registered_once_and_not_drawn_in_main_picker(self):
+        self.prepare_service()
+        home, _editor = self.mapped_motion_home()
+        self.context.scene = home
+        operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion
+        self.assertEqual(self.ui.WORKLIST_CLASSES.count(operator), 1)
+        layout = Layout()
+        self.ui.draw_motion_picker(layout, self.context)
+        self.assertFalse(any(kind == 'operator' and value[0] == operator.bl_idname
+                             for kind, value, _ in layout.records))
+        settings = home.character_designer_animation_worklist
+        [catalog] = [value[0] for kind, value, _ in layout.records if kind == 'list']
+        self.assertEqual(catalog, ('CHARACTERDESIGNER_UL_prepared_motions', 'prepared',
+                                   settings, 'catalog', settings, 'list_cursor'))
 
 
 if __name__ == '__main__':

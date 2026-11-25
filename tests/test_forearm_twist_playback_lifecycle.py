@@ -118,6 +118,7 @@ class Fixture:
                       "load_pre", "save_pre", "undo_pre", "redo_pre", "load_post", "undo_post", "redo_post"):
             setattr(self.bpy.app.handlers, event, [])
         self.events = []
+        self.prepare_scenes = []
         self.prepare_error = self.apply_error = self.math_error = None
         self.prepared_result = None
         self.prepare = Mock(side_effect=self.prepare_call)
@@ -147,7 +148,8 @@ class Fixture:
                  and any(isinstance(target, ast.Name) and target.id == "_HANDLERS" for target in node.targets)]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), self.ns)
 
-    def prepare_call(self, owner):
+    def prepare_call(self, owner, *, scene=None):
+        self.prepare_scenes.append(scene)
         self.events.append(("prepare", owner, bool(self.ns["_PLAYBACK_PREPARED"]), self.cache.depth))
         if self.prepare_error is not None:
             raise self.prepare_error
@@ -191,6 +193,7 @@ class PlaybackLifecycleTests(unittest.TestCase):
         f.arm_playback()
         f.assert_live(self)
         self.assertEqual(f.prepare.call_count, 1)
+        self.assertEqual(f.prepare_scenes, [f.scene])
         self.assertEqual(f.numeric.call_count, 1)
         f.ns["_graph_post"](f.scene, f.graph)
         f.frame()
@@ -268,7 +271,7 @@ class PlaybackLifecycleTests(unittest.TestCase):
 
     def test_record_mode_and_binding_identity_changes_retire_without_regrant(self):
         changes = {
-            "record": lambda f: f.owner.__setitem__(RECORD_KEY, json.dumps({"L": dict(f.records["L"], enabled=False)})),
+            "record": lambda f: f.owner.__setitem__(RECORD_KEY, json.dumps({"L": dict(f.records["L"], target="Changed")})),
             "object_mode": lambda f: setattr(f.owner, "mode", "EDIT"),
             "arm_mode": lambda f: setattr(f.arm, "mode", "OBJECT"),
             "pose_position": lambda f: setattr(f.arm_data, "pose_position", "REST"),
@@ -294,9 +297,14 @@ class PlaybackLifecycleTests(unittest.TestCase):
         f.arm_playback()
         f.ns["_write_records"](f.owner, {"L": dict(f.records["L"], enabled=False)})
         self.assertFalse(f.ns["_PLAYBACK_PREPARED"])
-        before = f.prepare.call_count
+        before, before_numeric = f.prepare.call_count, f.numeric.call_count
+        f.frame()
+        self.assertEqual(f.prepare.call_count, before)
+        self.assertEqual(f.numeric.call_count, before_numeric)
+        f.ns["_write_records"](f.owner, f.records)
         f.frame()
         self.assertEqual(f.prepare.call_count, before + 1)
+        self.assertEqual(f.numeric.call_count, before_numeric + 1)
 
     def test_render_and_unknown_graphs_do_not_borrow_viewport_admission(self):
         for mode in ("RENDER", None, "UNKNOWN"):
@@ -304,7 +312,7 @@ class PlaybackLifecycleTests(unittest.TestCase):
                 f = Fixture()
                 f.arm_playback()
                 before = f.prepare.call_count
-                graph = NS(mode=mode)
+                graph = NS(mode=mode, scene=f.scene)
                 f.frame(graph)
                 self.assertEqual(f.prepare.call_count, before + 1)
                 self.assertIs(f.numeric.call_args.args[1], graph)
@@ -454,7 +462,14 @@ class PlaybackLifecycleTests(unittest.TestCase):
                             f.graph_get.return_value = None
                         f.ns["_playback_pre"](f.scene, graph)
                     self.assertFalse(f.ns["_PLAYBACK_PREPARED"])
-                    self.assertEqual(f.prepare.call_count, 1)
+                    # Since183 the strict path passes the graph's actual scene
+                    # into preparation. Missing graph.scene fails before that
+                    # call; an invalid admission still never grants Play reuse.
+                    prepares = int(hasattr(graph, 'scene'))
+                    self.assertEqual(f.prepare.call_count, prepares)
+                    self.assertEqual(f.numeric.call_count, prepares)
+                    if not prepares:
+                        self.assertIn(f.owner.name, f.ns["_ERRORS"])
 
                     f = Fixture()
                     f.arm_playback()
@@ -465,10 +480,11 @@ class PlaybackLifecycleTests(unittest.TestCase):
                         f.ns["_frame_post"](f.scene, None)
                     else:
                         f.frame(graph)
-                    self.assertEqual(f.prepare.call_count, before + 1)
+                    prepares = int(hasattr(graph, 'scene'))
+                    self.assertEqual(f.prepare.call_count, before + prepares)
                     self.assertFalse(f.ns["_PLAYBACK_PREPARED"])
                     f.frame()
-                    self.assertEqual(f.prepare.call_count, before + 2)
+                    self.assertEqual(f.prepare.call_count, before + prepares + 1)
         f = Fixture()
         original_viewport_graph = NS(mode="VIEWPORT", scene=NS(original=f.scene))
         f.ns["_playback_pre"](f.scene, original_viewport_graph)

@@ -85,7 +85,8 @@ class SetupFixture(SelectionFixture):
         operator = self.public[name]()
         operator.actual_surface = True
         with patch.dict(sys.modules, {self.package.__name__: self.package,
-                                      self.module.__name__: self.module}):
+                                      self.module.__name__: self.module,
+                                      self.package.__name__+'.animation_physics': self.package.animation_physics}):
             return operator.execute(self.context)
 
     def handoff(self):

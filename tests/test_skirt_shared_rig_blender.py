@@ -311,11 +311,16 @@ class SharedRigTests(unittest.TestCase):
         owned_names = set(updated['shared']['names'])
         self.assertEqual(owned_names, set(names))
         collection = main.data.collections_all[updated['shared']['collection']]
-        self.assertEqual(set(collection.bones.keys()), owned_names)
+        from character_designer import skirt_bone_display as layers
+        groups = layers.inspect(main, updated, collection)
+        role_names = layers.roles(updated)
+        self.assertEqual({role: set(group.bones.keys()) for role, group in groups.items()}, role_names)
+        self.assertEqual(set.union(*role_names.values()), owned_names)
         for name in names:
             self.assertEqual(main.data.bones[name].get(service.OWNER_KEY), updated['owner'])
             self.assertIs(main.data.bones[name].get(service.SOURCE_KEY), source)
-            self.assertEqual(set(main.data.bones[name].collections), {collection}, name)
+            self.assertEqual(set(main.data.bones[name].collections),
+                             {group for role, group in groups.items() if name in role_names[role]}, name)
         for chain in updated['chains']:
             for name in chain['def']:
                 for constraint in main.pose.bones[name].constraints:
@@ -643,7 +648,7 @@ class SharedRigTests(unittest.TestCase):
         collections.simplify_body_collections(main)
         self.assertEqual(calibration.native_rest(main), before_native)
         dress = main.data.collections_all[updated['shared']['collection']]
-        self.assertEqual(set(dress.bones.keys()), names)
+        self.assertEqual({b.name for child in dress.children for b in child.bones}, names)
         self.assertFalse(names & set(main.data.collections_all['Original'].bones.keys()))
         other = main.data.collections_all.get('_Other')
         if other:

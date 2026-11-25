@@ -1,4 +1,4 @@
-"""Save one internal native Pose asset from the evaluated Body pose.
+"""Save one native Pose asset from the evaluated Body pose.
 
 Capture is read-only for the artist rig: no mode switches, temporary keying,
 constraint changes, Action assignment, or alterations to an Original session.
@@ -8,6 +8,11 @@ Action contains native transform channels, not generated controller names.
 
 import json
 import math
+import os
+from pathlib import Path
+import re
+from tempfile import TemporaryDirectory
+from uuid import UUID
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
@@ -17,14 +22,19 @@ from . import control_pose_assets as poses, limb_ik, limb_ik_fk
 
 METADATA = 'character_designer_pose_asset_v1'
 _SCOPES = {'SELECTED', 'ALL_BODY'}
+_SHARED_LIBRARY = 'Pose Library'
+_SHARED_CATALOG = 'Pose Library/Cosha'
 
 
 def _require(context, rig):
-    from . import bone_display, forearm_twist
-    bone_display._editable(rig)
-    if context.mode not in {'OBJECT', 'POSE'} or rig.override_library:
+    from . import animation_pose_test, forearm_twist
+    if context.mode not in {'OBJECT', 'POSE'}:
         raise ValueError('Save a Pose on a local character in Object or Pose Mode.')
-    if rig.name not in context.view_layer.objects:
+    # Retained Actions can reference the same Armature without evaluating a
+    # second object. Capture only reads the pose of this rig and creates an Action.
+    if rig is None or not animation_pose_test._pose_owner(rig):
+        raise ValueError('Save Pose needs a local, editable character Armature used by one Object.')
+    if context.view_layer.objects.get(rig.name) != rig:
         raise ValueError('The character must be in this view layer.')
     if context.scene.get('character_designer_weight_workspace_v1', {}).get('rig') == rig:
         raise ValueError('Legacy weight workspace recovery is pending; reopen the file in its original view layer before continuing.')
@@ -108,7 +118,7 @@ def _source_maps(rig, inventory, body):
     return mapping, arms
 
 
-def _resolve_names(rig, inventory, scope, include_fingers):
+def _resolve_names(rig, inventory, scope, include_fingers, *, ignore_unrelated=False):
     body = _body_names(rig, inventory)
     fingers = _finger_names(rig, inventory)
     if scope == 'ALL_BODY':
@@ -125,8 +135,10 @@ def _resolve_names(rig, inventory, scope, include_fingers):
                 names.update(mapping[name])
             elif name in body:
                 names.add(name)
-            else:
+            elif not ignore_unrelated:
                 raise ValueError(f'{name}: select a native Body bone or its public control; Hair, Dress and mechanisms are not supported.')
+        if not names:
+            raise ValueError('Select native Body bones or Body controls, or choose All Body.')
         if include_fingers:
             sides = {side for side, chain in arms.items() if names.intersection(chain)}
             names.update(name for name, side in fingers.items() if side in sides)
@@ -151,8 +163,14 @@ def _owned_constraints(rig, inventory):
     return result
 
 
-def _validate_channels(rig, names, inventory):
+def _validate_channels(rig, names, inventory, *, save_pose=False):
     owned = _owned_constraints(rig, inventory)
+    if save_pose:
+        from . import natural_bind_graph
+        if natural_bind_graph.KEY in rig:
+            graph = natural_bind_graph.validate(rig)
+            if graph['attached']:
+                owned.update((name, natural_bind_graph.COPY) for name in graph["frames"].keys())
     for name in names:
         pb = rig.pose.bones[name]
         if any((name, con.name) not in owned for con in pb.constraints):
@@ -210,9 +228,10 @@ def _capture_fields(rig, evaluated, names):
     return result
 
 
-def save_pose(context, rig, name, *, scope='SELECTED', include_fingers=False):
+def save_pose(context, rig, name, *, scope='SELECTED', include_fingers=False,
+              generate_preview=True):
     """Return a new local Action asset without assigning it to artist animation."""
-    from . import forearm_original_inventory
+    from . import body_original_mode, controller_animation, forearm_original_inventory
     _require(context, rig)
     if scope not in _SCOPES:
         raise ValueError('Choose Selected Region or All Body.')
@@ -220,15 +239,19 @@ def save_pose(context, rig, name, *, scope='SELECTED', include_fingers=False):
         from . import unity_animation_rigging
         session = unity_animation_rigging.current(rig)
         if session is not None and session['enabled']:
-            raise ValueError('All Body cannot save a combined Rigging result. Edit Base with native keying or use Save Controls.')
+            raise ValueError('All Body cannot save a combined Rigging result. Edit Base with native keying or use Key Controls.')
     name = name.strip() if isinstance(name, str) else ''
     if not name:
         raise ValueError('Give the Pose a name.')
-    inventory = forearm_original_inventory.validate(rig)
+    if body_original_mode.active(rig):
+        inventory = forearm_original_inventory.validate(rig)
+    else:
+        inventory = limb_ik._validate_inventory(rig, limb_pose_only=True)
+        controller_animation._controls(rig, inventory, pose_matching=True)
     if not inventory['rigs']:
         raise ValueError('Generate Character Designer Body controls before saving this Pose.')
-    names = _resolve_names(rig, inventory, scope, include_fingers)
-    _validate_channels(rig, names, inventory)
+    names = _resolve_names(rig, inventory, scope, include_fingers, ignore_unrelated=True)
+    _validate_channels(rig, names, inventory, save_pose=True)
     # This merely finishes pending native evaluation; capture never rewrites
     # matrix_basis or an artist controller, even with Auto Key enabled.
     context.view_layer.update()
@@ -259,17 +282,66 @@ def save_pose(context, rig, name, *, scope='SELECTED', include_fingers=False):
     except Exception:
         bpy.data.actions.remove(action)
         raise
-    # Preview is optional presentation work. The saved Pose remains valid if a
-    # background Blender instance does not provide an asset preview renderer.
-    try:
-        action.asset_generate_preview()
-    except RuntimeError:
-        pass
+    if generate_preview:
+        # The preview renderer can be unavailable in background Blender.
+        try:
+            action.asset_generate_preview()
+        except RuntimeError:
+            pass
     return action
 
 
-def _show_current_file(context, action=None):
-    """Show local Poses only in the current window's visible asset browsers.
+def _shared_pose_library(context):
+    libraries = [entry for entry in context.preferences.filepaths.asset_libraries
+                 if entry.name == _SHARED_LIBRARY]
+    if len(libraries) != 1 or not libraries[0].path or getattr(libraries[0], 'use_remote_url', False):
+        raise ValueError('Set one asset library named Pose Library in Preferences → File Paths.')
+    root = Path(bpy.path.abspath(libraries[0].path)).resolve()
+    catalog_file = root / 'blender_assets.cats.txt'
+    if not catalog_file.is_file():
+        raise ValueError('The configured Pose Library needs its Cosha asset catalog.')
+    catalog_ids = []
+    for line in catalog_file.read_text(encoding='utf-8-sig').splitlines():
+        fields = line.split(':', 2)
+        if not line.lstrip().startswith('#') and len(fields) == 3 and fields[1] == _SHARED_CATALOG:
+            catalog_ids.append(UUID(fields[0].strip()))
+    if len(catalog_ids) != 1 or not catalog_ids[0].int:
+        raise ValueError('The configured Pose Library needs one Pose Library/Cosha asset catalog.')
+    return root / 'Saved' / 'Actions', str(catalog_ids[0])
+
+
+def write_shared_pose(action, directory, catalog_id, name):
+    """Publish one existing pose Action without replacing a library asset."""
+    if action.library or action.asset_data is None:
+        raise ValueError('Select a local Pose asset to publish.')
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .')
+    if not stem:
+        raise ValueError('Give the Pose a name that can be used as a filename.')
+    output = directory / (stem + '.asset.blend')
+    if output.exists():
+        raise ValueError(f'The shared Pose Library already has "{stem}". Choose another name.')
+    directory.mkdir(parents=True, exist_ok=True)
+    previous = action.asset_data.catalog_id
+    try:
+        action.asset_data.catalog_id = catalog_id
+        with TemporaryDirectory(prefix='.cd-pose-', dir=directory) as staging:
+            # Use a non-asset suffix so the library cannot list the staging file.
+            candidate = Path(staging) / 'pose.tmp'
+            bpy.data.libraries.write(str(candidate), {action}, path_remap='NONE',
+                                     fake_user=True, compress=True)
+            if not candidate.is_file() or candidate.stat().st_size == 0:
+                raise OSError('Blender did not write the shared Pose asset.')
+            try:
+                os.link(candidate, output)
+            except FileExistsError as exc:
+                raise ValueError(f'The shared Pose Library already has "{stem}". Choose another name.') from exc
+    finally:
+        action.asset_data.catalog_id = previous
+    return output
+
+
+def _show_current_file(context, action=None, *, shared=False, asset_name=''):
+    """Show the saved pose in the current window's visible Asset Browsers.
 
     Hidden workspace browsers can have an uninitialized native runtime even
     when params exists. Blender 5.2's deferred asset activation dereferences
@@ -288,12 +360,16 @@ def _show_current_file(context, action=None):
         if params is None or not hasattr(params, 'asset_library_reference'):
             continue
         try:
-            params.asset_library_reference = 'LOCAL'
-            params.filter_search = ''
+            params.asset_library_reference = _SHARED_LIBRARY if shared else 'LOCAL'
+            params.filter_search = asset_name if shared else ''
             params.filter_asset_id.filter_action = True
             params.catalog_id = '00000000-0000-0000-0000-000000000000'
             params.asset_catalog_visibility = 'ALL'
             area.tag_redraw()
+            if shared:
+                with context.temp_override(area=area):
+                    if bpy.ops.asset.library_refresh.poll():
+                        bpy.ops.asset.library_refresh()
         except (AttributeError, RuntimeError, TypeError, ValueError):
             # Presentation cannot invalidate an already completed Pose.
             continue
@@ -302,10 +378,14 @@ def _show_current_file(context, action=None):
 class CHARACTERDESIGNER_OT_save_pose_asset(bpy.types.Operator):
     bl_idname = 'character_designer.save_pose_asset'
     bl_label = 'Save Pose'
-    bl_description = 'Save the visible Body pose as one internal asset and match controls when applying it'
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_description = 'Save the visible Body pose to this file or to the shared Cosha Pose Library'
+    bl_options = {'UNDO'}
 
     name: StringProperty(name='Name', default='Pose')
+    destination: EnumProperty(name='Save To', items=(
+        ('LOCAL', 'Current File', 'Keep the pose in the current blend file'),
+        ('SHARED', 'Pose Library / Cosha', 'Write a separate asset to the shared Pose Library'),
+    ), default='LOCAL')
     scope: EnumProperty(name='Save', items=(
         ('SELECTED', 'Selected Region', 'Selected native bones or their Body controls; a limb saves its full chain'),
         ('ALL_BODY', 'All Body', 'Save every supported native Body bone'),
@@ -330,18 +410,35 @@ class CHARACTERDESIGNER_OT_save_pose_asset(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, 'name')
+        layout.prop(self, 'destination')
         layout.prop(self, 'scope')
         layout.prop(self, 'include_fingers')
-        layout.label(text='Saved in Current File', icon='FILE_BLEND')
+        if self.destination == 'SHARED':
+            layout.label(text='Writes a shared asset file immediately', icon='FILE_FOLDER')
 
     def execute(self, context):
         from . import bone_display
         try:
             rig = bone_display.character_rig(context)
-            action = save_pose(context, rig, self.name, scope=self.scope, include_fingers=self.include_fingers)
-        except (ValueError, RuntimeError, KeyError) as exc:
+            shared = _shared_pose_library(context) if getattr(self, 'destination', 'LOCAL') == 'SHARED' else None
+            # Shared captures are removed after serialization. They must not
+            # have an asynchronous preview job reading the temporary Action.
+            preview = {'generate_preview': False} if shared else {}
+            action = save_pose(context, rig, self.name, scope=self.scope,
+                               include_fingers=self.include_fingers, **preview)
+            if shared:
+                asset_name = action.name
+                try:
+                    write_shared_pose(action, *shared, self.name)
+                finally:
+                    bpy.data.actions.remove(action)
+        except (ValueError, RuntimeError, KeyError, OSError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+        if shared:
+            _show_current_file(context, shared=True, asset_name=asset_name)
+            self.report({'INFO'}, f'Saved Pose "{asset_name}" in Pose Library / Cosha.')
+            return {'FINISHED'}
         _show_current_file(context, action)
         self.report({'INFO'}, f'Saved Pose "{action.name}" in Current File; save the .blend to keep it.')
         return {'FINISHED'}
@@ -354,10 +451,14 @@ def draw(layout, context):
 
 
 def register():
+    from . import control_pose_preview
+    control_pose_preview.register()
     if not CHARACTERDESIGNER_OT_save_pose_asset.is_registered:
         bpy.utils.register_class(CHARACTERDESIGNER_OT_save_pose_asset)
 
 
 def unregister():
+    from . import control_pose_preview
+    control_pose_preview.unregister()
     if CHARACTERDESIGNER_OT_save_pose_asset.is_registered:
         bpy.utils.unregister_class(CHARACTERDESIGNER_OT_save_pose_asset)

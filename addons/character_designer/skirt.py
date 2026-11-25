@@ -87,7 +87,7 @@ def _finish_setup_selection(context, source):
                                                    + "; ".join(failures)) from error
                 raise
             return source
-    return rig_service.select_controls(context, source)
+    return rig_service.select_controls(context, source, level="DEFAULT")
 
 
 def _desired_attachment(context, source):

@@ -508,6 +508,11 @@ def _playback_token(scene, obj, depsgraph, *, require_playing=False):
 
 
 def _calculate_object(obj, depsgraph, *, _playback_scene=None):
+    # Disabled calibration is retained author data, not a request to prepare or
+    # validate geometry every frame. Explicit Enable performs full preparation.
+    if not any(record.get("enabled", True) for record in _records(obj).values()):
+        _PLAYBACK_PREPARED.pop(obj.as_pointer(), None)
+        return
     # Preparation and correction write only our keys/records, never topology.
     with validation_cache.read_scope():
         prepared = _PLAYBACK_PREPARED.get(obj.as_pointer())
@@ -585,7 +590,7 @@ def _apply_runtime_records(obj, records, depsgraph):
 
 def _calculate_records(obj, depsgraph):
     records = _records(obj)
-    if not records:
+    if not any(record.get("enabled", True) for record in records.values()):
         return
     keys = obj.data.shape_keys
     if keys is None:
@@ -828,9 +833,16 @@ def update_runtime(scene, depsgraph=None, *, _playback=False, _playback_prepared
         return
     _BUSY = True
     try:
-        depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
         for obj in owners:
             try:
+                # Do not request evaluation, prepare bindings, inspect keys or
+                # read vertices/weights/matrices for an entirely disabled owner.
+                # Read the saved flags afresh: Undo/load and other owners still
+                # share these handlers and must retain their normal lifecycle.
+                if not any(record.get("enabled", True) for record in _records(obj).values()):
+                    _PLAYBACK_PREPARED.pop(obj.as_pointer(), None)
+                    continue
+                depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
                 if _playback:
                     _calculate_object(obj, depsgraph, _playback_scene=scene)
                 else:
@@ -1619,6 +1631,14 @@ def toggle_paired_calibration(context, obj):
         return
     enabled = not all(record.get("enabled", True) for record in records.values())
     if enabled:
+        # Preparation may resolve owned keys and historically repaired a cached
+        # rename before its output transaction began. Enable must not change an
+        # artist name if a later binding/pose check refuses the activation.
+        for side, record in records.items():
+            key = _managed_key(obj, side, record, repair_name=False)
+            if key.name != record["key"]:
+                raise ForearmTwistError(
+                    f"Restore managed Shape Key '{record['key']}' to that exact name before enabling correction.")
         records = _prepare_runtime_records(obj)
         for record in records.values():
             record["enabled"] = True
@@ -2272,9 +2292,9 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
             op.repair_stale = True
             if record:
                 enabled = all(item.get("enabled", True) for item in records.values())
-                paused = obj.name in _ERRORS and any(item.get("enabled", True) for item in records.values())
                 row = layout.row(align=True)
-                row.operator("character_designer.forearm_twist_toggle", text="Paused" if paused else "Enabled" if enabled else "Disabled", depress=enabled)
+                row.operator("character_designer.forearm_twist_toggle", text="Enable",
+                             icon="CHECKBOX_HLT" if enabled else "CHECKBOX_DEHLT", emboss=False)
                 remove_row = row.row(align=True)
                 remove_row.alert = True
                 remove_row.operator("character_designer.forearm_twist_remove", text="Remove", icon="TRASH")

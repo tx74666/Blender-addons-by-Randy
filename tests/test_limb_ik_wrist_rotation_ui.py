@@ -1,4 +1,4 @@
-"""Wrist Alt+R adapter/keymap ownership tests; no Blender or native events."""
+"""Explicit wrist commands and ownership of Blender's Pose keymap."""
 
 import ast
 import importlib.util
@@ -55,11 +55,14 @@ class WristRotationUI(unittest.TestCase):
         package_name = '_wrist_ui_' + uuid.uuid4().hex
         package = ModuleType(package_name)
         package.__path__ = [str(SOURCE)]
+        package.natural_bind_mode = NS(register=Mock(), unregister=Mock())
         self.backend_name = package_name + '.limb_ik_wrist_rotation'
         self.backend = ModuleType(self.backend_name)
         self.backend.reset_wrist_neutral = Mock()
         self.bpy = ModuleType('bpy')
         types = ModuleType('bpy.types')
+        props = ModuleType('bpy.props')
+        props.EnumProperty = lambda **kwargs: kwargs
 
         class Operator:
             is_registered = False
@@ -96,7 +99,7 @@ class WristRotationUI(unittest.TestCase):
         package.limb_ik = self.limb
         self.package = package
         self.enterContext(patch.dict(sys.modules, {package_name:package, 'bpy':self.bpy,
-            'bpy.types':types, self.limb.__name__:self.limb}))
+            'bpy.types':types, 'bpy.props':props, self.limb.__name__:self.limb}))
         name = package_name + '.limb_ik_wrist_rotation_ui'
         spec = importlib.util.spec_from_file_location(name, SOURCE / 'limb_ik_wrist_rotation_ui.py')
         self.ui = importlib.util.module_from_spec(spec)
@@ -108,6 +111,7 @@ class WristRotationUI(unittest.TestCase):
         self.rig.data.properties[self.limb.ARMATURE_ID_KEY] = 'owned-rig'
         self.hand = self.bone('Hand.L')
         self.context = NS(mode='POSE', object=self.rig, selected_pose_bones=[self.hand],
+                          scene=NS(tool_settings=NS(use_keyframe_insert_auto=False)),
                           active_pose_bone=self.hand, body_page=False)
 
     def bone(self, name, role='HAND_IK', owner='owned-rig'):
@@ -115,7 +119,8 @@ class WristRotationUI(unittest.TestCase):
         bone.properties.update({self.limb.OWNER_KEY:self.limb.OWNER_VALUE,
             self.limb.VERSION_KEY:self.limb.RIG_VERSION,
             self.limb.ARMATURE_ID_KEY:owner, self.limb.ROLE_KEY:role})
-        return NS(name=name, bone=bone, id_data=self.rig)
+        return ID(name=name, bone=bone, id_data=self.rig, rotation_mode='XYZ',
+                  lock_rotation=(False,) * 3, lock_rotations_4d=False, lock_rotation_w=False)
 
     def load_backend(self):
         self.enterContext(patch.dict(sys.modules, {self.backend_name:self.backend}))
@@ -158,6 +163,32 @@ class WristRotationUI(unittest.TestCase):
         self.hand.id_data = ID(type='MESH', data=ID())
         self.assertFalse(self.operator.poll(self.context))
 
+    def test_shortcut_keeps_partial_rotation_locks_and_fk_on_the_native_path(self):
+        self.hand.lock_rotation_w = True
+        self.assertTrue(self.operator.poll(self.context))  # W is unused in XYZ.
+        self.hand.rotation_mode = 'QUATERNION'
+        self.hand.lock_rotations_4d = True
+        self.assertFalse(self.operator.poll(self.context))
+        self.hand.lock_rotation_w = False
+        self.hand.lock_rotation = (False, True, False)
+        self.assertFalse(self.operator.poll(self.context))
+        self.hand.lock_rotation = (False,) * 3
+        self.hand.properties['ik_fk'] = 0.
+        self.assertFalse(self.operator.poll(self.context))
+        self.hand.properties['ik_fk'] = .96
+        self.assertTrue(self.operator.poll(self.context))
+
+    def test_autokey_mixed_available_rotation_uses_compensation_and_custom_key_set_falls_through(self):
+        self.context.selected_pose_bones.append(self.bone('Root', 'MASTER'))
+        self.context.scene.tool_settings = NS(use_keyframe_insert_auto=True, auto_keying_mode='ADD_REPLACE_KEYS',
+            use_keyframe_insert_keyingset=False, use_keyframe_cycle_aware=False)
+        self.context.scene.keying_sets = NS(active=None)
+        self.context.preferences = NS(edit=NS(use_visual_keying=False, use_keyframe_insert_available=True))
+        self.rig.animation_data = NS(action=object())
+        self.assertTrue(self.operator.poll(self.context))
+        self.context.scene.keying_sets.active = object()
+        self.assertFalse(self.operator.poll(self.context))
+
     def test_single_hand_routes_real_context_and_target_once_without_native_clear(self):
         self.load_backend()
         # Selection, rather than a stale active-bone value, identifies the target.
@@ -168,16 +199,29 @@ class WristRotationUI(unittest.TestCase):
         self.bpy.ops.pose.rot_clear.assert_not_called()
         self.assertIn('UNDO', self.operator.bl_options)
 
-    def test_mixed_and_dual_owned_selection_are_consumed_without_backend_or_fallback(self):
+    def test_mixed_controls_route_to_group_reset_while_foreign_rigs_refuse(self):
         self.load_backend()
-        for selected in ([self.hand, self.bone('FK', 'ARM_FK')], [self.hand, self.bone('Hand.R')]):
-            with self.subTest(selected=selected):
-                self.context.selected_pose_bones = selected
-                self.assertTrue(self.operator.poll(self.context))
-                operator = self.operator()
-                self.assertEqual(operator.execute(self.context), {'CANCELLED'})
-                self.assertIn('only one', operator.messages[-1][1])
+        companion = self.bone('FK', 'ARM_FK')
+        self.context.selected_pose_bones = [companion, self.hand]
+        mixed = NS(reset_mixed_rotation=Mock())
+        with patch.object(self.package, 'controller_transform_clear', mixed, create=True):
+            self.assertTrue(self.operator.poll(self.context))
+            self.assertEqual(self.operator().execute(self.context), {'FINISHED'})
+            mixed.reset_mixed_rotation.assert_called_once_with(self.context, (self.hand,), (companion,))
+            companion.id_data = ID(type='ARMATURE', data=ID())
+            operator = self.operator()
+            self.assertEqual(operator.execute(self.context), {'CANCELLED'})
+            self.assertIn('same rig', operator.messages[-1][1])
+            self.assertEqual(mixed.reset_mixed_rotation.call_count, 1)
         self.backend.reset_wrist_neutral.assert_not_called()
+        self.bpy.ops.pose.rot_clear.assert_not_called()
+
+    def test_both_owned_wrists_use_existing_paired_backend(self):
+        self.load_backend()
+        self.context.selected_pose_bones = [self.hand, self.bone('Hand.R')]
+        self.assertEqual(self.operator().execute(self.context), {'FINISHED'})
+        self.backend.reset_wrist_neutral.assert_called_once_with(
+            self.context, targets=tuple(self.context.selected_pose_bones))
         self.bpy.ops.pose.rot_clear.assert_not_called()
 
     def test_selection_or_context_changed_after_poll_is_rechecked(self):
@@ -203,70 +247,71 @@ class WristRotationUI(unittest.TestCase):
                 self.assertEqual(operator.messages[-1], ({'ERROR'}, reason))
         self.bpy.ops.pose.rot_clear.assert_not_called()
 
-    def test_register_is_idempotent_and_only_adds_its_owned_pose_alt_r_item(self):
-        before = self.unrelated_snapshot()
+    def test_registration_adds_only_one_owned_alt_r_and_teardown_restores_all_maps(self):
+        maps = [config.keymaps['Pose'] for config in vars(self.configs).values()]
+        for km in maps:
+            for key, op in [('G', 'pose.loc_clear'), ('R', 'pose.rot_clear'), ('S', 'pose.scale_clear')]:
+                km.keymap_items.new(op, key, 'PRESS', alt=True)
+        before = [list(km.keymap_items) for km in maps]
+        unrelated = self.unrelated_snapshot()
         self.ui.register()
         self.ui.register()
-        self.assertEqual(len(self.ui._KEYMAPS), 1)
-        km, item = self.ui._KEYMAPS[0]
-        self.assertIs(km, self.addon_map)
-        self.assertEqual((item.idname,item.type,item.value), (self.operator.bl_idname,'R','PRESS'))
-        self.assertEqual(item.flags, dict(alt=True,shift=False,ctrl=False,oskey=False,any=False,head=True))
-        self.assertIs(km.keymap_items.values[0], item)
-        self.assertEqual(before, self.unrelated_snapshot())
-        self.assertEqual(self.bpy.utils.register_class.call_count, 1)
+        self.assertEqual(self.bpy.utils.register_class.call_count, len(self.ui.CLASSES))
         self.assertNotIn(self.backend_name, sys.modules)
+        owned = self.ui._KEYMAPS[0][1]
+        self.assertEqual((owned.idname, owned.type, owned.value, owned.flags),
+                         (self.operator.bl_idname, 'R', 'PRESS', {'alt': True, 'head': True}))
+        self.assertEqual([list(km.keymap_items) for km in maps], [[owned, *before[0]], *before[1:]])
         self.ui.unregister()
         self.ui.unregister()
-        self.assertEqual(self.addon_map.keymap_items.values, [self.foreign])
-        self.assertEqual(self.ui._KEYMAPS, [])
-        self.assertEqual(before, self.unrelated_snapshot())
+        self.assertEqual([list(km.keymap_items) for km in maps], before)
+        self.assertEqual(self.unrelated_snapshot(), unrelated)
 
-    def test_registration_failure_rolls_back_only_new_class_and_keeps_existing_items(self):
-        before = self.unrelated_snapshot()
-        with patch.object(self.addon_map.keymap_items, 'new', side_effect=RuntimeError('keymap failed')):
-            with self.assertRaisesRegex(RuntimeError, 'keymap failed'):
-                self.ui.register()
-        self.assertFalse(self.operator.is_registered)
-        self.assertEqual(self.ui._KEYMAPS, [])
-        self.assertEqual(before, self.unrelated_snapshot())
-        self.operator.is_registered = True
-        with patch.object(self.addon_map.keymap_items, 'new', side_effect=RuntimeError('keymap failed')):
-            with self.assertRaises(RuntimeError):
-                self.ui.register()
-        self.assertTrue(self.operator.is_registered)
-
-    def test_missing_addon_config_can_register_class_then_add_binding_later(self):
+    def test_no_key_configuration_is_required_to_register_explicit_commands(self):
         self.configs.addon = None
         self.ui.register()
-        self.assertTrue(self.operator.is_registered)
-        self.assertEqual(self.ui._KEYMAPS, [])
-        self.configs.addon = NS(keymaps=Maps())
-        self.ui.register()
-        self.assertEqual(len(self.ui._KEYMAPS), 1)
-        self.assertEqual(self.configs.addon.keymaps['Pose'].space_type, 'EMPTY')
-        self.assertEqual(self.configs.addon.keymaps['Pose'].region_type, 'WINDOW')
+        self.assertTrue(all(cls.is_registered for cls in self.ui.CLASSES))
 
-    def test_wrong_pose_map_context_refuses_without_changing_foreign_map(self):
-        self.addon_map.space_type = 'GRAPH_EDITOR'
-        with self.assertRaisesRegex(RuntimeError, 'unexpected editor context'):
+    def test_bind_registration_failure_preserves_preexisting_commands(self):
+        self.operator.is_registered = True
+        self.package.natural_bind_mode.register.side_effect = RuntimeError('bind mode error')
+        with self.assertRaisesRegex(RuntimeError, 'bind mode error'):
             self.ui.register()
-        self.assertEqual(self.addon_map.space_type, 'GRAPH_EDITOR')
-        self.assertEqual(self.addon_map.keymap_items.values, [self.foreign])
-        self.assertFalse(self.operator.is_registered)
-
-    def test_removed_native_item_is_tolerated_and_cleanup_failure_retains_retry_handle(self):
-        self.ui.register()
-        km,item = self.ui._KEYMAPS[0]
-        with patch.object(km.keymap_items, 'remove', side_effect=RuntimeError('remove failed')):
-            with self.assertRaisesRegex(RuntimeError, 'remove failed'):
-                self.ui.unregister()
-        self.assertEqual(self.ui._KEYMAPS, [(km,item)])
         self.assertTrue(self.operator.is_registered)
-        km.keymap_items.remove(item)
-        self.ui.unregister()
-        self.assertEqual(self.ui._KEYMAPS, [])
-        self.assertFalse(self.operator.is_registered)
+        self.assertFalse(any(cls.is_registered for cls in self.ui.CLASSES[1:]))
+
+    def test_legacy_explicit_clear_channel_operator_delegates_only_requested_channel(self):
+        ops = self.bpy.ops.pose
+        ops.scale_clear = Mock(return_value={'FINISHED'})
+        ops.loc_clear = Mock(return_value={'FINISHED'})
+        command = self.ui.CHARACTERDESIGNER_OT_clear_body_transform_channel()
+        for channel in ('LOCATION', 'SCALE', 'LOCATION', 'SCALE'):
+            command.channel = channel
+            clear, other = (ops.loc_clear, ops.scale_clear) if channel == 'LOCATION' else (ops.scale_clear, ops.loc_clear)
+            clear.reset_mock()
+            other.reset_mock()
+            self.assertEqual(command.execute(self.context), {'FINISHED'})
+            clear.assert_called_once_with('EXEC_DEFAULT', False)
+            other.assert_not_called()
+            ops.rot_clear.assert_not_called()
+
+    def test_removed_chain_command_is_absent_from_registration_and_keymap(self):
+        self.ui.register()
+        removed = 'character_designer.reset_selected_pose_chains'
+        self.assertNotIn(removed, [cls.bl_idname for cls in self.ui.CLASSES])
+        self.assertEqual(self.addon_map.keymap_items.values, [self.ui._KEYMAPS[0][1], self.foreign])
+
+    def test_second_class_registration_fault_rolls_back_only_owned_new_class(self):
+        def register(cls):
+            if cls is self.ui.CLASSES[1]:
+                raise RuntimeError('new class fault')
+            cls.is_registered = True
+        self.bpy.utils.register_class.side_effect = register
+        with self.assertRaisesRegex(RuntimeError, 'new class fault'):
+            self.ui.register()
+        self.assertFalse(self.ui.CLASSES[0].is_registered)
+        self.assertFalse(self.ui.CLASSES[1].is_registered)
+        self.assertEqual(self.addon_map.keymap_items.values, [self.foreign])
 
 
 if __name__ == '__main__':

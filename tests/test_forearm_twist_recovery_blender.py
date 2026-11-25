@@ -38,8 +38,14 @@ def panel_state():
     layout = Layout()
     runtime.CHARACTERDESIGNER_PT_forearm_twist.draw(SimpleNamespace(layout=layout), bpy.context)
     assert "Both Arms" not in layout.labels
-    return next((kwargs["text"] for identifier, kwargs in layout.buttons
-                 if identifier == "character_designer.forearm_twist_toggle"), None)
+    toggle = next((kwargs for identifier, kwargs in layout.buttons
+                   if identifier == "character_designer.forearm_twist_toggle"), None)
+    if toggle is None:
+        return None
+    assert toggle["text"] == "Enable", "Enable label must remain fixed in every state"
+    assert toggle["icon"] in ("CHECKBOX_HLT", "CHECKBOX_DEHLT")
+    assert toggle["emboss"] is False
+    return toggle["icon"] == "CHECKBOX_HLT"
 
 
 def calibrated_fixture(side="L"):
@@ -74,7 +80,7 @@ def test_stale_calibration_disable_and_reenable_guard():
             expected = ("Mesh topology changed before this calibration had a local proof"
                         if stale_field == "topology" else "Mesh topology or rig chain changed")
             assert expected in runtime._ERRORS[mesh.name]
-            assert panel_state() == "Paused"
+            assert panel_state() is True
             before_pose = fixtures.pose_snapshot(armature)
             before_structure = fixtures.structure_snapshot(armature, mesh)
             before_keys = fixtures.key_snapshot(mesh)
@@ -90,7 +96,7 @@ def test_stale_calibration_disable_and_reenable_guard():
             assert key.mute and key.value == value
             assert tuple(tuple(point.co) for point in key.data) == coordinates
             runtime.update_runtime(bpy.context.scene)
-            assert key.mute and panel_state() == "Disabled"
+            assert key.mute and panel_state() is False
             assert not bpy.context.scene.render.use_lock_interface
             assert runtime.controller_status(armature, fixture["target"].name) == (
                 False, "Forearm Twist disabled: original skinning")
@@ -106,7 +112,7 @@ def test_stale_calibration_disable_and_reenable_guard():
             runtime._write_records(mesh, valid)
             runtime.toggle_paired_calibration(bpy.context, mesh)
             fixtures.assert_runtime_geometry(fixture, "Reenabled repaired calibration")
-            assert panel_state() == "Enabled"
+            assert panel_state() is True
             runtime.remove_paired_calibration(bpy.context, mesh)
             assert runtime.RECORD_KEY not in mesh and panel_state() is None
             print("PASS stale disable, enable guard and recovery", side, stale_field, flush=True)
@@ -147,13 +153,13 @@ def test_disable_undo_redo_preserves_stale_profile():
     mesh = bpy.data.objects[name]
     assert runtime._records(mesh) == records
     runtime.update_runtime(bpy.context.scene)
-    assert panel_state() == "Paused"
+    assert panel_state() is True and mesh.name in runtime._ERRORS
     assert bpy.ops.ed.redo() == {"FINISHED"}
     mesh = bpy.data.objects[name]
     records["L"]["enabled"] = False
     assert runtime._records(mesh) == records
     assert mesh.data.shape_keys.key_blocks[records["L"]["key"]].mute
-    assert panel_state() == "Disabled"
+    assert panel_state() is False
     fixtures.assert_pose_snapshot(bpy.data.objects[armature_name], before_pose, "Disable Undo/Redo")
     print("PASS stale calibration disable Undo/Redo", flush=True)
 

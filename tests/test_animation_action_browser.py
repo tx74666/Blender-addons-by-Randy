@@ -109,7 +109,7 @@ class BrowserTests(unittest.TestCase):
                 cls.bl_rna.properties.pop(name, None)
         class WM(metaclass=WMMeta):
             bl_rna = NS(properties={})
-        types.Menu, types.Operator, types.WindowManager = Base, Base, WM
+        types.Menu, types.Operator, types.WindowManager, types.Action = Base, Base, WM, Action
         for name in ('BoolProperty', 'IntProperty', 'StringProperty'):
             setattr(props, name, lambda **kwargs: kwargs.get('default', False))
         self.bpy.types = types
@@ -165,6 +165,135 @@ class BrowserTests(unittest.TestCase):
 
     def choose(self, action, slot=10):
         return self.ui.activate(self.context, target_uid='100', action_uid=str(action.session_uid), slot_handle=slot)
+
+    def bind(self, action, slot=10):
+        link = ModuleType(self.package.__name__ + '.animation_link')
+        link.ACTION_KEY = 'character_designer_animation_link_action'
+        link.get_link = Mock(return_value={'link_id': 'link-id', 'action_slot': slot})
+        self.rig[link.ACTION_KEY] = action
+        loader = patch.dict(sys.modules, {link.__name__: link})
+        loader.start()
+        self.addCleanup(loader.stop)
+        return link
+
+    def open_link(self, displayed, slot=10):
+        return self.ui.activate(self.context, target_uid='100',
+                                action_uid='link:link-id:' + str(displayed.session_uid), slot_handle=slot)
+
+    def test_open_link_restores_its_exact_slot_even_when_daily_list_shows_a_duplicate(self):
+        self.mark(self.first)
+        self.mark(self.idle, label='Same work item')
+        alternate = NS(handle=11, target_id_type='OBJECT', name_display='Linked slot')
+        self.idle.slots.append(alternate)
+        self.bind(self.idle, slot=11)
+        self.assertFalse(any(row['action'] is self.idle for row in self.ui.daily_rows(self.rig)))
+        self.assertIs(self.open_link(self.idle, slot=11), self.idle)
+        self.assertIs(self.rig.animation_data.action_slot, alternate)
+        self.assertTrue(self.first.use_fake_user and self.idle.use_fake_user)
+
+    def test_stale_link_button_never_falls_back_to_an_ordinary_daily_choice(self):
+        link = self.bind(self.idle)
+        self.assertTrue(any(row['action'] is self.idle for row in self.ui.daily_rows(self.rig)))
+        for change in ('link', 'action', 'slot', 'deleted', 'malformed'):
+            with self.subTest(change=change):
+                link.get_link.return_value = {'link_id': 'other' if change == 'link' else 'link-id',
+                                              'action_slot': 11 if change == 'slot' else 10}
+                link.get_link.side_effect = ValueError('invalid link') if change == 'malformed' else None
+                self.rig[link.ACTION_KEY] = {'action': self.first, 'deleted': None}.get(change, self.idle)
+                with self.assertRaisesRegex(ValueError, 'link changed'):
+                    self.open_link(self.idle)
+                self.assertIs(self.rig.animation_data.action, self.first)
+                self.assertFalse(self.first.use_fake_user or self.idle.use_fake_user)
+
+    def test_open_link_keeps_owner_and_slot_consumer_protections(self):
+        self.bind(self.idle)
+        self.rig['character_designer_worklist_main_session_v1'] = '{}'
+        with self.assertRaisesRegex(ValueError, 'ordinary animation editing'):
+            self.open_link(self.idle)
+        del self.rig['character_designer_worklist_main_session_v1']
+        self.other_rig(AnimData(self.idle))
+        with self.assertRaisesRegex(ValueError, 'another armature'):
+            self.open_link(self.idle)
+        self.assertIs(self.rig.animation_data.action, self.first)
+        self.assertFalse(self.first.use_fake_user or self.idle.use_fake_user)
+
+    def single_action_panel(self):
+        from test_animation_physics_ui import ui as physics
+        self.rig.mode = 'POSE'
+        self.context.region = NS(width=280)
+        tree = ast.parse(SOURCE.with_name('animation.py').read_text(encoding='utf8'))
+        scope = {'__package__': self.package.__name__, 'bpy': self.bpy, '_job': None,
+                 '_settings': lambda context: NS(), '_main_rig': lambda context: self.rig,
+                 '_main_rig_error': lambda context, rig: '', '_target': lambda context: self.rig,
+                 '_link_idle': lambda: self.animation._link_idle()}
+        nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name in {'_draw_single_action', '_draw_local_fbx', '_linked_send_ready', '_linked_send_key'}]
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), 'animation.py', 'exec'), scope)
+        modules = {self.package.__name__ + '.animation_action_browser': self.ui,
+                   self.package.__name__ + '.animation_physics_ui': physics,
+                   self.package.__name__ + '.unity_animation_rigging': NS(SESSION_KEY='rigging', display_state=Mock())}
+        return scope['_draw_single_action'], patch.dict(sys.modules, modules)
+
+    def test_detached_archived_link_shows_the_native_action_and_slot_under_all_picker_guards(self):
+        from test_animation_sections_ui import NativeActionLayout
+        self.mark(self.first, clip='hair', label='Walk_N')
+        self.mark(self.idle, role='ARCHIVED', label='Walk_N')
+        self.first.name, self.idle.name = 'Hair Custom / Move Across Clip', 'Walk_N Custom.002'
+        self.rig['character_designer_worklist_main_session_v1'] = 'owned'
+        link = self.bind(self.idle)
+        link.get_link.return_value['identity'] = {}
+        draw, modules = self.single_action_panel()
+        with modules:
+            for busy in (False, True):
+                with self.subTest(busy=busy):
+                    self.animation._link_idle = lambda: not busy
+                    self.assertFalse(self.ui.can_select(self.context, self.rig))
+                    layout = NativeActionLayout()
+                    self.assertTrue(draw(layout, self.context))
+                    [native] = [event for event in layout.events if event[0] == 'template_action']
+                    [slot] = [event for event in layout.events if event[0] == 'template_search']
+                    self.assertIs(native[4], self.rig)
+                    self.assertIs(slot[4][0], self.rig.animation_data)
+                    self.assertEqual((native[2], slot[2]), (not busy, not busy))
+                    labels = ' '.join(event[1] for event in layout.events if event[0] == 'label')
+                    self.assertIn('Archived link: Walk_N Custom.002', labels)
+                    self.assertNotIn('Sync List', labels)
+                    [manual] = [event for event in layout.events if event[0] == 'character_designer.animation_export']
+                    self.assertEqual(manual[2], not busy)
+                    self.assertFalse(any(event[0] == 'character_designer.animation_link_sync' for event in layout.events))
+                    self.assertNotIn(self.first.name, labels)
+                    self.assertNotIn('Action Editor', labels)
+                    self.assertIs(self.rig.animation_data.action, self.first)
+                    self.assertIs(self.rig[link.ACTION_KEY], self.idle)
+                    self.assertFalse(self.first.use_fake_user or self.idle.use_fake_user)
+
+    def test_new_local_action_on_linked_rig_exports_as_file_without_sending_to_previous_slot(self):
+        from test_animation_sections_ui import NativeActionLayout
+        self.mark(self.first, clip='new')
+        self.mark(self.idle)
+        link = self.bind(self.idle)
+        link.get_link.return_value['identity'] = {}
+        draw, modules = self.single_action_panel()
+        with modules:
+            layout = NativeActionLayout()
+            self.assertTrue(draw(layout, self.context))
+            named = {event[3].get('text', ''): event for event in layout.events if event[0].startswith('character_designer.')}
+            self.assertEqual(set(named), {'Open Linked Action', 'Export Current Action as FBX…'})
+            self.assertTrue(named['Export Current Action as FBX…'][2])
+            self.assertIs(self.rig.animation_data.action, self.first)
+            self.assertIs(self.rig[link.ACTION_KEY], self.idle)
+            self.rig['character_designer_body_original_mode_v1'] = '{}'
+            layout = NativeActionLayout()
+            self.assertTrue(draw(layout, self.context))
+            [manual] = [event for event in layout.events if event[0] == 'character_designer.animation_export']
+            self.assertFalse(manual[2])
+            del self.rig['character_designer_body_original_mode_v1']
+            self.open_link(self.idle)
+            layout = NativeActionLayout()
+            self.assertFalse(draw(layout, self.context))
+            names = [event[3].get('text', '') for event in layout.events if event[0].startswith('character_designer.')]
+            self.assertEqual(names, ['Send to Unity'])
+            self.assertIs(self.rig.animation_data.action, self.idle)
 
     def test_classification_writes_only_strings_and_preserves_existing_identity(self):
         self.first['existing_owner'] = 'byte-exact'
@@ -649,6 +778,7 @@ class AnimationIntegrationTests(unittest.TestCase):
         with patch.dict(sys.modules, {}):
             sys.modules.pop(name, None)
             if browser is not None:
+                browser._idle = Mock(return_value=True)
                 sys.modules[name] = browser
             result = case.draw_unmanaged_animation()
         return result, case.context

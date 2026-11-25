@@ -129,6 +129,61 @@ class TargetTests(unittest.TestCase):
     def adopt(self):
         return self.target.adopt_main_rig(self.context)
 
+    def current_base_fixture(self):
+        self.adopt()
+        self.rig.is_editable = self.data.is_editable = True
+        self.data.override_library = None
+        self.saved.retired_items = []
+        self.bpy_data.scenes = [self.scene]
+        self.saved.rig, self.saved.status, self.saved.has_error = None, 'Old error', True
+        self.target._capture.reset_mock()
+        self.target._apply_capture.reset_mock()
+        self.ua._mapping.reset_mock()
+
+    def test_explicit_current_base_discards_only_orphan_and_repeats_without_adoption(self):
+        self.current_base_fixture()
+        del self.rig[self.target.REFS]
+        action = ID(name='Current Action')
+        self.rig.animation_data = SimpleNamespace(action=action, action_slot_handle=5)
+        for _ in range(2):
+            self.assertIs(self.target.start_from_current(self.context), self.rig)
+        self.assertTrue(self.target.uses_current_character(self.context))
+        self.assertIs(self.rig.animation_data.action, action)
+        self.assertEqual(self.rig.animation_data.action_slot_handle, 5)
+        self.assertNotIn(self.target.SESSION, self.rig)
+        self.assertNotIn(self.target.REFS, self.rig)
+        self.target._capture.assert_not_called()
+        self.target._apply_capture.assert_not_called()
+        self.ua._mapping.assert_not_called()
+
+    def test_current_base_refuses_recoverable_session_and_other_scene_ownership(self):
+        self.current_base_fixture()
+        snapshot = dict(self.rig)
+        with self.assertRaisesRegex(ValueError, 'missing reference table'):
+            self.target.start_from_current(self.context)
+        self.assertEqual(dict(self.rig), snapshot)
+        del self.rig[self.target.REFS]
+        other = ID(character_designer_animation_worklist=SimpleNamespace(
+            rig=None, items=[], retired_items=[SimpleNamespace(rig=self.rig)]))
+        other['scene'] = 'other'
+        self.bpy_data.scenes.append(other)
+        with self.assertRaisesRegex(ValueError, 'Another scene'):
+            self.target.start_from_current(self.context)
+        self.assertEqual(self.rig[self.target.SESSION], snapshot[self.target.SESSION])
+        self.assertNotIn(self.target.CURRENT_BASE, self.rig)
+        self.assertIsNone(self.saved.rig)
+
+    def test_failed_current_base_commit_rolls_back_record_and_worklist(self):
+        self.current_base_fixture()
+        del self.rig[self.target.REFS]
+        before = dict(self.rig)
+        with patch.object(self.target, 'uses_current_character', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'did not retain'):
+                self.target.start_from_current(self.context)
+        self.assertEqual(dict(self.rig), before)
+        self.assertEqual((self.saved.rig, self.saved.status, self.saved.has_error),
+                         (None, 'Old error', True))
+
     def motion_copy(self):
         self.adopt()
         original = ID(name='forearm.L', id_data=self.data, use_connect=True)

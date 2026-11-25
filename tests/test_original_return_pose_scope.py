@@ -84,6 +84,7 @@ class OriginalPoseScopeTests(unittest.TestCase):
         self.assertEqual(self.match_pose.call_args.args[3],{'native'})
         self.assertEqual(self.angle_values(),self.initial_angles)
         self.assertTrue(self.match_pose.call_args.kwargs['preserve_modes'])
+        self.assertTrue(self.match_pose.call_args.kwargs['sync_controls'])
         self.ns['_verify'].assert_called_once()
 
     def test_parent_change_propagates_actual_native_motion_to_both_legs(self):
@@ -118,6 +119,7 @@ class OriginalPoseScopeTests(unittest.TestCase):
         self.assertTrue(self.invoke(legacy=True))
         self.assertEqual(self.match_pose.call_args.args[3],{'shin.L'})
         self.assertEqual(self.match_pose.call_args.kwargs['precise_limbs'],(('LEG','L'),))
+        self.assertFalse(self.match_pose.call_args.kwargs['sync_controls'])
 
     def test_old_session_without_settled_pose_keeps_conservative_legacy_matching(self):
         del self.saved['entered_pose']

@@ -545,6 +545,25 @@ def read(source, validate=True):
 
 def _read_transported_selection(source):
     """Prove current native Hair for selection after the reviewed reference trim."""
+    return _read_transported_current_native(source, check_layers=False)
+
+
+def read_for_model_export(source):
+    """Prove model-export Hair without acquiring historical recovery rights.
+
+    A reviewed transported source can retain its saved chain proof while the
+    historical/current recovery references have deliberately been removed.
+    In that exact transport shape, validate the current native Rest and source
+    cross-sections directly. Never project a connected flag from history. All
+    other sources retain the ordinary strict reader, including its refusals.
+    This detached proof grants no backend, Action, Original or recovery right.
+    """
+    data = _read_transported_current_native(source, check_layers=True)
+    return read(source, validate=True) if data is None else data
+
+
+def _read_transported_current_native(source, *, check_layers):
+    """Current native proof only; no discovery, metadata writes or recovery."""
     if not isinstance(source, bpy.types.Object) or source.type != 'MESH':
         return None
     rig = source.get(hair.RIG_KEY)
@@ -560,9 +579,10 @@ def _read_transported_selection(source):
         return None
     data = _saved(source)
     if data is None:
+        # Preserve the established selection refusal text.
         raise HairStrandRegistryError('Transported Hair selection needs its saved strand registry.')
     return _compare_saved(source, data,
-                          _live_with_rest(source, check_layers=False, native_selection=True))
+                          _live_with_rest(source, check_layers=check_layers, native_selection=True))
 
 
 def _compare_saved(source, data, current_state):

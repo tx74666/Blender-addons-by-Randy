@@ -15,6 +15,10 @@ SOURCE = Path(__file__).resolve().parents[1] / 'addons' / 'character_designer'
 
 
 class ControllerWorklistUI(ui_fixture.WorklistUI):
+    def setUp(self):
+        super().setUp()
+        self.state.rig = self.state.items[0].rig
+
     def test_controller_class_is_in_existing_registration_chain_exactly_once(self):
         controller = sys.modules[self.ui.__package__ + '.controller_animation_ui']
         cls = controller.CHARACTERDESIGNER_OT_make_controller_animation
@@ -22,16 +26,20 @@ class ControllerWorklistUI(ui_fixture.WorklistUI):
         identifiers = [getattr(value, 'bl_idname', value.__name__) for value in self.ui.WORKLIST_CLASSES]
         self.assertEqual(len(identifiers), len(set(identifiers)))
 
-    def test_controller_draw_follows_list_and_precedes_existing_edit_tools(self):
-        calls = []
-        with patch.object(self.ui, '_draw_worklist_actions', side_effect=lambda *_:calls.append('list')), \
-                patch.object(self.ui, 'draw_controller_animation', side_effect=lambda *_:calls.append('controller')), \
-                patch.object(self.ui, '_draw_rigging', side_effect=lambda *_:calls.append('rigging')):
-            self.ui.draw_worklist(ui_fixture.Layout(), self.context)
-        self.assertEqual(calls, ['list', 'controller', 'rigging'])
+    def test_controller_draw_is_available_in_advanced_tools_after_list(self):
+        for advanced in (False, True):
+            with self.subTest(advanced=advanced):
+                self.state.show_advanced = advanced
+                calls = []
+                with patch.object(self.ui, '_draw_worklist_actions', side_effect=lambda *_:calls.append('list')), \
+                        patch.object(self.ui, 'draw_controller_animation', side_effect=lambda *_:calls.append('controller')), \
+                        patch.object(self.ui, '_draw_rigging', side_effect=lambda *_:calls.append('rigging')):
+                    self.ui.draw_worklist(ui_fixture.Layout(), self.context)
+                self.assertEqual(calls, ['list', 'rigging', 'controller'] if advanced else ['list', 'rigging'])
 
     def test_controller_draw_not_offered_for_empty_list(self):
         self.state.items = []
+        self.state.show_advanced = True
         with patch.object(self.ui, 'draw_controller_animation') as draw:
             self.ui.draw_worklist(ui_fixture.Layout(), self.context)
         draw.assert_not_called()
@@ -95,11 +103,24 @@ class ControllerImport(worklist_fixture.WorklistTests):
         with self.assertRaisesRegex(ValueError,'owned copy writing failed'):
             self.worklist._populate_controller_custom(self.context,object(),self.source_action,self.custom_action)
 
+    def test_controller_import_explicit_native_copy_never_starts_hidden_conversion(self):
+        backend = self.setup_controller()
+        self.custom_action['artist_channels'] = ('retained native bone curves',)
+        result = self.worklist._populate_controller_custom(
+            self.context, object(), self.source_action, self.custom_action, prepare_controls=False)
+        self.assertEqual(result, 'NATIVE_SOURCE')
+        self.assertEqual(self.custom_action['artist_channels'], ('retained native bone curves',))
+        backend.build_controller_channels.assert_not_called()
+        backend.apply_to_action.assert_not_called()
+
 
 def load_tests(loader, _suite, _pattern):
     suite=unittest.TestSuite()
     for cls in (ControllerWorklistUI,ControllerImport):
-        suite.addTests(cls(name) for name in loader.getTestCaseNames(cls) if name.startswith('test_controller_'))
+        # Base fixture tests run in their own suites. Select this module's
+        # integration cases without inheriting later feature-specific tests.
+        suite.addTests(cls(name) for name in loader.getTestCaseNames(cls)
+                       if name in cls.__dict__ and name.startswith('test_controller_'))
     return suite
 
 

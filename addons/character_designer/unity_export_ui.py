@@ -158,10 +158,53 @@ def _candidate_capabilities(context, rig, config):
     return _candidate_helpers().receiver_capabilities(_model_target(context, rig, config))
 
 
+def _rig_capabilities(context, rig, config):
+    from . import unity_rig_update
+    return unity_rig_update.read_capabilities(_model_target(context, rig, config))
+
+
+_RIG_DISPLAY_CAPABILITY = {}
+
+
+def _rig_display_capabilities(context, rig, config):
+    """One-target/one-second draw cache; actions always use the fresh reader."""
+    target = str(_model_target(context, rig, config))
+    key = (id(rig), config.asset_id, target, bpy.data.filepath)
+    now = time.monotonic()
+    if _RIG_DISPLAY_CAPABILITY.get('key') == key and now - _RIG_DISPLAY_CAPABILITY.get('time', 0) < 1:
+        value, error = _RIG_DISPLAY_CAPABILITY['value'], _RIG_DISPLAY_CAPABILITY['error']
+    else:
+        try: value, error = _rig_capabilities(context, rig, config), None
+        except (ValueError, RuntimeError, OSError, ReferenceError) as caught: value, error = None, str(caught)
+        _RIG_DISPLAY_CAPABILITY.clear()
+        _RIG_DISPLAY_CAPABILITY.update(key=key, time=now, value=value, error=error)
+    if error: raise ValueError(error)
+    return value
+
+
+def _reviewed_rig_route(context, rig, config, selection):
+    # Preserve legacy/first complete exports for a one-Mesh Hair character.
+    # Existing Unity characters use the dedicated immutable reviewed route.
+    model = _model_target(context, rig, config)
+    helper = _candidate_helpers()
+    if (len(selection['meshes']) == len(selection['eligible']) and
+            (_existing_unity_project(model) is None or
+             not helper._io(model).exists() or not helper._io(model.with_suffix('.cdesigner.json')).exists())):
+        return 'FULL'
+    return 'REVIEWED_RIG'
+
+
 def _selection_mode(selection):
     if not selection['meshes'] and not selection['update_rig']:
         return 'NONE'
     if selection['update_rig']:
+        if len(selection['meshes']) == 1:
+            source = selection['meshes'][0]
+            if (getattr(source, 'type', None) == 'MESH' and callable(getattr(source, 'get', None))
+                    and getattr(source.get('character_designer_hair_bones_armature'), 'type', None) == 'ARMATURE'
+                    and all(type(source.get(key)) is str for key in ('character_designer_hair_bones_v1',
+                        'character_designer_hair_strands_v1', 'character_designer_hair_motion_v1'))):
+                return 'REVIEWED_RIG'
         return ('FULL' if selection['eligible']
                 and len(selection['meshes']) == len(selection['eligible']) else 'RIG_UNSUPPORTED')
     return 'CANDIDATE'
@@ -172,10 +215,16 @@ def _prepare_update_route(context, rig, config):
     selection = update_selection.get_selection(context, rig)
     mode = _selection_mode(selection)
     capabilities = None
+    if mode == 'REVIEWED_RIG':
+        mode = _reviewed_rig_route(context, rig, config, selection)
     if mode == 'FULL':
         _full_update_ledger_guard(context, rig, config)
     elif mode == 'RIG_UNSUPPORTED':
-        raise ValueError('Partial Rig updates are not supported. Uncheck Rig for a mesh update.')
+        raise ValueError('Partial Rig updates require exactly Rig + the existing Hair. Extra Mesh requests cannot be ignored.')
+    elif mode == 'REVIEWED_RIG':
+        capabilities = _rig_capabilities(context, rig, config)
+        if capabilities is None:
+            raise ValueError('The reviewed Rig is not ready in Unity. Complete its native review before sending.')
     elif mode == 'CANDIDATE':
         capabilities = _candidate_capabilities(context, rig, config)
         if capabilities is None:
@@ -388,8 +437,10 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
         candidate = result.get('candidate_path')
         if isinstance(candidate, str) and candidate:
             config.last_report = candidate
-            config.last_status = 'Pending Unity review'
-            self.report({'INFO'}, 'Mesh update exported; review it in Unity before applying. The accepted model is unchanged.')
+            config.last_status = 'Reviewed Rig pending Unity' if result.get('reviewed_rig') else 'Pending Unity review'
+            self.report({'INFO'}, 'Reviewed Rig sent; Unity application is pending. The accepted model is unchanged.'
+                        if result.get('reviewed_rig') else
+                        'Mesh update exported; review it in Unity before applying. The accepted model is unchanged.')
             return
         report = result.get('report_path') or result.get('report')
         if isinstance(report, str):
@@ -423,7 +474,7 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
                 return {'FINISHED'}
             _object_mode_required(context)
             self._config = config
-            if mode == 'CANDIDATE':
+            if mode in {'CANDIDATE', 'REVIEWED_RIG'}:
                 self._job = _exporter().begin_candidate_export(context, rig, config, selection=selection)
             else:
                 self._job = _exporter().begin_export(
@@ -431,7 +482,8 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
             if self._job is None:
                 self.report({'INFO'}, 'Nothing selected; Unity is unchanged.')
                 return {'FINISHED'}
-            self._config.last_status = ('Preparing mesh update for Unity review...'
+            self._config.last_status = ('Checking reviewed Rig source...'
+                                        if mode == 'REVIEWED_RIG' else 'Preparing mesh update for Unity review...'
                                         if mode == 'CANDIDATE' else 'Preparing Unity export...')
             self._window_manager = context.window_manager
             self._timer = context.window_manager.event_timer_add(0.2, window=context.window)
@@ -499,7 +551,7 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
                 return {'FINISHED'}
             config = saved_config
             _object_mode_required(context)
-            if mode == 'CANDIDATE':
+            if mode in {'CANDIDATE', 'REVIEWED_RIG'}:
                 result = _run_candidate_sync(context, rig, config, selection)
                 if result is None:
                     self.report({'INFO'}, 'Nothing selected; Unity is unchanged.')
@@ -874,8 +926,12 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             update_rig = bool(choices.update_rig)
             selected_meshes = tuple(obj for obj in eligible if update_selection._selected(choices, obj))
             mode = _selection_mode({'meshes': selected_meshes, 'eligible': eligible, 'update_rig': update_rig})
+            if mode == 'REVIEWED_RIG':
+                mode = _reviewed_rig_route(context, rig, config,
+                    {'meshes': selected_meshes, 'eligible': eligible, 'update_rig': update_rig})
             try:
-                capabilities = _candidate_capabilities(context, rig, config)
+                capabilities = (_rig_display_capabilities(context, rig, config) if mode == 'REVIEWED_RIG'
+                                else _candidate_capabilities(context, rig, config))
             except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
                 capability_error = str(exc)
             if mode == 'FULL':
@@ -897,7 +953,15 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             selection.label(text='Full Mesh + Rig update available.', icon='INFO')
             selection.label(text='Existing partial updates must be reconciled first.', icon='INFO')
         elif mode == 'RIG_UNSUPPORTED':
-            selection.label(text='Partial Rig updates are not supported.', icon='INFO')
+            selection.label(text='Select Rig + Hair to send a reviewed Rig.', icon='INFO')
+        elif mode == 'REVIEWED_RIG':
+            if capability_error:
+                selection.label(text=_short(capability_error), icon='ERROR')
+            elif capabilities is None:
+                selection.label(text='The Rig review is not ready in Unity.', icon='INFO')
+            else:
+                selection.label(text='Native Rig review is ready.', icon='INFO')
+                selection.label(text='Current source is checked when sent.', icon='INFO')
         elif mode == 'CANDIDATE':
             if capability_error:
                 selection.label(text=_short(capability_error), icon='ERROR')
@@ -915,11 +979,12 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
         row = layout.row()
         row.scale_y = 1.35
         running = _exporter().export_running()
-        ready = mode == 'FULL' and not full_error or mode == 'CANDIDATE' and capabilities is not None
+        ready = mode == 'FULL' and not full_error or mode in {'CANDIDATE', 'REVIEWED_RIG'} and capabilities is not None
         row.enabled = not running and ready and not error and context.mode in {'OBJECT', 'POSE'}
         row.operator_context = 'INVOKE_DEFAULT'
         row.operator('character_designer.unity_export', icon='EXPORT',
-                     text='Exporting...' if running else 'Export / Update to Unity')
+                     text='Sending...' if running and mode == 'REVIEWED_RIG' else 'Exporting...' if running
+                     else 'Send Reviewed Rig' if mode == 'REVIEWED_RIG' else 'Export / Update to Unity')
         if running:
             layout.label(text='Esc cancels; existing files are kept.', icon='INFO')
         if context.mode not in {'OBJECT', 'POSE'}:

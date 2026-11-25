@@ -362,8 +362,6 @@ def draw_composition(layout, context):
         row.operator('character_designer.composition_close', text='Close', icon='LOOP_BACK')
         if session.get('following_hold'):
             box.label(text='Following Hold: ' + session['following_hold']['custom_action'].name, icon='ACTION')
-        row = box.row(align=True)
-        row.operator('character_designer.composition_weapon', text='Load Attachment', icon='IMPORT').remove = False
     else:
         if saved.composition_catalog:
             box.template_list('CHARACTERDESIGNER_UL_composition_catalog', 'composition', saved,
@@ -377,11 +375,17 @@ def draw_composition(layout, context):
             box.operator('character_designer.composition_create_a', icon='DUPLICATE')
             box.operator('character_designer.composition_sync', text='Sync Overlay', icon='EXPORT')
             box.operator('character_designer.composition_register_b', text='Register Overlay', icon='ACTION')
-    if saved.rig is not None and saved.rig.get('character_designer_composition_weapon_v1'):
+    record = saved.rig.get('character_designer_composition_weapon_v1') if saved.rig is not None else None
+    if record is None:
+        if session and session['spec'].get('weaponContextFile') and session['spec'].get('weaponModelFile'):
+            box.operator('character_designer.composition_weapon', text='Load Attachment', icon='IMPORT').remove = False
+    elif not hasattr(record, 'keys'):
+        box.label(text='The captured attachment needs validation before editing.', icon='ERROR')
+    elif 'rigging_session_owner' not in record:
         box.operator('character_designer.composition_weapon', text='Remove Attachment', icon='X').remove = True
         try:
             import json
-            proof = json.loads(saved.rig['character_designer_composition_weapon_v1']['proof_json'])
+            proof = json.loads(record['proof_json'])
             if proof.get('grip_limitation'):
                 box.label(text=proof['grip_limitation'], icon='INFO')
         except (ValueError, TypeError, KeyError):

@@ -351,6 +351,12 @@ def restore(context, rig, state, inventory, *, allowed_bones=None):
         for owner, properties in ((pb, saved['pose_properties']), (pb.bone, saved['bone_properties'])):
             for field, value in properties.items():
                 owner[field] = value
+        from . import foot_sole_display
+        if foot_sole_display.current(pb.bone) and pb.custom_shape_transform is not None:
+            for key, limb in inventory['rigs'].items():
+                if key[0] == 'LEG' and limb['target'].name == pb.name:
+                    foot_sole_display.anchor(pb, rig.pose.bones[limb['chain'][2]])
+                    break
         control_colors.restore_bone_state(pb, saved['colors'])
         control_colors._set_color(pb.bone, saved['bone_color'])
         pb.bone.hide, pb.bone.hide_select = saved['hide'], saved['hide_select']
@@ -364,6 +370,9 @@ def restore(context, rig, state, inventory, *, allowed_bones=None):
             foot_controls._write_records(rig, records)
     records = foot_controls._all_records(rig)
     for side, saved in state['foot_visuals'].items():
+        if records[side].get('roll_hinge') == 1:
+            from . import foot_roll_hinge
+            foot_roll_hinge.center(rig.pose.bones[records[side]['roll']])
         for field in ('roll_visual_backup', 'roll_visual_fit'):
             if field in saved:
                 records[side][field] = copy.deepcopy(saved[field])

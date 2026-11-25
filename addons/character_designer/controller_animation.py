@@ -146,15 +146,18 @@ def _secondary_bones(rig):
     return result
 
 
-def _controls(rig, inventory):
+def _controls(rig, inventory, *, pose_matching=False):
     from . import root_control, torso_controls, spine_ik_fk, eye_controls, foot_controls
     from . import animation_worklist_target
     names = {bone.name for bone in inventory['bones']}
-    view = animation_worklist_target.control_rest_view(rig)
+    _require(type(pose_matching) is bool, 'Pose-matching validation must be on or off.')
+    view = None if pose_matching else animation_worklist_target.control_rest_view(rig)
     kwargs = {'source_rest': view} if view is not None else {}
-    records = [module.validate(rig, inventory, **kwargs)
-               for module in (root_control, torso_controls, spine_ik_fk, eye_controls)]
-    records.extend(foot_controls.validate(rig, inventory, **kwargs).values())
+    records = [root_control.validate(rig, inventory, pose_only=pose_matching, **kwargs),
+               torso_controls.validate(rig, inventory, pose_only=pose_matching, **kwargs),
+               spine_ik_fk.validate(rig, inventory, pose_only=pose_matching, **kwargs),
+               eye_controls.validate(rig, inventory, pose_only=pose_matching, **kwargs)]
+    records.extend(foot_controls.validate(rig, inventory, limb_pose_only=pose_matching, **kwargs).values())
     for record in records:
         if record:
             names.update(record['bones'].values())
@@ -260,7 +263,7 @@ def _closure(rig, inventory, secondary, controls):
     return tuple(sorted(native)), frozenset(needed), frozenset(active_drivers)
 
 
-def _times(action, curves, start, end, sample_step):
+def _times(action, curves, start, end, sample_step, *, converting=True):
     _require(sample_step == 1.0, 'Controller conversion currently uses one-frame base sampling.')
     first, last = map(float, action.frame_range)
     _require(all(math.isfinite(v) for v in (first, last)) and last > first,
@@ -271,8 +274,9 @@ def _times(action, curves, start, end, sample_step):
     times = {first, last, *(float(frame) for frame in range(math.ceil(first), math.floor(last) + 1))}
     count = 0
     for curve in curves:
-        count += len(curve.keyframe_points)
-        _require(count <= MAX_KEYS, 'This clip exceeds 500,000 keys; use a shorter clip.')
+        if converting:
+            count += len(curve.keyframe_points)
+            _require(count <= MAX_KEYS, 'This clip exceeds 500,000 keys; use a shorter clip.')
         for key in curve.keyframe_points:
             frame = float(key.co.x)
             _require(math.isfinite(frame), 'The clip has a non-finite authored key time.')
@@ -284,7 +288,7 @@ def _times(action, curves, start, end, sample_step):
 
 def _source_plan(context, rig, action, handle, start, end, sample_step, quality='EDITABLE', *,
                  auto_reduce=True, position_tolerance_meters=.001,
-                 rotation_tolerance_radians=.004363323129985824):
+                 rotation_tolerance_radians=.004363323129985824, pose_matching=False):
     options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
     policy = _quality_policy(context, quality, position_tolerance_meters=options['position_tolerance_meters'],
                              rotation_tolerance_radians=options['rotation_tolerance_radians'])
@@ -302,8 +306,10 @@ def _source_plan(context, rig, action, handle, start, end, sample_step, quality=
     # Current-Custom callers keep the stricter prepare_variant admission.
     handle = inputs._handle(rig, action, handle)
     curves = inputs._curves(action, handle)
-    times = _times(action, curves, start, end, sample_step)
-    inventory = limb._validate_inventory(rig)
+    _require(type(pose_matching) is bool, 'Pose-matching validation must be on or off.')
+    inventory = (limb._validate_inventory(rig, limb_pose_only=True) if pose_matching
+                 else limb._validate_inventory(rig))
+    times = _times(action, curves, start, end, sample_step, converting=bool(inventory['rigs']))
     if not inventory['rigs']:
         return dict(conversion_state='NATIVE_FK', source_action=action, source_slot=handle,
                     channels={}, frame_times=times, native_names=(), metadata=None,
@@ -319,7 +325,7 @@ def _source_plan(context, rig, action, handle, start, end, sample_step, quality=
         _require(target.bone.get(match.VERSION_KEY) == match.VERSION,
                  'Update the installed Body IK/FK switching before converting controller motion.')
     secondary = _secondary_bones(rig)
-    controls = _controls(rig, inventory)
+    controls = _controls(rig, inventory, pose_matching=pose_matching)
     native, closure, drivers = _closure(rig, inventory, secondary, controls)
     from . import bone_collections
     display_path = '[' + json.dumps(bone_collections.AUTO_KEY) + ']'
@@ -690,6 +696,8 @@ def _conversion_kwargs(options):
 
 
 def _policy_from_source(source):
+    if source.get('daily_edit'):
+        return _daily_edit_policy(source['context'])
     options = source.get('conversion_options', _conversion_options())
     _conversion_kwargs(options)
     return _quality_policy(source['context'], source['quality'],
@@ -725,6 +733,20 @@ def _quality_policy(context, quality, *, position_tolerance_meters=.001,
         native_position_tolerance=2.e-4 if quality == 'STRICT' else None,
         native_absolute_scale_tolerance=2.e-4 if quality == 'STRICT' else None,
         scope='sampled object and native body bone matrices; no mesh-vertex or continuous-time guarantee')
+
+
+def _daily_edit_policy(context):
+    policy = _quality_policy(context, 'EDITABLE')
+    policy.update(imported_daily_edit=True, position_tolerance_meters=.003,
+                  rotation_tolerance_radians=math.radians(1), matched_sample_gate='world playback budget')
+    return policy
+
+
+def _sample_acceptable(actual, expected, errors, policy):
+    if policy and policy.get('imported_daily_edit'):
+        world = _world_playback_error(actual, expected, policy['scene_meters_per_unit'])
+        return _playback_acceptable(world, policy)
+    return _acceptable(errors)
 
 
 def _unit_quaternion(value):
@@ -798,18 +820,37 @@ def _playback_acceptable(errors, policy):
             and errors['shape_relative'] <= policy['shape_relative_tolerance'])
 
 
-def _match_limb(context, solver, inventory, entry, wanted, expected_world, raw_names, work):
+def _match_limb(context, solver, inventory, entry, wanted, expected_world, raw_names, work, *, policy=None, pole_position=None):
     """Escalate search only when actual evaluated motion misses the same gate."""
     from . import limb_ik_fk as match
     before = _raw(solver, raw_names)
     affected = set()
+    layout = {'pole_position': pole_position} if pole_position is not None else {}
 
     def acceptable():
         work['limb_checks'] += 1
-        return _acceptable(_error(_pose(context, solver, wanted), (expected_world, wanted)))
+        return pose_acceptable(wanted)
+
+    def pose_acceptable(bones):
+        actual = _pose(context, solver, bones)
+        expected = (expected_world, bones)
+        return _sample_acceptable(actual, expected, _error(actual, expected), policy)
+
+    if policy is not None and pole_position is not None:
+        # Try the geometric pole-angle estimate and a small neighborhood first.
+        # A miss restores the whole pre-limb state before the native global search.
+        work['local_pole_trials'] = work.get('local_pole_trials', 0) + 1
+        trial = set(match._match_ik(context, solver, inventory, entry, wanted,
+                                    local_pole_search=True, accept_pole_pose=pose_acceptable, **layout))
+        trial.update(match._match_toe(context, solver, entry, wanted))
+        if acceptable():
+            work['local_pole_accepted'] = work.get('local_pole_accepted', 0) + 1
+            return trial
+        _restore_raw(solver, before)
+        context.view_layer.update()
 
     work['ordinary'] += 1
-    affected.update(match._match_ik(context, solver, inventory, entry, wanted))
+    affected.update(match._match_ik(context, solver, inventory, entry, wanted, **layout))
     affected.update(match._match_toe(context, solver, entry, wanted))
     if acceptable():
         work['ordinary_accepted'] += 1
@@ -820,14 +861,14 @@ def _match_limb(context, solver, inventory, entry, wanted, expected_world, raw_n
     _restore_raw(solver, before)
     context.view_layer.update()
     work['precise'] += 1
-    affected.update(match._match_ik(context, solver, inventory, entry, wanted, precise=True))
+    affected.update(match._match_ik(context, solver, inventory, entry, wanted, precise=True, **layout))
     affected.update(match._match_toe(context, solver, entry, wanted))
     if acceptable():
         work['precise_accepted'] += 1
         return affected
 
     work['refine'] += 1
-    match._refine_calibrated_reach(context, solver, inventory, entry, wanted)
+    match._refine_calibrated_reach(context, solver, inventory, entry, wanted, **layout)
     affected.update(match._match_toe(context, solver, entry, wanted))
     if acceptable():
         work['refine_accepted'] += 1
@@ -836,17 +877,39 @@ def _match_limb(context, solver, inventory, entry, wanted, expected_world, raw_n
     return affected
 
 
-def _match_body(context, solver, inventory, desired, source_raw, raw_names, work):
+def _match_body(context, solver, inventory, desired, source_raw, raw_names, work, *, policy=None, pole_positions=None):
     """Keep one original full-precision retry for cross-limb interactions."""
     from . import limb_ik_fk as match
     affected = set()
+    def layout_inputs(key, entry):
+        if not pole_positions or key not in pole_positions:
+            return {}
+        if key[0] == 'ARM':
+            return {'pole_position': pole_positions[key]}
+        # Author an independent all-IK result. The original FK Action is
+        # immutable; the shin pre-solve basis belongs only to this IK copy.
+        if match._leg_front_policy(inventory, entry) and match.mode_for_rig(solver, entry) == 'FK':
+            from . import knee_pole_layout
+            seed, changed = knee_pole_layout.condition_shin(*(desired[1][n] for n in entry['chain']))
+            if changed:
+                shin_name = entry['chain'][1]
+                match._set_matrix(context, solver, solver.pose.bones[shin_name], seed)
+                names = work.setdefault('conditioned_shins', [])
+                if shin_name not in names:
+                    names.append(shin_name)
+        affected.add(entry['chain'][1])
+        return {'pole_position': pole_positions[key]}
+
     for key in sorted(inventory['rigs']):
         entry = inventory['rigs'][key]
         wanted = {name: desired[1][name] for name in match.pose_names(entry)}
-        affected.update(_match_limb(context, solver, inventory, entry, wanted, desired[0], raw_names, work))
-    errors = _error(_pose(context, solver, desired[1]), desired)
+        layout = layout_inputs(key, entry)
+        affected.update(_match_limb(context, solver, inventory, entry, wanted, desired[0], raw_names, work,
+                                    policy=policy, **layout))
+    actual = _pose(context, solver, desired[1])
+    errors = _error(actual, desired)
     work['full_body_checks'] += 1
-    if _acceptable(errors):
+    if _sample_acceptable(actual, desired, errors, policy):
         return affected, errors
 
     # The staged local route may choose different, still locally acceptable
@@ -859,20 +922,22 @@ def _match_body(context, solver, inventory, desired, source_raw, raw_names, work
     for key in sorted(inventory['rigs']):
         entry = inventory['rigs'][key]
         wanted = {name: desired[1][name] for name in match.pose_names(entry)}
+        layout = layout_inputs(key, entry)
         work['precise'] += 1
-        affected.update(match._match_ik(context, solver, inventory, entry, wanted, precise=True))
+        affected.update(match._match_ik(context, solver, inventory, entry, wanted, precise=True, **layout))
         work['refine'] += 1
-        match._refine_calibrated_reach(context, solver, inventory, entry, wanted)
+        match._refine_calibrated_reach(context, solver, inventory, entry, wanted, **layout)
         affected.update(match._match_toe(context, solver, entry, wanted))
-    errors = _error(_pose(context, solver, desired[1]), desired)
+    actual = _pose(context, solver, desired[1])
+    errors = _error(actual, desired)
     work['full_body_checks'] += 1
-    if _acceptable(errors):
+    if _sample_acceptable(actual, desired, errors, policy):
         work['full_fallback_accepted'] += 1
     return affected, errors
 
 
-def _stabilize_pole_phase(context, solver, inventory, desired, references):
-    """Keep each limb's first native angle and move its Pole to compensate.
+def _stabilize_pole_phase(context, solver, inventory, desired, references, *, aligned_elbows=()):
+    """Keep the legacy solver's stable angle and the geometric handle on Direct arms and legs.
 
     Native pole_angle is bounded to +/-pi. Interpolating equivalent angles on
     opposite sides of that boundary rotates the limb through the wrong plane.
@@ -893,6 +958,8 @@ def _stabilize_pole_phase(context, solver, inventory, desired, references):
                              for curve in drivers),
                      'An active IK Pole angle driver owns this limb; controller conversion kept the original motion.')
         reference = references.setdefault(key, angle)
+        if key[0] == 'LEG' or key in aligned_elbows:
+            continue
         if angle != reference:
             constraint.pole_angle = reference
             match._update(context, solver)
@@ -903,22 +970,44 @@ def _stabilize_pole_phase(context, solver, inventory, desired, references):
     return affected
 
 
-def _capture_channels(solver, inventory, affected, frame, result, previous):
+def _compatible_axis_angle(components, previous=None):
+    from mathutils import Vector
+    angle, *direction = components
+    axis = Vector(direction)
+    if axis.length < 1.e-8:
+        axis = Vector(previous[1:] if previous is not None else (0., 1., 0.))
+        angle = 0.
+    axis.normalize()
+    if previous is not None:
+        if axis.dot(Vector(previous[1:])) < 0.:
+            axis.negate()
+            angle = -angle
+        angle = previous[0] + math.remainder(angle - previous[0], math.tau)
+    return (angle, *axis)
+
+
+def _capture_channels(solver, inventory, affected, frame, result, previous, rotation_paths=None):
     from mathutils import Euler, Quaternion
     for name in sorted(affected):
         pb = solver.pose.bones[name]
-        rotation_path = 'rotation_quaternion' if pb.rotation_mode == 'QUATERNION' else 'rotation_euler'
-        _require(pb.rotation_mode == 'QUATERNION' or pb.rotation_mode in {'XYZ','XZY','YXZ','YZX','ZXY','ZYX'},
-                 'Controller motion currently supports Euler or quaternion controls.')
-        rotation = pb.rotation_quaternion.copy() if rotation_path == 'rotation_quaternion' else pb.rotation_euler.copy()
-        if rotation_path == 'rotation_quaternion':
+        mode = pb.rotation_mode
+        rotation_path = {'QUATERNION': 'rotation_quaternion', 'AXIS_ANGLE': 'rotation_axis_angle'}.get(mode, 'rotation_euler')
+        if rotation_paths is not None:
+            rotation_paths[pb.path_from_id(rotation_path)] = mode
+        if mode == 'QUATERNION':
+            rotation = pb.rotation_quaternion.copy()
             _require(rotation.magnitude > 1.e-8, 'A solved controller has a zero quaternion.')
             rotation.normalize()
             if name in previous and rotation.dot(previous[name]) < 0:
                 rotation.negate()
-        elif name in previous:
-            rotation = rotation.to_quaternion().to_euler(pb.rotation_mode, previous[name])
-        previous[name] = rotation.copy()
+        elif mode == 'AXIS_ANGLE':
+            rotation = _compatible_axis_angle(pb.rotation_axis_angle, previous.get(name))
+        else:
+            _require(mode in {'XYZ','XZY','YXZ','YZX','ZXY','ZYX'}, 'Unknown controller rotation mode.')
+            rotation = pb.rotation_euler.copy()
+            if name in previous:
+                rotation = rotation.to_quaternion().to_euler(mode, previous[name])
+        previous[name] = rotation
         fields = (('location', pb.location), (rotation_path, rotation), ('scale', pb.scale))
         for field, values in fields:
             for index, value in enumerate(values):
@@ -935,8 +1024,10 @@ def _capture_channels(solver, inventory, affected, frame, result, previous):
 
 def _write_channels(action, handle, result, retained_indices=None):
     from . import control_pose_offset as offset
+    from .controller_animation_curves import pole_angle_keys
     bag = offset._bag(action, handle)
     channels = result['channels']
+    extra_guards = 0
     for curve in tuple(bag.fcurves):
         if (curve.data_path, curve.array_index) in channels:
             bag.fcurves.remove(curve)
@@ -945,12 +1036,20 @@ def _write_channels(action, handle, result, retained_indices=None):
         curve = bag.fcurves.new(path, index=index)
         # Its native update callback merges nearby keys; configure it while empty.
         curve.extrapolation = 'CONSTANT'
-        curve.keyframe_points.add(len(selected))
-        constant = all(value == values[0] for value in values)
-        for point, item in zip(curve.keyframe_points, selected):
-            point.co = result['frame_times'][item], values[item]
-            point.interpolation = 'CONSTANT' if constant and path.endswith('["ik_fk"]') else 'LINEAR'
+        samples = ((result['frame_times'][item], values[item]) for item in selected)
+        if path.endswith('.pole_angle'):
+            keys = pole_angle_keys(samples)
+            extra_guards += len(keys) - len(selected)
+        else:
+            switch = path.endswith('["ik_fk"]') and all(value == values[0] for value in values)
+            interpolation = 'CONSTANT' if switch else 'LINEAR'
+            keys = tuple((t, value, interpolation) for t, value in samples)
+        curve.keyframe_points.add(len(keys))
+        for point, (frame, value, interpolation) in zip(curve.keyframe_points, keys):
+            point.co = frame, value
+            point.interpolation = interpolation
         # Times are already ordered. update() would merge distinct adaptive samples.
+    return extra_guards
 
 
 def _probes(times):
@@ -958,16 +1057,105 @@ def _probes(times):
                                     for fraction in (.25, .5, .75)}))
 
 
-def _verify(context, scene, source, playback, raw, plan, times):
+def _order_solved_channels(values, times, indices, rotation_paths):
+    """Insert new samples chronologically before choosing quaternion signs and Euler branches."""
+    from mathutils import Euler, Quaternion
+    order = [indices[frame] for frame in times]
+    ordered = {key: [column[index] for index in order] for key, column in values.items()}
+    for path, mode in rotation_paths.items():
+        if mode == 'AXIS_ANGLE':
+            columns = [ordered[path, axis] for axis in range(4)]
+            previous = None
+            for index, components in enumerate(zip(*columns)):
+                previous = _compatible_axis_angle(components, previous)
+                for column, value in zip(columns, previous):
+                    column[index] = float(value)
+            continue
+        quaternion = mode == 'QUATERNION'
+        columns = [ordered[path, axis] for axis in range(4 if quaternion else 3)]
+        previous = None
+        for index, components in enumerate(zip(*columns)):
+            rotation = Quaternion(components) if quaternion else Euler(components, mode)
+            if previous is not None:
+                if quaternion:
+                    if rotation.dot(previous) < 0:
+                        rotation.negate()
+                else:
+                    rotation = rotation.to_quaternion().to_euler(mode, previous)
+                for column, value in zip(columns, rotation):
+                    column[index] = float(value)
+            previous = rotation
+    return ordered
+
+
+def _knee_handle_error(evaluated, legs):
+    """Angle from the displayed shaft to the evaluated bend when the knee has a plane."""
+    from . import limb_ik
+    worst = 0.
+    world = evaluated.matrix_world
+    for leg in legs:
+        hip, knee, ankle = (evaluated.pose.bones[n].head for n in leg['chain'])
+        upper, lower = knee - hip, ankle - knee
+        span = upper.length + lower.length
+        axis = ankle - hip
+        if span < 1.e-8:
+            continue
+        if axis.length < span * 1.e-5:
+            radial = upper
+        else:
+            axis.normalize()
+            radial = upper - axis * upper.dot(axis)
+        if radial.length < .01 * span:
+            continue
+        handle = limb_ik._custom_shape_anchor_world(evaluated, evaluated.pose.bones[leg['pole'].name])
+        shaft = handle - world @ knee
+        bend = world.to_3x3() @ radial
+        worst = max(worst, shaft.angle(bend, math.pi))
+    return worst
+
+
+def _pole_seam_probes(playback, limbs):
+    """Check almost the entire outgoing hold, refining halfway if its residual is too large."""
+    from . import animation_export_inputs
+    from .controller_animation_curves import pole_angle_interpolation
+    paths = {constraint.path_from_id('pole_angle') for limb in limbs
+             for _, constraint, record in limb['entries'] if record['role'] == 'IK'}
+    animation = playback.animation_data
+    probes = {}
+    for curve in animation_export_inputs._curves(animation.action, animation.action_slot_handle):
+        if curve.data_path not in paths:
+            continue
+        points = curve.keyframe_points
+        for left, right in zip(points, list(points)[1:]):
+            a, u = left.co
+            b, v = right.co
+            if pole_angle_interpolation(u, v) == 'CONSTANT':
+                probes[a + (b - a) * .99] = a + (b - a) * .5
+    return probes
+
+
+def _verify(context, scene, source, playback, raw, plan, times, *, progress=None,
+            phase='Checking controller playback', round_number=0):
     editable = plan['playback_policy']['quality'] == 'EDITABLE'
     fields = ('matrix', 'position', 'rotation', 'scale')
     if editable:
         fields += ('world_matrix', 'position_meters', 'rotation_radians', 'scale_relative', 'shape_relative')
         fields += ('sample_matrix', 'sample_position', 'sample_rotation', 'sample_scale')
+    legs = [leg for key, leg in plan.get('inventory', {}).get('rigs', {}).items() if key[0] == 'LEG']
+    elbows = list(plan.get('aligned_elbows', ()))
+    if legs:
+        fields += ('knee_handle_radians',)
+    if elbows:
+        from . import elbow_pole_layout
+        fields += ('elbow_handle_degrees',)
     worst = {key: 0. for key in fields}
     samples = set(times)
     failed = []
-    for frame in _probes(times):
+    seam_probes = _pole_seam_probes(playback, legs + elbows) if legs or elbows else {}
+    probes = sorted(set(_probes(times)) | set(seam_probes))
+    for index, frame in enumerate(probes, 1):
+        if progress is not None:
+            progress(phase, index, len(probes), round_number)
         _restore_raw(source, raw)
         _restore_raw(playback, raw)
         _frame(scene, frame)
@@ -976,36 +1164,56 @@ def _verify(context, scene, source, playback, raw, plan, times):
         errors = _error(actual, expected)
         if editable:
             errors.update(_world_playback_error(actual, expected, plan['playback_policy']['scene_meters_per_unit']))
+        if legs or elbows:
+            evaluated = playback.evaluated_get(context.evaluated_depsgraph_get())
+        if legs:
+            errors['knee_handle_radians'] = _knee_handle_error(evaluated, legs)
+        if elbows:
+            errors['elbow_handle_degrees'] = max(elbow_pole_layout.alignment_error(evaluated, entry) or 0.
+                                                for entry in elbows)
         for key, value in errors.items():
             worst[key] = max(worst[key], value)
-        accepted = _playback_acceptable(errors, plan['playback_policy'])
+        accepted = (_playback_acceptable(errors, plan['playback_policy'])
+                    and errors.get('knee_handle_radians', 0.) <= math.radians(5.))
+        if elbows:
+            accepted &= errors['elbow_handle_degrees'] <= elbow_pole_layout.ALIGNMENT_TOLERANCE_DEGREES
         if editable and frame in samples:
             for key in ('matrix', 'position', 'rotation', 'scale'):
                 worst['sample_'+key] = max(worst['sample_'+key], errors[key])
-            accepted = accepted and _acceptable(errors)
+            if not plan['playback_policy'].get('imported_daily_edit'):
+                accepted = accepted and _acceptable(errors)
         if not accepted:
-            failed.append(frame)
+            failed.append(seam_probes.get(frame, frame))
     return worst, tuple(failed)
 
 
 def build_controller_channels(context, rig, action, slot_handle=None, *, frame_start=None, frame_end=None, sample_step=1.0,
                               quality='EDITABLE', auto_reduce=True, position_tolerance_meters=.001,
-                              rotation_tolerance_radians=.004363323129985824):
+                              rotation_tolerance_radians=.004363323129985824, pose_matching=False, progress=None,
+                              daily_edit=False):
     """Return validated IK overlay channels; never bind or modify an author Action.
 
+    Explicit pose matching validates current Rest and its native controls while
+    omitting asset-container checks used for rig removal/rebuilding. The default
+    retains the existing complete inventory admission.
     Caller-owned import copies can use apply_to_action after their immutable
     Source baseline has been fixed.  Actual new-Action playback is verified,
     including authored subframes and interval quarter probes.
     """
     _require_private_evaluation_idle()
     import bpy
-    from . import forearm_twist, controller_animation_curves, controller_animation_sampling
+    from . import (controller_animation_curves, controller_animation_sampling, elbow_pole_layout,
+                   forearm_twist, knee_pole_layout)
     offset, api, match, limb, inputs = _api()
     options = _conversion_options(auto_reduce, position_tolerance_meters, rotation_tolerance_radians)
     plan = _source_plan(context, rig, action, slot_handle, frame_start, frame_end, sample_step,
-                        quality=quality, **_conversion_kwargs(options))
+                        quality=quality, pose_matching=pose_matching, **_conversion_kwargs(options))
     if plan['conversion_state'] == 'NATIVE_FK':
         return plan
+    if daily_edit:
+        _require(pose_matching and quality == 'EDITABLE', 'Daily edit accuracy requires imported pose matching.')
+        plan['daily_edit'] = True
+        plan['playback_policy'] = _daily_edit_policy(context)
     source_proof = plan['source_hash']
     raw = _raw(rig, plan['closure'])
     missing_inputs = _required_inputs(plan)
@@ -1029,6 +1237,17 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
         playback.animation_data.action = None
         inventory = _solver_inventory(plan, solver)
         pole_references = {}
+        pole_history = {}
+        layouts = {key: knee_pole_layout.position for key in inventory['rigs'] if key[0] == 'LEG'}
+        aligned_elbows = {key for key, entry in inventory['rigs'].items()
+                          if key[0] == 'ARM' and elbow_pole_layout.supports(inventory, entry)}
+        layouts.update(dict.fromkeys(aligned_elbows, elbow_pole_layout.position))
+        plan['aligned_elbows'] = tuple(plan['inventory']['rigs'][key] for key in sorted(aligned_elbows))
+        match_policy = plan['playback_policy'] if daily_edit else None
+        # Each solve starts from the evaluated source. Near-straight limbs use the preceding solved layout.
+        # Store numeric channels before rotation unwrapping. Their Action is always replayed in full.
+        solved_indices, solved_channels, sampled_inputs, rotation_paths = {}, {}, {}, {}
+        solve_worst = 0.
         with forearm_twist.defer_runtime(context, flush_on_exit=False):
             with context.temp_override(scene=scene, view_layer=scene.view_layers[0], object=solver, active_object=solver):
                 for refinement in range(MAX_REFINEMENTS+1):
@@ -1036,8 +1255,17 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                     _require(len(times) <= MAX_SAMPLES and len(times)*len(plan['native_names']) <= MAX_BONE_SAMPLES,
                              'Controller accuracy needs more samples than this bounded operation supports.')
                     channels, filled, previous = {}, {}, {}
-                    solve_worst = 0.
-                    for frame in times:
+                    solve_times = times
+                    if daily_edit:
+                        channels, filled = solved_channels, sampled_inputs
+                        solve_times = tuple(t for t in times if t not in solved_indices)
+                        work['reused_samples'] = work.get('reused_samples', 0) + len(times) - len(solve_times)
+                    else:
+                        solve_worst = 0.
+                    preceding = dict(zip(times[1:], times))
+                    for index, frame in enumerate(solve_times, 1):
+                        if progress is not None:
+                            progress('Solving controller poses', index, len(solve_times), refinement + 1)
                         _restore_raw(source, raw)
                         _frame(scene, frame)
                         context.view_layer.update()
@@ -1047,19 +1275,48 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                         _capture_inputs(source_evaluated, missing_inputs, filled)
                         _restore_raw(solver, source_raw)
                         context.view_layer.update()
+                        previous_positions = pole_history.get(preceding.get(frame), {})
+                        positions = {key: layout(solver, inventory['rigs'][key], desired[1],
+                                                 previous=previous_positions.get(key))
+                                     for key, layout in layouts.items()}
+                        pole_history[frame] = positions
                         work['sample_solves'] += 1
-                        affected, errors = _match_body(context, solver, inventory, desired, source_raw, plan['closure'], work)
-                        affected.update(_stabilize_pole_phase(context, solver, inventory, desired, pole_references))
-                        errors = _error(_pose(context, solver, plan['native_names']), desired)
+                        affected, errors = _match_body(context, solver, inventory, desired, source_raw,
+                                                       plan['closure'], work, pole_positions=positions, policy=match_policy)
+                        affected.update(_stabilize_pole_phase(context, solver, inventory, desired, pole_references,
+                                                              aligned_elbows=aligned_elbows))
+                        solved = _pose(context, solver, plan['native_names'])
+                        errors = _error(solved, desired)
                         work['full_body_checks'] += 1
                         solve_worst = max(solve_worst, errors['matrix'])
-                        _require(_acceptable(errors),
+                        _require(_sample_acceptable(solved, desired, errors, plan['playback_policy']),
                                  f'Installed IK cannot reproduce body frame {frame:g} within tolerance '
                                  f'(matrix {errors["matrix"]:.6g}, position {errors["position"]:.6g}, '
                                  f'rotation {errors["rotation"]:.6g}, scale {errors["scale"]:.6g}); original motion was kept.')
-                        _capture_channels(solver, inventory, affected, frame, channels, previous)
-                    filled_keys = tuple(key for key in filled if key not in channels)
-                    channels.update((key, filled[key]) for key in filled_keys)
+                        if daily_edit:
+                            _capture_channels(solver, inventory, affected, frame, channels, {}, rotation_paths)
+                            solved_indices[frame] = len(solved_indices)
+                        else:
+                            _capture_channels(solver, inventory, affected, frame, channels, previous)
+                    # The IK copy needs only the conditioned rotation. Keep existing
+                    # artist shin location/scale and wholly unconditioned rotation curves.
+                    passthrough = set()
+                    for key, entry in inventory['rigs'].items():
+                        if key[0] != 'LEG':
+                            continue
+                        shin = solver.pose.bones[entry['chain'][1]]
+                        passthrough.update(shin.path_from_id(field) for field in ('location', 'scale'))
+                        if shin.name not in work.get('conditioned_shins', ()):
+                            passthrough.update(shin.path_from_id(field) for field in
+                                               ('rotation_euler', 'rotation_quaternion', 'rotation_axis_angle'))
+                    values = {key: samples for key, samples in channels.items() if key[0] not in passthrough}
+                    filled_keys = tuple(key for key in filled if key not in values)
+                    values.update((key, filled[key]) for key in filled_keys)
+                    if daily_edit:
+                        rotations = {path: mode for path, mode in rotation_paths.items() if path not in passthrough}
+                        channels = _order_solved_channels(values, times, solved_indices, rotations)
+                    else:
+                        channels = values
                     result = dict(conversion_state='CONTROLLER', source_action=action, source_slot=plan['slot'],
                                   channels=channels, frame_times=times, native_names=plan['native_names'],
                                   quality=quality, playback_policy=dict(plan['playback_policy']))
@@ -1069,7 +1326,8 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                     _write_channels(candidate, plan['slot'], result)
                     playback.animation_data.action = candidate
                     playback.animation_data.action_slot = next(slot for slot in candidate.slots if slot.handle == plan['slot'])
-                    full_error, failed = _verify(context, scene, source, playback, raw, plan, times)
+                    full_error, failed = _verify(context, scene, source, playback, raw, plan, times,
+                                                 progress=progress, round_number=refinement + 1)
                     if not failed:
                         break
                     _require(refinement < MAX_REFINEMENTS,
@@ -1078,34 +1336,39 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                     owned['actions'].remove(candidate)
                     bpy.data.actions.remove(candidate)
                     times = tuple(sorted(set(times) | set(failed)))
+                if progress is not None:
+                    progress('Preparing editable keys')
                 compressed = controller_animation_sampling.compress_legal(channels, times, controller_animation_curves,
                                                                           auto_reduce=options['auto_reduce'])
                 reduced = action.copy()
                 owned['actions'].append(reduced)
                 reduced.use_fake_user = False
-                _write_channels(reduced, plan['slot'], result, compressed['indices'])
+                extra_guards = _write_channels(reduced, plan['slot'], result, compressed['indices'])
                 playback.animation_data.action = reduced
                 playback.animation_data.action_slot = next(slot for slot in reduced.slots if slot.handle == plan['slot'])
-                reduced_error, reduced_failed = _verify(context, scene, source, playback, raw, plan, times)
+                reduced_error, reduced_failed = _verify(context, scene, source, playback, raw, plan, times,
+                                                        progress=progress, phase='Checking editable keys')
                 if reduced_failed:
                     # A fallback is still an editable grid. Full V remains the
                     # verification domain, including every omitted sample.
-                    _write_channels(reduced, plan['slot'], result, compressed['fallback_indices'])
-                    fallback_error, fallback_failed = _verify(context, scene, source, playback, raw, plan, times)
+                    extra_guards = _write_channels(reduced, plan['slot'], result, compressed['fallback_indices'])
+                    fallback_error, fallback_failed = _verify(context, scene, source, playback, raw, plan, times,
+                                                              progress=progress, phase='Checking full keys')
                     _require(not fallback_failed,
                              'Editable controller keys cannot reproduce this clip within tolerance; original motion was kept.')
                 else:
                     fallback_error = None
                 result['retained_indices'] = compressed['fallback_indices'] if reduced_failed else compressed['indices']
+                before_points = sum(len(values) for values in channels.values())
+                after_points = sum(map(len, result['retained_indices'].values())) + extra_guards
                 result['diagnostics'] = dict(solve_matrix_error=solve_worst, full_error=full_error,
                     reduced_error=reduced_error, compression_accepted=options['auto_reduce'] and not reduced_failed,
                     compression_attempted=options['auto_reduce'], auto_reduce_requested=options['auto_reduce'],
                     compression_fallback='Reduced playback exceeded tolerance; complete legal grid verified.' if reduced_failed else '',
                     fallback_error=fallback_error,
-                    before_points=sum(len(values) for values in channels.values()),
-                    after_points=sum(len(result['retained_indices'][key]) for key in channels),
+                    before_points=before_points, after_points=after_points, native_pole_guard_keys=extra_guards,
                     legal_points=compressed['legal_points'],
-                    reduction_ratio=1.-sum(len(result['retained_indices'][key]) for key in channels)/sum(len(values) for values in channels.values()),
+                    reduction_ratio=1.-after_points/before_points,
                     legal_sample_count=compressed['legal_sample_count'],
                     legal_key_time_range=list(compressed['legal_key_time_range']),
                     sample_count=len(times), probe_count=len(_probes(times)), refinement_passes=refinement,
@@ -1114,16 +1377,17 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                 result['filled_input_channels'] = filled_keys
         result['metadata'] = dict(schema=SCHEMA, frame_start=times[0], frame_end=times[-1],
             limbs=[kind+'.'+side for kind, side in sorted(plan['inventory']['rigs'])],
-            authority='complete body IK; existing native FK orientation curves retained',
+            authority='Complete body IK. Original FK Action retained; IK copy uses a calibrated shin input.',
             native_input_sampling='evaluated raw RNA before constraints; solver Action detached',
             source_evaluation='explicit Action/slot; NLA excluded; captured raw defaults',
-            pole_phase='per-limb first solved native angle retained across samples and adaptive passes; Pole position compensates; full-body native gate retained',
+            pole_phase='Leg handles follow evaluated knee bend; arm phase retained; native playback verified',
             source_action=action.name_full, source_slot=plan['slot'], source_fingerprint=source_proof,
             sample_count=len(times), body_bone_count=len(plan['native_names']),
             body_bones_sha256=_digest(plan['native_names']),
             filled_inputs=dict(count=len(filled_keys), channels_sha256=_digest(filled_keys),
                                sampling='raw RNA transforms and numeric controls before constraints'),
-            verification='written Action strict native gate at every matched sample including removed keys; interval quarters use selected playback quality; no continuous-time guarantee',
+            verification='Matched samples, interval quarters and outgoing native phase crossings checked on written Action',
+            knee_handle_tolerance_degrees=5.,
             quality=quality, playback_budget=dict(plan['playback_policy']), conversion_options=dict(options),
             world_playback_metrics='computed for EDITABLE' if quality == 'EDITABLE' else 'not computed; STRICT retains the historical replay contract',
             matrix_tolerance=MATRIX_TOLERANCE, matrix_tolerance_scope='sample solve and all written-Action matched samples; STRICT also all interval probes',
@@ -1141,6 +1405,20 @@ def build_controller_channels(context, rig, action, slot_handle=None, *, frame_s
                 key_range=result['diagnostics']['legal_key_time_range'],
                 endpoint_extension='CONSTANT; at most .01 frame; original matched endpoints verified',
                 verification='all original samples and quarter probes retained'))
+        if aligned_elbows:
+            result['metadata'].update(pole_phase='Knees and Direct elbows follow their evaluated bend; native playback verified',
+                                      elbow_handle_tolerance_degrees=elbow_pole_layout.ALIGNMENT_TOLERANCE_DEGREES)
+        if daily_edit:
+            policy = plan['playback_policy']
+            result['metadata'].update(verification='World playback budget at matched samples and interval probes',
+                                      matrix_tolerance=None, matrix_tolerance_scope='diagnostic only',
+                                      conversion_options=dict(auto_reduce=options['auto_reduce'],
+                                          position_tolerance_meters=policy['position_tolerance_meters'],
+                                          rotation_tolerance_radians=policy['rotation_tolerance_radians']))
+        if work.get('conditioned_shins'):
+            from . import knee_pole_keying
+            result['original_shin_curves'] = knee_pole_keying.capture(action, plan['slot'], rig,
+                                                                      work['conditioned_shins'])
         _require(len(_json(result['metadata'])) <= MAX_RECORD, 'Controller metadata exceeds its bounded record size.')
         _require(offset._action_hash(api, action, plan['slot']) == source_proof,
                  'The source animation changed during controller conversion; no result was published.')
@@ -1182,10 +1460,17 @@ def apply_to_action(action, slot_handle, built):
     _require(built['channels'] and all(len(values) == len(built['frame_times']) for values in built['channels'].values()),
              'Controller output channels are incomplete.')
     _write_channels(action, slot_handle, built, built.get('retained_indices'))
+    if built.get('original_shin_curves'):
+        from . import knee_pole_keying
+        knee_pole_keying.store(action, slot_handle, built['original_shin_curves'])
     from . import animation_export_inputs as inputs
     action.pop(inputs.RECORD, None)
     action.pop(inputs.COUNT, None)
     action[RECORD] = _json(built['metadata'])
+    action['character_designer_knee_pole_layout'] = 1
+    if 'elbow_handle_tolerance_degrees' in built['metadata']:
+        from . import elbow_pole_layout
+        action[elbow_pole_layout.MARKER] = elbow_pole_layout.VERSION
     return dict(action=action, conversion_state='CONTROLLER', metadata=built['metadata'], diagnostics=built['diagnostics'])
 
 

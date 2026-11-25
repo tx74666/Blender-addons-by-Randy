@@ -1,7 +1,7 @@
 # Finger tools (0.62.5)
 
 For a bound character, the existing Fingers panel appears under Rig > Body only
-while Body Controls > Setup > Fingers is selected. It follows the active rig or
+while Body Controls > Fingers is selected. It follows the active rig or
 the active mesh's unique Armature binding, including mesh Edit Mode. An unbound
 mesh keeps access for initial setup. These display rules do not change saved
 finger references or any of the individual operators below.
@@ -34,7 +34,10 @@ local loop additions/removals. Detection uses read-only traversal helpers in
 finger_range.py; it does not generate loops or prepare topology snapshots.
 
 Reference and bend guides display one selected side. The small double arrow
-switches L/R, with L as the default. The master eye hides both guide types and
+switches L/R, with L as the default. From 0.77.184, guides default to hidden in new scenes or when no display
+choice was saved. Explicit saved On/Off choices remain. The eye beside Capture
+Detection controls references, Start/End labels, loop marks and bend guides
+without clearing them. The master eye hides both guide types and
 retains cached lines. Bend previews are explicitly requested and cached; drawing
 callbacks do no BMesh work, topology planning or full mesh fingerprinting.
 Ordinary mesh edits leave these guides frozen at their saved locations. There

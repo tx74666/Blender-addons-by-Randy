@@ -686,7 +686,11 @@ def _free_finger_plan(context, rig, desired, changed, values, metadata):
     # A generated limb source can have no constraint of its own yet still be
     # controlled by a child's IK. Reuse the validated native finger identity,
     # rather than treating every constraint-free Body bone as ordinary FK.
-    inventory = forearm_original_inventory.validate(rig)
+    from . import body_original_mode
+    if body_original_mode.active(rig):
+        inventory = forearm_original_inventory.validate(rig)
+    else:
+        inventory = limb_ik._validate_inventory(rig, limb_pose_only=True)
     fingers = set(capture._finger_names(rig, inventory))
     original_group = rig.data.collections_all.get('Original')
     if original_group is None or original_group.get(bone_collections.GROUP_KEY) != 'Original':

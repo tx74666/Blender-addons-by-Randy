@@ -1,5 +1,37 @@
 # Controller animation authoring
 
+## Imported motions on the character
+
+Open **Animation → Animations** on the character you want to edit. Click a
+clip name to open its saved controller Action. The first click on an unprepared
+import queues an independent FK Action for that character. When it is ready,
+it opens on the character if you are still in the same editing context. If you
+have moved to another frame, pose or clip, click the clip again to open it.
+**Prepare Missing FK** queues the missing clips for the current character,
+including clips outside the Pinned view. **Advanced → Open Source Motion**
+opens the imported rig for inspection.
+
+Opening a prepared clip starts on its first frame with Auto Key off.
+In Pose Mode, select a hand or foot on the character. Use **FK** or **IK** for
+that limb. With Auto Key off, pose the limb and press **Key Pose** to record
+the matched controls and mode together. With Auto Key on, switching keys the
+matched pose and mode immediately. The mode holds until its next key. For
+example, right-foot IK at frame 20 and FK at frame 30 uses IK from frame 20
+through frame 29. To place the foot with a handle and record an ordinary FK
+key instead, use **Pose with IK**, move the target, then press **Key as FK**.
+
+Daily FK preparation uses the rig's native FK bones and its installed torso
+and toe controls. Import baked transform curves on the source bones. If a
+source clip uses a moving stepped or Bézier span, or an ambiguous rotation
+turn, the panel identifies the curve or bone that needs linear sampling.
+The editable Action on X can use Blender's usual interpolation.
+For a complete set of hand and foot IK trajectories, open
+**Advanced → Make Full IK from FK**. This creates an alternative from the
+current keyed FK edit and retains both Actions. Save the editing blend to
+continue with these Actions and their keys later.
+
+## Controller Customs in the source editing scene
+
 This workflow converts a complete imported body motion into editable controller
 channels on the character's existing rig. It applies to supported motions by
 their mapping and control graph; Walk is a validation example, not a special

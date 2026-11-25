@@ -32,10 +32,11 @@ SCHEMA = {
         'character_designer_forearm_twist', 'character_designer_finger_root',
         'character_designer_hair_bones', 'character_designer_hair_motion',
         'character_designer_skirt', 'character_designer_animation', 'update_views',
+        'character_designer_colors_advanced', 'character_designer_colors_error',
     ),
     'Scene': ('character_designer_setup', 'character_designer_body_region',
               'character_designer_ground', 'character_designer_animation_worklist'),
-    'Object': ('character_designer_unity_export', 'update_settings'),
+    'Object': ('character_designer_unity_export', 'update_settings', 'character_designer_colors'),
 }
 
 
@@ -63,10 +64,21 @@ class RegistrationModel:
             module = getattr(package, name)
             module.register_properties = self.catalog_register(name)
             module.unregister_properties = self.catalog_unregister(name)
+        package.color_center = NS(COLORS_PROPERTY='character_designer_colors',
+                                  ADVANCED_PROPERTY='character_designer_colors_advanced',
+                                  ERROR_PROPERTY='character_designer_colors_error')
+        colors = package.color_center
+        color_fields = ((self.types.Object, colors.COLORS_PROPERTY),
+                        (self.types.WindowManager, colors.ADVANCED_PROPERTY),
+                        (self.types.WindowManager, colors.ERROR_PROPERTY))
+        colors.register_properties = lambda: self.add_properties(color_fields)
+        colors.unregister_properties = lambda: self.remove_properties(color_fields)
         updates = package.unity_update_selection_ui
         updates.SETTINGS_PROPERTY, updates.VIEW_PROPERTY = 'update_settings', 'update_views'
-        updates.register_properties = self.register_updates
-        updates.unregister_properties = self.unregister_updates
+        update_fields = ((self.types.Object, updates.SETTINGS_PROPERTY),
+                         (self.types.WindowManager, updates.VIEW_PROPERTY))
+        updates.register_properties = lambda: self.add_properties(update_fields)
+        updates.unregister_properties = lambda: self.remove_properties(update_fields)
 
         def import_module(name, globals=None, locals=None, fromlist=(), level=0):
             if not name and level == 1:
@@ -131,16 +143,14 @@ class RegistrationModel:
     def catalog_unregister(self, name):
         return lambda: self.catalog_properties.discard(name)
 
-    def register_updates(self):
-        self.events.append(('property', 'unity_update_selection_ui'))
-        for owner, name in ((self.types.Object, 'update_settings'),
-                            (self.types.WindowManager, 'update_views')):
+    def add_properties(self, fields):
+        for owner, name in fields:
+            self.events.append(('property', name))
             if not hasattr(owner, name):
                 setattr(owner, name, object())
 
-    def unregister_updates(self):
-        for owner, name in ((self.types.Object, 'update_settings'),
-                            (self.types.WindowManager, 'update_views')):
+    def remove_properties(self, fields):
+        for owner, name in fields:
             if hasattr(owner, name):
                 delattr(owner, name)
 

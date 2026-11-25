@@ -94,9 +94,13 @@ def _columns(points, budget):
 
 
 def _curve(curve, budget):
-    _require(not curve.modifiers and not curve.sampled_points and not curve.lock
+    _require(all(m.type == 'CYCLES' for m in curve.modifiers) and not curve.sampled_points and not curve.lock
              and not (curve.group and curve.group.lock) and not getattr(curve, 'is_driver', False),
              'Unlock this wrist curve and remove its modifiers/samples before Auto Key.')
+    return _point_snapshot(curve, budget)
+
+
+def _point_snapshot(curve, budget):
     return dict(curve=curve, pointer=int(curve.as_pointer()), group=curve.group,
         settings=_settings(curve), count=len(curve.keyframe_points), columns=_columns(curve.keyframe_points, budget))
 
@@ -169,7 +173,7 @@ def _policy(context):
 
 
 def _curves(domain):
-    return tuple(domain['bag'].fcurves.find(domain['path'], index=i) for i in range(domain['size']))
+    return tuple(domain['bag'].fcurves.find(domain['path'], index=i) for i in domain['indices'])
 
 
 def _has_frame(curve, frame):
@@ -218,7 +222,8 @@ def prepare_keying(context, plan):
     size = plan['rotation_size']
     _require(plan['rotation_path'] in {'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle'}
         and size == len(getattr(plan['target'], plan['rotation_path'])) and size in (3, 4), 'Unsupported wrist representation.')
-    plan['key_domain'] = dict(bag=bag, path=path, size=size, saved=[None] * size, policy=policy,
+    plan['key_domain'] = dict(bag=bag, path=path, indices=plan.get('key_indices', range(size)),
+        saved=[None] * size, policy=policy,
         owned_new={}, owned_groups={}, attempted=set(), values_before=tuple(getattr(plan['target'], plan['rotation_path'])),
         snapshot_points=0, closed=False, started=False, store=None)
     validate_keying(context, plan)
@@ -325,7 +330,8 @@ def key_rotation(context, plan):
     if domain['policy'][4][1]: options.add('INSERTKEY_NEEDED')
     needed = domain['policy'][4][1]
     values = tuple(getattr(plan['target'], plan['rotation_path']))
-    for i, value in enumerate(values):
+    for i in domain['indices']:
+        value = values[i]
         _require(math.isfinite(float(value)), 'The current wrist rotation is non-finite.')
         _binding(plan)
         _require(_policy(context) == domain['policy']
@@ -364,7 +370,7 @@ def key_rotation(context, plan):
 
 
 def _lease_curve(curve):
-    _require(not curve.modifiers and not curve.sampled_points and not curve.lock
+    _require(all(m.type == 'CYCLES' for m in curve.modifiers) and not curve.sampled_points and not curve.lock
         and not (curve.group and curve.group.lock) and not getattr(curve, 'is_driver', False),
         'Unlock this wrist curve and remove its modifiers/samples before Auto Key.')
     count = len(curve.keyframe_points)

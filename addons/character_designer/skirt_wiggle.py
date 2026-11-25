@@ -165,7 +165,7 @@ def status(context=None, source=None):
         return dict(info, mode='MANUAL', running=False, message=str(error), reason=str(error))
 
 
-def _write(source, record, selected, *, reason='', original=None, lease=None, settings=None):
+def _write(source, record, selected, *, reason='', original=None, lease=None, settings=None, stopped=None):
     previous = _state(source) or {}
     state = {'version': 1, 'owner': record['owner'], 'mode': selected,
              'names': [name for chain in record['chains'] for name in chain['phys']],
@@ -174,6 +174,14 @@ def _write(source, record, selected, *, reason='', original=None, lease=None, se
              'lease': previous.get('lease', {}) if lease is None else lease,
              'settings': previous.get('settings', {}) if settings is None else settings}
     session = _SESSIONS.get(source.as_pointer())
+    baseline = previous.get('off_pose')
+    producer = session or stopped
+    if producer:
+        baseline = producer.get('off_pose') or {'influence': producer['influence'], 'channels': producer['channels']}
+    if baseline is not None:
+        state['off_pose'] = baseline
+        state['output_hash'] = (_pose_digest(_layer_pose(producer['rig'], producer['holder'], state['names']))
+                                if producer else previous.get('output_hash'))
     state['runtime_v2'] = (dict(version=1, component='SKIRT', source=source.name,
         rig=session['rig'].name, owner=record['owner'], names=list(session['names']),
         scene_token=source.get(STATE_SCENE_KEY),
@@ -213,6 +221,69 @@ def _restore_channels(bone, saved):
     bone.rotation_mode = saved['mode']
     for name, value in saved['values'].items():
         setattr(bone, name, value)
+
+
+def _layer_pose(rig, holder, names):
+    return {'influence': holder['physics_influence'],
+            'channels': {name: _channels(rig.pose.bones[name]) for name in names}}
+
+
+def _pose_digest(pose):
+    data = json.dumps(pose, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def _apply_layer(rig, holder, pose):
+    for name, channels in pose['channels'].items():
+        _restore_channels(rig.pose.bones[name], channels)
+    holder['physics_influence'] = pose['influence']
+    rig.update_tag(refresh={'OBJECT'})
+
+
+def stopped_output(source, record, *, suspended):
+    """Restore only a generated, stopped solver's contribution to its Dress."""
+    state = _state(source)
+    if not state or not state.get('original'):
+        return None
+    baseline = state.get('off_pose')
+    if baseline is None and not (suspended or state['mode'] == 'AUTOMATIC' or
+            state.get('reason') == 'Character Designer stopped automatic Dress motion; the current shape is kept.'):
+        return None
+    rig = source[skirt.RIG_KEY]
+    if any(obj.library or obj.override_library or not obj.is_editable for obj in (source, rig)):
+        _fail('Restore Dress physics on its local editable rig.')
+    names = tuple(name for chain in record['chains'] for name in chain['phys'])
+    if state.get('backend') != BACKEND_NAME or set(state['original']) != set(names):
+        _fail('The stopped Dress no longer matches its generated physics bones.')
+    holder = _graph(source, record, rig, names)
+    current = _layer_pose(rig, holder, names)
+    if baseline is None:
+        # Earlier releases retained solver rotations without a pre-simulation
+        # snapshot. Bypass the owned additive layer and keep those raw channels.
+        if current['influence'] == 0:
+            return None
+        before, after = ({'influence': value, 'channels': {}} for value in (current['influence'], 0.0))
+    else:
+        if (not isinstance(baseline, dict) or type(baseline.get('influence')) not in (float, int)
+                or baseline['influence'] not in (0.0, 1.0)
+                or set(baseline.get('channels', {})) != set(names)):
+            _fail('The saved Dress pose does not match its generated physics bones.')
+        modes = {'QUATERNION', 'AXIS_ANGLE', 'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX'}
+        for name, pose in baseline['channels'].items():
+            if (not isinstance(pose, dict) or pose.get('mode') not in modes
+                    or not isinstance(pose.get('values'), dict) or set(pose['values']) != set(_CHANNELS)):
+                _fail('The saved Dress pose contains unrecognized transform channels.')
+            for channel, values in pose['values'].items():
+                if (not isinstance(values, (list, tuple)) or len(values) != len(current['channels'][name]['values'][channel])
+                        or any(type(v) not in (float, int) or not math.isfinite(v) for v in values)):
+                    _fail('The saved Dress pose contains an invalid transform.')
+        now = _pose_digest(current)
+        if now == _pose_digest(baseline):
+            return None
+        if now != state.get('output_hash'):
+            _fail('The stopped Dress physics channels were edited. Their pose was preserved.')
+        before, after = current, baseline
+    return ('DRESS_OUTPUT', (rig, holder), after, before, None)
 
 
 def _raw(owner, name):
@@ -450,6 +521,11 @@ def _start(context, source):
              'bone_refs': {name: rig.pose.bones[name] for name in names}, 'scene_ref': source.get(STATE_SCENE_KEY),
              'scene_id_raw': scene.get(SCENE_ID_KEY), 'paused': False,
              'original_context': original.wiggle_original_context(source, record)}
+    prior = _state(source) or {}
+    if prior.get('off_pose') and _pose_digest(_layer_pose(rig, holder, names)) == prior.get('output_hash'):
+        restore = stopped_output(source, record, suspended=False)
+        if restore is not None:
+            saved['off_pose'] = restore[2]
     lease = runtime.acquire(context, 'SKIRT', source, rig, names, backend)
     saved['lease'] = lease
     saved['scene_enable'] = copy.deepcopy(lease['scene_original'])
@@ -532,7 +608,7 @@ def _stop(key, *, reason, preserve_preference=False):
     _SESSIONS.pop(key, None)
     try:
         # PHYS channels and influence remain exactly as currently evaluated.
-        _write(source, saved['record'], 'AUTOMATIC' if preserve_preference else 'MANUAL', reason=reason, settings=settings)
+        _write(source, saved['record'], 'AUTOMATIC' if preserve_preference else 'MANUAL', reason=reason, settings=settings, stopped=saved)
         rig.update_tag(refresh={'OBJECT'})
     except ReferenceError:
         pass
@@ -583,12 +659,31 @@ def set_paused(context, source, paused):
     from . import wiggle2_runtime
     previous = saved.get('paused', False)
     state_raw = source.get(STATE_KEY)
-    wiggle2_runtime.set_paused(saved['lease'], paused)
+    stored = saved.get('paused_output')
+    if paused == previous and (not paused or stored is not None):
+        return dict(preview_state(source), available=True)
+    rig, holder = saved['rig'], saved['holder']
+    current = _layer_pose(rig, holder, saved['names'])
     try:
+        if paused:
+            wiggle2_runtime.set_paused(saved['lease'], True)
+            saved['paused_output'] = current
+            _apply_layer(rig, holder, saved.get('off_pose') or {'influence': saved['influence'], 'channels': saved['channels']})
+        else:
+            if stored is not None:
+                _apply_layer(rig, holder, stored)
+                context.view_layer.update()
+            wiggle2_runtime.set_paused(saved['lease'], False)
+            saved.pop('paused_output', None)
         saved['paused'] = paused
         _write(source, saved['record'], 'AUTOMATIC',
                reason='Dress physics is paused.' if paused else '')
     except Exception:
+        _apply_layer(rig, holder, current)
+        if stored is None:
+            saved.pop('paused_output', None)
+        else:
+            saved['paused_output'] = stored
         wiggle2_runtime.set_paused(saved['lease'], previous)
         saved['paused'] = previous
         if state_raw is None:
@@ -850,7 +945,8 @@ def _changed(saved):
     if has_original and (original_context is None or original_context != saved.get('original_context')):
         return 'The verified Original skirt session changed; its physics was paused.'
     holder = _graph(source, record, rig, saved['names'])
-    if holder.get('physics_influence') != 1.0 or any(not rig.pose.bones[name].wiggle_tail for name in saved['names']):
+    expected = (saved.get('off_pose') or saved)['influence'] if saved.get('paused_output') is not None else 1.0
+    if holder.get('physics_influence') != expected or any(not rig.pose.bones[name].wiggle_tail for name in saved['names']):
         return 'The Dress physics switch was changed; automatic motion is paused.'
     from . import wiggle2_runtime
     if saved.get('lease') is None:
@@ -969,6 +1065,10 @@ def _load_post(*args):
     _SESSIONS.clear()
     if bpy.app.timers.is_registered(_resume_saved):
         bpy.app.timers.unregister(_resume_saved)
+
+
+    from . import animation_physics
+    animation_physics.restore_stopped_skirts(bpy.context)
 
 
 @persistent

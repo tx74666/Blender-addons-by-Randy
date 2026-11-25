@@ -82,9 +82,9 @@ def collection_members(armature):
     return result
 
 
-def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None, limb_pose_only=False):
     """Validate the optional extension, without recursing into Limb IK inventory."""
-    if original_mutes is None:
+    if original_mutes is None and not limb_pose_only:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     values = records(armature)
     expected = set()
@@ -121,18 +121,41 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
             con = pb.constraints.get(entry['name']) if pb else None
             if con is None or con.type != entry['type']:
                 raise _error(f"Foot Controls constraint '{entry['name']}' is missing.")
-            if _limb()._validation_mute(pb, con, original_mutes):
+            ref = entry.get('hinge_reference')
+            if ref and isinstance(ref, dict):
+                source_pb = armature.pose.bones[ref['owner']]
+                source_con = source_pb.constraints[ref['name']]
+                source_mute = _limb()._validation_mute(source_pb, source_con, original_mutes)
+                expected_mute = ref.get('original_ik_mute', source_mute)
+                if (_limb()._validation_mute(pb, con, original_mutes) != expected_mute
+                        or abs(con.influence - source_con.influence) > 1e-6
+                        or con.type == 'IK' and con.pole_target != armature):
+                    raise _error(f"Foot Controls reference '{con.name}' no longer matches its source.")
+            elif _limb()._validation_mute(pb, con, original_mutes):
                 raise _error(f"Foot Controls constraint '{con.name}' was disabled.")
-            if con.name not in {'CD Foot IK Toe Space', 'CD Foot Auto Toe Space'} and abs(con.influence - 1.0) > 1e-6:
+            if (not ref and con.name not in {'CD Foot IK Toe Space', 'CD Foot Auto Toe Space', 'CD Heel Lift Plant'}
+                    and abs(con.influence - 1.0) > 1e-6):
                 raise _error(f"Foot Controls constraint '{con.name}' influence was edited.")
             for name, value in entry['fields'].items():
                 actual = getattr(con, name)
                 if actual != value:
                     raise _error(f"Foot Controls constraint '{con.name}' was edited.")
-            if con.target is not armature:
+            is_roll_stop = (con.type == 'LIMIT_ROTATION' and record.get('roll_hinge') == 1
+                            and pb.name == record['roll'] and con.name == 'CD Foot Roll Hinge')
+            if not is_roll_stop and getattr(con, 'target', None) is not armature:
                 raise _error('Foot Controls must follow its original armature.')
             if entry.get('custom_space') and con.space_object is not armature:
                 raise _error('Foot Controls custom space must use its original armature.')
+        display = record.get('footwear_display')
+        if display:
+            from . import footwear_display
+            target = armature.pose.bones[record['target']]
+            dial = armature.pose.bones[record['roll']]
+            con = dial.constraints.get(footwear_display.FOLLOW)
+            if (target.custom_shape_transform != armature.pose.bones[record['bones']['SOLE_DISPLAY']]
+                    or con is None or con != dial.constraints[-1]
+                    or con.subtarget != record['bones']['DIAL_DISPLAY']):
+                raise _error('The registered sole or heel display frame has changed.')
         for entry in record['drivers']:
             _validate_driver(armature, entry)
         if armature.animation_data:
@@ -146,9 +169,12 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
                 if (any(bone_path in path for bone_path in bone_paths)
                         and (path, curve.array_index) not in owned_drivers):
                     raise _error('Another driver writes to Foot Controls; keep that dependency intact.')
-        collection = bpy.data.collections.get(record['widget_collection'])
-        if collection is None or collection.get(ID_KEY) != record['id']:
-            raise _error('Foot Controls widget collection is missing.')
+        # Pose matching writes joint/control inputs. Removing/rebuilding the
+        # extension also needs authority over the original asset collection.
+        if not limb_pose_only:
+            collection = bpy.data.collections.get(record['widget_collection'])
+            if collection is None or collection.get(ID_KEY) != record['id']:
+                raise _error('Foot Controls widget collection is missing.')
         for role, entry in record['widgets'].items():
             obj = bpy.data.objects.get(entry['object'])
             pb = armature.pose.bones[record['bones'][role]]
@@ -271,7 +297,7 @@ def _distance_to_segment(point, start, end):
     return (point - start - delta * factor).length_squared
 
 
-def _shoe_points(context, armature, foot_name, toe_name, shoe, rotation):
+def _shoe_points(context, armature, foot_name, toe_name, shoe, rotation, *, section_edges=None):
     """Read evaluated shoe geometry and separate paired shoes by weights or proximity."""
     if (not isinstance(shoe, bpy.types.Object) or shoe.type != 'MESH'
             or context.scene.objects.get(shoe.name) != shoe or shoe.get(OWNER_KEY) == OWNER_VALUE):
@@ -298,25 +324,32 @@ def _shoe_points(context, armature, foot_name, toe_name, shoe, rotation):
         segments[name] = (armature.matrix_world @ bone_matrix(name).translation,
                           armature.matrix_world @ bone_matrix(child_name).translation,
                           armature.matrix_world @ (bone_matrix(child_name) @ Vector((0, toe_bone.length, 0))))
-    group_indices = {name: {group.index for group in shoe.vertex_groups if group.name in names}
-                     for name, names in group_names.items()}
-    evaluated = shoe.evaluated_get(context.evaluated_depsgraph_get())
-    mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=context.evaluated_depsgraph_get())
+    # A shin group can contribute to more than one candidate. Read each native
+    # weight once, keeping all its owners and the existing equal-weight rule.
+    group_owners = {group.index: tuple(i for i, names in enumerate(group_names.values()) if group.name in names)
+                    for group in shoe.vertex_groups}
+    foot_index = tuple(group_names).index(foot_name)
+    depsgraph = context.evaluated_depsgraph_get()
+    evaluated = shoe.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
     points = []
     try:
         if mesh is None:
             raise _error('The shoe reference has no evaluated mesh.')
         to_local = source_world.inverted_safe()
         to_ground = rotation.transposed()
+        shoe_world = evaluated.matrix_world.copy()
+        selected = {} if section_edges is not None else None
         for vertex in mesh.vertices:
-            world = evaluated.matrix_world @ vertex.co
-            weights = {name: sum(item.weight for item in vertex.groups if item.group in indices)
-                       for name, indices in group_indices.items()}
-            strongest = max(weights.values(), default=0.0)
-            if strongest > 1e-5:
-                if weights[foot_name] < strongest or weights[foot_name] <= 1e-5:
-                    continue
-            else:
+            weights = [0.] * len(group_names)
+            for item in vertex.groups:
+                for owner in group_owners.get(item.group, ()):
+                    weights[owner] += item.weight
+            strongest = max(weights)
+            if strongest > 1e-5 and weights[foot_index] < strongest:
+                continue
+            world = shoe_world @ vertex.co
+            if strongest <= 1e-5:
                 distances = {name: min(_distance_to_segment(world, ankle, ball),
                                        _distance_to_segment(world, ball, tip))
                              for name, (ankle, ball, tip) in segments.items()}
@@ -326,6 +359,13 @@ def _shoe_points(context, armature, foot_name, toe_name, shoe, rotation):
             if not all(math.isfinite(value) for value in point):
                 raise _error('The shoe reference contains invalid coordinates.')
             points.append(point)
+            if selected is not None:
+                selected[vertex.index] = point
+        if selected is not None:
+            for edge in mesh.edges:
+                a, b = edge.vertices
+                if a in selected and b in selected:
+                    section_edges.append((selected[a], selected[b]))
     finally:
         evaluated.to_mesh_clear()
     if len(points) < 3:
@@ -373,6 +413,8 @@ def fit_roll_visual(context, armature, key, shoe=None):
     record = get_record(armature, key)
     if record is None:
         raise _error('Add Foot Controls before fitting their display.')
+    if record.get('roll_hinge') == 1:
+        raise _error('This heel-lift arrow is already centered on its rotation axis.')
     roll = armature.pose.bones[record['roll']]
     _visual_animation_guard(armature, roll)
     _update(context, armature)
@@ -397,6 +439,8 @@ def restore_roll_visual(context, armature, key):
     _active(context, armature)
     _limb()._validate_inventory(armature)
     record = get_record(armature, key)
+    if record and record.get('roll_hinge') == 1:
+        raise _error('This heel-lift arrow uses its own center for rotation.')
     if record is None or not record.get('roll_visual_backup'):
         raise _error('There is no saved Foot Roll display to restore.')
     roll = armature.pose.bones[record['roll']]
@@ -619,7 +663,7 @@ def build(context, armature, key, toe_name=None, shoe=None):
     target = armature.pose.bones[rig['target'].name]
     native_foot = armature.pose.bones[rig['chain'][2]]
     _update(context, armature)
-    visual_state, visual_metadata = _roll_visual_plan(context, armature, rig['chain'][2], toe.name, shoe)
+    visual_state, _metadata = _roll_visual_plan(context, armature, rig['chain'][2], toe.name, shoe)
     desired = {name: armature.pose.bones[name].matrix.copy() for name in (*rig['chain'], toe.name)}
     ankle, ball, tip = native_foot.head.copy(), toe_pose.head.copy(), toe_pose.tail.copy()
     if (tip - ball).length < 1e-5 or (ball - ankle).length < 1e-5:
@@ -639,7 +683,7 @@ def build(context, armature, key, toe_name=None, shoe=None):
     foot_length = (tip - ankle).length
     heel = ankle - forward * ((ball - ankle).length * 0.24)
     heel -= up * (heel - tip).dot(up)
-    handle = heel - forward * foot_length * 0.30 + up * foot_length * 0.32
+    handle = native_foot.matrix @ Vector(visual_state['custom_shape_translation'])
     depose_target = target.bone.matrix_local @ target.matrix.inverted_safe()
     depose_foot = native_foot.bone.matrix_local @ native_foot.matrix.inverted_safe()
     names = {role: prefix + '.' + side for role, prefix in (
@@ -722,6 +766,9 @@ def build(context, armature, key, toe_name=None, shoe=None):
         for role, axis, expression, variable in _rotation_driver_plan(side, natural=True):
             variables = {variable: x_path if variable == 'roll' else y_path}
             record['drivers'].append(_driver(armature, armature.pose.bones[names[role]], 'rotation_euler', axis, expression, variables))
+        from . import foot_roll_hinge
+        roll.custom_shape_scale_xyz = visual_state['custom_shape_scale_xyz']
+        foot_roll_hinge.install_new(armature, record)
         space = armature.pose.bones[names['TOE_SPACE']]
         _add_constraint(record, space, 'COPY_TRANSFORMS', 'CD Foot FK Toe Space', armature,
                         subtarget=names['FK_TOE_REF'], target_space='WORLD', owner_space='WORLD', mix_mode='REPLACE')
@@ -743,11 +790,13 @@ def build(context, armature, key, toe_name=None, shoe=None):
         _verify_pose(armature, desired)
         validate(armature)
         _limb()._validate_inventory(armature)
-        _set_roll_visual(armature, armature.pose.bones[record['roll']], visual_state)
-        record['roll_visual_fit'] = visual_metadata
-        _write_records(armature, dict(previous_records, **{side: record}))
         record = update_auto_follow(context, armature, key, _building=True)
         bone_collections.finish_rig_edit(armature, layout_before)
+        from . import foot_sole_display
+        foot_sole_display.anchor(armature.pose.bones[record['target']], armature.pose.bones[record['chain'][2]])
+        from . import footwear_display
+        footwear_display.fit(context, armature, record, shoe)
+        record = get_record(armature, key)
     except Exception:
         _set_fields(armature, record['original_constraints'])
         _write_records(armature, previous_records)
@@ -798,7 +847,7 @@ def update_auto_follow(context, armature, key, *, _building=False):
     Legacy records remain valid until this explicit, reversible migration.
     """
     import copy
-    from . import bone_collections, limb_ik_fk
+    from . import bone_collections, foot_roll_hinge_plant, limb_ik_fk
     _active(context, armature)
     inventory = _limb()._validate_inventory(armature)
     record = get_record(armature, key)
@@ -848,6 +897,7 @@ def update_auto_follow(context, armature, key, *, _building=False):
     if any(name in armature.data.bones for name in new_names.values()):
         raise _error('A Foot Auto Align helper name is already in use.')
     added = {'bones': new_names, 'drivers': [], 'constraints': [], 'widgets': {}, 'widget_collection': ''}
+    plant = foot_roll_hinge_plant.new_record()
     mirror_before = armature.data.use_mirror_x
     try:
         # Calibrate the constant local reference against the unconstrained foot.
@@ -913,12 +963,16 @@ def update_auto_follow(context, armature, key, *, _building=False):
         record['auto_follow'] = 1
         record['constraints'].extend(added['constraints'])
         record['drivers'].extend(added['drivers'])
+        if record.get('roll_hinge') == 1:
+            foot_roll_hinge_plant.install(context, armature, record, plant)
+            foot_roll_hinge_plant.merge(record, plant)
         _write_records(armature, dict(values, **{record['side']: record}))
         _update(context, armature)
         _verify_pose(armature, desired)
         _limb()._validate_inventory(armature)
         bone_collections.finish_rig_edit(armature, layout_before)
     except Exception:
+        foot_roll_hinge_plant.rollback(context, armature, plant)
         _set_fields(armature, [old_fields])
         manual.mute, offset.mute = old_mutes
         _write_records(armature, dict(values, **{record['side']: old_record}))
@@ -1026,8 +1080,9 @@ def set_auto_align(context, armature, rig, enabled):
     manual = next(con for _pb, con, entry in rig['entries'] if entry['role'] == 'END_ROTATION')
     offset = rig['auto_offset_rotation']
     desired = {name: armature.pose.bones[name].matrix.copy() for name in (*record['chain'], record['toe'])}
+    from . import foot_sole_display
     before = (target.matrix_basis.copy(), manual.mute, offset.mute,
-              target.bone[_limb().AUTO_ALIGN_KEY], target.custom_shape_transform, _limb()._control_visual_state(target))
+              target.bone[_limb().AUTO_ALIGN_KEY], foot_sole_display.capture(target))
     try:
         manual.mute, offset.mute = enabled, not enabled
         target.bone[_limb().AUTO_ALIGN_KEY] = enabled
@@ -1040,7 +1095,7 @@ def set_auto_align(context, armature, rig, enabled):
             pivot = ankle.matrix.translation.copy()
             target.matrix = Matrix.Translation(pivot) @ rotation.to_matrix().to_4x4() @ Matrix.Translation(-pivot) @ target.matrix
             _update(context, armature)
-        _limb()._retarget_custom_shape_frame(target, armature.pose.bones[record['chain'][2]] if enabled else None)
+        foot_sole_display.anchor(target, armature.pose.bones[record['chain'][2]])
         _update(context, armature)
         _verify_pose(armature, desired)
         _limb()._validate_inventory(armature)
@@ -1048,8 +1103,7 @@ def set_auto_align(context, armature, rig, enabled):
         target.matrix_basis = before[0]
         manual.mute, offset.mute = before[1:3]
         target.bone[_limb().AUTO_ALIGN_KEY] = before[3]
-        target.custom_shape_transform = before[4]
-        _limb()._apply_control_visual_state(target, before[5])
+        foot_sole_display.restore(target, before[4])
         _update(context, armature)
         raise
     return target.name, enabled, True
@@ -1081,7 +1135,7 @@ def _refuse_foreign_dependencies(armature, record):
         for con in obj.constraints:
             if _limb()._constraint_references_controls(con, armature, names):
                 raise _error(f"Object constraint '{con.name}' follows Foot Controls; detach it before removal.")
-        if obj.type != 'ARMATURE':
+        if obj.type != 'ARMATURE' or obj.pose is None:
             continue
         for pb in obj.pose.bones:
             for con in pb.constraints:
@@ -1090,7 +1144,9 @@ def _refuse_foreign_dependencies(armature, record):
                 if _limb()._constraint_references_controls(con, armature, names):
                     raise _error(f"Constraint '{con.name}' follows Foot Controls; detach it before removal.")
             if (obj == armature and pb.name not in names and pb.custom_shape_transform
-                    and pb.custom_shape_transform.name in names):
+                    and pb.custom_shape_transform.name in names
+                    and not (record.get('footwear_display') and pb.name == record['target']
+                             and pb.custom_shape_transform.name == record['bones'].get('SOLE_DISPLAY'))):
                 raise _error('Another bone displays its shape in a Foot Controls frame; detach it before removal.')
             if pb.custom_shape and pb.custom_shape.name in owned_widgets:
                 if obj != armature or pb.name != owned_widgets[pb.custom_shape.name]:
@@ -1209,7 +1265,7 @@ def remove(context, armature, key):
             raise _error('Another bone is parented to Foot Controls; detach it first.')
     own_cons = {(entry['owner'], entry['name']) for entry in record['constraints']}
     base_cons = {(entry['owner'], entry['name']) for entry in record['original_constraints']}
-    for obj in (o for o in bpy.data.objects if o.type == 'ARMATURE'):
+    for obj in (o for o in bpy.data.objects if o.type == 'ARMATURE' and o.pose is not None):
         for pb in obj.pose.bones:
             for con in pb.constraints:
                 if obj is armature and (pb.name, con.name) in own_cons | base_cons:
@@ -1224,10 +1280,15 @@ def remove(context, armature, key):
                        for e in record['original_constraints']]
     native_toe = armature.pose.bones[record['toe']]
     toe_constraint = native_toe.constraints['CD Toe Bend']
+    plant_constraints = [armature.pose.bones[row['owner']].constraints[row['name']]
+                         for row in record['constraints'] if row['name'] == 'CD Heel Lift Plant']
+    old_plant_mutes = [con.mute for con in plant_constraints]
     try:
         _SUSPENDED.add((armature.as_pointer(), side))
         _set_fields(armature, record['original_constraints'])
         toe_constraint.mute = True
+        for con in plant_constraints:
+            con.mute = True
         _update(context, armature)
         limb_ik_fk.match_existing_pose(context, armature, key, desired, keyframe=False)
         native_toe.matrix = desired[record['toe']]
@@ -1236,6 +1297,8 @@ def remove(context, armature, key):
     except Exception:
         _set_fields(armature, extended_fields)
         toe_constraint.mute = False
+        for con, old_mute in zip(plant_constraints, old_plant_mutes):
+            con.mute = old_mute
         for name, basis in pose_before.items():
             armature.pose.bones[name].matrix_basis = basis
         _update(context, armature)
@@ -1243,6 +1306,15 @@ def remove(context, armature, key):
     finally:
         _SUSPENDED.discard((armature.as_pointer(), side))
     try:
+        if record.get('footwear_display'):
+            from . import foot_sole_display
+            target = armature.pose.bones[record['target']]
+            donor = target.custom_shape_transform
+            _limb()._retarget_custom_shape_frame(target, None, current_reference_matrix=donor.bone.matrix_local,
+                                                 previous_reference_matrix=target.bone.matrix_local)
+            target.bone[foot_sole_display.KEY] = 2
+            from . import footwear_display
+            footwear_display.forget(armature, side)
         _delete_graph(context, armature, record)
         updated = _all_records(armature)
         del updated[side]

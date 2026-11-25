@@ -629,7 +629,7 @@ class ControllerServiceTest(unittest.TestCase):
                                     'precise_accepted','refine_accepted','full_fallback_accepted',
                                     'limb_checks','full_body_checks')}
 
-    def _staged_limb(self, errors, work=None):
+    def _staged_limb(self, errors, work=None, *, policy=None, direct_leg=True):
         state = {'stage':'before', 'other_limb':'already accepted', 'toe':False}
         before = dict(state)
         events, precise_entry = [], []
@@ -637,14 +637,23 @@ class ControllerServiceTest(unittest.TestCase):
             precise = kwargs.get('precise',False)
             if precise:
                 precise_entry.append(dict(state))
-            state.update(stage='precise' if precise else 'ordinary',toe=False)
+            self.assertEqual(kwargs.get('pole_position'), 'evaluated knee handle' if direct_leg else None)
+            if kwargs.get('local_pole_search'):
+                self.assertEqual(state, before)
+                stage = 'local'
+            else:
+                stage = 'precise' if precise else 'ordinary'
+            state.update(stage=stage,toe=False)
             events.append(state['stage'])
+            if stage == 'local':
+                self.assertTrue(kwargs['accept_pole_pose']({'upper':'wanted'}))
             return {'target','pole'}
         def toe(*args):
             state['toe']=True
             events.append('toe')
             return {'toe'}
-        def refine(*args):
+        def refine(*args, **kwargs):
+            self.assertEqual(kwargs.get('pole_position'), 'evaluated knee handle' if direct_leg else None)
             state.update(stage='refine',toe=False)
             events.append('refine')
         def restore(_solver,saved):
@@ -652,11 +661,15 @@ class ControllerServiceTest(unittest.TestCase):
             state.update(saved)
             events.append('restore')
         def error(actual,expected):
+            self.assertEqual(expected[0], 'source-world')
+            if expected[1] == {'upper':'wanted'}:
+                events.append('pole gate')
+                return dict(matrix=0.,position=0.,rotation=0.,scale=0.)
             self.assertTrue(actual['toe'],'Local gate ran before matching Toe.')
             self.assertEqual(expected,('source-world',{'hand':'wanted'}))
             return dict(matrix=errors[actual['stage']],position=0.,rotation=0.,scale=0.)
         match=NS(_match_ik=Mock(side_effect=match_ik),_match_toe=Mock(side_effect=toe),
-                 _refine_calibrated_reach=Mock(side_effect=refine))
+                 _refine_calibrated_reach=Mock(side_effect=refine), _leg_front_policy=Mock(return_value=direct_leg))
         context=NS(view_layer=NS(update=Mock(side_effect=lambda:events.append('update'))))
         patches=[patch.dict(sys.modules,{PACKAGE+'.limb_ik_fk':match}),
                  patch.object(service,'_raw',side_effect=lambda *_args:dict(state)),
@@ -667,12 +680,43 @@ class ControllerServiceTest(unittest.TestCase):
         with ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
+            if policy is not None:
+                def sample_gate(_actual, _expected, actual_errors, active_policy):
+                    self.assertIs(active_policy, policy)
+                    return actual_errors['matrix'] <= .003
+                stack.enter_context(patch.object(service, '_sample_acceptable', side_effect=sample_gate))
             work=self._work() if work is None else work
             affected=service._match_limb(context,object(),{},object(),{'hand':'wanted'},
-                                         'source-world',{'hand'},work)
+                                         'source-world',{'hand'},work,policy=policy,
+                                         pole_position="evaluated knee handle" if direct_leg else None)
         self.assertEqual(state['other_limb'],'already accepted')
         self.assertEqual(affected,{'target','pole','toe'})
         return work,events,precise_entry,before
+
+    def test_daily_leg_accepts_verified_geometric_angle_and_checks_complete_limb(self):
+        work, events, _, _ = self._staged_limb({'local':.002}, policy={'imported_daily_edit':True})
+        self.assertEqual(events, ['local','pole gate','toe'])
+        self.assertEqual((work['local_pole_trials'],work['local_pole_accepted'],work['limb_checks']), (1,1,1))
+        self.assertEqual((work['ordinary'],work['precise'],work['refine']), (0,0,0))
+
+    def test_daily_leg_restores_inputs_when_complete_limb_rejects_local_angle(self):
+        work, events, _, _ = self._staged_limb({'local':.004,'ordinary':.002}, policy={'imported_daily_edit':True})
+        self.assertEqual(events, ['local','pole gate','toe','restore','update','ordinary','toe'])
+        self.assertEqual((work['local_pole_trials'],work.get('local_pole_accepted',0),work['limb_checks']), (1,0,2))
+        self.assertEqual((work['ordinary_accepted'],work['precise'],work['refine']), (1,0,0))
+
+    def test_geometric_knee_handles_survive_all_daily_and_strict_fallbacks(self):
+        for policy, errors in (({'imported_daily_edit': True}, {'local':.004,'ordinary':.005,'precise':.004,'refine':.001}),
+                               (None, {'ordinary':.001,'precise':.001,'refine':.0001})):
+            work, events, _, _ = self._staged_limb(errors, policy=policy)
+            self.assertEqual(work['refine_accepted'], 1)
+            self.assertEqual(events[-2:], ['refine','toe'])
+
+    def test_daily_arm_does_not_receive_a_geometric_knee_layout(self):
+        work, events, _, _ = self._staged_limb({'ordinary':.001}, policy={'imported_daily_edit':True},
+                                               direct_leg=False)
+        self.assertEqual(events, ['ordinary','toe'])
+        self.assertEqual(work['ordinary_accepted'], 1)
 
     def test_ordinary_strict_pass_does_not_run_precise_or_reach_search(self):
         work,events,precise,_before=self._staged_limb({'ordinary':2.e-4})
@@ -705,6 +749,31 @@ class ControllerServiceTest(unittest.TestCase):
         self._staged_limb({'ordinary':.001,'precise':.0001},work)
         self.assertEqual((work['ordinary'],work['precise'],work['refine']),(2,1,0))
         self.assertEqual((work['ordinary_accepted'],work['precise_accepted'],work['limb_checks']),(1,1,3))
+
+    def test_only_direct_fk_chains_receive_a_conditioned_shin_input(self):
+        from contextlib import ExitStack
+        key = ('LEG', 'R')
+        names = ('thigh','shin','foot')
+        entry = {'chain':names}
+        rig = NS(pose=NS(bones={'shin':object()}))
+        desired = ('world',{name:object() for name in names})
+        for direct,mode,conditioned in ((True,'FK',True), (False,'FK',False), (True,'IK',False)):
+            with self.subTest(direct=direct,mode=mode):
+                match=NS(pose_names=lambda _entry:names,_leg_front_policy=lambda *_:direct,
+                         mode_for_rig=lambda *_:mode,_set_matrix=Mock())
+                layout=NS(condition_shin=Mock(return_value=('stable',True)))
+                with ExitStack() as stack:
+                    stack.enter_context(patch.dict(sys.modules,{PACKAGE+'.limb_ik_fk':match,PACKAGE+'.knee_pole_layout':layout}))
+                    stack.enter_context(patch.object(service,'_match_limb',return_value=set()))
+                    stack.enter_context(patch.object(service,'_pose',return_value=desired))
+                    stack.enter_context(patch.object(service,'_error',return_value={}))
+                    stack.enter_context(patch.object(service,'_sample_acceptable',return_value=True))
+                    work=self._work()
+                    service._match_body(object(),rig,{'rigs':{key:entry}},desired,{},names,work,
+                                        pole_positions={key:'visible handle'})
+                self.assertEqual(layout.condition_shin.called,conditioned)
+                self.assertEqual(match._set_matrix.called,conditioned)
+                self.assertEqual(work.get('conditioned_shins', []), ['shin'] if conditioned else [])
 
     def test_full_body_failure_gets_only_one_original_route_retry_from_source_inputs(self):
         from contextlib import ExitStack
@@ -749,6 +818,29 @@ class ControllerServiceTest(unittest.TestCase):
         self.assertEqual(result['conversion_state'], 'NATIVE_FK')
         self.assertEqual(result['channels'], {})
         self.assertIsNone(result['metadata'])
+
+    def test_large_native_fk_keeps_fractional_keys_and_real_conversion_still_has_a_key_limit(self):
+        data = NS(library=None, pose_position='POSE', animation_data=None)
+        rig = NS(type='ARMATURE', library=None, mode='OBJECT', data=data, parent=None,
+                 constraints=[], modifiers=[], pose=NS(bones=[object()]))
+        action = NS(asset_data=None, frame_range=(1., 3.))
+        key = NS(co=NS(x=1.25))
+        curves = [NS(keyframe_points=[key] * (service.MAX_KEYS + 1))]
+        inputs = NS(_handle=lambda *_: 7, _curves=lambda *_: curves)
+        inventory = {'rigs': {}}
+        limb = NS(_validate_inventory=lambda _: inventory)
+        context = NS(scene=NS(unit_settings=NS(scale_length=1.)))
+        with patch.object(service, '_api', return_value=(None, None, None, limb, inputs)):
+            plan = service._source_plan(context, rig, action, 7, None, None, 1.)
+            self.assertEqual(plan['conversion_state'], 'NATIVE_FK')
+            self.assertEqual(plan['frame_times'], (1., 1.25, 2., 3.))
+            self.assertIs(plan['source_action'], action)
+            key.co.x = float('nan')
+            with self.assertRaisesRegex(ValueError, 'non-finite authored key'):
+                service._source_plan(context, rig, action, 7, None, None, 1.)
+            inventory['rigs']['actual'] = object()
+            with self.assertRaisesRegex(ValueError, '500,000 keys'):
+                service._source_plan(context, rig, action, 7, None, None, 1.)
 
     def test_missing_raw_inputs_skip_existing_and_driven_components(self):
         class PB:
@@ -1019,6 +1111,28 @@ class ControllerServiceTest(unittest.TestCase):
         self.assertEqual(references, {})
         self.assertEqual(constraint.pole_angle, .7)
         self.assertFalse(match._update.called or match._match_pole_plane.called or match._match_toe.called)
+
+    def test_geometric_poles_are_not_relocated_between_samples(self):
+        for kind in ('LEG', 'ARM'):
+            with self.subTest(kind=kind):
+                key = (kind, 'R')
+                aligned_elbows = (key,) if kind == 'ARM' else ()
+                constraint = NS(pole_angle=.7, path_from_id=lambda _field: 'owned-angle')
+                rig = NS(animation_data=NS(drivers=()))
+                entry = {'pole': NS(name='pole')}
+                match = NS(_fixed_pole_constraint=lambda _entry: constraint,
+                           _match_pole_plane=Mock(), _update=Mock())
+                references = {}
+                with patch.dict(sys.modules, {PACKAGE + '.limb_ik_fk': match}):
+                    inventory = {'rigs': {key: entry}}
+                    service._stabilize_pole_phase(object(), rig, inventory, (None, {}), references,
+                                                 aligned_elbows=aligned_elbows)
+                    constraint.pole_angle = -2.8
+                    service._stabilize_pole_phase(object(), rig, inventory, (None, {}), references,
+                                                 aligned_elbows=aligned_elbows)
+                self.assertEqual(constraint.pole_angle, -2.8)
+                match._match_pole_plane.assert_not_called()
+                match._update.assert_not_called()
 
     def test_pole_phase_keeps_independent_first_references_on_retries(self):
         constraints = {key: NS(pole_angle=value, path_from_id=lambda _field: 'owned-angle')

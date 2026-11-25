@@ -105,20 +105,20 @@ def _run(operator, context, operation, *args):
         if focus_gun:
             from . import animation_composition as composition, animation_composition_weapon as weapon
             if context.active_object != rig or rig.mode != 'POSE':
-                raise ValueError('Select the Main Rig in Pose Mode to edit Gun Motion.')
+                raise ValueError('Select the Main Rig in Pose Mode to select the weapon hand.')
             gun, _objects = weapon.validate_owned(rig)
             if not isinstance(gun.get('rigging_session_owner'), str):
-                raise ValueError('Gun Motion needs the current owned Rigging weapon preview.')
+                raise ValueError('Open the weapon preview for these controls first.')
             session = backend.current(rig)
             if session is None or gun.get('rigging_session_owner') != session['owner']:
-                raise ValueError('The displayed gun belongs to another input preview.')
+                raise ValueError('The displayed weapon belongs to another input preview.')
             matches = [(row, binding) for row, binding in zip(session['native_bindings'], session['capture']['bindings'])
                        if row['native_side'] == 'R']
             if len(matches) != 1 or not matches[0][1]['constraintWeight'] or not matches[0][1]['targetPositionWeight']:
-                raise ValueError('Gun Motion needs its existing enabled Right Target position input.')
+                raise ValueError('The weapon hand needs an enabled Right Target position input.')
             target = rig.pose.bones[matches[0][0]['target']]
             if target.bone.collections and not any(c.is_visible_effectively for c in target.bone.collections):
-                raise ValueError('Show the Right Target collection in Bone Display, then choose Gun Motion.')
+                raise ValueError('Show the Right Target collection in Bone Display, then select the weapon hand.')
             owners = [(composition._pose_selection_owner(pb), pb == target) for pb in rig.pose.bones]
         getattr(backend, operation)(context, rig, *args)
         if focus_gun:
@@ -127,10 +127,10 @@ def _run(operator, context, operation, *args):
                     owner.select = selected
                 rig.data.bones.active = target.bone
             except _ERRORS as error:
-                operator.report({'WARNING'}, 'Inputs are open. Gun Motion selection failed: ' + str(error))
+                operator.report({'WARNING'}, 'Inputs are open. Could not select the weapon hand: ' + str(error))
                 _redraw(context)
                 return {'FINISHED'}  # The successful edit transaction still needs its normal Undo.
-        operator.report({'INFO'}, 'Gun Motion selected. Move the control, then Key Gun Motion.' if focus_gun else
+        operator.report({'INFO'}, 'Right wrist selected. Pose it, then choose Key Controls.' if focus_gun else
             {'edit_controls': 'Editing Target/Hint inputs.',
             'key_current': 'Saved keys to the editable input Action.',
             'view_body': 'Viewing the original Body reference; its Action remains read-only.',
@@ -183,6 +183,12 @@ class CHARACTERDESIGNER_OT_original_inputs_edit(Operator):
     focus_gun_motion: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
+    def description(cls, _context, properties):
+        if properties.focus_gun_motion:
+            return 'Select the right wrist IK target that the held weapon follows'
+        return cls.bl_description
+
+    @classmethod
     def poll(cls, context):
         return has_original_inputs(_rig(context)) and _idle(context)
 
@@ -192,8 +198,8 @@ class CHARACTERDESIGNER_OT_original_inputs_edit(Operator):
 
 class CHARACTERDESIGNER_OT_original_inputs_save(Operator):
     bl_idname = 'character_designer.original_inputs_save'
-    bl_label = 'Save Input Keys'
-    bl_description = 'Key the current Target/Hint inputs in Custom; do not export Body animation'
+    bl_label = 'Key Controls'
+    bl_description = 'Insert keys for both wrist targets and elbow hints at the current frame in Custom'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -292,7 +298,6 @@ def draw_original_inputs(layout, context):
     if rig is None:
         return
     box = layout.box()
-    box.label(text='Original Rigging Inputs', icon='ARMATURE_DATA')
     box.label(text='Rig: ' + rig.name, icon='ARMATURE_DATA')
     attach = box.row()
     attach.operator_context = 'INVOKE_DEFAULT'
@@ -315,19 +320,14 @@ def draw_original_inputs(layout, context):
         op = reference.operator('character_designer.original_inputs_body_view', text=label,
                                 depress=value['legacy_side'] == side)
         op.side = side
-    if rig.get('character_designer_composition_weapon_v1') is not None:
-        gun = box.row(align=True)
-        gun.enabled = _idle(context)
-        gun.operator('character_designer.original_inputs_edit', text='Gun Motion').focus_gun_motion = True
-        key = gun.row()
-        key.enabled = bool(value['enabled'] and value['tweak_enabled'] and value['edit_role'] == 'RIGGING')
-        key.operator('character_designer.original_inputs_save', text='Key Gun Motion')
     edit = box.row(align=True)
     edit.enabled = _idle(context)
     edit.operator('character_designer.original_inputs_edit').focus_gun_motion = False
-    save = edit.row()
-    save.enabled = bool(value['enabled'] and value['tweak_enabled'] and value['edit_role'] == 'RIGGING')
-    save.operator('character_designer.original_inputs_save')
+    if rig.get('character_designer_composition_weapon_v1') is not None:
+        edit.operator('character_designer.original_inputs_edit', text='Select Weapon Hand').focus_gun_motion = True
+    save = box.row()
+    save.enabled = edit.enabled and value['enabled'] and value['tweak_enabled'] and value['edit_role'] == 'RIGGING'
+    save.operator('character_designer.original_inputs_save', icon='KEY_HLT')
     publish = box.row()
     publish.enabled = _idle(context)
     publish.operator_context = 'INVOKE_DEFAULT'

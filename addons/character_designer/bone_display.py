@@ -63,6 +63,62 @@ def _editable(rig, *, _original_pose=None):
         raise ValueError('Choose a local, single-user character armature outside Edit Mode.')
 
 
+def _passive_armature_action_users(rig):
+    """Read the native user closure; only this rig displays the Armature."""
+    from . import animation_worklist_target as target, unity_animation as ua
+    data=rig.data
+    local=lambda owner: owner.library is None and owner.override_library is None and owner.is_editable
+    if (rig.type != 'ARMATURE' or rig.mode == 'EDIT' or not local(rig) or not local(data)
+            or data.use_fake_user):
+        raise ValueError('Controls need local editable Armature data without fake users.')
+    bound=tuple(obj for obj in bpy.data.objects if getattr(obj, 'data', None) == data)
+    owners=set(bpy.data.user_map(subset={data}).get(data, ()))
+    if (len(bound) != 1 or bound[0] != rig or rig not in owners
+            or any(owner != rig and not isinstance(owner, bpy.types.Action) for owner in owners)):
+        raise ValueError('Controls cannot change data displayed by another Object or unknown ID user.')
+    actions=tuple(sorted((owner for owner in owners if owner != rig), key=lambda owner: owner.as_pointer()))
+    if (not actions or int(data.users) != 1 + len(actions) or len(owners) != int(data.users)
+            or target._data_reference_keys(rig, data)):
+        raise ValueError('Controls require exact Object plus passive Action reference accounting.')
+    for action in actions:
+        if (not local(action) or action.get(ua.ORIGINAL_DATA_KEY) != data
+                or action.get(target.ACTION_RIG_KEY) != rig
+                or target._data_reference_keys(action, data) != {ua.ORIGINAL_DATA_KEY}):
+            raise ValueError('A passive Action has foreign, unknown or extra Armature-data references.')
+    return actions, owners
+
+
+def _passive_action_controls_proof(rig):
+    """Current native user closure for visibility only; no saved Rest rights."""
+    actions, owners = _passive_armature_action_users(rig)
+    data = rig.data
+    return {'schema': 'cdesigner.passive-action-controls-display/1',
+            'scope': 'ORDINARY_CONTROLS_VISIBILITY_ONLY', 'rig': rig, 'data': data,
+            'actions': actions, 'native_users': int(data.users),
+            'owner_pointers': tuple(sorted(owner.as_pointer() for owner in owners)),
+            'rest_or_original_or_structural_rights': False}
+
+
+def _controls_editable(context, rig):
+    """Keep strict recovery guards; accept only proven ordinary display refs."""
+    if rig is None or getattr(rig, 'type', None) != 'ARMATURE':
+        raise ValueError('Choose a local character Armature before showing Controls.')
+    try:
+        _editable(rig)
+        return None
+    except ValueError:
+        if VIEW_KEY in rig.data or 'character_designer_body_original_mode_v1' in rig:
+            raise
+        from . import weight_paint_entry
+        if weight_paint_entry._STATE is not None:
+            state=weight_paint_entry._session(context)
+            if state['rig'] != rig:
+                raise ValueError('This Controls display belongs to another painting owner.')
+        elif context.mode not in {'OBJECT', 'POSE'}:
+            raise ValueError('Ordinary Controls require Object/Pose Mode or their guarded painting owner.')
+        return _passive_action_controls_proof(rig)
+
+
 def _single_data_user(rig):
     from . import limb_ik
     return limb_ik._single_armature_user(rig)
@@ -300,7 +356,9 @@ def _native_targets(context, main, mode):
     if main.get(skirt_rig.OWNER_KEY):
         return {}
     if mode == 'HAIR':
-        names = {b.name for _rig, c in _control_collections(context, main, 'HAIR') for b in c.bones}
+        collections = tuple(dict.fromkeys(child for _rig, root in _control_collections(context, main, 'HAIR')
+                                          for child in _hair_public_tree(root)))
+        names = _hair_public_names(collections)
         return {main: {name for name in names if main.data.bones[name].use_deform}}
     original = main.data.collections_all.get('Original')
     if original is None or original.get(groups.GROUP_KEY) != 'Original':
@@ -384,9 +442,50 @@ def _dress_collection_record(context, main, rig, collection):
                  if target == rig and record['owner'] == owner), None)
 
 
-def _hide_registered_foot_mechanisms(rig):
+def _collection_descendants(root):
+    """Read exact native hierarchy without assigning membership or ownership."""
+    result=[];seen=set();stack=[root]
+    while stack:
+        collection=stack.pop()
+        if collection in seen:
+            continue
+        seen.add(collection);result.append(collection)
+        stack.extend(reversed(tuple(collection.children)))
+    return tuple(result)
+
+
+def _hair_public_tree(root):
+    """Existing registered Hair roots authorize only their public descendants."""
+    result=[];seen=set();stack=[root]
+    while stack:
+        collection=stack.pop()
+        if collection in seen:
+            continue
+        seen.add(collection)
+        if (collection.get(groups.GROUP_KEY) not in {None, 'Hair'}
+                or collection.get(hair.OWNER_KEY) not in {None, hair.OWNER_VALUE}
+                or collection.get(skirt_rig.OWNER_KEY)
+                or collection.get(foot_controls.OWNER_KEY) is not None):
+            continue
+        result.append(collection)
+        stack.extend(reversed(tuple(collection.children)))
+    return tuple(result)
+
+
+def _hair_public_names(collections, *, visible_only=False):
+    """Read existing public membership; exclude exact foreign generated owners."""
+    return {bone.name for collection in collections
+            if not visible_only or collection.is_visible_effectively
+            for bone in collection.bones
+            if bone.get(hair.OWNER_KEY) in {None, hair.OWNER_VALUE}
+            and not bone.get(skirt_rig.OWNER_KEY)
+            and bone.get(foot_controls.OWNER_KEY) is None}
+
+
+def _registered_foot_mechanism_names(rig):
     # A helper can also belong to an artist-visible collection. Its ownership
     # record, rather than the collection name or bone prefix, identifies it.
+    names = set()
     roles = {'HEEL_PIVOT', 'TOE_TIP_PIVOT', 'BALL_PIVOT', 'ANKLE_SOLVER',
              'IK_TOE_REF', 'FK_TOE_REF', 'TOE_SPACE', 'AUTO_ROTATION_REF', 'AUTO_TOE_REF'}
     for side, record in foot_controls.records(rig).items():
@@ -399,11 +498,18 @@ def _hide_registered_foot_mechanisms(rig):
                     and bone.get(foot_controls.ID_KEY) == record.get('id')
                     and bone.get(foot_controls.ROLE_KEY) == role
                     and bone.get(foot_controls.SIDE_KEY) == side):
-                _set_hidden(rig, bone, True)
+                names.add(bone.name)
+    return names
 
 
-def _hide_registered_wrist_mechanisms(rig):
+def _hide_registered_foot_mechanisms(rig):
+    for name in _registered_foot_mechanism_names(rig):
+        _set_hidden(rig, rig.data.bones[name], True)
+
+
+def _registered_wrist_mechanism_names(rig):
     from . import limb_ik
+    names = set()
     for _owner, _constraint, record in limb_ik._owned_constraint_records(rig):
         if record.get('rotation_space') != 'PARENT_DELTA':
             continue
@@ -414,21 +520,130 @@ def _hide_registered_wrist_mechanisms(rig):
             if (not bone.use_deform and limb_ik._owned(
                     bone, target.get(limb_ik.ARMATURE_ID_KEY),
                     role='HAND_ROTATION', rig_id=target.get(limb_ik.RIG_ID_KEY))):
-                _set_hidden(rig, bone, True)
+                names.add(bone.name)
+    return names
+
+
+def _hide_registered_wrist_mechanisms(rig):
+    for name in _registered_wrist_mechanism_names(rig):
+        _set_hidden(rig, rig.data.bones[name], True)
+
+
+def _body_selection_names(rig):
+    """Existing public operation records, without granting structural rights."""
+    from . import limb_ik, torso_controls, eye_controls, root_control, spine_ik_fk
+    native = groups._native_body_names(rig, set(), set())
+    names = {bone.name for bone in rig.data.bones if bone.name in native
+             if bone.get(limb_ik.OWNER_KEY) is None
+             and bone.get(hair.OWNER_KEY) is None and bone.get(skirt_rig.OWNER_KEY) is None
+             and bone.get(foot_controls.OWNER_KEY) is None}
+    for module in (torso_controls, eye_controls, root_control, spine_ik_fk):
+        record = module.get_record(rig)
+        if record is not None:
+            public = module.collection_members(rig)['always']
+            names.update(name for role, name in record['bones'].items()
+                         if name in public and module._owned(rig.data.bones.get(name), record, role))
+    for side, record in foot_controls.records(rig).items():
+        if side not in {'L', 'R'} or record.get('side') != side or not record.get('id'):
+            continue
+        for role, key in (('FOOT_ROLL', 'roll'), ('TOE_BEND', 'toe_control')):
+            name = record.get(key)
+            bone = rig.data.bones.get(name or '')
+            if (name == record.get('bones', {}).get(role) and bone is not None
+                    and bone.get(foot_controls.OWNER_KEY) == foot_controls.OWNER_VALUE
+                    and bone.get(foot_controls.ID_KEY) == record['id']
+                    and bone.get(foot_controls.ROLE_KEY) == role
+                    and bone.get(foot_controls.SIDE_KEY) == side):
+                names.add(name)
+    armature_id = rig.data.get(limb_ik.ARMATURE_ID_KEY)
+    if armature_id:
+        master = rig.data.bones.get(limb_ik.MASTER_NAME)
+        if limb_ik._owned(master, armature_id, role='MASTER'):
+            names.add(master.name)
+        for _owner, _constraint, record in limb_ik._owned_constraint_records(rig):
+            if record.get('armature_id') != armature_id or record.get('kind') not in {'ARM', 'LEG'}:
+                continue
+            target_role = 'HAND_IK' if record.get('kind') == 'ARM' else 'FOOT_IK'
+            for key, role in (('target', target_role), ('pole', 'POLE'), ('heel', 'HEEL_ROLL')):
+                bone = rig.data.bones.get(record.get(key) or '')
+                if (limb_ik._owned(bone, armature_id, role=role, rig_id=record['rig_id'])
+                        and bone.get(limb_ik.KIND_KEY) == record['kind']
+                        and bone.get(limb_ik.SIDE_KEY) == record.get('side')):
+                    names.add(bone.name)
+    return names
+
+def _unlock_visible_controls(rig, names):
+    """A normal Controls request owns selection only for its visible inputs."""
+    if not _object_visible(rig):
+        return ()
+    changed = []
+    for name in names:
+        bone = rig.data.bones[name]
+        if (not getattr(rig.pose.bones[name], 'hide', bone.hide)
+                and any(collection.is_visible_effectively for collection in bone.collections)
+                and bone.hide_select):
+            bone.hide_select = False
+            changed.append(name)
+    return tuple(sorted(changed))
+
+def ensure_controls_selectable(context, main):
+    """Repair current public Body selection locks after a normal Controls return.
+
+    Native display restoration remains exact. No membership, eye, pose-hide or
+    object flag is changed. Independent Hair/Dress locks remain authored choices;
+    those groups repair their public selection only through explicit group requests.
+    """
+    if main is None or getattr(main, 'type', None) != 'ARMATURE':
+        raise ValueError('Choose a local character Armature before repairing Controls selection.')
+    if (VIEW_KEY in main.data or 'character_designer_body_original_mode_v1' in main):
+        raise ValueError('Finish the Original or temporary view before repairing Controls selection.')
+    _controls_editable(context, main)
+    plans = {}
+    for rig, collection in _control_collections(context, main, 'BODY'):
+        _controls_editable(context, rig)
+        names = set(collection.bones.keys()) & _body_selection_names(rig)
+        plans.setdefault(rig, set()).update(names)
+    # Exact registered machinery is excluded even when another collection or
+    # an older saved view accidentally exposes it. No hide state is normalized.
+    plans = {rig: names - _registered_foot_mechanism_names(rig) - _registered_wrist_mechanism_names(rig)
+             for rig, names in plans.items()}
+    before = [(rig.data.bones[name], rig.data.bones[name].hide_select)
+              for rig, names in plans.items() for name in names]
+    try:
+        changed = {rig.name: _unlock_visible_controls(rig, names) for rig, names in plans.items()}
+        _completed(main, update=False)
+        return changed
+    except Exception:
+        for bone, locked in before:
+            bone.hide_select = locked
+        raise
 
 
 def show_controls(context, main, role='ALL', *, toggle=False):
+    if main is None or getattr(main, 'type', None) != 'ARMATURE':
+        raise ValueError('Choose a local character Armature before showing Controls.')
+    if role not in {'BODY', 'HAIR', 'DRESS', 'ALL'}:
+        raise ValueError('Choose an ordinary Body, Hair or Dress Controls group.')
     if 'character_designer_body_original_mode_v1' in main:
         raise ValueError('Choose Controls in Bone Display to leave Original mode first.')
-    _editable(main)
+    _controls_editable(context, main)
     roles = ('BODY', 'HAIR', 'DRESS') if role == 'ALL' else (role,)
     collections = [pair for part in roles for pair in _control_collections(context, main, part)]
     if not collections:
         raise ValueError('Organize or create the controls in this group first.')
+    hair_roots = {collection for _rig, collection in _control_collections(context, main, 'HAIR')} if 'HAIR' in roles else set()
+    hair_trees = {collection: _hair_public_tree(collection) for collection in hair_roots}
+    if any(not tree for tree in hair_trees.values()):
+        raise ValueError('A registered Hair root has conflicting group ownership; keep that boundary before showing Hair.')
+    for collection, tree in hair_trees.items():
+        public = _hair_public_names(tree)
+        excluded = {bone.name for child in _collection_descendants(collection) for bone in child.bones} - public
+        if any(not main.data.bones[name].hide and not getattr(main.pose.bones[name], 'hide', False) for name in excluded):
+            raise ValueError('A Hair group contains visible foreign-owned participants; keep their display before showing Hair.')
     rigs = _affected(context, main)
     for rig in rigs:
         if rig is not main:
-            _editable(rig)
+            _controls_editable(context, rig)
     checkpoint = _checkpoint(rigs)
     was_native_view = view_mode(main) is not None
     try:
@@ -440,6 +655,7 @@ def show_controls(context, main, role='ALL', *, toggle=False):
                 collection.is_solo = False
                 if collection.get(groups.GROUP_KEY) in {'Original', '_Internal', '_Other'}:
                     collection.is_visible = False
+        selectable = {}
         for rig, collection in collections:
             rig.data.show_bone_custom_shapes = True
             collection.is_visible = visible
@@ -447,16 +663,31 @@ def show_controls(context, main, role='ALL', *, toggle=False):
                 _reveal_object(rig)
                 record = _dress_collection_record(context, main, rig, collection)
                 if record is not None:
-                    names, deform, mechanism = skirt_rig._bone_collection_layout(record)
-                    for name in (deform | mechanism) - names:
-                        _set_hidden(rig, rig.data.bones[name], True)
+                    from . import skirt_bone_display
+                    skirt_bone_display.sync(context, rig.get(skirt_rig.SHARED_SOURCES_KEY, {}).get(record['owner'])
+                                            if skirt_rig.is_shared(record) else rig[skirt_rig.SOURCE_KEY])
+                    names = {b.name for child in collection.children if child.is_visible_effectively
+                             and child.get(skirt_bone_display.ROLE) in {'DEF', 'CTRL'} for b in child.bones}
+                elif collection in hair_trees:
+                    # Child eyes remain authored choices. A direct foreign member
+                    # is never passed to _set_hidden merely through Hair ancestry.
+                    names = _hair_public_names(hair_trees[collection], visible_only=True)
+                elif collection == groups.body_collection(rig):
+                    names = groups.fingers.body_members(collection, visible_only=True)
                 else:
                     names = set(collection.bones.keys())
                 for name in names:
                     _set_hidden(rig, rig.data.bones[name], False)
+                selection_names = names
+                if collection == groups.body_collection(rig):
+                    selection_names = names & _body_selection_names(rig)
+                selectable.setdefault(rig, set()).update(selection_names)
         for rig in rigs:
             _hide_registered_foot_mechanisms(rig)
             _hide_registered_wrist_mechanisms(rig)
+            names = (selectable.get(rig, set()) - _registered_foot_mechanism_names(rig)
+                     - _registered_wrist_mechanism_names(rig))
+            _unlock_visible_controls(rig, names)
     except Exception:
         _rollback(checkpoint)
         raise
@@ -490,6 +721,9 @@ class CHARACTERDESIGNER_OT_bone_display(Operator):
     def execute(self, context):
         try:
             main = character_rig(context)
+            from . import weight_paint_entry
+            if weight_paint_entry.owns_rig(main):
+                raise ValueError('Choose Controls on the Weight page before another display preset.')
             if self.action == 'RESTORE':
                 restore_view(main)
             elif self.action in {'ORIGINAL', 'HAIR_BONES', 'DRESS_BONES'}:
@@ -530,16 +764,22 @@ class CHARACTERDESIGNER_PT_bone_display(Panel):
                 return
             from . import body_original_mode
             original = body_original_mode.draw(layout, context)
+            from . import weight_paint_entry
+            painting = weight_paint_entry.owns_rig(main)
+            blocked = painting
             mode = view_mode(main)
             from . import bone_display_sync
             error = bone_display_sync.last_error(main)
             if error:
                 layout.label(text=error, icon='ERROR')
             controls = layout.row(align=True)
-            native_groups = body_original_mode._native_groups(context, main) if original else None
+            native_groups = body_original_mode._native_groups(context, main) if original and not blocked else None
             for role, label in (('BODY', 'Body'), ('HAIR', 'Hair'), ('DRESS', 'Dress')):
                 row = controls.row(align=True)
-                if original:
+                if blocked:
+                    row.enabled = False
+                    visible = False
+                elif original:
                     members = native_groups[role]
                     row.enabled = any(members.values()) and context.mode in {'OBJECT', 'POSE'}
                     visible = body_original_mode._targets_visible(members)
@@ -550,7 +790,9 @@ class CHARACTERDESIGNER_PT_bone_display(Panel):
                 row.operator('character_designer.bone_display', text=label,
                     depress=visible).action = role
             if not original and mode:
-                layout.operator('character_designer.bone_display', text='Restore Display').action = 'RESTORE'
+                restore = layout.row()
+                restore.enabled = not blocked
+                restore.operator('character_designer.bone_display', text='Restore Display').action = 'RESTORE'
         except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as exc:
             layout.label(text=str(exc), icon='ERROR')
 

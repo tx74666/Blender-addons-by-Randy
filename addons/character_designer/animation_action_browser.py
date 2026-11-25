@@ -199,6 +199,24 @@ def can_select(context, target):
         'character_designer_worklist_main_session_v1', 'character_designer_worklist_main_restored_v1'))
 
 
+def linked_choice(target, link_id, action_uid, slot_handle):
+    """Resolve a saved single-clip link even if its duplicate is the visible daily row."""
+    from .animation_link import ACTION_KEY, get_link
+    try:
+        saved = get_link(target)
+    except ValueError:
+        return None
+    action = target.get(ACTION_KEY) if saved and saved['link_id'] == link_id else None
+    if (not isinstance(action, bpy.types.Action) or _uid(action) != action_uid
+            or not _editable(action) or _foreign_hint(action, target)
+            or display_role(action, target) not in {'WORK', 'UNKNOWN'}
+            or type(slot_handle) is not int or saved.get('action_slot') != slot_handle
+            or not any(slot.handle == slot_handle and slot.target_id_type == 'OBJECT'
+                       for slot in action.slots)):
+        return None
+    return action
+
+
 def activate(context, *, target_uid, action_uid, slot_handle):
     """Choose fresh Action/slot and retain local work; roll back flags/binding.
 
@@ -209,11 +227,18 @@ def activate(context, *, target_uid, action_uid, slot_handle):
     target = next((obj for obj in bpy.data.objects if _uid(obj) == target_uid), None)
     if not can_select(context, target):
         raise ValueError('Return to idle, ordinary animation editing before choosing a working motion.')
-    choices = [row for row in daily_rows(target) if _uid(row['action']) == action_uid
-               and row['slot'] == slot_handle and row['editable']]
-    if len(choices) != 1:
-        raise ValueError('This motion or slot changed; reopen the working motion list.')
-    action = choices[0]['action']
+    if action_uid.startswith('link:'):
+        _, _, payload = action_uid.partition(':')
+        link_id, _, chosen_uid = payload.partition(':')
+        action = linked_choice(target, link_id, chosen_uid, slot_handle)
+        if action is None:
+            raise ValueError('The Unity link changed. Open the current linked Action from the panel.')
+    else:
+        choices = [row for row in daily_rows(target) if _uid(row['action']) == action_uid
+                   and row['slot'] == slot_handle and row['editable']]
+        if len(choices) != 1:
+            raise ValueError('This motion or slot changed; reopen the working motion list.')
+        action = choices[0]['action']
     _check_slot_consumers(target, action, slot_handle)
     slot = next((slot for slot in action.slots if slot.handle == slot_handle), None) if slot_handle else None
     old_ad = target.animation_data

@@ -104,6 +104,7 @@ class ReconcileTests(unittest.TestCase):
         self.worklist._finish_rig = Mock()
         self.worklist.adopt_main_rig = Mock(side_effect=self.adopt)
         self.target = ModuleType(name + '.animation_worklist_target')
+        self.target.uses_current_character = Mock(return_value=False)
         self.target.is_adopted = lambda rig: 'session' in rig
         self.target._load = lambda rig: deepcopy(rig['session'])
         self.target._store = lambda rig, record: rig.__setitem__('session', deepcopy(record))
@@ -142,6 +143,16 @@ class ReconcileTests(unittest.TestCase):
     @staticmethod
     def sha(path):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    def test_current_character_refreshes_catalog_without_applying_packets(self):
+        self.target.uses_current_character.return_value = True
+        self.worklist.connect = Mock()
+        with patch.object(self.core, '_plan', side_effect=AssertionError('unexpected rig adoption')):
+            preview = self.core.start_or_review(self.context)
+        self.worklist.connect.assert_called_once_with(self.context, str(self.manifest))
+        self.ua._mapping.assert_not_called()
+        self.worklist.adopt_main_rig.assert_not_called()
+        self.assertFalse(preview['blocked'] or preview['extras'])
 
     def clip(self, key):
         return dict(workItemId=key, clipGuid=key, clipName=key.title(),

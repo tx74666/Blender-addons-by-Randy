@@ -8,6 +8,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from bpy.app.handlers import persistent
 
 from .animation_runtime import DEFAULT_RUNTIME_ROOT, LocalMotionJob, read_runtime
+from . import animation_preview_ui
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_ANIMATION, active_ui_page
 
 
@@ -93,6 +94,15 @@ def _poll_job():
         return None
 
 
+def _cancel_local_motion():
+    """Release the owned worker only after its process has actually exited."""
+    global _job, _job_window_manager
+    if _job is not None:
+        _job.cancel()
+        _job.process.wait(timeout=5)
+    _job, _job_window_manager = None, None
+
+
 def stop_animation_runtime():
     global _job, _job_window_manager, _export_window_manager
     from . import animation_export
@@ -104,10 +114,7 @@ def stop_animation_runtime():
     _export_window_manager = None
     if bpy.app.timers.is_registered(_poll_job):
         bpy.app.timers.unregister(_poll_job)
-    if _job:
-        _job.cancel()
-    _job = None
-    _job_window_manager = None
+    _cancel_local_motion()
 
 
 @persistent
@@ -288,7 +295,7 @@ def _link_import(context, manifest_path, model_file):
         return None
     settings.target = result.rig
     settings.unity_directory = str(Path(manifest_path).resolve().parent)
-    settings.status = 'Linked ' + result.action.name + '. Edit this Action, then Sync to Unity.'
+    settings.status = 'Linked ' + result.action.name + '. Edit this Action, then click Send to Unity.'
     settings.has_error = False
     _redraw()
     return result
@@ -354,6 +361,33 @@ class CHARACTERDESIGNER_OT_animation_link_model(Operator):
         return {'FINISHED'} if _link_import(context, self.manifest_path, self.filepath) else {'CANCELLED'}
 
 
+def _linked_send_key(target, linked, bound):
+    return f"{target.session_uid}:{bound.session_uid}:{linked['link_id']}:{linked['action_slot']}"
+
+
+def _linked_send_ready(context, target, linked, bound):
+    """Check the visible Action/slot or managed inputs; full file checks stay in the exporter."""
+    if not isinstance(bound, bpy.types.Action) or not linked or target.data.pose_position == 'REST':
+        return False
+    identity = linked['identity']
+    if (identity.get('sourceOnly') or identity.get('compositionReferenceSource')
+            or identity.get('composition') is not None or type(linked.get('action_slot')) is not int):
+        return False
+    from .unity_animation import active_preview
+    preview = active_preview(target)
+    if preview is not None and preview is not bound:
+        return False
+    from .unity_animation_rigging import SESSION_KEY, display_state
+    if SESSION_KEY in target:
+        session = display_state(target)
+        return bool(session and session['scene'] is context.scene and session['base_action'] is bound
+                    and session['base_slot'] == linked['action_slot'] and not session['source_read_only'])
+    ad = target.animation_data
+    return bool(ad and ad.action is bound and ad.action_slot and ad.action_slot.target_id_type == 'OBJECT'
+                and ad.action_slot.handle == linked['action_slot'] and not ad.use_tweak_mode
+                and target.mode in {'OBJECT', 'POSE'})
+
+
 class CHARACTERDESIGNER_OT_animation_link_sync(Operator):
     bl_idname = 'character_designer.animation_link_sync'
     bl_label = 'Sync to Unity'
@@ -361,18 +395,27 @@ class CHARACTERDESIGNER_OT_animation_link_sync(Operator):
 
     @classmethod
     def poll(cls, context):
-        from .animation_link import get_link
+        from .animation_link import ACTION_KEY, get_link
+        worklist = getattr(context.scene, 'character_designer_animation_worklist', None)
+        if worklist is not None and worklist.workspace_path:
+            return False
         target = _target(context)
         if not _link_idle() or target is None:
             return False
         try:
-            return get_link(target) is not None
-        except Exception:
+            linked, bound = get_link(target), target.get(ACTION_KEY)
+            if not _linked_send_ready(context, target, linked, bound):
+                return False
+            expected = getattr(context, 'cd_single_send_key', '')
+            return not expected or expected == _linked_send_key(target, linked, bound)
+        except (ValueError, ReferenceError):
             return False
 
     def execute(self, context):
         from .animation_link import begin_linked_export
         try:
+            if not self.poll(context):
+                raise ValueError('Select the linked Action and its Object slot again before sending.')
             job = begin_linked_export(context, _target(context))
             _track_action_export(context, job)
         except Exception as exc:
@@ -669,10 +712,13 @@ class CHARACTERDESIGNER_OT_animation_generate(Operator):
     def execute(self, context):
         global _job, _job_window_manager
         settings = _settings(context)
+        previous_result_path = settings.result_path
         if not settings.prompt.strip():
             self.report({"ERROR"}, "Enter a motion description.")
             return {"CANCELLED"}
         try:
+            if _job is not None or bpy.app.timers.is_registered(_poll_job):
+                raise RuntimeError('Local generation is still active. Cancel it before starting another job.')
             job = LocalMotionJob(bpy.path.abspath(settings.runtime_root), prompt=settings.prompt,
                                  duration=settings.duration, seed=settings.seed)
         except Exception as exc:
@@ -680,11 +726,40 @@ class CHARACTERDESIGNER_OT_animation_generate(Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         _job, _job_window_manager = job, context.window_manager
-        settings.log_path = str(job.log_path)
-        settings.status, settings.has_error = job.status, False
-        # A previous imported preview remains usable while a new job runs.
-        settings.result_path = ""
-        bpy.app.timers.register(_poll_job, first_interval=0.5)
+        try:
+            bpy.app.timers.register(_poll_job, first_interval=0.5)
+            settings.log_path = str(job.log_path)
+            settings.status, settings.has_error = job.status, False
+            # A previous imported preview remains usable while a new job runs.
+            settings.result_path = ""
+        except Exception as exc:
+            cleanup_errors = []
+            try:
+                if bpy.app.timers.is_registered(_poll_job):
+                    bpy.app.timers.unregister(_poll_job)
+            except Exception as cleanup:
+                cleanup_errors.append('poll timer: ' + str(cleanup))
+            try:
+                _cancel_local_motion()
+            except Exception as cleanup:
+                cleanup_errors.append('worker: ' + str(cleanup))
+            try:
+                settings.result_path = previous_result_path
+            except Exception as cleanup:
+                cleanup_errors.append('previous result: ' + str(cleanup))
+            message = 'Local generation polling could not start: ' + str(exc)
+            if _job is job:
+                message += '. The worker is still owned; retry Cancel Generation before starting another job.'
+            else:
+                message += '. The generation worker was stopped.'
+            if cleanup_errors:
+                message += ' Cleanup: ' + '; '.join(cleanup_errors)
+            try:
+                settings.status, settings.has_error = message, True
+            except Exception as cleanup:
+                message += '. Status could not be updated: ' + str(cleanup)
+            self.report({'ERROR'}, message)
+            return {'CANCELLED'}
         return {"FINISHED"}
 
 
@@ -694,12 +769,17 @@ class CHARACTERDESIGNER_OT_animation_cancel(Operator):
 
     def execute(self, context):
         global _job, _job_window_manager
-        if _job:
-            _job.cancel()
-        _job, _job_window_manager = None, None
+        try:
+            _cancel_local_motion()
+        except Exception as exc:
+            message = 'Local generation could not stop: ' + str(exc) + '. Retry Cancel Generation.'
+            _settings(context).status, _settings(context).has_error = message, True
+            self.report({'ERROR'}, message)
+            return {'CANCELLED'}
         if bpy.app.timers.is_registered(_poll_job):
             bpy.app.timers.unregister(_poll_job)
         _settings(context).status = "Cancelled"
+        _settings(context).has_error = False
         return {"FINISHED"}
 
 
@@ -714,6 +794,12 @@ def import_motion_preview(context, filepath, start_frame):
     selected = tuple(context.selected_objects)
     active = context.view_layer.objects.active
     frame = context.scene.frame_current
+    subframe = context.scene.frame_subframe
+    # Blender exposes negative fractional times with a negative subframe, but
+    # frame_set accepts only 0..1. Convert to its equivalent accepted arguments.
+    if subframe < 0.0:
+        frame -= 1
+        subframe += 1.0
     old_mode = active.mode if active else "OBJECT"
     try:
         if context.object and context.object.mode != "OBJECT":
@@ -743,7 +829,7 @@ def import_motion_preview(context, filepath, start_frame):
                 bpy.data.actions.remove(action)
         raise
     finally:
-        context.scene.frame_set(frame)
+        context.scene.frame_set(frame, subframe=subframe)
         for obj in context.selected_objects:
             obj.select_set(False)
         for obj in selected:
@@ -839,6 +925,208 @@ class CHARACTERDESIGNER_OT_animation_open_log(Operator):
         return {"CANCELLED"}
 
 
+def _draw_single_action(layout, context):
+    settings = _settings(context)
+    main_rig = _main_rig(context)
+    if main_rig is None:
+        layout.prop(settings, "target")
+        if not settings.target and _target(context):
+            layout.label(text=f"Using: {_target(context).name}")
+    else:
+        error = _main_rig_error(context, main_rig)
+        if error:
+            layout.label(text=error, icon='ERROR')
+            layout.label(text='Choose Main Rig in Rig > Character Setup.')
+    from .unity_animation import active_preview
+    from .animation_link import ACTION_KEY, get_link
+    from .animation_physics_ui import wrapped_label
+    import sys
+    target = _target(context)
+    preview = active_preview(target) if target else None
+    try:
+        linked = get_link(target) if target else None
+    except ValueError as exc:
+        wrapped_label(layout, context, str(exc), icon='ERROR')
+        linked = None
+    browser = sys.modules.get(__package__ + '.animation_action_browser')
+    bound = target.get(ACTION_KEY) if linked else None
+    # The daily list hides archived work and may label the active Action with
+    # its source clip name. On this detached rig, expose the existing All picker.
+    archived_link = (linked and browser and isinstance(bound, bpy.types.Action)
+                     and any(key in target for key in ('character_designer_worklist_main_session_v1',
+                                                        'character_designer_worklist_main_restored_v1'))
+                     and browser._eligible(context, target) and browser.display_role(bound, target) == 'ARCHIVED')
+    if target is not None:
+        actions = layout.column(align=True)
+        actions.enabled = (not preview and _job is None
+                           and not (target.animation_data
+                                    and target.animation_data.use_tweak_mode))
+        if archived_link:
+            actions.enabled = actions.enabled and browser._idle(context, target)
+            browser._draw_native(actions, target)
+        elif browser is None or not browser.draw_selector(actions, context, target):
+            actions.template_action(target, new="action.new", unlink="action.unlink",
+                                    text="Action")
+            animation_data = target.animation_data
+            if animation_data and animation_data.action:
+                actions.context_pointer_set("animated_id", target)
+                actions.template_search(animation_data, "action_slot",
+                                        animation_data, "action_suitable_slots",
+                                        new="anim.slot_new_for_id",
+                                        unlink="anim.slot_unassign_from_id")
+    local_fbx = target is not None and not linked
+    if linked:
+        ad = target.animation_data
+        current = ad.action if ad else None
+        handle = linked.get('action_slot')
+        identity = linked['identity']
+        label = bound.name if isinstance(bound, bpy.types.Action) else linked.get('action_name') or 'Missing Action'
+        wrapped_label(layout, context, ('Archived link: ' if archived_link else 'Unity link: ') + label, icon='LINKED')
+        if identity.get('sourceOnly') or identity.get('compositionReferenceSource') or identity.get('composition'):
+            wrapped_label(layout, context, 'Use the Unity action list for this composition.', icon='INFO')
+        elif not isinstance(bound, bpy.types.Action) or type(handle) is not int or not any(
+                slot.handle == handle and slot.target_id_type == 'OBJECT' for slot in bound.slots):
+            wrapped_label(layout, context, 'Linked Action or slot missing. Open the link again in Advanced.', icon='ERROR')
+        else:
+            if _linked_send_ready(context, target, linked, bound):
+                row = layout.row()
+                row.enabled = _link_idle()
+                row.context_string_set('cd_single_send_key', _linked_send_key(target, linked, bound))
+                row.operator('character_designer.animation_link_sync', text='Send to Unity', icon='EXPORT')
+            else:
+                local_fbx = current is not None and current is not bound
+                if not archived_link:
+                    wrapped_label(layout, context, 'Editing: ' + (current.name if current else 'No Action'), icon='ACTION')
+                if target.data.pose_position == 'REST':
+                    wrapped_label(layout, context, 'Return to Pose before sending the linked Action.')
+                elif preview:
+                    wrapped_label(layout, context, 'End the preview to return to the linked Action.')
+                elif (not archived_link and browser is not None and browser.can_select(context, target)
+                      and browser.linked_choice(target, linked['link_id'], browser._uid(bound), handle) is bound):
+                    op = layout.operator('character_designer.choose_working_action', text='Open Linked Action', icon='ACTION')
+                    op.target_uid = browser._uid(target)
+                    op.action_uid = 'link:' + linked['link_id'] + ':' + browser._uid(bound)
+                    op.slot_handle = handle
+                elif not archived_link:
+                    slot = next(slot for slot in bound.slots if slot.handle == handle)
+                    wrapped_label(layout, context, 'In the Action Editor, choose the linked Action and slot: ' + slot.name_display)
+    if preview:
+        _draw_unity_preview(layout, context, target, preview)
+    elif local_fbx:
+        idle = browser._idle(context, target) if browser is not None else _link_idle()
+        _draw_local_fbx(layout, target, enabled=actions.enabled and idle)
+        return True
+    return False
+
+
+def _draw_unity_preview(unity, context, target, preview):
+    from .unity_animation import preview_time_seconds
+    unity.label(text=preview.name, icon="ACTION")
+    playing = context.screen and context.screen.is_animation_playing
+    unity.operator("character_designer.animation_play_pause", text="Pause" if playing else "Play", icon="PAUSE" if playing else "PLAY")
+    row = unity.row(align=True)
+    row.prop(context.scene, "frame_current", text="Frame")
+    row.prop(context.scene, "frame_subframe", text="Subframe")
+    unity.label(text=f"Time: {preview_time_seconds(context, target):.3f} s")
+    unity.operator("character_designer.animation_unity_cancel", text="End Preview", icon="LOOP_BACK")
+    from .forearm_twist import _ERRORS as forearm_errors
+    import textwrap
+    for name, error in forearm_errors.items():
+        mesh = context.scene.objects.get(name)
+        if mesh and any(mod.type == "ARMATURE" and mod.object == target for mod in mesh.modifiers):
+            warning = unity.box()
+            warning.alert = True
+            warning.label(text=f"{name}: Forearm Correction", icon="ERROR")
+            for line in textwrap.wrap(error, width=38):
+                warning.label(text=line)
+
+
+def _draw_local_fbx(layout, target, *, enabled=True):
+    export = layout.row()
+    export.enabled = bool(enabled and target and target.animation_data and target.animation_data.action)
+    export.operator('character_designer.animation_export', text='Export Current Action as FBX…', icon='EXPORT')
+
+
+def _draw_single_files(layout, context, *, show_export=True):
+    settings = _settings(context)
+    from .unity_animation import active_preview
+    target = _target(context)
+    preview = active_preview(target) if target else None
+    layout.operator('character_designer.animation_link_import', text='Open Single Unity Link', icon='LINKED')
+    row = layout.row(align=True)
+    row.enabled = not preview and _job is None
+    row.operator('character_designer.animation_unity_import', text='Preview Latest from Unity', icon='IMPORT').use_latest = True
+    row.operator('character_designer.animation_unity_import', text='', icon='FILE_FOLDER').use_latest = False
+    if not preview:
+        layout.prop(settings, 'start_frame')
+    layout.prop(settings, 'show_unity_files', text='Exchange Folder',
+                icon='TRIA_DOWN' if settings.show_unity_files else 'TRIA_RIGHT', emboss=False)
+    if settings.show_unity_files:
+        layout.prop(settings, 'unity_directory', text='Folder')
+        if not settings.unity_directory:
+            from .animation_physics_ui import wrapped_label
+            wrapped_label(layout, context, str(unity_exchange_folder(context)), icon='FILE_FOLDER')
+    if show_export:
+        _draw_local_fbx(layout, target)
+
+
+def _draw_local_motion(layout, context):
+    settings = _settings(context)
+    from .unity_animation import active_preview
+    target = _target(context)
+    preview = active_preview(target) if target else None
+    layout.prop(settings, "show_local_motion", icon="TRIA_DOWN" if settings.show_local_motion else "TRIA_RIGHT", emboss=False)
+    if not settings.show_local_motion and _job is None:
+        return
+    layout = layout.column()
+    layout.enabled = not preview
+    layout.label(text="Kimodo · Free local generation", icon="ARMATURE_DATA")
+    controls = layout.column()
+    controls.enabled = _job is None
+    controls.prop(settings, "prompt")
+    row = controls.row(align=True)
+    row.prop(settings, "duration")
+    row.prop(settings, "seed")
+    controls.prop(settings, "start_frame")
+    controls.operator("character_designer.animation_generate", icon="PLAY")
+    if _job:
+        layout.operator("character_designer.animation_cancel", icon="CANCEL")
+    row = layout.row()
+    row.enabled = bool(settings.result_path) and _job is None
+    row.operator("character_designer.animation_import", icon="IMPORT")
+    if settings.source:
+        layout.label(text=f"Preview: {settings.source.name}")
+        layout.operator("character_designer.animation_apply", icon="ACTION")
+    if not preview and _can_restore(context):
+        layout.operator("character_designer.animation_restore", icon="LOOP_BACK")
+    if settings.log_path:
+        layout.operator("character_designer.animation_open_log", icon="FILE_FOLDER")
+    layout.prop(settings, "show_setup", icon="TRIA_DOWN" if settings.show_setup else "TRIA_RIGHT",
+                emboss=False)
+    if settings.show_setup:
+        layout.prop(settings, "runtime_root")
+        layout.prop(settings, "result_path", text="Motion File")
+        try:
+            read_runtime(bpy.path.abspath(settings.runtime_root))
+            layout.label(text="Local runtime configured", icon="CHECKMARK")
+        except Exception:
+            layout.label(text="Local runtime needs setup", icon="INFO")
+        layout.label(text="First use of a prompt takes longer.")
+
+
+def _draw_pose_resets(layout, context):
+    if getattr(context, 'mode', None) != 'POSE':
+        return
+    selected = getattr(context, 'selected_pose_bones', None)
+    if not selected:
+        return
+    if len(selected) <= 2:
+        from .limb_ik_wrist_rotation_ui import _owned_wrist
+        if all(bone.id_data == context.object and _owned_wrist(bone) for bone in selected):
+            label = 'Match Wrist to Edit Pose' if len(selected) == 1 else 'Match Wrists to Edit Pose'
+            layout.operator('character_designer.limb_ik_clear_wrist_rotation', text=label, icon='LOOP_BACK')
+
+
 class CHARACTERDESIGNER_PT_animation(Panel):
     bl_label = "Animation"
     bl_idname = "CHARACTERDESIGNER_PT_animation"
@@ -852,164 +1140,40 @@ class CHARACTERDESIGNER_PT_animation(Panel):
 
     def draw(self, context):
         layout = self.layout
-        settings = _settings(context)
-        from .animation_physics_ui import draw as draw_physics, section
+        from .animation_physics_ui import draw as draw_physics, section, wrapped_label
         draw_physics(layout, context)
-        def draw_animations(layout):
-            layout = section(layout, "character_designer_animation_animations", "Animations", icon="ACTION")
-            if layout is None:
-                return
-            from .control_pose_capture import draw as draw_pose_capture
-            draw_pose_capture(layout, context)
-            from .animation_worklist_ui import draw_worklist
-            draw_worklist(layout, context, include_original_inputs=False)
-            worklist = context.scene.character_designer_animation_worklist
-            if worklist.workspace_path:
-                from .animation_export import active_job
-                if active_job():
-                    layout.operator('character_designer.animation_export_cancel', icon='CANCEL')
-                return
-            main_rig = _main_rig(context)
-            if main_rig is None:
-                layout.prop(settings, "target")
-                if not settings.target and _target(context):
-                    layout.label(text=f"Using: {_target(context).name}")
-            else:
-                error = _main_rig_error(context, main_rig)
-                if error:
-                    layout.label(text=error, icon='ERROR')
-                    layout.label(text='Choose Main Rig in Rig > Character Setup.')
-            from .unity_animation import active_preview, preview_time_seconds
-            target = _target(context)
-            preview = active_preview(target) if target else None
-            if target is not None:
-                actions = layout.column(align=True)
-                actions.enabled = (not preview and _job is None
-                                   and not (target.animation_data
-                                            and target.animation_data.use_tweak_mode))
-                import sys
-                browser = sys.modules.get(__package__ + '.animation_action_browser')
-                if browser is None or not browser.draw_selector(actions, context, target):
-                    actions.template_action(target, new="action.new", unlink="action.unlink",
-                                            text="Action")
-                    animation_data = target.animation_data
-                    if animation_data and animation_data.action:
-                        actions.context_pointer_set("animated_id", target)
-                        actions.template_search(animation_data, "action_slot",
-                                                animation_data, "action_suitable_slots",
-                                                new="anim.slot_new_for_id",
-                                                unlink="anim.slot_unassign_from_id")
+        page = section(layout, "character_designer_animation_animations", "Animations", icon="ACTION")
+        if page is not None:
+            from .animation_worklist_ui import draw_worklist, draw_worklist_tools, scan_pending
+            from .animation_worklist_collection import running as collection_running
             from .animation_export import active_job
-            if active_job():
-                layout.operator('character_designer.animation_export_cancel', icon='CANCEL')
-            if preview:
-                layout.operator('character_designer.animation_unity_cancel', icon='CANCEL')
-            unity = section(layout, "character_designer_animation_unity_exchange",
-                            "Unity", icon="IMPORT", default_closed=True)
-            if unity is not None:
-                from .animation_link import get_link
-                try:
-                    linked = get_link(target) if target else None
-                except Exception as exc:
-                    linked = None
-                    unity.label(text='Link needs attention: ' + str(exc), icon='ERROR')
-                if linked:
-                    unity.label(text='Linked Action: ' + linked.get('action_name', 'Walk'), icon='LINKED')
-                    if active_preview(target) is None:
-                        unity.label(text='Select the linked Action to continue editing.')
-                    if _link_idle():
-                        unity.operator('character_designer.animation_link_sync', icon='EXPORT')
-                    else:
-                        unity.label(text='Syncing…')
-                    unity.label(text='Save the .blend to keep this Link.')
-                else:
-                    unity.operator('character_designer.animation_link_import', icon='LINKED')
-                row = unity.row(align=True)
-                row.enabled = not preview and _job is None
-                row.operator("character_designer.animation_unity_import", text="Import Latest from Unity", icon="IMPORT").use_latest = True
-                row.operator("character_designer.animation_unity_import", text="", icon="FILE_FOLDER").use_latest = False
-                if preview:
-                    unity.label(text=preview.name, icon="ACTION")
-                    playing = context.screen and context.screen.is_animation_playing
-                    unity.operator("character_designer.animation_play_pause", text="Pause" if playing else "Play", icon="PAUSE" if playing else "PLAY")
-                    row = unity.row(align=True)
-                    row.prop(context.scene, "frame_current", text="Frame")
-                    row.prop(context.scene, "frame_subframe", text="Subframe")
-                    unity.label(text=f"Time: {preview_time_seconds(context, target):.3f} s")
-                    unity.operator("character_designer.animation_restore", icon="LOOP_BACK")
-                    unity.operator("character_designer.animation_unity_cancel", icon="CANCEL")
-                    from .forearm_twist import _ERRORS as forearm_errors
-                    import textwrap
-                    for name, error in forearm_errors.items():
-                        mesh = context.scene.objects.get(name)
-                        if mesh and any(mod.type == "ARMATURE" and mod.object == target for mod in mesh.modifiers):
-                            warning = unity.box()
-                            warning.alert = True
-                            warning.label(text=f"{name}: Forearm Correction", icon="ERROR")
-                            for line in textwrap.wrap(error, width=38):
-                                warning.label(text=line)
-                else:
-                    unity.prop(settings, "start_frame")
-                unity.prop(settings, "show_unity_files", icon="TRIA_DOWN" if settings.show_unity_files else "TRIA_RIGHT", emboss=False)
-                if settings.show_unity_files:
-                    unity.prop(settings, "unity_directory", text="Folder")
-                    if not settings.unity_directory:
-                        unity.label(text=str(unity_exchange_folder(context)))
-                from .animation_export import active_job
-                export = unity.box()
-                export.label(text='Return Action to Unity', icon='EXPORT')
-                action = target.animation_data.action if target and target.animation_data else None
-                export.label(text='Action: ' + (action.name if action else 'Select in Action Editor'))
-                if active_job():
-                    export.label(text='Exporting…')
-                    export.operator('character_designer.animation_export_cancel', icon='CANCEL')
-                else:
-                    export.operator('character_designer.animation_export', icon='EXPORT')
-            if settings.status:
-                box = layout.box()
-                box.alert = settings.has_error
-                import textwrap
-                for line in textwrap.wrap(settings.status, width=40):
-                    box.label(text=line)
-            layout.prop(settings, "show_local_motion", icon="TRIA_DOWN" if settings.show_local_motion else "TRIA_RIGHT", emboss=False)
-            if not settings.show_local_motion:
-                return
-            layout = layout.column()
-            layout.enabled = not preview
-            layout.label(text="Kimodo · Free local generation", icon="ARMATURE_DATA")
-            controls = layout.column()
-            controls.enabled = _job is None
-            controls.prop(settings, "prompt")
-            row = controls.row(align=True)
-            row.prop(settings, "duration")
-            row.prop(settings, "seed")
-            controls.prop(settings, "start_frame")
-            controls.operator("character_designer.animation_generate", icon="PLAY")
-            if _job:
-                layout.operator("character_designer.animation_cancel", icon="CANCEL")
-            row = layout.row()
-            row.enabled = bool(settings.result_path) and _job is None
-            row.operator("character_designer.animation_import", icon="IMPORT")
-            if settings.source:
-                layout.label(text=f"Preview: {settings.source.name}")
-                layout.operator("character_designer.animation_apply", icon="ACTION")
-            if not preview and _can_restore(context):
-                layout.operator("character_designer.animation_restore", icon="LOOP_BACK")
-            if settings.log_path:
-                layout.operator("character_designer.animation_open_log", icon="FILE_FOLDER")
-            layout.prop(settings, "show_setup", icon="TRIA_DOWN" if settings.show_setup else "TRIA_RIGHT",
-                        emboss=False)
-            if settings.show_setup:
-                layout.prop(settings, "runtime_root")
-                layout.prop(settings, "result_path", text="Motion File")
-                try:
-                    read_runtime(bpy.path.abspath(settings.runtime_root))
-                    layout.label(text="Local runtime configured", icon="CHECKMARK")
-                except Exception:
-                    layout.label(text="Local runtime needs setup", icon="INFO")
-                layout.label(text="First use of a prompt takes longer.")
-
-        draw_animations(layout)
+            worklist = context.scene.character_designer_animation_worklist
+            preview = animation_preview_ui.session.status(context)
+            motions = page.column()
+            motions.enabled = preview is None
+            draw_worklist(motions, context, include_original_inputs=False, include_tools=False)
+            local_fbx_shown = not worklist.workspace_path and _draw_single_action(motions, context)
+            job = active_job()
+            if job and not (job.get('composition_job') or collection_running() or scan_pending()):
+                page.operator('character_designer.animation_export_cancel', icon='CANCEL')
+            settings = _settings(context)
+            if not worklist.workspace_path and settings.status:
+                if settings.has_error or worklist.show_advanced:
+                    wrapped_label(page, context, settings.status, icon='ERROR' if settings.has_error else 'INFO')
+                elif settings.status.startswith('Synced '):
+                    wrapped_label(page, context, 'Last send: preview the candidate in Unity.', icon='CHECKMARK')
+                    if '. Omitted: ' in settings.status:
+                        wrapped_label(page, context, 'Omitted: ' + settings.status.split('. Omitted: ', 1)[1])
+            _draw_pose_resets(motions, context)
+            animation_preview_ui.draw(page, context, preview)
+            tools = page.column()
+            tools.enabled = preview is None
+            draw_worklist_tools(tools, context)
+            if not worklist.workspace_path:
+                if worklist.show_advanced:
+                    _draw_single_files(tools, context, show_export=not local_fbx_shown)
+                if worklist.show_advanced or _job is not None:
+                    _draw_local_motion(tools, context)
         original = section(layout, "character_designer_animation_original_inputs",
                            "Original Rigging Inputs", icon="ARMATURE_DATA", default_closed=True)
         if original is not None:
@@ -1018,6 +1182,7 @@ class CHARACTERDESIGNER_PT_animation(Panel):
 
 
 ANIMATION_CLASSES = (
+    animation_preview_ui.CHARACTERDESIGNER_OT_key_reduction_preview,
     CHARACTERDESIGNER_OT_animation_link_import,
     CHARACTERDESIGNER_OT_animation_link_model,
     CHARACTERDESIGNER_OT_animation_link_sync,

@@ -102,6 +102,60 @@ def _known_users(saved, rig, action, checkpoint, api):
     return count
 
 
+def _unkeyed_local_slot(context, rig, action, saved, api):
+    """Admit a current-frame pose edit on a native Action outside the worklist."""
+    from . import animation_action_browser as browser
+    from . import animation_worklist_target as target
+    slot = rig.animation_data.action_slot
+    _require(api.pose._pose_owner(rig) and action.is_editable and not action.library
+        and not action.override_library and not action.asset_data and slot is not None
+        and slot.id_data == action and slot.target_id_type in {'OBJECT', 'UNSPECIFIED'},
+        'Choose a local working Action and its Object slot to reset this wrist.')
+    _require(not browser._foreign_hint(action, rig)
+        and action.get(browser.ROLE_KEY) in (None, 'WORK')
+        and action.get(target.ACTION_RIG_KEY, rig) == rig
+        and not any(obj.get(api.worklist.links.ACTION_KEY) == action
+                    for obj in api.bpy.data.objects if obj.type == 'ARMATURE')
+        and not any(key in action for key in (api.revision.RECORD, api.revision.REFS,
+                                               api.pose.SESSION_KEY, api.pose.REFS_KEY))
+        and api.worklist._rigging_module(rig, action) is None,
+        'Switch from the protected animation to a local working Action before resetting the wrist.')
+    # An old revision can become the artist's explicitly classified daily
+    # Action. Its checkpoint is history, never authority to restore or export.
+    if any(key in action for key in (api.revision.TOKEN, api.revision.CHECKPOINT,
+                                     target.ACTION_MOTION_KEY, target.ACTION_RIG_KEY)):
+        _require(action.get(browser.ROLE_KEY) == 'WORK' and browser._owned_hint(action, rig),
+            'Choose the local working Action; this managed animation has no active worklist row.')
+    _require(not any(row.rig == rig or row.source_action == action or row.custom_action == action
+                     for row in getattr(saved, 'retired_items', ())),
+        'Use the managed worklist to edit a retired rig or Action.')
+    for scene in api.bpy.data.scenes:
+        if scene == context.scene:
+            continue
+        worklist = scene.character_designer_animation_worklist
+        _require(not any(action in (row.source_action, row.custom_action)
+                         for rows in (worklist.items, worklist.retired_items) for row in rows),
+                 'This Action belongs to an animation worklist in another scene.')
+    return int(slot.handle)
+
+
+def _local_key_owner(rig, action, slot, api):
+    if action.users == 1 + int(action.use_fake_user):
+        return
+    for user in api.bpy.data.user_map(subset={action}).get(action, ()):
+        animation = getattr(user, 'animation_data', None)
+        if not animation or user == rig:
+            continue
+        if animation.action == action and animation.action_slot_handle == slot:
+            raise ValueError('Another animation owner uses this Action slot.')
+        strips = [strip for track in animation.nla_tracks for strip in track.strips]
+        while strips:
+            strip = strips.pop()
+            if getattr(strip, 'action', None) == action and strip.action_slot_handle == slot:
+                raise ValueError('Another animation owner uses this Action slot in NLA.')
+            strips.extend(getattr(strip, 'strips', ()))
+
+
 def prepare(context, rig):
     api = _modules()
     _context(context, rig, api)
@@ -119,6 +173,14 @@ def prepare(context, rig):
         and ad.action_blend_type == 'REPLACE' and ad.action_influence == 1.,
         'Finish NLA or weighted Action editing before resetting the wrist.')
     saved, row = api.worklist.state(context), api.worklist.current(context)
+    if row is None and not saved.items:
+        slot = _unkeyed_local_slot(context, rig, action, saved, api)
+        owner.update(slot=slot, unkeyed_local=not owner['autokey'], local_action=True,
+                     workspace_path=saved.workspace_path)
+        if owner['autokey']:
+            _local_key_owner(rig, action, slot, api)
+            owner.update(bag=_bag(action, slot), expected_action_users=action.users)
+        return owner
     _require(row is not None and row.rig is rig and row.side == 'CUSTOM'
         and row.custom_action is action and not action.library and not action.asset_data
         and action.is_editable and ad.action_slot is not None
@@ -141,12 +203,20 @@ def prepare(context, rig):
 
 def validate(context, owner):
     _require(owner['context'] is context, 'Apply the wrist edit in its original context.')
+    _require(owner['autokey'] == bool(context.scene.tool_settings.use_keyframe_insert_auto),
+             'The wrist Auto Key policy changed.')
     fresh = prepare(context, owner['rig'])
     fields = ('rig', 'data', 'action', 'frame', 'autokey', 'item_id', 'slot',
               'source', 'source_slot', 'checkpoint', 'token', 'expected_action_users')
     _require(all(fresh[name] == owner[name] for name in fields),
         'The prepared wrist frame, keying policy or Custom owner changed.')
-    if owner['action'] is not None:
+    _require(fresh.get('unkeyed_local') == owner.get('unkeyed_local')
+             and fresh.get('workspace_path') == owner.get('workspace_path'),
+             'The current wrist Action changed editing workflows.')
+    if owner.get('local_action') and owner['autokey']:
+        _require(fresh.get('local_action') and fresh['bag'] == owner['bag'],
+                 'The local wrist Action or channelbag changed.')
+    elif owner['action'] is not None and not owner.get('unkeyed_local'):
         _require(fresh['bag'] == owner['bag'] and fresh['source_library'] is owner['source_library'],
             'The current Custom channelbag or Source identity changed.')
     return owner

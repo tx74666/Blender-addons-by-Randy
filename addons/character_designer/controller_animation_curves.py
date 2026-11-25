@@ -11,6 +11,59 @@ import re
 
 from .animation_key_reduce_math import reduce_linear
 
+
+def pole_angle_interpolation(value, next_value):
+    """Blender clamps IK angles at ±pi; never interpolate through the opposite plane."""
+    return 'CONSTANT' if abs(next_value - value) > math.pi else 'LINEAR'
+
+
+def pole_angle_keys(samples):
+    """Write bounded IK angles along the short arc, with editable guards at ±pi.
+
+    Blender merges native key times within .01 frames and reserves the same
+    zone around integer edit frames. Existing keys always win; inserted guards
+    bracket only the seam and use the nearest legal times on its two sides.
+    """
+    from .controller_animation_sampling import MIN_KEY_GAP, _native_time
+
+    points = list(samples)
+    result = []
+    for (start, first), (end, last) in zip(points, points[1:]):
+        if pole_angle_interpolation(first, last) == 'LINEAR':
+            result.append((start, first, 'LINEAR'))
+            continue
+        start, end = _native_time(start), _native_time(end)
+        step = math.remainder(last - first, math.tau)
+        edge = math.copysign(math.pi, first)
+        fraction = min(1., max(0., (edge - first) / step)) if abs(step) > 1.e-12 else .5
+        seam = start + (end - start) * fraction
+        # The native keys are float32. At large frame numbers their ULP can
+        # exceed the normal editing threshold. Keep the bracket representable.
+        spacing = max(MIN_KEY_GAP * 1.01, abs(seam) * 2. ** -22)
+        def guard(time, direction):
+            integer = round(time)
+            if 0. < abs(time - integer) <= MIN_KEY_GAP:
+                time = integer if direction * (integer - time) >= 0 else integer + direction * spacing
+            return _native_time(time)
+
+        left = guard(min(seam - .5 * spacing, end - spacing), -1)
+        right = guard(max(seam + .5 * spacing, start + spacing), 1)
+        if left - start <= MIN_KEY_GAP:
+            left = start
+        if end - right <= MIN_KEY_GAP:
+            right = end
+        # If a short adaptive validation interval leaves no legal insertion,
+        # both original keys remain and the outgoing hold is replay-checked.
+        result.append((start, first, 'LINEAR' if left > start else 'CONSTANT'))
+        if left > start:
+            result.append((left, edge, 'CONSTANT'))
+        if right < end:
+            result.append((right, -edge, 'LINEAR'))
+    if points:
+        result.append((*points[-1], 'LINEAR'))
+    return tuple(result)
+
+
 _TRANSFORM = re.compile(
     r'^(pose\.bones\[("(?:[^"\\]|\\.)*")\])\.'
     r'(location|rotation_euler|rotation_quaternion|rotation_axis_angle|scale)$')

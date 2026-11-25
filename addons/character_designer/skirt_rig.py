@@ -154,12 +154,11 @@ def read_record(obj):
             collections = [group for group in rig.data.collections_all if group.get(OWNER_KEY) == record['owner']]
             if (rig.get(SHARED_SOURCES_KEY, {}).get(record["owner"]) != obj
                     or names != expected or names != actual or len(collections) != 1
-                    or set(collections[0].bones.keys()) != expected
-                    or any(set(rig.data.bones[name].collections) != {collections[0]}
-                           for name in names if name in rig.data.bones)
                     or any(name not in rig.data.bones or rig.data.bones[name].get(OWNER_KEY) != record["owner"]
                            or rig.data.bones[name].get(SOURCE_KEY) != obj for name in names)):
                 raise SkirtRigError("This shared skirt's bone ownership is incomplete. Undo that change first.")
+            from . import skirt_bone_display
+            skirt_bone_display.inspect(rig, record, collections[0])
             record['shared']['collection'] = collections[0].name
         record["rig"] = rig.name
         record["source"] = obj.name
@@ -214,8 +213,8 @@ def migrate_skirt_bone_collections(armature):
         raise SkirtRigError("The skirt bone collection ownership is ambiguous.")
     target = grouped[0] if grouped else None
     if target is not None:
-        if set(target.bones.keys()) != owned_names or target.children:
-            raise SkirtRigError("The skirt bone collection was edited; restore it before organizing it.")
+        from . import skirt_bone_display
+        skirt_bone_display.inspect(armature, record, target)
         previous_name = target.name
         # Blender gives this owned group a unique suffix if an artist already
         # uses Dress; never rename or merge that unrelated collection.
@@ -697,7 +696,7 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
         _check_existing_geometry(obj, existing)
         if not is_shared(existing):
             migrate_skirt_bone_collections(obj[RIG_KEY])
-        select_controls(context, obj)
+        select_controls(context, obj, level="DEFAULT")
         return existing
     _validate_source(obj)
     plan = analyze_skirt(obj, chain_count=chain_count, segment_count=segment_count)
@@ -792,6 +791,8 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
         for names, hidden in ((control_names, False), (deform_names, True), (mechanism_names, True)):
             for name in names:
                 bone = data.bones[name]
+                for initial in tuple(bone.collections):
+                    initial.unassign(bone)
                 bone_collection.assign(bone)
                 bone.hide = hidden
         for name in control_names:
@@ -901,7 +902,7 @@ def build_skirt(context, obj, chain_count=8, segment_count=4, armature=None, par
         record["owned_objects"] = [candidate.name for candidate in bpy.data.objects
                                    if candidate is not obj and candidate.get(OWNER_KEY) == owner]
         write_record(obj, record)
-        select_controls(context, obj)
+        select_controls(context, obj, level="DEFAULT")
         from . import control_colors
         for name in control_names:
             control_colors.style(rig.pose.bones[name])
@@ -936,10 +937,10 @@ def select_controls(context, obj, level="ALL"):
     _require_controls_for_setup(obj)
     rig = obj[RIG_KEY]
     _activate(context, rig, "POSE")
-    from . import bone_display
-    controls, deform, mechanism = _bone_collection_layout(record)
-    for name in controls | deform | mechanism:
-        bone_display._set_hidden(rig, rig.data.bones[name], name not in controls)
+    from . import skirt_bone_display
+    skirt_bone_display.sync(context, obj)
+    if level != "DEFAULT":
+        skirt_bone_display.inspect_layer(rig, record, "CONTROLS")
     rig.data.show_bone_custom_shapes = True
     wanted = record["controls"]["waist"]
     if level.lower() in {"waist", "mid", "hem"}:
@@ -947,8 +948,6 @@ def select_controls(context, obj, level="ALL"):
     for bone in rig.pose.bones:
         bone.select = bone.name == wanted
     rig.data.bones.active = rig.data.bones[wanted]
-    for collection in rig.data.bones[wanted].collections:
-        collection.is_visible = True
     rig.data.bones[wanted].hide = False
     if hasattr(rig.pose.bones[wanted], "hide"):
         rig.pose.bones[wanted].hide = False

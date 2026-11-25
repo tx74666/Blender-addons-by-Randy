@@ -59,7 +59,10 @@ def _show_layer(context, source, layer):
     if record is None:
         raise ValueError("Create the Dress controls first.")
     rig = source[skirt_rig.RIG_KEY]
-    bone_display._editable(rig)
+    if layer == "ORIGINAL":
+        bone_display._editable(rig)
+    else:
+        bone_display._controls_editable(context, rig)
     controls, deform, mechanism = skirt_rig._bone_collection_layout(record)
     owned = controls | deform | mechanism
     if layer == "CONTROLS":
@@ -81,6 +84,13 @@ def _show_layer(context, source, layer):
         # requested layer. Its flag is included in the reversible snapshot.
         for collection in rig.data.collections_all:
             collection.is_solo = False
+        if layer != "ORIGINAL" and not bone_display.view_mode(rig):
+            from . import skirt_bone_display
+            skirt_bone_display.inspect_layer(rig, record, layer)
+            if layer == "CONTROLS":
+                rig.data.show_bone_custom_shapes = True
+            bone_display._completed(_display_owner(source))
+            return
         for name in owned:
             bone = rig.data.bones[name]
             bone_display._set_hidden(rig, bone, name not in visible)
@@ -98,7 +108,7 @@ def _show_layer(context, source, layer):
         raise
 
 
-def _bones_visible(rig, names):
+def _bones_visible(rig, names, *, require_all=True):
     solo = any(collection.is_solo for collection in rig.data.collections_all)
 
     def collection_visible(collection):
@@ -112,7 +122,7 @@ def _bones_visible(rig, names):
             collection = collection.parent
         return False
 
-    return bool(names) and all(
+    return bool(names) and (all if require_all else any)(
         not getattr(rig.pose.bones[name], "hide", rig.data.bones[name].hide)
         and not rig.data.bones[name].hide
         and (not rig.data.bones[name].collections
@@ -131,9 +141,7 @@ def _controls_visible(source, record):
     rig = source[skirt_rig.RIG_KEY]
     controls, deform, mechanism = skirt_rig._bone_collection_layout(record)
     return (_bones_visible(rig, controls)
-            and all(rig.data.bones[name].hide
-                    and getattr(rig.pose.bones[name], "hide", rig.data.bones[name].hide)
-                    for name in (deform | mechanism) - controls))
+            and not _bones_visible(rig, (deform | mechanism) - controls, require_all=False))
 
 
 class CHARACTERDESIGNER_OT_dress_wiggle_mode(Operator):
@@ -164,12 +172,6 @@ class CHARACTERDESIGNER_OT_dress_wiggle_mode(Operator):
         except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as error:
             workflow._report(self, context, str(error), error=True)
             return {"CANCELLED"}
-        # A successful pause remains successful even if its optional display
-        # handoff needs recovery. It never changes the artist's selection.
-        try:
-            _show_layer(context, source, "CONTROLS")
-        except (ValueError, RuntimeError, KeyError, TypeError, ReferenceError) as error:
-            self.report({"WARNING"}, "Motion changed; Dress display needs attention: " + str(error))
         workflow._report(self, context, message)
         return {"FINISHED"}
 

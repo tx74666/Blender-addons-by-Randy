@@ -1,8 +1,8 @@
 """Explicit IK wrist neutral, preserving native FK inputs and the existing rig.
 
 Only the visible target's active rotation representation is written. Raw target
-zero is not redefined: this operation solves the compensation that makes the
-native hand look like its own FK Alt-R at the current solved forearm pose.
+zero is not redefined: the hand returns to its own Edit Mode orientation
+in armature space, at its current position and evaluated scale.
 """
 import math
 
@@ -151,6 +151,11 @@ def _local_inventory(limb, match, rig, target):
     actual native owner/name/type; a prefix or tag alone never authorizes it.
     """
     from mathutils import Vector
+    from . import natural_bind_graph
+    bind_ik = {}
+    if natural_bind_graph.KEY in rig:
+        graph = natural_bind_graph.validate(rig)
+        bind_ik = {(name, constraint): prior for name, constraint, prior in limb.validation_json.decode(graph['ik'])}
     armature_id = rig.data.get(limb.ARMATURE_ID_KEY)
     bone = target.bone
     rig_id, side = bone.get(limb.RIG_ID_KEY), bone.get(limb.SIDE_KEY)
@@ -222,7 +227,7 @@ def _local_inventory(limb, match, rig, target):
             _require(role in roles and role not in by_role and roles[role][1] == pb.name
                 and record.get('owner') == limb.OWNER_VALUE and record.get('version') == limb.RIG_VERSION
                 and record.get('armature_id') == armature_id and all(record.get(field, '') == sample.get(field, '') for field in common)
-                and constraint_name == limb._constraint_name(rig_id, role), 'The local wrist registry fingerprint is inconsistent.')
+                and limb._constraint_name_matches(constraint_name, record), 'The local wrist registry fingerprint is inconsistent.')
             actual = [con for con in pb.constraints if con.name == constraint_name]
             _require(len(actual) == 1 and actual[0].type == roles[role][0], 'The owned native wrist constraint is missing or changed type.')
             con = actual[0]
@@ -232,7 +237,8 @@ def _local_inventory(limb, match, rig, target):
             auto = bone.get(limb.AUTO_ALIGN_KEY, False)
             _require(type(auto) is bool, 'The wrist Auto Align state is invalid.')
             expected_mute = auto if role == 'END_ROTATION' else not auto if role == 'AUTO_OFFSET_ROTATION' else False
-            _require(bool(con.mute) == expected_mute, 'The local wrist mute state differs from its mode.')
+            _require(bind_ik.get((pb.name, con.name), bool(con.mute)) == expected_mute,
+                     'The local wrist mute state differs from its mode.')
             entry = (pb, con, record); entries.append(entry); by_role[role] = entry
     _require(set(by_role) == set(roles), 'The selected wrist graph is incomplete.')
     auto = bone.get(limb.AUTO_ALIGN_KEY, False)
@@ -379,12 +385,18 @@ def _resolve(context, rig, limb, match, target, *, inventory=None, owner=None):
     if owner is None:
         owner = _owner_guard().prepare(context, rig)
     target, end, forearm, inventory, key, entry = _owner_guard().resolve(context, rig, target, owner)
-    _require(match.mode_for_rig(rig, entry) == 'IK'
-             and abs(float(target.get(match.PROPERTY, 1.)) - 1.) <= 1e-6,
-             'This wrist must already be fully IK; its FK/IK mode was kept.')
+    influence = float(target.get(match.PROPERTY, 1.))
+    mode = match.mode_for_rig(rig, entry)
+    if mode == 'BLEND' and owner.get('local_action') and 0. < influence < 1.:
+        expected_influence = influence
+    else:
+        _require(mode == 'IK' and abs(influence - 1.) <= 1e-6,
+                 'This wrist must already be fully IK; its FK/IK mode was kept.')
+        expected_influence = 1.
     _require(not target.constraints, 'The hand target has an unsupported constraint.')
     _rotation_path(target.rotation_mode)
-    _require(not any(target.lock_rotation) and not target.lock_rotation_w,
+    locks_w = target.rotation_mode in {'QUATERNION', 'AXIS_ANGLE'} and target.lock_rotations_4d and target.lock_rotation_w
+    _require(not any(target.lock_rotation) and not locks_w,
              'Unlock the hand target rotation before resetting the wrist.')
     _require(_same(end.parent, forearm) and _same(entry['solver_target'], target.bone),
              'This wrist uses an unsupported solver or native parent.')
@@ -393,15 +405,20 @@ def _resolve(context, rig, limb, match, target, *, inventory=None, owner=None):
     end_rotation, offset = rotations[0][1], entry.get('auto_offset_rotation')
     _require(offset is not None, 'This wrist needs its existing authenticated rotation offset.')
     owned = [con for pb, con, _record in entry['entries'] if _same(pb, end)]
+    from . import natural_bind_graph
+    if natural_bind_graph.KEY in rig:
+        record = natural_bind_graph.validate(rig)
+        if record['attached'] and end.name in record['frames']:
+            owned.append(end.constraints[natural_bind_graph.COPY])
     _require(all(any(_same(con, expected) for expected in owned) for con in end.constraints),
              'The native hand has an unsupported constraint.')
     if entry['auto_align']:
         _require(entry.get('auto_rotation_space') == 'PARENT_DELTA' and end_rotation.mute
-                 and not offset.mute and abs(float(offset.influence) - 1.) <= 1e-6,
+                 and not offset.mute and abs(float(offset.influence) - expected_influence) <= 1e-6,
                  'Use the authenticated parent-delta Auto wrist contract.')
     else:
         _require(not end_rotation.mute and offset.mute and end_rotation.target_space == 'WORLD'
-                 and end_rotation.owner_space == 'WORLD' and abs(float(end_rotation.influence) - 1.) <= 1e-6,
+                 and end_rotation.owner_space == 'WORLD' and abs(float(end_rotation.influence) - expected_influence) <= 1e-6,
                  'Use the authenticated WORLD Manual wrist contract.')
     paths = {target.path_from_id(prop) for prop in _TRANSFORMS}
     paths.add(match.property_path(target))
@@ -430,11 +447,10 @@ def _matrix_finite(matrix):
 
 
 def _reference(api, rig, end):
-    from mathutils import Matrix, Quaternion, Vector
-    location = Vector((0., 0., 0.)) if end.bone.use_connect else end.location.copy()
-    basis = Matrix.LocRotScale(location, Quaternion(), end.scale.copy())
-    wanted = end.bone.convert_local_to_pose(basis, end.bone.matrix_local,
-        parent_matrix=end.parent.matrix, parent_matrix_local=end.parent.bone.matrix_local)
+    from mathutils import Matrix
+    posed = end.matrix
+    _require(_matrix_finite(posed), 'The current hand transform is singular, reflected or non-finite.')
+    wanted = Matrix.LocRotScale(posed.translation, end.bone.matrix_local.to_quaternion(), posed.to_scale())
     _require(_matrix_finite(wanted), 'The wrist neutral reference is singular, reflected or non-finite.')
     return {end.name: wanted}
 
@@ -531,9 +547,22 @@ def _assign_rotation(target, rotation):
 
 
 def _solve(context, plan):
-    from mathutils import Matrix
+    from mathutils import Matrix, Quaternion
+    from . import natural_bind_graph
     rig, target, end = plan['rig'], plan['target'], plan['end']
     desired = plan['wanted_native'][end.name]
+    influence = float(target.get(plan['api'].match.PROPERTY, 1.))
+    record = rig.get(natural_bind_graph.KEY)
+    if record and record['enabled'] and natural_bind_graph.active_branch(record) != record:
+        # A calibrated stable bind can map the controller's exact default to
+        # the Edit hand. Test that input against the evaluated hand first.
+        path = plan['rotation_path']
+        zero = tuple(target.bl_rna.properties[path].default_array)
+        if tuple(getattr(target, path)) != zero:
+            plan['written_rotation'] = True
+            setattr(target, path, zero)
+            _fault('after_rotation_write')
+            plan['api'].match._update(context, rig)
     for iteration in range(MAX_ITERATIONS):
         _require(target.rotation_mode == plan['rotation_mode'], 'The wrist rotation representation changed during matching.')
         current = end.matrix.copy()
@@ -541,6 +570,15 @@ def _solve(context, plan):
         if _rotation_error(current, desired) <= 1e-6:
             return iteration
         delta = desired.to_quaternion().normalized() @ current.to_quaternion().normalized().inverted()
+        if 0. < influence < 1. - 1e-6:
+            # The constraint applies only a fraction of the target turn. Follow
+            # the shortest arc and remeasure after a bounded input-space step.
+            if delta.w < 0.:
+                delta.negate()
+            length = math.hypot(delta.x, delta.y, delta.z)
+            if length > 0.:
+                angle = min(2. * math.atan2(length, delta.w) / influence, math.pi / 2.)
+                delta = Quaternion((delta.x / length, delta.y / length, delta.z / length), angle)
         posed = target.matrix.copy()
         wanted = Matrix.LocRotScale(posed.translation,
             (delta @ posed.to_quaternion().normalized()).normalized(), posed.to_scale())
@@ -571,7 +609,7 @@ def _verify(context, plan):
     _require(all(math.isfinite(value) for value in measurements.values())
              and measurements['matrix'] <= MATRIX_TOLERANCE and measurements['position'] <= POSITION_TOLERANCE
              and measurements['rotation'] <= ROTATION_TOLERANCE and measurements['scale'] <= SCALE_TOLERANCE,
-             'The wrist cannot reach native FK neutral without another change; its original input was kept.')
+             'The wrist cannot reach its Edit Mode orientation without another change; its original input was kept.')
     _require((plan['target'].matrix.translation - plan['target_position']).length <= POSITION_TOLERANCE
              and _difference(plan['forearm'].matrix, plan['forearm_matrix']) <= MATRIX_TOLERANCE
              and _difference(rig.pose.bones[plan['limb']['pole'].name].matrix, plan['pole_matrix']) <= MATRIX_TOLERANCE,

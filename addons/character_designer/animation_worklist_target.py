@@ -17,6 +17,7 @@ import bpy
 SESSION = 'character_designer_worklist_main_session_v1'
 REFS = 'character_designer_worklist_main_refs_v1'
 RESTORED = 'character_designer_worklist_main_restored_v1'
+CURRENT_BASE = 'character_designer_worklist_current_base_v1'
 ACTION_MOTION_KEY = 'character_designer_worklist_motion_rest_v1'
 ACTION_RIG_KEY = 'character_designer_worklist_motion_rig_v1'
 _LOCKS = ('lock_location', 'lock_rotation', 'lock_scale', 'lock_rotation_w', 'lock_rotations_4d')
@@ -29,7 +30,64 @@ def is_adopted(rig):
 
 def managed(rig):
     return bool(rig is not None and hasattr(rig, 'get')
-                and (rig.get(SESSION) is not None or rig.get(RESTORED) is not None))
+                and (rig.get(SESSION) is not None or rig.get(RESTORED) is not None
+                     or rig.get(CURRENT_BASE)))
+
+
+def uses_current_character(context):
+    """The character scene owns the live rig; no source motion has been adopted yet."""
+    saved = getattr(context.scene, 'character_designer_animation_worklist', None)
+    rig = getattr(saved, 'rig', None)
+    setup = getattr(context.scene, 'character_designer_setup', None)
+    return bool(rig is not None and rig is getattr(setup, 'rig', None)
+                and rig.get(CURRENT_BASE) and not is_adopted(rig))
+
+
+def start_from_current(context):
+    """Retire an orphaned adoption after an explicit choice to use today's character."""
+    from . import animation_worklist as worklist
+    worklist._idle(context)
+    saved = worklist.state(context)
+    rig = getattr(getattr(context.scene, 'character_designer_setup', None), 'rig', None)
+    if (rig is None or rig.type != 'ARMATURE' or rig.library or rig.override_library
+            or rig.data.library or rig.data.override_library or not rig.is_editable or not rig.data.is_editable
+            or context.scene.objects.get(rig.name) is not rig
+            or context.view_layer.objects.get(rig.name) is not rig or context.mode not in {'OBJECT', 'POSE'}):
+        raise ValueError('Choose the local character armature in Object or Pose Mode.')
+    if not saved.workspace_path or (saved.rig is not None and saved.rig is not rig):
+        raise ValueError('Use the animation workspace connected to this character.')
+    if uses_current_character(context):
+        return rig
+    if saved.items or saved.retired_items:
+        raise ValueError('This animation workspace already owns local or retired motions.')
+    if not is_adopted(rig) or REFS in rig or RESTORED in rig:
+        raise ValueError('Only an old Main Rig session with a missing reference table can be replaced here.')
+    # A stray string or damaged record is not evidence of a detached session.
+    raw = rig[SESSION]
+    if not isinstance(raw, str) or _compile_rest_record(raw) is None:
+        raise ValueError('The saved record does not describe a Main Rig session.')
+    for scene in bpy.data.scenes:
+        other = getattr(scene, 'character_designer_animation_worklist', None)
+        if scene == context.scene or other is None:
+            continue
+        if other.rig is rig or any(row.rig is rig for rows in (other.items, other.retired_items) for row in rows):
+            raise ValueError('Another scene still uses this Main Rig for its animation worklist.')
+    previous = capture_session_metadata(rig)
+    old_rig, status, error = saved.rig, saved.status, saved.has_error
+    try:
+        # The native scene/worklist binding identifies the current character.
+        # Packet, Rest and control compatibility are proved on actual adoption.
+        saved.rig = rig
+        rig[CURRENT_BASE] = True
+        del rig[SESSION]
+        if not uses_current_character(context):
+            raise ValueError('Blender did not retain the current character binding.')
+        saved.status, saved.has_error = 'Current character connected to the animation list.', False
+    except Exception:
+        restore_session_metadata(rig, previous)
+        saved.rig, saved.status, saved.has_error = old_rig, status, error
+        raise
+    return rig
 
 
 def _encode(value, references):
@@ -555,11 +613,11 @@ def _load_rest_record(rig, *, _for_rest_proof=False):
 
 def capture_session_metadata(rig):
     return {key: (dict(rig[key]) if key == REFS else rig[key])
-            for key in (SESSION, REFS, RESTORED) if key in rig}
+            for key in (SESSION, REFS, RESTORED, CURRENT_BASE) if key in rig}
 
 
 def restore_session_metadata(rig, saved):
-    for key in (SESSION, REFS, RESTORED):
+    for key in (SESSION, REFS, RESTORED, CURRENT_BASE):
         if key in saved:
             rig[key] = saved[key]
         elif key in rig:
@@ -982,6 +1040,7 @@ def adopt_main_rig(context):
             if entry['action'] and entry['action'].library is None:
                 entry['action'].use_fake_user = True
         rig.pop(RESTORED, None)
+        rig.pop(CURRENT_BASE, None)
         saved.rig = rig
         saved.status, saved.has_error = 'Main Rig connected. Original model, controls and artist recovery snapshot are retained.', False
         return rig

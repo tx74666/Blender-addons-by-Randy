@@ -128,12 +128,12 @@ def _owned_constraint_pointers(rig, inventory):
     return {(rig.as_pointer(), pb, con) for pb, con in constraints}
 
 
-def _refuse_dependencies(rig, inventory, keys):
+def _refuse_dependencies(rig, inventory, keys, *, rebuilding_curves=()):
     from . import foot_controls, body_region
     chains = [inventory['rigs'][key]['chain'] for key in keys]
     own_constraints = _owned_constraint_pointers(rig, inventory)
     problems = limb_ik._direct_source_dependency_problems(
-        rig, chains, owned_constraints=own_constraints)
+        rig, chains, owned_constraints=own_constraints, rebuilding_curves=rebuilding_curves)
     if problems:
         raise ValueError('Rest resync cannot preserve this dependency: ' + problems[0] + '.')
     affected = {name for key in keys for name in limb_ik_fk.pose_names(inventory['rigs'][key])}

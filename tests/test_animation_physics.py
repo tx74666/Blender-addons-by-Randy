@@ -40,6 +40,8 @@ class PhysicsTests(unittest.TestCase):
     def setUp(self):
         physics._LAST_ERRORS.clear()
         self.rig = Object('Rig')
+        physics._write(self.rig, dict(physics._fresh(), enabled=True))
+        self.enabled_permission = self.rig[physics.STATE_KEY]
         self.rig.data = Object('RigData')
         self.rig.data.bones = {'Waist': object()}
         self.source = Object('Dress', 'MESH')
@@ -67,7 +69,7 @@ class PhysicsTests(unittest.TestCase):
         self.calls = []
         self.wiggle = SimpleNamespace(STATE_KEY='character_designer_skirt_wiggle_v1',
             _SESSIONS={}, mode=lambda source: 'AUTOMATIC',
-            _state=lambda source: None,
+            _state=lambda source: None, stopped_output=lambda *args, **kwargs: None,
             available=lambda: {'available': True}, _changed=lambda saved: '',
             set_mode=lambda context, source, mode: self.calls.append(('start', source.name, mode)),
             _stop=lambda key, **kw: self.calls.append(('stop', key, kw['preserve_preference'])))
@@ -90,6 +92,7 @@ class PhysicsTests(unittest.TestCase):
         self.hair.preview_state = self.hair_preview
         self.hair.prepare_recovery = self.prepare_hair_recovery
         self.modules = {
+            'skirt_bone_display': SimpleNamespace(sync=lambda *_args, **_kwargs: None),
             'body_original_mode': SimpleNamespace(active=lambda rig:
                 'character_designer_body_original_mode_v1' in rig),
             'bone_display': SimpleNamespace(view_mode=lambda rig: None),
@@ -149,7 +152,8 @@ class PhysicsTests(unittest.TestCase):
         return {'changed': False, 'stopped_confirmed': True}
 
     def test_default_permission_does_not_create_saved_data(self):
-        self.assertTrue(physics.is_enabled(self.source, component='SKIRT'))
+        del self.rig[physics.STATE_KEY]
+        self.assertFalse(physics.is_enabled(self.source, component='SKIRT'))
         self.assertNotIn(physics.STATE_KEY, self.rig)
 
     def test_off_disables_actual_cloth_and_preserves_mode_record(self):
@@ -219,7 +223,7 @@ class PhysicsTests(unittest.TestCase):
         self.context.view_layer.update = lambda: (_ for _ in ()).throw(RuntimeError('injected update'))
         with self.assertRaisesRegex(RuntimeError, 'injected update'):
             physics.set_enabled(self.context, False)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
         self.assertEqual(physics._flags(self.cloth), [True, True])
 
     def test_restore_validation_failure_repauses_native_flags_and_gate(self):
@@ -249,7 +253,7 @@ class PhysicsTests(unittest.TestCase):
         self.rig.pose.bones.append(SimpleNamespace(name='PHYS', wiggle_head=False, wiggle_tail=True))
         with self.assertRaisesRegex(ValueError, 'unowned live Wiggle'):
             physics.set_enabled(self.context, False)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_wiggle_permission_roundtrip_does_not_replay_finished_session(self):
         self.record['physics'] = None
@@ -332,7 +336,7 @@ class PhysicsTests(unittest.TestCase):
             physics.set_enabled(self.context, False)
         self.assertEqual(native, {'SKIRT': True, 'HAIR': True})
         self.assertEqual(self.calls[-2:], [('rollback-recovery', 'HAIR'), ('rollback-recovery', 'SKIRT')])
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_hair_recovery_needed_before_changed_is_valid_preflight(self):
         native = self.pending_pair()
@@ -360,7 +364,7 @@ class PhysicsTests(unittest.TestCase):
         self.assertFalse(result['dresses'][0]['stopped_confirmed'])
         self.assertFalse(result['dresses'][0]['paused'])
         self.assertEqual(result['message'], 'Backend registration changed; cannot confirm stopped.')
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_native_pause_backend_error_is_not_hidden_by_paused_message(self):
         self.record['physics'] = None
@@ -375,7 +379,7 @@ class PhysicsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Verified backend registration changed'):
             physics.set_enabled(self.context, False)
         self.assertFalse(self.wiggle._SESSIONS[self.source.as_pointer()]['paused'])
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
         self.assertEqual(physics.status(self.context)['message'], 'Verified backend registration changed.')
 
     def test_unconfirmed_recovery_receipt_is_rolled_back_and_not_success(self):
@@ -389,7 +393,7 @@ class PhysicsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Native stop proof is incomplete'):
             physics.set_enabled(self.context, False)
         self.assertEqual(native, {'SKIRT': True, 'HAIR': True})
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_malformed_saved_permission_refuses(self):
         self.rig[physics.STATE_KEY] = json.dumps(dict(physics._fresh(), enabled=1))
@@ -445,7 +449,7 @@ class PhysicsTests(unittest.TestCase):
 
     def test_saved_true_inactive_hair_single_enable_starts_owned_preview(self):
         source = self.add_hair()
-        physics._write(self.rig, physics._fresh())
+        physics._write(self.rig, dict(physics._fresh(), enabled=True))
         self.assertFalse(physics.status(self.context)['hair']['active'])
         result = physics.set_component(self.context, 'HAIR', True)
         self.assertEqual(self.calls, [('hair-start', 'Hair', ['one'])])
@@ -458,7 +462,7 @@ class PhysicsTests(unittest.TestCase):
 
     def test_saved_true_paused_hair_repeat_enable_resumes_without_start_or_timeline(self):
         source = self.add_hair()
-        physics._write(self.rig, physics._fresh())
+        physics._write(self.rig, dict(physics._fresh(), enabled=True))
         original = self.rig[physics.STATE_KEY]
         self.hair_state.update(active=True, source=source.name,
                                source_pointer=source.as_pointer(), paused=True)
@@ -476,7 +480,7 @@ class PhysicsTests(unittest.TestCase):
 
     def test_saved_true_paused_hair_resume_failure_rolls_back_native_pause_and_raw(self):
         source = self.add_hair()
-        original = json.dumps(physics._fresh(), indent=2)
+        original = json.dumps(dict(physics._fresh(), enabled=True), indent=2)
         self.rig[physics.STATE_KEY] = original
         self.hair_state.update(active=True, source=source.name,
                                source_pointer=source.as_pointer(), paused=True)
@@ -489,7 +493,7 @@ class PhysicsTests(unittest.TestCase):
 
     def test_saved_true_foreign_active_hair_enable_refuses_with_exact_raw(self):
         source = self.add_hair()
-        original = json.dumps(physics._fresh(), indent=2)
+        original = json.dumps(dict(physics._fresh(), enabled=True), indent=2)
         self.rig[physics.STATE_KEY] = original
         foreign = Object(source.name, 'MESH')
         self.hair_state.update(active=True, source=foreign.name,
@@ -504,7 +508,7 @@ class PhysicsTests(unittest.TestCase):
 
     def test_saved_true_hair_start_failure_restores_exact_raw(self):
         self.add_hair()
-        original = json.dumps(physics._fresh(), indent=2)
+        original = json.dumps(dict(physics._fresh(), enabled=True), indent=2)
         self.rig[physics.STATE_KEY] = original
         self.hair.start_preview = lambda *args: (_ for _ in ()).throw(ValueError('backend refused'))
         with self.assertRaisesRegex(ValueError, 'backend refused'):
@@ -518,7 +522,7 @@ class PhysicsTests(unittest.TestCase):
         self.hair.start_preview = lambda *args: (_ for _ in ()).throw(ValueError('backend refused'))
         with self.assertRaisesRegex(ValueError, 'backend refused'):
             physics.set_component(self.context, 'HAIR', True)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
         self.assertFalse(physics.status(self.context)['hair']['active'])
         self.assertIn('backend refused', physics.status(self.context)['hair']['last_error'])
 
@@ -526,7 +530,7 @@ class PhysicsTests(unittest.TestCase):
         self.add_hair()
         physics.start_hair_preview(self.context)
         self.assertIn(('hair-start', 'Hair', ['one']), self.calls)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_explicit_hair_resume_uses_visible_preview_action_not_master_pause_api(self):
         source = self.add_hair()
@@ -574,14 +578,14 @@ class PhysicsTests(unittest.TestCase):
         self.rig.pose.bones.append(SimpleNamespace(name='Hair PHYS', wiggle_head=False, wiggle_tail=True))
         with self.assertRaisesRegex(ValueError, 'unowned Wiggle configuration'):
             physics.set_component(self.context, 'HAIR', False)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_explicit_hair_start_does_not_stop_other_source(self):
         self.add_hair()
         self.hair.status = lambda context: {'active': True, 'source': 'Other Hair'}
         with self.assertRaisesRegex(ValueError, 'Another Hair preview'):
             physics.start_hair_preview(self.context)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
         self.assertFalse(any(call[0] in {'hair', 'hair-start'} for call in self.calls))
 
     def test_same_name_replacement_is_not_the_live_hair_source(self):
@@ -605,7 +609,7 @@ class PhysicsTests(unittest.TestCase):
         self.hair.stop_preview = stop
         physics.stop_hair_preview(self.context)
         self.assertEqual(self.calls, [('hair-stop', 'Hair')])
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_stop_does_not_claim_success_when_adapter_retains_active_cleanup(self):
         source = self.add_hair()
@@ -653,7 +657,7 @@ class PhysicsTests(unittest.TestCase):
         self.hair.start_preview = lambda *args: (_ for _ in ()).throw(ValueError('backend refused'))
         with self.assertRaisesRegex(ValueError, 'backend refused'):
             physics.start_hair_preview(self.context)
-        self.assertNotIn(physics.STATE_KEY, self.rig)
+        self.assertEqual(self.rig.get(physics.STATE_KEY), self.enabled_permission)
 
     def test_failed_hair_enable_restores_exact_saved_permission(self):
         self.add_hair()

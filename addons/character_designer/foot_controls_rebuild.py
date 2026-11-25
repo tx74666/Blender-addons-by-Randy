@@ -108,6 +108,9 @@ def _restore_display(rig, record, state):
             pb.custom_shape_wire_width = display['wire_width']
         control_colors.restore_bone_state(pb, saved['colors'])
         pb.bone.hide, pb.bone.hide_select = saved['hidden'], saved['hide_select']
+        if role == 'FOOT_ROLL' and record.get('roll_hinge') == 1:
+            from . import foot_roll_hinge
+            foot_roll_hinge.center(pb)
         record['widgets'][role] = {'object': obj.name, 'mesh': obj.data.name}
 
 
@@ -146,7 +149,11 @@ def _preflight(context, rig, sides):
     # The Rest resync guard covers all affected input readers, native toe
     # descendants, Hook/Warp bone references, attachments and foreign constraints.
     from . import body_rest_resync
-    body_rest_resync._refuse_dependencies(rig, inventory, {('LEG', s) for s in sides})
+    # The validated foot graph mirrors the source-leg inputs into the
+    # unrolled chain. These exact owned curves are recreated with this foot.
+    rebuilding_curves = {(row['path'], row['index']) for side in sides for row in records[side]['drivers']}
+    body_rest_resync._refuse_dependencies(rig, inventory, {('LEG', s) for s in sides},
+                                         rebuilding_curves=rebuilding_curves)
     own_constraints = body_rest_resync._owned_constraint_pointers(rig, inventory)
     for obj in bpy.data.objects:
         owners = [obj]
@@ -189,6 +196,9 @@ def rebuild(context, rig, sides=('L', 'R'), shoe=None):
     """
     sides = _sides(sides)
     inventory, old_records, affected = _preflight(context, rig, sides)
+    from . import footwear_display
+    shoes = {side: shoe if shoe is not None else footwear_display.reference(context, rig, old_records[side])
+             for side in sides}
     owner_proof = body_region._ownership_seed(rig)
     native_rest = control_pose_assets.native_rest(rig)
     display = {}
@@ -209,7 +219,7 @@ def rebuild(context, rig, sides=('L', 'R'), shoe=None):
             for side in sides:
                 feet.remove(context, rig, ('LEG', side))
                 record = feet.build(context, rig, ('LEG', side),
-                                    toe_name=old_records[side]['toe'], shoe=shoe)
+                                    toe_name=old_records[side]['toe'])
                 _restore_display(rig, record, display[side])
                 for field in ('roll_visual_backup', 'roll_visual_fit'):
                     if field in old_records[side]:
@@ -219,6 +229,10 @@ def rebuild(context, rig, sides=('L', 'R'), shoe=None):
                 values = feet._all_records(rig)
                 values[side] = record
                 feet._write_records(rig, values)
+                if shoes[side] is not None:
+                    # The artist's restored heel dial can have different mesh
+                    # bounds and display scale from the freshly built widget.
+                    footwear_display.fit(context, rig, record, shoes[side])
             # Removing an extension uses the general no-pop matcher, which may
             # make a tiny Pole-plane correction. Foot-only rebuilding retains
             # the animator's Pole input; verify the final skin with it restored.

@@ -30,6 +30,18 @@ class Action(ID):
     pass
 
 
+class IDPropertyArray:
+    """Native sequence protocol without __iter__, as exposed by Blender 5.2."""
+    def __init__(self, values, typecode='d'):
+        self.values, self.typecode = list(values), typecode
+
+    def __len__(self):
+        return len(self.values)
+
+    def __getitem__(self, index):
+        return self.values[index]
+
+
 class Data(ID):
     @property
     def users(self):
@@ -64,6 +76,7 @@ class OriginalPoseOwnerTests(unittest.TestCase):
         self.bpy = NS(types=NS(ID=ID, Action=Action),
                       data=NS(objects=self.objects, scenes=[scene], user_map=Mock(side_effect=self.user_map)))
         modules = {'bpy': self.bpy, 'mathutils': NS(Matrix=object, Vector=object), self.package: package,
+                   'idprop': NS(), 'idprop.types': NS(IDPropertyArray=IDPropertyArray),
                    self.package + '.body_original_mode': self.original,
                    self.package + '.animation_worklist_target': self.target,
                    self.package + '.unity_animation': self.ua,
@@ -177,6 +190,25 @@ class OriginalPoseOwnerTests(unittest.TestCase):
         self.actions[0]['preview_data'] = ID('replacement with same label')
         with self.assertRaisesRegex(ValueError, 'native ID reference'):
             self.owner._check_pose_capability(cap, self.rig)
+
+    def test_native_history_array_values_and_storage_are_pinned(self):
+        array = IDPropertyArray([.25, .75])
+        self.actions[0]['numeric_history'] = array
+        cap = self.entered()
+        self.assertTrue(self.owner._check_pose_capability(cap, self.rig))
+        for value, storage in ((.5, 'd'), (.25, 'f')):
+            array.values[0], array.typecode = value, storage
+            with self.assertRaisesRegex(ValueError, 'retained history changed'):
+                self.owner._check_pose_capability(cap, self.rig)
+        array.values[0], array.typecode = .25, 'd'
+        self.assertTrue(self.owner._check_pose_capability(cap, self.rig))
+
+    def test_native_history_array_nonfinite_and_unknown_storage_are_refused(self):
+        for value, storage in ((float('nan'), 'd'), (.25, 'unsupported')):
+            with self.subTest(value=value, storage=storage):
+                self.actions[0]['numeric_history'] = IDPropertyArray([value], storage)
+                with self.assertRaises(ValueError):
+                    self.owner.pose_capability(self.context, self.rig, entering=True)
 
     def test_native_map_supports_fresh_capability_and_detects_tampering(self):
         self.entered()

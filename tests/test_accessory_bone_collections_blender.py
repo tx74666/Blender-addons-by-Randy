@@ -64,11 +64,12 @@ def legacy_layout(rig, record):
 
 def assert_compact_skirt(rig, record):
     collection = next(c for c in rig.data.collections_all if c.get(skirt_rig.OWNER_KEY) == record["owner"])
-    assert set(collection.bones.keys()) == set(rig.data.bones.keys())
-    controls, deform, mechanism = skirt_rig._bone_collection_layout(record)
-    assert all(not rig.data.bones[name].hide for name in controls)
-    assert all(rig.data.bones[name].hide for name in deform | mechanism)
-    assert len(collection.bones) == 115
+    from character_designer import skirt_bone_display as display
+    groups = display.inspect(rig, record, collection)
+    assert set(groups) == set(display.TITLES)
+    assert len({bone.name for group in groups.values() for bone in group.bones}) == 115
+    assert not groups['MCH'].is_visible and not groups['PHYS'].is_visible
+    assert not any(b.hide or getattr(rig.pose.bones[b.name], 'hide', False) for b in rig.data.bones)
 
 
 def test_skirt_defaults_and_baked_visibility():
@@ -101,7 +102,8 @@ def test_skirt_migration_preserves_motion_and_user_collection():
     bpy.context.view_layer.update()
     matrices = {bone.name: bone.matrix.copy() for bone in rig.pose.bones}
     original_record = source[skirt_rig.RECORD_KEY]
-    assert skirt_rig.migrate_skirt_bone_collections(rig)
+    from character_designer import skirt_bone_display
+    skirt_bone_display.sync(bpy.context, source)
     assert_compact_skirt(rig, record)
     assert tuple(artist.bones.keys()) == (record["controls"]["hem"],)
     assert artist.name == "Skirt"
@@ -148,6 +150,9 @@ def test_owned_skirt_rename_preserves_display_and_physics():
     collection.name = "Skirt"
     skirt_rig.build_skirt(bpy.context, source)
     assert collection.name == "Dress", "Reusing an existing skirt must migrate its owned display group"
+    from character_designer import animation_physics
+    owner = animation_physics._owner(source, 'SKIRT')
+    animation_physics._write(owner, dict(animation_physics._read(owner), enabled=True))
     physics_record = skirt_physics.add_physics(bpy.context, source)
     assert physics_record["physics"]
     assert skirt_rig.read_record(source)["physics"] == physics_record["physics"]

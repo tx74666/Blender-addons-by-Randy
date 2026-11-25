@@ -766,7 +766,7 @@ def _capture_hair_snapshot(job, objects):
     if armature not in objects or armature.type != 'ARMATURE' or armature.name != capture.get('rig'):
         raise ExportError('The snapshot authoritative Hair armature is outside the collected export.')
     try:
-        registry = registry_service.read(source, validate=True)
+        registry = registry_service.read_for_model_export(source)
         profiles = profile_service.effective_all(source, registry=registry)
         if registry != capture.get('registry') or profiles != capture.get('profiles'):
             raise ExportError('Hair native proof or motion settings changed between capture and snapshot.')

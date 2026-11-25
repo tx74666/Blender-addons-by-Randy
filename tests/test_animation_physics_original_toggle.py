@@ -109,7 +109,7 @@ class OriginalToggleTests(unittest.TestCase):
         f.modules['skirt_physics'].validate_physics = refuse_graph
         with self.assertRaisesRegex(ValueError, 'owned Cloth graph changed'):
             physics.set_enabled(f.context, False)
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
         self.assertEqual(physics._flags(f.cloth), [True, True])
         self.assertEqual(f.calls, [])
         self.assert_original_exact()
@@ -121,7 +121,7 @@ class OriginalToggleTests(unittest.TestCase):
         f.wiggle._changed = lambda saved: 'Original editing paused automatic Dress motion.'
         with self.assertRaisesRegex(ValueError, 'Dress simulation changed'):
             physics.set_enabled(f.context, False)
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
         self.assertFalse(f.wiggle._SESSIONS[f.source.as_pointer()]['paused'])
         self.assertEqual(f.calls, [])
         self.assert_original_exact()
@@ -132,7 +132,7 @@ class OriginalToggleTests(unittest.TestCase):
         f.rig.pose.bones.append(fixture.SimpleNamespace(name='PHYS', wiggle_head=False, wiggle_tail=True))
         with self.assertRaisesRegex(ValueError, 'unowned live Wiggle'):
             physics.set_enabled(f.context, False)
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
         self.assertTrue(f.rig.pose.bones[0].wiggle_tail)
         self.assertEqual(f.calls, [])
         self.assert_original_exact()
@@ -140,7 +140,7 @@ class OriginalToggleTests(unittest.TestCase):
     def test_original_later_hair_failure_restores_cloth_and_exact_prior_permission(self):
         f = self.f
         state = self.active_hair()
-        physics._write(f.rig, physics._fresh())
+        physics._write(f.rig, dict(physics._fresh(), enabled=True))
         before = f.rig[physics.STATE_KEY]
         record_raw = f.source[physics.SKIRT_RECORD]
         pause = f.hair.set_preview_paused

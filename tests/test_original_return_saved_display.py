@@ -151,6 +151,7 @@ class OriginalSavedDisplayTests(unittest.TestCase):
         self.owner = NS(_check_pose_capability=self.checked, pose_return_checkpoint=checkpoint,
                         finish_pose_session=finish, restore_pose_session=self.restored_owner)
         self.package.body_original_owner, self.package.body_rest_resync = self.owner, self.resync
+        self.package.animation_pose_test = NS(natural_active=lambda rig: False)
         self.package.forearm_original_inventory = NS(validate=Mock(return_value={'exact': 'inventory'}))
 
         def restore_channels(rig, channels):
@@ -202,7 +203,7 @@ class OriginalSavedDisplayTests(unittest.TestCase):
         self.desired, self.rig.channels = 11.0, {'native': 2}
         self.assertTrue(self.invoke())
         self.match_pose.assert_called_once_with(self.context, self.rig, {'native': 11.0}, {'native'},
-            preserve_modes=True, precise_limbs=(), _pose_only_owner=True)
+            preserve_modes=True, sync_controls=True, precise_limbs=(), _pose_only_owner=True)
         self.assertEqual(self.pb.matrix, 11.0)
         self.assertEqual(self.exact_metadata(), before)
         self.assertEqual(self.snapshot(self.rig), self.saved_display)

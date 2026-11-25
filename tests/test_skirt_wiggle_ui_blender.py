@@ -251,16 +251,15 @@ class NativeDressWiggleUITests(unittest.TestCase):
                                ("PHYS", {name for chain in record["chains"] for name in chain["phys"]}),
                                ("CONTROLS", controls)):
             call_display(source, layer)
-            self.assertTrue(all(hidden(rig, name) == (name not in visible, name not in visible)
-                                for name in owned), layer)
+            self.assertEqual({n for n in owned if ui._bones_visible(rig, (n,))}, visible, layer)
+            self.assertTrue(all(hidden(rig, n) == (False, False) for n in owned))
             self.assertEqual({name: hidden(main, name) for name in unrelated}, unrelated)
             self.assertEqual(channels(rig), source_channels)
             self.assertEqual(mesh_data(source), source_data)
             self.assert_geometry(source_vertices, evaluated_vertices(source))
             self.assert_protected(protected, self.protected(main, body, hair, foreign))
         skirt_rig.select_controls(bpy.context, source)
-        self.assertTrue(all(hidden(rig, name) == (name not in controls, name not in controls)
-                            for name in owned))
+        self.assertEqual({n for n in owned if ui._bones_visible(rig, (n,))}, controls)
         self.assertEqual(mesh_data(source), source_data)
         self.assert_protected(protected, self.protected(main, body, hair, foreign))
 
@@ -355,8 +354,7 @@ class NativeDressWiggleUITests(unittest.TestCase):
             source = bpy.data.objects[source_name]
             rig, record = source[skirt_rig.RIG_KEY], skirt_rig.read_record(source)
             controls, deform, mechanism = skirt_rig._bone_collection_layout(record)
-            self.assertTrue(all(hidden(rig, name) == (name not in controls, name not in controls)
-                                for name in controls | deform | mechanism))
+            self.assertEqual({n for n in controls | deform | mechanism if ui._bones_visible(rig, (n,))}, controls)
             self.assertEqual(mesh_data(source), before)
             self.assert_geometry(vertices, evaluated_vertices(source))
 

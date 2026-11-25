@@ -5,6 +5,10 @@ import json
 import math
 import textwrap
 
+from . import animation_worklist_edit_scene as edit_scene
+from . import animation_worklist_categories as categories
+from . import animation_motion_pins as pins
+
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, PropertyGroup, UIList
@@ -617,6 +621,7 @@ class CHARACTERDESIGNER_OT_worklist_locate_dependencies(Operator):
 
 class CharacterDesignerAnimationWorklistCatalog(PropertyGroup):
     clip_key: StringProperty(options={'HIDDEN'})
+    target_slot_id: StringProperty(options={'HIDDEN'})
     work_item_id: StringProperty(options={'HIDDEN'})
     name: StringProperty(name='Clip')
     source_name: StringProperty(name='Source')
@@ -682,6 +687,9 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     list_cursor: IntProperty(default=-1, min=-1, options={'HIDDEN', 'SKIP_SAVE'},
                              get=_worklist_cursor, set=_ignore_worklist_cursor)
     catalog_index: IntProperty(default=-1, min=-1)
+    selected_motion_clip: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    precise_imported_motions: BoolProperty(name='Prepare Full IK', default=False,
+        description='Prepare complete IK trajectories for explicit Prepare commands. Opening a new motion uses FK')
     search: StringProperty(name='Search Clips', options={'TEXTEDIT_UPDATE'})
     workspace_path: StringProperty(name='Workspace', subtype='FILE_PATH')
     workspace_id: StringProperty(options={'HIDDEN'})
@@ -696,6 +704,8 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     rig: PointerProperty(type=bpy.types.Object, poll=_armature)
     show_catalog: BoolProperty(name='Clip Browser', default=True)
     show_advanced: BoolProperty(name='Advanced', default=False, options={'SKIP_SAVE'})
+    convert_imported_to_controls: BoolProperty(name='Convert to Character Controls', default=True,
+        description='Create a controller version when opening a motion, or keep editing its original bone animation when disabled')
     controller_auto_reduce: BoolProperty(name='Automatically Simplify Keys', default=True,
         options={'SKIP_SAVE'}, description='Remove extra controller keys after playback verification; turn off to keep all editable samples')
     controller_show_advanced: BoolProperty(name='Playback Tolerance', default=False, options={'SKIP_SAVE'})
@@ -730,11 +740,11 @@ class CHARACTERDESIGNER_OT_worklist_connect(Operator):
         label, _icon = _workspace_connection_display(settings)
         if label == 'Connected':
             status = ('Workspace validated at the last successful Connect or Refresh. '
-                      'Use Refresh to check its files again.')
+                      'Use Sync List to check its files again.')
         elif label == 'Check Failed':
-            status = 'The last Refresh failed. Existing animations and edits are kept.'
+            status = 'The last check failed. Existing animations and edits are kept.'
         else:
-            status = 'A workspace path is saved, but has no validated connection identity. Use Refresh to check it.'
+            status = 'A workspace path is saved, but has no validated connection identity. Use Sync List to check it.'
         return status + '\nClick to choose another workspace.\n' + settings.workspace_path
 
     def invoke(self, context, _event):
@@ -940,6 +950,24 @@ class CHARACTERDESIGNER_OT_worklist_discard_retired(Operator):
         self.report({'INFO'}, _state(context).status)
         for detail in result['kept_actions']:
             self.report({'INFO'}, detail['name'] + ': ' + detail['reason'])
+        _redraw(context)
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_worklist_start_from_current(Operator):
+    bl_idname = 'character_designer.worklist_start_from_current'
+    bl_label = 'Use Current Character'
+    bl_description = ('Replace the disconnected Main Rig record with the character in this scene. '
+                      'Keep the current pose, Action and keys')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .animation_worklist_target import start_from_current
+        try:
+            start_from_current(context)
+        except (ValueError, RuntimeError, OSError, ReferenceError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
         _redraw(context)
         return {'FINISHED'}
 
@@ -1225,6 +1253,26 @@ class CHARACTERDESIGNER_OT_worklist_activate(Operator):
         if settings is not None:
             # A previous collection cancellation is not this cell's outcome.
             settings.collection_feedback = False
+        home = edit_scene.mapping_home(context.scene)
+        if self.side == 'CUSTOM' and home is not None:
+            from . import animation_controller_edit
+            matches = [row for row in settings.items if row.item_id == self.item_id]
+            if len(matches) != 1:
+                self.report({'ERROR'}, 'This motion is no longer in the editing list.')
+                return {'CANCELLED'}
+            item = matches[0]
+            if not animation_controller_edit._authored_row(item):
+                try:
+                    result = animation_controller_edit.open_motion(context, home, item.clip_key, prepare_on_open=True)
+                    edit_scene.select_motion(home, item.clip_key)
+                except (ValueError, OSError, RuntimeError, ReferenceError) as exc:
+                    self.report({'ERROR'}, str(exc))
+                    return {'CANCELLED'}
+                if result.get('state') in {'MAPPING_NEEDED', 'CONTROLLER_RECOVERY'} and result.get('message'):
+                    self.report({'WARNING'}, result['message'])
+                elif result.get('state') == 'PREPARE_REQUIRED' and result.get('message'):
+                    self.report({'INFO'}, result['message'])
+                return {'FINISHED'}
         get = getattr(rig, 'get', None)
         restored = get('character_designer_worklist_main_restored_v1') if callable(get) else None
         needs_resume = (type(restored) in (bool, int) and restored == 1
@@ -1379,6 +1427,10 @@ class CHARACTERDESIGNER_OT_worklist_drag(Operator):
         self._finish()
 
 
+def _worklist_send_key(item):
+    return f'{item.rig.session_uid}:{item.custom_action.session_uid}:{item.custom_slot}:{item.item_id}'
+
+
 class CHARACTERDESIGNER_OT_worklist_sync(Operator):
     bl_idname = 'character_designer.worklist_sync'
     bl_label = 'Sync Current to Unity'
@@ -1388,9 +1440,16 @@ class CHARACTERDESIGNER_OT_worklist_sync(Operator):
     @classmethod
     def poll(cls, context):
         item = _selected(_state(context))
-        return item is not None and _active_side(item, 'CUSTOM') and _idle(context)
+        if (item is None or getattr(item, 'current_rig_revision', '')
+                or not _active_side(item, 'CUSTOM') or not _idle(context)):
+            return False
+        expected = getattr(context, 'cd_worklist_send_key', '')
+        return not expected or expected == _worklist_send_key(item)
 
     def execute(self, context):
+        if not self.poll(context):
+            self.report({'ERROR'}, 'Select the current editable Unity list entry again before sending.')
+            return {'CANCELLED'}
         return _run(self, context, 'sync')
 
 
@@ -1415,8 +1474,8 @@ class CHARACTERDESIGNER_OT_worklist_rigging_edit(Operator):
 
 class CHARACTERDESIGNER_OT_worklist_save_controls(Operator):
     bl_idname = 'character_designer.worklist_save_controls'
-    bl_label = 'Save Controls'
-    bl_description = 'Key the current effective Target/Hint inputs into their controls Action; does not export'
+    bl_label = 'Key Controls'
+    bl_description = 'Insert keys for the wrist targets and elbow hints at the current frame in their controls Action'
     bl_options = {'REGISTER', 'UNDO'}
     item_id: StringProperty(options={'HIDDEN'})
 
@@ -1459,27 +1518,30 @@ class CHARACTERDESIGNER_UL_animation_catalog(UIList):
 
 
 class CHARACTERDESIGNER_UL_animation_worklist(UIList):
-    def filter_items(self, _context, data, propname):
-        # This list owns its search; saved catalog search never hides imports.
-        terms = self.filter_name.casefold().split()
-        if not terms:
-            return [], []
-        return [self.bitflag_filter_item if all(term in item.name.casefold() for term in terms) else 0
-                for item in getattr(data, propname)], []
+    def filter_items(self, context, data, propname):
+        return categories.filter_rows(self, context, data, propname)
 
     def draw_filter(self, _context, layout):
         layout.prop(self, 'filter_name', text='', icon='VIEWZOOM')
 
     def draw_item(self, context, layout, _data, item, _icon, _active_data,
                   _active_propname, _index=0, _flt_flag=0):
-        row = layout.row(align=True)
+        home = edit_scene.mapping_home(context.scene)
+        edit, status, manage = edit_scene.motion_row(layout)
         action = item.custom_action
-        row.enabled = (_idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
-                       and action is not None and action.library is None)
-        activate = row.operator('character_designer.worklist_activate', text=item.name, icon='EDITMODE_HLT',
-                                emboss=True, depress=(_active_data.active_index == _index
-                                                      and _active_side(item, 'CUSTOM')))
+        from . import animation_controller_edit
+        mapped = home is not None and not animation_controller_edit._authored_row(item)
+        record = edit_scene.mapping_record(home, item) if mapped else None
+        ready = record is not None and record.state == 'READY' and record.controller_action is not None
+        edit.enabled = (_idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
+                        and (ready or (action is not None and action.library is None)))
+        active = (edit_scene.controller_motion_active(home, item) if mapped
+                  else _active_data.active_index == _index and _active_side(item, 'CUSTOM'))
+        activate = edit.operator('character_designer.worklist_activate', text=item.name, icon='ACTION',
+                                 emboss=False, depress=active)
         activate.item_id, activate.side = item.item_id, 'CUSTOM'
+        edit_scene.draw_mapping_state(status, context, item)
+        categories.draw_move(manage, context, item)
 
 
 def _draw_worklist_actions(layout, context, settings):
@@ -1487,6 +1549,31 @@ def _draw_worklist_actions(layout, context, settings):
     column.enabled = _idle(context) and getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
     column.template_list('CHARACTERDESIGNER_UL_animation_worklist', 'actions',
                          settings, 'items', settings, 'list_cursor', rows=5, maxrows=5)
+
+
+def motion_picker_available(context):
+    settings = _state(context)
+    return bool(settings and settings.workspace_path and (settings.items or settings.catalog))
+
+
+def draw_motion_picker(layout, context):
+    settings = _state(context)
+    if settings is None:
+        return
+    edit_scene.draw_return(layout, context)
+    categories.draw_toolbar(layout, context)
+    rows = settings.items if settings.items else settings.catalog
+    if rows and not categories.has_members(context, rows):
+        layout.label(text='No animations in this category', icon='INFO')
+    elif settings.items:
+        _draw_worklist_actions(layout, context, settings)
+    elif rows:
+        layout.template_list('CHARACTERDESIGNER_UL_prepared_motions', 'prepared', settings, 'catalog',
+                             settings, 'list_cursor', rows=5, maxrows=5)
+    edit_scene.draw_mapping_options(layout, context)
+    if getattr(context, 'mode', '') == 'POSE':
+        from . import limb_ik_fk_pose_key
+        limb_ik_fk_pose_key.draw(layout, context)
 
 
 def _draw_rigging(layout, context, item):
@@ -1515,35 +1602,19 @@ def _draw_rigging(layout, context, item):
         operator.item_id, operator.edit_role = item.item_id, role
     save = box.row()
     save.enabled = row.enabled and display['enabled'] and display['edit_role'] == 'RIGGING'
-    save.operator('character_designer.worklist_save_controls', text='Save Controls', icon='KEY_HLT').item_id = item.item_id
+    save.operator('character_designer.worklist_save_controls', icon='KEY_HLT').item_id = item.item_id
 
 
-def draw_worklist(layout, context, *, include_original_inputs=True):
-    if include_original_inputs:
-        draw_original_inputs(layout, context)
-    old_controls = layout.column()
-    old_controls.enabled = not original_inputs_live(context)
-    layout = old_controls
-    from .animation_composition_ui import draw_composition
-    draw_composition(layout, context)
-    settings = _state(context)
-    if settings is None:
-        layout.label(text='Animation workspace is unavailable.', icon='ERROR')
-        return
-    box = layout.box()
-    header = box.row(align=True)
-    header.label(text='Animations', icon='ACTION')
-    header.operator_context = 'INVOKE_DEFAULT'
-    connection_label, connection_icon = _workspace_connection_display(settings)
-    header.operator('character_designer.worklist_connect', text=connection_label, icon=connection_icon)
-    header.operator('character_designer.worklist_refresh', text='', icon='FILE_REFRESH')
-    busy = scan_pending() or _collection().running()
+def _draw_worklist_pose(box, context, *, recovery_only):
     from . import animation_rest_pose, animation_pose_test
     try:
         display_rig = animation_rest_pose.get_rig(context)
     except (ValueError, AttributeError, ReferenceError):
         display_rig = None
     if display_rig is not None:
+        recovery_needed = animation_pose_test.active(display_rig) or display_rig.data.pose_position == 'REST'
+        if recovery_needed != recovery_only:
+            return
         pose_row = box.row(align=True)
         pose_row.enabled = _idle(context) and getattr(context, 'mode', '') in {'OBJECT', 'POSE'}
         testing = animation_pose_test.active(display_rig)
@@ -1563,12 +1634,70 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
             recovery.enabled = _idle(context)
             recovery.operator('character_designer.worklist_keep_base_pose_draft',
                               text='Keep Draft / Exit Test', icon='FILE_BACKUP')
+
+
+def _draw_worklist_connection(box, context, settings, *, advanced):
+    connection_label, connection_icon = _workspace_connection_display(settings)
+    # Saved local actions need no refresh. Only setup or a failed check needs
+    # these controls on the main page; they always remain available in one place.
+    needs_setup = bool(settings.workspace_path and (
+        connection_label != 'Connected' or not (settings.items or edit_scene.editing_scene(context.scene))))
+    if (not advanced) != needs_setup:
+        return
+    header = box.row(align=True)
+    header.operator_context = 'INVOKE_DEFAULT'
+    if not settings.workspace_path:
+        connection_label = 'Connect Unity Action List'
+    elif connection_label == 'Connected':
+        connection_label = getattr(settings, 'target_name', '') or 'Unity Action List'
+    header.operator('character_designer.worklist_connect', text=connection_label, icon=connection_icon)
+    if settings.workspace_path:
+        local_current = any(getattr(item, 'current_rig_revision', '') for item in settings.items)
+        update = header.row(align=True)
+        update.enabled = _idle(context) and not local_current
+        update.operator('character_designer.worklist_sync_list', text='Sync List', icon='FILE_REFRESH')
+
+
+def _draw_empty_list(box, context, settings, main):
+    ready = [entry for entry in getattr(settings, 'catalog', ()) if entry.ready]
+    fixed = sum(bool(getattr(entry, 'target_slot_id', '')) for entry in ready)
+    label = str(len(ready)) + ' prepared in Unity'
+    if fixed and fixed != len(ready):
+        label += ' (' + str(fixed) + ' character slots)'
+    editor = edit_scene.editing_scene(context.scene)
+    if not editor:
+        box.label(text=label + ' · 0 local actions', icon='INFO')
+    from . import animation_worklist_target as target
+    if main is not None and target.is_adopted(main) and target.REFS not in main:
+        box.operator('character_designer.worklist_start_from_current', text='Use Current Character', icon='ARMATURE_DATA')
+    if not settings.catalog:
+        return
+    if ready and main is None and settings.rig is None and not any(obj.type == 'ARMATURE' for obj in context.scene.objects):
+        row = box.row()
+        row.enabled = _idle(context)
+        row.operator('character_designer.worklist_add_ready', text='Import Prepared Motions', icon='IMPORT')
+    draw_motion_picker(box, context)
+
+
+def draw_worklist(layout, context, *, include_original_inputs=True, include_tools=True):
+    if include_original_inputs:
+        draw_original_inputs(layout, context)
+    settings = _state(context)
+    if settings is None:
+        layout.label(text='Animation workspace is unavailable.', icon='ERROR')
+        return
+    box = layout.column()
+    box.enabled = not original_inputs_live(context)
+    _draw_worklist_connection(box, context, settings, advanced=False)
+    busy = scan_pending() or _collection().running()
+    _draw_worklist_pose(box, context, recovery_only=True)
     if settings.workspace_path:
         setup = getattr(context.scene, 'character_designer_setup', None)
         main = getattr(setup, 'rig', None)
         rig = getattr(settings, 'rig', None)
         if (main is not None and not (rig is not None and hasattr(rig, 'get')
-                and rig.get('character_designer_worklist_main_session_v1') is not None)):
+                and (rig.get('character_designer_worklist_main_session_v1') is not None
+                     or rig.get('character_designer_worklist_current_base_v1')))):
             row = box.row(align=True)
             row.enabled = _idle(context)
             row.operator('character_designer.worklist_use_main_rig', text='Edit Animations', icon='ARMATURE_DATA')
@@ -1576,78 +1705,41 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
         if local_current:
             box.label(text='Current Rig: local animation versions', icon='ACTION')
             box.label(text='Prepare matching Unity sources before exporting.', icon='INFO')
-        elif (main is not None and callable(getattr(getattr(main, 'data', None), 'get', None))
+        elif (settings.items and main is not None and callable(getattr(getattr(main, 'data', None), 'get', None))
                 and main.data.get('character_designer_current_leg_rest_acceptance_v1') is not None):
             row = box.row()
             row.enabled = _idle(context)
             row.operator('character_designer.worklist_use_current_revision', text='Use Current Rig', icon='ARMATURE_DATA')
-        batch = box.row(align=True)
-        batch.enabled = _idle(context) and not local_current
-        batch.operator('character_designer.worklist_sync_list', text='Sync List', icon='FILE_REFRESH')
-        batch.operator('character_designer.worklist_sync_changed', text='Export Changes', icon='EXPORT')
-        if _prepared_rigging_target(context):
-            prepared = box.row()
-            prepared.enabled = _idle(context) and not local_current
-            prepared.operator_context = 'INVOKE_DEFAULT'
-            prepared.operator('character_designer.worklist_add_prepared_animation',
-                              text='Add Prepared Animation', icon='ADD')
         if settings.items:
-            _draw_worklist_actions(box, context, settings)
-            draw_controller_animation(box, context)
+            draw_motion_picker(box, context)
+            item = _selected(settings)
+            send = box.row()
+            send.enabled = (item is not None and not getattr(item, 'current_rig_revision', '')
+                            and _active_side(item, 'CUSTOM') and _idle(context))
+            set_key = getattr(send, 'context_string_set', None)
+            if send.enabled and set_key is not None:
+                set_key('cd_worklist_send_key', _worklist_send_key(item))
+            send.operator('character_designer.worklist_sync', text='Send Selected to Unity', icon='EXPORT')
         else:
-            box.label(text='Add motions in Unity, then click Sync List.', icon='INFO')
+            _draw_empty_list(box, context, settings, main)
         _draw_rigging(box, context, _selected(settings))
-        advanced = box.row()
-        advanced.prop(settings, 'show_advanced', text='Advanced', emboss=False,
-                      icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
-        if settings.show_advanced:
-            files = box.row(align=True)
-            files.enabled = _idle(context)
-            files.operator('character_designer.worklist_package_dependencies', text='Package Editing Files', icon='PACKAGE')
-            files.operator('character_designer.worklist_locate_dependencies', text='Locate Editing Files', icon='FILE_FOLDER')
-            selected = _selected(settings)
-            if (selected is not None and selected.side == 'CUSTOM'
-                    and selected.rig is not None and selected.custom_action is not None):
-                export_base = box.row()
-                export_base.enabled = _idle(context) and _active_custom_action(context)
-                capture = export_base.operator('character_designer.animation_export_base_pose',
-                                               text='Capture Export Base Pose', icon='POSE_HLT')
-                capture.rig_name = selected.rig.name
-                capture.action_name = selected.custom_action.name
-                capture.clear = False
-                if ('character_designer_animation_export_base_v1' in selected.custom_action
-                        or 'character_designer_animation_export_base_v1_count' in selected.custom_action):
-                    clear_base = box.row()
-                    clear_base.enabled = export_base.enabled
-                    clear = clear_base.operator('character_designer.animation_export_base_pose',
-                                                text='Clear Export Base Pose', icon='X')
-                    clear.rig_name = selected.rig.name
-                    clear.action_name = selected.custom_action.name
-                    clear.clear = True
-            base = box.operator('character_designer.worklist_base_pose', text='Base Pose',
-                                icon='LOOP_BACK')
-            base.finish = False
-            box.operator('character_designer.worklist_register_new', text='New Action', icon='ACTION')
-            retired = getattr(settings, 'retired_items', ())
-            if retired:
-                archive = box.box()
-                archive.label(text='Retired Animations (' + str(len(retired)) + ')', icon='FILE_BACKUP')
-                for item in retired:
-                    row = archive.row(align=True)
-                    row.label(text=item.name, icon='ACTION')
-                    restore = row.operator('character_designer.worklist_restore_retired', text='Restore')
-                    restore.item_id = item.item_id
-                    discard = row.operator('character_designer.worklist_discard_retired', text='Discard', icon='TRASH')
-                    discard.item_id = item.item_id
-            if (rig is not None and hasattr(rig, 'get')
-                    and rig.get('character_designer_worklist_main_session_v1') is not None):
-                box.operator('character_designer.worklist_restore_main_rig',
-                             text='Restore Main Rig', icon='LOOP_BACK')
+        from . import animation_composition
+        if hasattr(rig, "get") and rig.get(animation_composition.SESSION) is not None:
+            from .animation_composition_ui import draw_composition
+            draw_composition(box, context)
     if busy:
         box.operator('character_designer.worklist_cancel_collection', text='Cancel', icon='CANCEL')
     unresolved = any(
         item.scan_state in {'UNKNOWN', 'BLOCKED'} for item in settings.items)
     show_status = (settings.has_error or busy) and bool(settings.status)
+    if not show_status and settings.status.startswith('Synced '):
+        from .animation_physics_ui import wrapped_label
+        if settings.show_advanced:
+            wrapped_label(box, context, settings.status, icon='CHECKMARK')
+        else:
+            wrapped_label(box, context, 'Last send: preview the candidate in Unity.', icon='CHECKMARK')
+            if '. Omitted: ' in settings.status:
+                wrapped_label(box, context, 'Omitted: ' + settings.status.split('. Omitted: ', 1)[1])
     if show_status:
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.status, width=width)):
@@ -1663,6 +1755,90 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(selected.scan_reason, width=width)):
             box.label(text=line, icon=('ERROR' if selected.scan_state == 'BLOCKED' else 'INFO') if index == 0 else 'BLANK1')
+
+    if include_tools:
+        draw_worklist_tools(layout, context)
+
+
+def draw_worklist_tools(layout, context):
+    settings = _state(context)
+    if settings is None:
+        return
+    layout.prop(settings, 'show_advanced', text='Advanced', emboss=False,
+                icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
+    if not settings.show_advanced:
+        return
+    from .control_pose_capture import draw as draw_pose_capture
+    draw_pose_capture(layout, context)
+    box = layout.column()
+    box.enabled = not original_inputs_live(context)
+    _draw_worklist_connection(box, context, settings, advanced=True)
+    _draw_worklist_pose(box, context, recovery_only=False)
+    if not settings.workspace_path:
+        return
+    home = edit_scene.mapping_home(context.scene)
+    if home is not None:
+        box.prop(home.character_designer_animation_worklist, 'precise_imported_motions')
+    edit_scene.draw_source_motion(box, context)
+    rig = getattr(settings, 'rig', None)
+    local_current = any(getattr(item, 'current_rig_revision', '') for item in settings.items)
+    batch = box.row()
+    batch.enabled = _idle(context) and not local_current
+    batch.operator('character_designer.worklist_sync_changed', text='Export Changes', icon='EXPORT')
+    if _prepared_rigging_target(context):
+        prepared = box.row()
+        prepared.enabled = _idle(context) and not local_current
+        prepared.operator_context = 'INVOKE_DEFAULT'
+        prepared.operator('character_designer.worklist_add_prepared_animation',
+                          text='Add Prepared Animation', icon='ADD')
+    if settings.items:
+        draw_controller_animation(box, context)
+    from . import animation_composition
+    if not hasattr(rig, "get") or rig.get(animation_composition.SESSION) is None:
+        from .animation_composition_ui import draw_composition
+        draw_composition(box, context)
+    files = box.row(align=True)
+    files.enabled = _idle(context)
+    files.operator('character_designer.worklist_package_dependencies', text='Package Editing Files', icon='PACKAGE')
+    files.operator('character_designer.worklist_locate_dependencies', text='Locate Editing Files', icon='FILE_FOLDER')
+    selected = _selected(settings)
+    if (selected is not None and selected.side == 'CUSTOM'
+            and selected.rig is not None and selected.custom_action is not None):
+        export_base = box.row()
+        export_base.enabled = _idle(context) and _active_custom_action(context)
+        capture = export_base.operator('character_designer.animation_export_base_pose',
+                                       text='Capture Export Base Pose', icon='POSE_HLT')
+        capture.rig_name = selected.rig.name
+        capture.action_name = selected.custom_action.name
+        capture.clear = False
+        if ('character_designer_animation_export_base_v1' in selected.custom_action
+                or 'character_designer_animation_export_base_v1_count' in selected.custom_action):
+            clear_base = box.row()
+            clear_base.enabled = export_base.enabled
+            clear = clear_base.operator('character_designer.animation_export_base_pose',
+                                        text='Clear Export Base Pose', icon='X')
+            clear.rig_name = selected.rig.name
+            clear.action_name = selected.custom_action.name
+            clear.clear = True
+    base = box.operator('character_designer.worklist_base_pose', text='Base Pose',
+                        icon='LOOP_BACK')
+    base.finish = False
+    box.operator('character_designer.worklist_register_new', text='New Action', icon='ACTION')
+    retired = getattr(settings, 'retired_items', ())
+    if retired:
+        archive = box.box()
+        archive.label(text='Retired Animations (' + str(len(retired)) + ')', icon='FILE_BACKUP')
+        for item in retired:
+            row = archive.row(align=True)
+            row.label(text=item.name, icon='ACTION')
+            restore = row.operator('character_designer.worklist_restore_retired', text='Restore')
+            restore.item_id = item.item_id
+            discard = row.operator('character_designer.worklist_discard_retired', text='Discard', icon='TRASH')
+            discard.item_id = item.item_id
+    if (rig is not None and hasattr(rig, 'get')
+            and rig.get('character_designer_worklist_main_session_v1') is not None):
+        box.operator('character_designer.worklist_restore_main_rig',
+                     text='Restore Main Rig', icon='LOOP_BACK')
 
 
 WORKLIST_CLASSES = (
@@ -1683,6 +1859,7 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_sync_back,
     CHARACTERDESIGNER_OT_worklist_restore_retired,
     CHARACTERDESIGNER_OT_worklist_discard_retired,
+    CHARACTERDESIGNER_OT_worklist_start_from_current,
     CHARACTERDESIGNER_OT_worklist_use_main_rig,
     CHARACTERDESIGNER_OT_worklist_restore_main_rig,
     CHARACTERDESIGNER_OT_worklist_pose_position,
@@ -1705,4 +1882,7 @@ WORKLIST_CLASSES = (
     CHARACTERDESIGNER_OT_worklist_save_controls,
     CHARACTERDESIGNER_UL_animation_catalog,
     CHARACTERDESIGNER_UL_animation_worklist,
+    *edit_scene.CLASSES,
+    *categories.CLASSES,
+    *pins.CLASSES,
 )

@@ -15,7 +15,7 @@ spec.loader.exec_module(selection)
 
 def ownership_api():
     """Reuse production ownership/registry decoding and constants."""
-    names = {'_owned', '_constraint_registry', '_constraint_name'}
+    names = {'_owned', '_constraint_registry', '_constraint_name', '_ik_label', '_constraint_name_matches'}
     constants = {'OWNER_KEY', 'OWNER_VALUE', 'VERSION_KEY', 'RIG_VERSION',
                  'ARMATURE_ID_KEY', 'RIG_ID_KEY', 'KIND_KEY', 'SIDE_KEY',
                  'CHAIN_KEY', 'ROLE_KEY', 'CONSTRAINT_REGISTRY_KEY', 'LIMB_SPEC',

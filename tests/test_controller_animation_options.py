@@ -27,6 +27,21 @@ class ControllerOptionsTest(unittest.TestCase):
     def context(self):
         return NS(scene=NS(unit_settings=NS(scale_length=1.)))
 
+    def test_imported_daily_samples_use_world_space_and_keep_shape_limits(self):
+        context = self.context()
+        policy = service._daily_edit_policy(context)
+        self.assertEqual(service._policy_from_source(dict(context=context, daily_edit=True)), policy)
+        self.assertEqual(policy['position_tolerance_meters'], .003)
+        self.assertAlmostEqual(policy['rotation_tolerance_radians'], .01745329252)
+        precise = dict(matrix=.001, position=.001, rotation=.001, scale=.00001)
+        world = dict(position_meters=.002, rotation_radians=.01, scale_relative=0., shape_relative=0.)
+        with patch.object(service, '_world_playback_error', return_value=world):
+            self.assertTrue(service._sample_acceptable(None, None, precise, policy))
+            self.assertFalse(service._sample_acceptable(None, None, precise, None))
+            for key in ('scale_relative', 'shape_relative', 'position_meters', 'rotation_radians'):
+                with self.subTest(key=key), patch.object(service, '_world_playback_error', return_value=dict(world, **{key: .1})):
+                    self.assertFalse(service._sample_acceptable(None, None, precise, policy))
+
     def test_stricter_world_budgets_leave_native_and_shape_gates_exact(self):
         context = self.context()
         default = service._quality_policy(context,'EDITABLE')

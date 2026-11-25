@@ -71,7 +71,8 @@ def _foot_metadata(armature, rigs, limb):
                 or record.get('side') != side or record.get('rig_id') != base['rig_id']
                 or record.get('chain') != list(base['chain'])
                 or record.get('target') != base['target'].name
-                or record.get('rotation_direction') not in (None, 'LEGACY', 'NATURAL')):
+                or record.get('rotation_direction') not in (None, 'LEGACY', 'NATURAL')
+                or ('roll_hinge' in record and (type(record['roll_hinge']) is not int or record['roll_hinge'] != 1))):
             raise limb.LimbIKError('Foot Controls display metadata does not match this leg.')
         base['foot_controls'] = {
             'presentation_only': True,
@@ -79,6 +80,7 @@ def _foot_metadata(armature, rigs, limb):
             'side': side,
             'rig_id': base['rig_id'],
             'rotation_direction': record.get('rotation_direction'),
+            'roll_hinge': record.get('roll_hinge'),
         }
 
 

@@ -13,6 +13,19 @@ from test_animation_physics_ui import Layout, ui
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def panel_draw(scope):
+    """Compile the actual panel and its extracted draw helpers, without registering any RNA."""
+    scope.setdefault("animation_preview_ui", SimpleNamespace(
+        draw=Mock(), session=SimpleNamespace(status=Mock(return_value=None))))
+    tree = ast.parse((ROOT / "addons/character_designer/animation.py").read_text(encoding="utf8"))
+    panel = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                 and node.name == "CHARACTERDESIGNER_PT_animation")
+    draw = next(node for node in panel.body if isinstance(node, ast.FunctionDef) and node.name == "draw")
+    helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in
+               {"_draw_single_action", "_draw_single_files", "_draw_local_fbx", "_draw_local_motion", "_draw_unity_preview", "_draw_pose_resets"}]
+    exec(compile(ast.Module(body=[*helpers, draw], type_ignores=[]), "animation.py", "exec"), scope)
+
+
 class PanelLayout(Layout):
     def __init__(self, events=None, parent=None, *, opened=None):
         super().__init__(events, parent)
@@ -69,6 +82,9 @@ class NativeActionLayout(FullWidthLayout):
     def context_pointer_set(self, name, value):
         self.events.append(("context_pointer", name, self.enabled, {}, value))
 
+    def context_string_set(self, name, value):
+        self.events.append(("context_string", name, self.enabled, {}, value))
+
     def template_search(self, *args, **kwargs):
         self.events.append(("template_search", None, self.enabled, kwargs, args))
 
@@ -76,6 +92,35 @@ class NativeActionLayout(FullWidthLayout):
 class AnimationSectionsTests(unittest.TestCase):
     def setUp(self):
         self.context = SimpleNamespace(mode="POSE", region=SimpleNamespace(width=180))
+
+    def test_pose_resets_follow_visible_control_selection(self):
+        package = ModuleType("_pose_reset_fixture")
+        owned = ModuleType(package.__name__ + ".limb_ik_wrist_rotation_ui")
+        owned._owned_wrist = lambda bone: bone.wrist
+        package.natural_pose_clear = SimpleNamespace(body_selected=lambda context: context.whole)
+        scope = {"__package__": package.__name__}
+        panel_draw(scope)
+        rig = object()
+        wrist = SimpleNamespace(id_data=rig, wrist=True)
+        pole = SimpleNamespace(id_data=rig, wrist=False)
+        foreign_wrist = SimpleNamespace(id_data=object(), wrist=True)
+        cases = [
+            ("OBJECT", [wrist], False, []),
+            ("POSE", [], False, []),
+            ("POSE", [wrist], False, ["Match Wrist to Edit Pose"]),
+            ("POSE", [wrist, wrist], False, ["Match Wrists to Edit Pose"]),
+            ("POSE", [wrist, pole], False, []),
+            ("POSE", [wrist, foreign_wrist], False, []),
+            ("POSE", [pole] * 9, False, []),
+            ("POSE", [pole] * 9, True, []),
+        ]
+        with patch.dict(sys.modules, {package.__name__: package, owned.__name__: owned}):
+            for mode, selection, whole, expected in cases:
+                with self.subTest(mode=mode, selection=selection, whole=whole):
+                    context = SimpleNamespace(mode=mode, object=rig, selected_pose_bones=selection, whole=whole)
+                    layout = PanelLayout()
+                    scope["_draw_pose_resets"](layout, context)
+                    self.assertEqual([event[1] for event in layout.events], expected)
 
     def test_native_folded_physics_does_not_read_backend_state(self):
         layout = PanelLayout(opened={"character_designer_animation_physics": False})
@@ -125,28 +170,27 @@ class AnimationSectionsTests(unittest.TestCase):
             ui.draw(FullWidthLayout(), self.context)
 
     def draw_animation(self, opened):
-        tree = ast.parse((ROOT / "addons/character_designer/animation.py").read_text(encoding="utf8"))
-        panel = next(node for node in tree.body if isinstance(node, ast.ClassDef)
-                     and node.name == "CHARACTERDESIGNER_PT_animation")
-        draw = next(node for node in panel.body if isinstance(node, ast.FunctionDef) and node.name == "draw")
         package = "_animation_section_draw_fixture"
         physics = ModuleType(package + ".animation_physics_ui")
-        physics.draw, physics.section = Mock(), ui.section
+        physics.draw, physics.section, physics.wrapped_label = Mock(), ui.section, ui.wrapped_label
         original = ModuleType(package + ".animation_original_inputs_ui")
         original.draw_original_inputs = Mock()
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
-        worklist.draw_worklist = Mock()
+        worklist.draw_worklist, worklist.draw_worklist_tools = Mock(), Mock()
+        worklist.scan_pending = Mock(return_value=False)
+        collection = ModuleType(package + ".animation_worklist_collection")
+        collection.running = Mock(return_value=False)
         export = ModuleType(package + ".animation_export")
-        export.active_job = Mock(return_value=True)
+        export.active_job = Mock(return_value={"ordinary_export": True})
         scope = {"__package__": package, "_settings": lambda context: SimpleNamespace(),
                  "_main_rig": Mock(side_effect=AssertionError("Connected worklist entered legacy UI"))}
-        exec(compile(ast.Module(body=[draw], type_ignores=[]), "animation.py", "exec"), scope)
+        panel_draw(scope)
         self.context.scene = SimpleNamespace(character_designer_animation_worklist=SimpleNamespace(workspace_path="linked"))
         layout = PanelLayout(opened=opened)
         with patch.dict(sys.modules, {module.__name__: module for module in
-                                     (physics, original, pose, worklist, export)}):
+                                     (physics, original, pose, worklist, collection, export)}):
             scope["draw"](SimpleNamespace(layout=layout), self.context)
         return layout, physics, original, pose, worklist, export
 
@@ -154,8 +198,9 @@ class AnimationSectionsTests(unittest.TestCase):
         layout, physics, original, pose, worklist, export = self.draw_animation({})
         original.draw_original_inputs.assert_not_called()
         worklist.draw_worklist.assert_called_once()
-        self.assertEqual(worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False})
-        pose.draw.assert_called_once()
+        self.assertEqual(worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False, "include_tools": False})
+        worklist.draw_worklist_tools.assert_called_once()
+        pose.draw.assert_not_called()  # No duplicate pose controls outside Advanced.
         self.assertIn("character_designer.animation_export_cancel", [event[0] for event in layout.events])
         original_panel = next(event for event in layout.events if event[1] == "character_designer_animation_original_inputs")
         self.assertTrue(original_panel[3]["default_closed"])
@@ -166,47 +211,53 @@ class AnimationSectionsTests(unittest.TestCase):
             "character_designer_animation_animations": False})
         original.draw_original_inputs.assert_called_once()
         worklist.draw_worklist.assert_not_called()
+        worklist.draw_worklist_tools.assert_not_called()
         pose.draw.assert_not_called()
         export.active_job.assert_not_called()
 
     def draw_unmanaged_animation(self, *, opened=None, has_animation_data=True, has_action=True,
-                                 tweak=False, preview=False, generation_job=None, export_job=False):
-        tree = ast.parse((ROOT / "addons/character_designer/animation.py").read_text(encoding="utf8"))
-        panel = next(node for node in tree.body if isinstance(node, ast.ClassDef)
-                     and node.name == "CHARACTERDESIGNER_PT_animation")
-        draw = next(node for node in panel.body if isinstance(node, ast.FunctionDef) and node.name == "draw")
+                                 tweak=False, preview=False, generation_job=None, export_job=False, advanced=False):
         package = "_unmanaged_animation_section_fixture"
         physics = ModuleType(package + ".animation_physics_ui")
-        physics.draw, physics.section = Mock(), ui.section
+        physics.draw, physics.section, physics.wrapped_label = Mock(), ui.section, ui.wrapped_label
         original = ModuleType(package + ".animation_original_inputs_ui")
         original.draw_original_inputs = Mock()
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
-        worklist.draw_worklist = Mock()
+        worklist.draw_worklist, worklist.draw_worklist_tools = Mock(), Mock()
+        worklist.scan_pending = Mock(return_value=False)
+        collection = ModuleType(package + ".animation_worklist_collection")
+        collection.running = Mock(return_value=False)
         export = ModuleType(package + ".animation_export")
-        export.active_job = Mock(return_value=export_job)
+        export.active_job = Mock(return_value={"ordinary_export": True} if export_job else None)
         unity = ModuleType(package + ".unity_animation")
         unity.active_preview = Mock(return_value=SimpleNamespace(name="Unity Preview") if preview else None)
-        unity.preview_time_seconds = Mock(side_effect=AssertionError("Collapsed Unity read preview time"))
+        unity.preview_time_seconds = Mock(return_value=0.25)
         link = ModuleType(package + ".animation_link")
+        link.ACTION_KEY = "character_designer_animation_link_action"
         link.get_link = Mock(return_value=None)
+        forearm = ModuleType(package + ".forearm_twist")
+        forearm._ERRORS = {}
         action = SimpleNamespace(name="Local motion") if has_action else None
         animation_data = SimpleNamespace(action=action, use_tweak_mode=tweak,
                                          action_slot=SimpleNamespace(handle=1), action_suitable_slots=()) if has_animation_data else None
         rig = SimpleNamespace(name="CoshaRig", animation_data=animation_data,
                               animation_data_create=Mock(side_effect=AssertionError("Draw created animation data")))
-        settings = SimpleNamespace(status="", has_error=False, show_local_motion=False,
-                                   show_unity_files=False, start_frame=1)
+        settings = SimpleNamespace(status="", has_error=False, show_local_motion=False, show_setup=False,
+                                   show_unity_files=False, start_frame=1, result_path="", log_path="", source=None,
+                                   prompt="walk", duration=1., seed=1)
         folder = Mock(side_effect=AssertionError("Draw resolved an exchange folder"))
         scope = {"__package__": package, "_settings": lambda context: settings,
                  "_main_rig": lambda context: rig, "_main_rig_error": lambda context, target: "",
-                 "_target": lambda context: rig, "_job": generation_job,
-                 "_link_idle": Mock(return_value=True), "unity_exchange_folder": folder}
-        exec(compile(ast.Module(body=[draw], type_ignores=[]), "animation.py", "exec"), scope)
-        self.context.scene = SimpleNamespace(character_designer_animation_worklist=SimpleNamespace(workspace_path=""))
+                 "_target": lambda context: rig, "_job": generation_job, "_can_restore": lambda context: False,
+                 "_link_idle": Mock(return_value=not export_job and not generation_job), "unity_exchange_folder": folder}
+        panel_draw(scope)
+        self.context.screen = SimpleNamespace(is_animation_playing=False)
+        self.context.scene = SimpleNamespace(frame_current=6, frame_subframe=.25,
+            character_designer_animation_worklist=SimpleNamespace(workspace_path="", show_advanced=advanced))
         layout = NativeActionLayout(opened=opened)
-        modules = (physics, original, pose, worklist, export, unity, link)
+        modules = (physics, original, pose, worklist, collection, export, unity, link, forearm)
         with patch.dict(sys.modules, {module.__name__: module for module in modules}), \
                 patch.object(Path, "open", side_effect=AssertionError("Draw read a file")), \
                 patch.object(Path, "stat", side_effect=AssertionError("Draw inspected file metadata")):
@@ -226,16 +277,21 @@ class AnimationSectionsTests(unittest.TestCase):
         pointer = next(event for event in result.layout.events if event[0] == "context_pointer")
         self.assertEqual(pointer[1], "animated_id")
         self.assertIs(pointer[4], result.rig)
-        unity_panel = next(event for event in result.layout.events
-                           if event[0] == "panel" and event[1] == "character_designer_animation_unity_exchange")
-        self.assertEqual(unity_panel[3], {"default_closed": True})
-        result.link.get_link.assert_not_called()
+        # Reading the saved link is how the primary panel determines the correct action.
+        # Filesystem access remains forbidden by the draw harness.
+        result.link.get_link.assert_called_once_with(result.rig)
+        self.assertFalse(any(event[1] == "character_designer_animation_unity_exchange" for event in result.layout.events))
         result.unity.preview_time_seconds.assert_not_called()
         result.folder.assert_not_called()
         result.rig.animation_data_create.assert_not_called()
         result.worklist.draw_worklist.assert_called_once()
-        self.assertEqual(result.worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False})
-        self.assertFalse(any(event[0] == "character_designer.animation_export" for event in result.layout.events))
+        self.assertEqual(result.worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False, "include_tools": False})
+        [manual] = [event for event in result.layout.events if event[0] == "character_designer.animation_export"]
+        self.assertTrue(manual[2])
+        self.assertEqual(manual[3]["text"], "Export Current Action as FBX…")
+        self.assertFalse(any(event[0] in {"character_designer.animation_unity_import",
+                                          "character_designer.animation_link_import",
+                                          "character_designer.animation_link_sync"} for event in result.layout.events))
 
     def test_unmanaged_empty_action_selector_does_not_create_animation_data_or_slots(self):
         for has_animation_data in (False, True):
@@ -244,6 +300,8 @@ class AnimationSectionsTests(unittest.TestCase):
                 actions = [event for event in result.layout.events if event[0] == "template_action"]
                 self.assertEqual(len(actions), 1)
                 self.assertTrue(actions[0][2])
+                [manual] = [event for event in result.layout.events if event[0] == "character_designer.animation_export"]
+                self.assertFalse(manual[2])
                 self.assertFalse(any(event[0] in {"template_search", "context_pointer"} for event in result.layout.events))
                 result.rig.animation_data_create.assert_not_called()
                 if has_animation_data:
@@ -254,7 +312,7 @@ class AnimationSectionsTests(unittest.TestCase):
     def test_unmanaged_picker_guards_and_collapsed_preview_export_cancels(self):
         for name, options, enabled, cancel in (
                 ("preview", dict(preview=True), False, "character_designer.animation_unity_cancel"),
-                ("generation", dict(generation_job=object()), False, None),
+                ("generation", dict(generation_job=object()), False, "character_designer.animation_cancel"),
                 ("tweak", dict(tweak=True), False, None),
                 ("export", dict(export_job=True), True, "character_designer.animation_export_cancel")):
             with self.subTest(state=name):
@@ -264,19 +322,21 @@ class AnimationSectionsTests(unittest.TestCase):
                 if cancel is not None:
                     [event] = [event for event in result.layout.events if event[0] == cancel]
                     self.assertTrue(event[2])
-                result.link.get_link.assert_not_called()
-                result.unity.preview_time_seconds.assert_not_called()
+                manual = [event for event in result.layout.events if event[0] == "character_designer.animation_export"]
+                self.assertEqual([event[2] for event in manual], [] if name == "preview" else [False])
+                result.link.get_link.assert_called_once_with(result.rig)
+                self.assertEqual(result.unity.preview_time_seconds.call_count, int(name == "preview"))
                 result.folder.assert_not_called()
 
-    def test_unmanaged_unity_link_and_export_draw_only_after_explicit_expand(self):
-        result = self.draw_unmanaged_animation(opened={"character_designer_animation_unity_exchange": True})
+    def test_unmanaged_unity_sources_expand_without_duplicating_local_export(self):
+        result = self.draw_unmanaged_animation(advanced=True)
         result.link.get_link.assert_called_once_with(result.rig)
         result.folder.assert_not_called()
         result.unity.preview_time_seconds.assert_not_called()
         operations = [event[0] for event in result.layout.events]
         self.assertIn("character_designer.animation_link_import", operations)
         self.assertIn("character_designer.animation_unity_import", operations)
-        self.assertIn("character_designer.animation_export", operations)
+        self.assertEqual(operations.count("character_designer.animation_export"), 1)
 
 
 if __name__ == "__main__":

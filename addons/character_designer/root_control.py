@@ -134,9 +134,11 @@ def _validate_scale_drivers(armature, pb):
         raise _error('Another driver controls Root uniform scale; preserve that setup first.')
 
 
-def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None, pose_only=False):
     """Validate this extension without entering the limb inventory recursively."""
-    if original_mutes is None:
+    if pose_only and (original_mutes is not None or source_rest is not None):
+        raise _error('Current root posing requires the live Rest and constraint state.')
+    if original_mutes is None and not pose_only:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     actual = {b.name for b in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)}
@@ -181,7 +183,7 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
         collection = bpy.data.collections.get(record['widget_collection'])
         entry = record['widgets']['MASTER']
         obj = bpy.data.objects.get(entry['object'])
-        if (not _owned(collection, record, 'WIDGET_COLLECTION') or not _owned(obj, record, 'WIDGET')
+        if ((not pose_only and not _owned(collection, record, 'WIDGET_COLLECTION')) or not _owned(obj, record, 'WIDGET')
                 or obj.type != 'MESH' or obj.data.name != entry['mesh']
                 or not _owned(obj.data, record, 'WIDGET_MESH') or pb.custom_shape != obj):
             raise _error('Root Control widget was replaced or removed.')

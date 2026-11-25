@@ -91,7 +91,7 @@ def _bend_changed(self, context):
 
 
 class CharacterDesignerFingerDefinition(PropertyGroup):
-    overlays_enabled: BoolProperty(name='Show Finger Overlays', default=True, update=_overlays_changed,
+    overlays_enabled: BoolProperty(name='Show Finger Overlays', default=False, update=_overlays_changed,
         description='Show or hide finger references, loop marks and bend overlays; retain the cached guides')
     source: PointerProperty(type=bpy.types.Object)
     record: StringProperty(options={'HIDDEN'})

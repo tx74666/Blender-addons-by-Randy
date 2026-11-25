@@ -58,7 +58,7 @@ class RecoveryControlTests(unittest.TestCase):
         view['mode'] = None
         f.rig[ORIGINAL_KEY] = '{}'
         self.assertFalse(physics.status(f.context)['control_mode'])
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
         self.assertFalse(f.calls)
 
     def test_proved_wiggle_layer_does_not_require_control_mode(self):
@@ -102,7 +102,7 @@ class RecoveryControlTests(unittest.TestCase):
         for _ in range(2):
             self.assertFalse(physics.set_control_mode(f.context, False)['control_mode'])
         self.assertEqual(f.calls, [('original-enter', 'Rig')])
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
 
     def test_control_on_calls_strict_original_leave_and_not_display_restore(self):
         f = self.f
@@ -129,7 +129,7 @@ class RecoveryControlTests(unittest.TestCase):
     def test_control_mode_is_available_while_physics_permissions_are_off(self):
         f = self.f
         self.mode_fixture()
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['enabled'] = state['skirt_enabled'] = state['hair_enabled'] = False
         physics._write(f.rig, state)
         raw = f.rig[physics.STATE_KEY]
@@ -160,7 +160,7 @@ class RecoveryControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'edited Rest'):
             physics.set_control_mode(f.context, True)
         self.assertEqual(f.rig[ORIGINAL_KEY], before)
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
         self.assertEqual(physics.status(f.context)['control_error'], 'Original edited Rest cannot be matched')
 
     def test_control_edit_mode_refuses_before_existing_actions(self):
@@ -190,7 +190,7 @@ class RecoveryControlTests(unittest.TestCase):
     def test_hair_on_retries_partial_cleanup_before_permission_resume(self):
         f = self.f
         source, _pending = self.pending_hair(active=True, cleanup=True)
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['hair_enabled'] = False
         physics._write(f.rig, state)
         result = physics.set_component(f.context, 'HAIR', True)
@@ -201,7 +201,7 @@ class RecoveryControlTests(unittest.TestCase):
     def test_hair_recovery_refusal_leaves_exact_permission_marker_and_native_state(self):
         f = self.f
         source, pending = self.pending_hair()
-        before = json.dumps(physics._fresh(), indent=2)
+        before = json.dumps(dict(physics._fresh(), enabled=True), indent=2)
         f.rig[physics.STATE_KEY] = before
         def refuse(*args, **kwargs):
             raise ValueError('Saved Hair ownership changed')
@@ -217,7 +217,7 @@ class RecoveryControlTests(unittest.TestCase):
     def test_hair_start_failure_after_recovery_stays_stopped_with_exact_prior_permission(self):
         f = self.f
         source, pending = self.pending_hair()
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['hair_enabled'] = False
         before = json.dumps(state, indent=2)
         f.rig[physics.STATE_KEY] = before
@@ -242,7 +242,7 @@ class RecoveryControlTests(unittest.TestCase):
             physics.set_component(f.context, 'HAIR', True)
         self.assertEqual(f.hair_state, before)
         self.assertFalse(f.calls)
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
 
     def test_hair_ambiguous_inactive_sources_are_not_guessed_during_recovery(self):
         f = self.f
@@ -256,7 +256,7 @@ class RecoveryControlTests(unittest.TestCase):
     def test_hair_on_with_master_off_only_stores_preference(self):
         f = self.f
         _source, pending = self.pending_hair()
-        state = physics._fresh()
+        state = dict(physics._fresh(), enabled=True)
         state['enabled'] = state['hair_enabled'] = False
         physics._write(f.rig, state)
         result = physics.set_component(f.context, 'HAIR', True)
@@ -269,7 +269,7 @@ class RecoveryControlTests(unittest.TestCase):
         source, pending = self.pending_hair()
         physics.start_hair_preview(f.context)
         self.assertFalse(pending['value'])
-        self.assertNotIn(physics.STATE_KEY, f.rig)
+        self.assertEqual(f.rig.get(physics.STATE_KEY), f.enabled_permission)
         self.assertEqual(f.calls, [('recover-own-hair', source.name), ('hair-start', source.name, ['one'])])
 
 

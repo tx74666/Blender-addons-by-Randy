@@ -487,7 +487,7 @@ def _capture_hair_motion(objects):
     if armature not in objects or armature.type != 'ARMATURE':
         raise ExportError(f'{source.name}: its authoritative Hair armature is outside the collected export.')
     try:
-        registry = hair_strand_registry.read(source, validate=True)
+        registry = hair_strand_registry.read_for_model_export(source)
         profiles = hair_motion_profiles.effective_all(source, registry=registry)
         # Validate the detached semantic contract now, before starting any worker.
         # These identity bindings are proof-only, not a guessed final FBX mapping.
@@ -676,6 +676,233 @@ def _candidate_full_config(config, eligible):
             return getattr(config, name)
 
     return FullContext()
+
+
+def rig_candidate_source(selection, rig=None):
+    """Recognize exact saved Rig + one authoritative Hair intent, never a name."""
+    if selection.get('update_rig') is not True or len(selection.get('meshes', ())) != 1:
+        return None
+    source = selection['meshes'][0]
+    if getattr(source, 'type', None) != 'MESH' or not callable(getattr(source, 'get', None)):
+        return None
+    authority = source.get('character_designer_hair_bones_armature')
+    if (getattr(authority, 'type', None) != 'ARMATURE' or rig is not None and authority != rig
+            or type(source.get('character_designer_hair_bones_v1')) is not str
+            or type(source.get('character_designer_hair_strands_v1')) is not str
+            or type(source.get('character_designer_hair_motion_v1')) is not str):
+        return None
+    return source
+
+
+def rig_source_snapshot(rig, objects, *, unit_scale=None):
+    """Portable static-export definition, comparable in a library and artist RAM.
+
+    No pointer IDs, frame, selection, display, pose channels or Action arrays.
+    Only authenticated owned Forearm derived key coordinates are excluded.
+    Native node/modifier inputs and their dependencies are read, never evaluated.
+    """
+    import math
+    from . import unity_forearm, forearm_twist
+    from .forearm_twist_math import _rotation
+    objects = tuple(objects)
+    if unit_scale is None:
+        unit_scale = bpy.context.scene.unit_settings.scale_length
+    if type(unit_scale) not in (float, int) or not math.isfinite(unit_scale) or unit_scale <= 0:
+        raise ExportError('The source definition needs a finite positive scene unit scale.')
+    if rig not in objects or rig.type != 'ARMATURE':
+        raise ExportError('The source definition needs its explicit Main Rig inventory.')
+    owned = _owned_keys(objects)
+    calibration = {}
+    for obj in objects:
+        if obj.type != 'MESH' or obj.name not in owned:
+            continue
+        armature = forearm_twist._check_mesh(obj)
+        if (obj.parent != armature or obj.parent_type != 'OBJECT'
+                or obj.constraints or armature.constraints):
+            raise ExportError('The Forearm source definition requires direct Object parenting to its bound Rig '
+                              'without Mesh or Rig object constraints; review other transform paths explicitly.')
+        try:
+            # A child world matrix is parent_world @ parent_inverse @ basis.
+            # Therefore inverse(child_world) @ parent_world cancels all world,
+            # pose, scene-linking and dependency-graph cache state exactly in
+            # this declared direct-parent path. Use only stored author inputs.
+            mesh_from_arm = obj.matrix_basis.inverted() @ obj.matrix_parent_inverse.inverted()
+            _rotation(mesh_from_arm)
+        except ValueError as error:
+            raise ExportError('The authored Forearm rest frame is singular, reflected, sheared or nonuniform.') from error
+        captured = unity_forearm.capture(obj)
+        for side in captured['sides']:
+            lower = armature.data.bones[side['lowerBone']]
+            hand = armature.data.bones[side['handBone']]
+            side['axis'] = unity_forearm.vector((mesh_from_arm.to_3x3() @
+                (lower.tail_local - lower.head_local)).normalized())
+            side['pivot'] = unity_forearm.vector(mesh_from_arm @ hand.head_local)
+        captured['rest_frame_definition'] = {
+            'schema': 'cdesigner.forearm-source-rest-frame/1',
+            'recipe': 'inverse(mesh.matrix_basis) @ inverse(mesh.matrix_parent_inverse)',
+            'parent_type': 'OBJECT', 'parent': armature.name, 'mesh': obj.name,
+            'mesh_and_rig_object_constraints': 'none',
+            'matrix': [list(row) for row in mesh_from_arm],
+            'axis': 'normalized(frame3x3 @ (lower.tail_local - lower.head_local))',
+            'pivot': 'frame @ hand.head_local',
+            'author_inputs': 'Stored basis, parent inverse, parent/binding identity and native Rest; '
+                             'all are retained in the enclosing object/bone definition.'}
+        # Preserve every saved calibration input, including knots or metadata
+        # which can flatten to the same currently sampled export coordinates.
+        # _records returns detached JSON and does not rewrite the native record.
+        captured['authored_calibration_records'] = forearm_twist._records(obj)
+        calibration[obj.name] = captured
+    dependencies, pending, done = {}, [], set()
+    roots = set(objects)
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+            allow_nan=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+    def identity(value):
+        return {'type': value.bl_rna.identifier, 'name': value.name_full,
+                'library': os.path.normcase(bpy.path.abspath(value.library.filepath)) if value.library else None}
+
+    def value(raw):
+        if isinstance(raw, bpy.types.ID):
+            if raw not in roots and raw.as_pointer() not in done:
+                pending.append(raw)
+            return identity(raw)
+        if raw is None or type(raw) in (str, bool, int):
+            return raw
+        if isinstance(raw, float):
+            if not math.isfinite(raw): raise ExportError('A static-export source input is nonfinite.')
+            return raw
+        if isinstance(raw, bpy.types.bpy_struct):
+            return inputs(raw)
+        if hasattr(raw, 'items'):
+            return {str(key): value(item) for key, item in sorted(raw.items())}
+        if hasattr(raw, '__len__') and hasattr(raw, '__getitem__'):
+            return [value(raw[index]) for index in range(len(raw))]
+        raise ExportError('Unsupported static-export source input: ' + type(raw).__name__)
+
+    def props(owner):
+        try: return value(dict(owner.items()))
+        except TypeError as error:
+            if "doesn't support IDProperties" not in str(error): raise
+            return None
+
+    def inputs(owner, exclude=()):
+        # Deliberately restricted to modifier/node/socket/input structs. Never
+        # enumerate whole Object/Pose/Action writable RNA as an author witness.
+        cosmetic = {'rna_type', 'id_data', 'bl_rna', 'animation_data', 'execution_time',
+                    'show_expanded', 'is_active', 'persistent_uid',
+                    'node', 'parent', 'layout', 'preview',
+                    'show_in_editmode', 'show_on_cage', *exclude}
+        result = {}
+        for prop in owner.bl_rna.properties:
+            name = prop.identifier
+            if name in cosmetic or prop.is_readonly and prop.type not in {'POINTER', 'COLLECTION'}: continue
+            result[name] = value(getattr(owner, name))
+        return result
+
+    def bulk(items, field, width=1, kind='f'):
+        data = array(kind, [0]) * (len(items) * width)
+        if data: items.foreach_get(field, data)
+        return {'count': len(items), 'width': width, 'typecode': kind,
+                'sha256': hashlib.sha256(data.tobytes()).hexdigest()}
+
+    def mesh_definition(obj):
+        mesh = obj.data
+        counts, indices, weights = array('I'), array('I'), array('f')
+        for vertex in mesh.vertices:
+            counts.append(len(vertex.groups))
+            for group in vertex.groups: indices.append(group.group); weights.append(group.weight)
+        attributes = []
+        fields = {'FLOAT': ('value', 1, 'f'), 'INT': ('value', 1, 'i'), 'INT8': ('value', 1, 'b'),
+            'BOOLEAN': ('value', 1, 'b'), 'FLOAT_VECTOR': ('vector', 3, 'f'), 'FLOAT2': ('vector', 2, 'f'),
+            'FLOAT_COLOR': ('color', 4, 'f'), 'BYTE_COLOR': ('color', 4, 'f'), 'QUATERNION': ('value', 4, 'f'),
+            'INT32_2D': ('value', 2, 'i'), 'INT16_2D': ('value', 2, 'h')}
+        for attribute in mesh.attributes:
+            if attribute.name.startswith(('.select_', '.hide_')): continue
+            if attribute.data_type == 'STRING': data = digest([item.value for item in attribute.data])
+            elif attribute.data_type in fields: data = bulk(attribute.data, *fields[attribute.data_type])
+            else: raise ExportError('Unsupported static Mesh attribute: ' + attribute.data_type)
+            attributes.append((attribute.name, attribute.domain, attribute.data_type, data))
+        keys = mesh.shape_keys
+        return {'coords': bulk(mesh.vertices, 'co', 3), 'edges': bulk(mesh.edges, 'vertices', 2, 'i'),
+            'loop_vertices': bulk(mesh.loops, 'vertex_index', 1, 'i'), 'loop_edges': bulk(mesh.loops, 'edge_index', 1, 'i'),
+            'polygons': {name: bulk(mesh.polygons, name, 1, kind) for name, kind in (
+                ('loop_start', 'i'), ('loop_total', 'i'), ('material_index', 'i'), ('use_smooth', 'b'))},
+            'attributes': attributes, 'groups': [(group.index, group.name, group.lock_weight) for group in obj.vertex_groups],
+            'uv_render_layers': [(layer.name, layer.active_render) for layer in mesh.uv_layers],
+            'color_render_index': mesh.color_attributes.render_color_index,
+            'weights': hashlib.sha256(counts.tobytes() + indices.tobytes() + weights.tobytes()).hexdigest(),
+            'key_definitions': None if keys is None else {'relative': keys.use_relative, 'blocks': [
+                {'name': key.name, 'relative': key.relative_key.name if key.relative_key else None,
+                 'vertex_group': key.vertex_group, 'slider_min': key.slider_min, 'slider_max': key.slider_max,
+                 'interpolation': key.interpolation, 'frame': key.frame,
+                 'coords': None if key.name in owned.get(obj.name, ()) else bulk(key.data, 'co', 3)} for key in keys.key_blocks]},
+            'authenticated_derived_keys': owned.get(obj.name, []), 'forearm_definition': calibration.get(obj.name)}
+
+    def object_definition(obj):
+        result = {'identity': identity(obj), 'parent': value(obj.parent), 'parent_type': obj.parent_type,
+            'parent_bone': obj.parent_bone, 'basis': value(obj.matrix_basis),
+            'parent_inverse': value(obj.matrix_parent_inverse),
+            'constraints': [{'type': item.type, 'inputs': inputs(item), 'custom_inputs': props(item)} for item in obj.constraints],
+            'modifiers': [{'type': item.type, 'inputs': inputs(item), 'custom_inputs': props(item)} for item in obj.modifiers],
+            'material_slots': [value(slot.material) for slot in obj.material_slots],
+            'semantic_properties': {key: value(obj.get(key)) for key in (
+                UPDATE_RIG_ID, UPDATE_PART_ID, UPDATE_PART_OWNER, 'character_designer_hair_bones_armature',
+                'character_designer_hair_bones_v1', 'character_designer_hair_strands_v1', 'character_designer_hair_motion_v1',
+                'character_designer_hair_bones_mirror_plane', 'character_designer_hair_bones_owner',
+                'character_designer_hair_variant_version', _DRESS_RECORD_KEY, _DRESS_OWNER_KEY,
+                _DRESS_SOURCE_KEY, _DRESS_RIG_KEY, _DRESS_ROLE_KEY) if key in obj}}
+        if obj.type == 'MESH': result['mesh'] = mesh_definition(obj)
+        if obj.type == 'ARMATURE': result['bones'] = [{
+            'name': bone.name, 'parent': bone.parent.name if bone.parent else None,
+            'head': value(bone.head_local), 'tail': value(bone.tail_local), 'matrix': value(bone.matrix_local),
+            'deform': bone.use_deform, 'connect': bone.use_connect, 'inherit_scale': bone.inherit_scale,
+            'inherit_rotation': bone.use_inherit_rotation, 'local_location': bone.use_local_location,
+            'control_owner': value(bone.get('character_designer_owner')),
+            'skirt_owner': value(bone.get('character_designer_skirt_owner')),
+            'hair_owner': value(bone.get('character_designer_hair_bones_owner')),
+            'hair_source': value(bone.get('character_designer_hair_bones_source')),
+            'hair_signature': value(bone.get('character_designer_hair_bones_signature'))} for bone in obj.data.bones]
+        return result
+
+    def node_definition(tree):
+        if any(node.bl_idname in {'GeometryNodeInputSceneTime', 'GeometryNodeSimulationInput',
+                                 'GeometryNodeSimulationOutput'} for node in tree.nodes):
+            raise ExportError('Time-dependent Geometry Nodes need a new explicit static export review.')
+        return {'identity': identity(tree), 'interface': [inputs(item) for item in tree.interface.items_tree],
+            'nodes': [{'name': node.name, 'type': node.bl_idname,
+                'inputs': inputs(node, {'location', 'location_absolute', 'width', 'height', 'label', 'select', 'show_options',
+                    'show_preview', 'hide', 'parent', 'color', 'use_custom_color', 'inputs', 'outputs', 'internal_links'}),
+                'sockets': [{'identifier': socket.identifier, 'enabled': socket.enabled,
+                    'default': value(socket.default_value) if hasattr(socket, 'default_value') else None}
+                    for socket in node.inputs]} for node in tree.nodes],
+            'links': [(link.from_node.name, link.from_socket.identifier, link.to_node.name, link.to_socket.identifier)
+                      for link in tree.links]}
+
+    records = {obj.name: object_definition(obj) for obj in sorted(objects, key=lambda item: item.name)}
+    while pending:
+        item = pending.pop()
+        if item in roots or item.as_pointer() in done: continue
+        done.add(item.as_pointer()); key = item.bl_rna.identifier + ':' + item.name_full + ':' + digest(identity(item))
+        if isinstance(item, bpy.types.Object): record = object_definition(item)
+        elif isinstance(item, bpy.types.NodeTree): record = node_definition(item)
+        elif isinstance(item, bpy.types.Image):
+            pixels = array('f', [0]) * len(item.pixels)
+            if pixels: item.pixels.foreach_get(pixels)
+            record = {'identity': identity(item), 'source': item.source, 'size': list(item.size),
+                'colorspace': item.colorspace_settings.name,
+                'pixels': hashlib.sha256(pixels.tobytes()).hexdigest()}
+        elif isinstance(item, bpy.types.Material):
+            # Material internals do not deform this static Rig; native material
+            # matching remains independently validated by the export/receiver.
+            record = {'identity': identity(item)}
+        else: record = {'identity': identity(item), 'inputs': inputs(item), 'custom_inputs': props(item)}
+        dependencies[key] = record
+    return {'schema': 'cdesigner.rig-source-definition/2', 'main_rig': rig.name, 'unit_scale': float(unit_scale),
+        'rig_id': rig.get(UPDATE_RIG_ID), 'objects': records, 'dependencies': dependencies,
+        'excluded': ['pose/frame/selection/display/Action arrays', 'authenticated owned Forearm derived key coordinates',
+                     'material shader/image internals unless a geometry modifier directly references them']}
 
 
 def _inert_update_part_identity_carrier(obj, rig, source, rig_id, part_id):
@@ -868,7 +1095,7 @@ def begin_candidate_export(context, rig, config, *, selection=None, base=None):
     if not current['meshes'] and not current['update_rig']:
         return None
     if current['update_rig']:
-        raise ExportError('Partial Rig updates are not enabled. Keep Rig unchecked for a same-skeleton mesh candidate.')
+        return _begin_reviewed_rig_candidate(context, rig, config, current, expected_base=base)
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ExportError('Finish Edit Mode before preparing a Unity update candidate.')
     from . import unity_update_candidate as candidate
@@ -980,6 +1207,8 @@ def poll_candidate_export(job):
     if job.get('cancel_requested'):
         _cancel_candidate_export(job)
         raise ExportError('Candidate export cancelled; the accepted Unity model is unchanged.')
+    if job.get('reviewed_rig'):
+        return _poll_reviewed_rig_candidate(job)
     process = job['process']
     if process.poll() is None:
         if time.monotonic() - job['started'] > 600:
@@ -1015,6 +1244,103 @@ def poll_candidate_export(job):
             _restore_candidate_ids(job)
         finally:
             _dispose(job)
+
+
+def _begin_reviewed_rig_candidate(context, rig, config, selection, *, expected_base=None):
+    """Admit one already-native-reviewed immutable bundle; no artist snapshot/write."""
+    global _ACTIVE_JOB
+    from . import unity_rig_update as reviewed, unity_update_candidate as candidate
+    if context.mode not in {'OBJECT', 'POSE'}:
+        raise ExportError('Finish Edit Mode before sending a reviewed Rig.')
+    source = rig_candidate_source(selection, rig)
+    if source is None:
+        raise ExportError('Select exactly Rig + the existing bound Hair. Extra Mesh requests require a separate update.')
+    directory, filename = _target(config, rig, context)
+    # A disabled announcement refuses before scene inventory, source hashing,
+    # transient preview restoration, ID registration or any private file write.
+    if reviewed.read_capabilities(directory / filename) is None:
+        raise ExportError('A native-verified reviewed Rig receiver is required before sending this update.')
+    scope = _collection_scope(context, rig, references=_scope_references(config, character_setup.settings(context)))
+    if set(scope['eligible']) != set(selection['eligible']):
+        raise ExportError('The bound Mesh context changed; review the selection again.')
+    collected = collect_character(context, rig, _candidate_full_config(config, set(scope['eligible'])), _scope=scope)
+    objects = collected['objects']
+    if _model_body(context, rig) not in objects:
+        raise ExportError('The selected Body must retain its enabled Armature binding.')
+    inventory = _candidate_renderer_inventory(directory / filename)
+    identities = _candidate_identity_plan(rig, [obj for obj in objects if obj.type == 'MESH'], inventory)
+    # This reviewed route cannot create missing identities or infer a rename.
+    _validate_candidate_ids(identities)
+    captured = candidate.capture_base(directory / filename, directory / (Path(filename).stem + '.cdesigner.json'),
+        asset_id=config.asset_id, rig_id=identities['rig_id'], parts=identities['parts'])
+    if expected_base is not None and expected_base != captured:
+        raise ExportError('The accepted Rig baseline changed before preparation.')
+    from . import dress_export_guard
+    try: dress_export_guard.reject_model_sources(objects)
+    except (ValueError, TypeError) as error: raise ExportError(str(error)) from error
+    capture = _capture_hair_motion(objects)
+    if capture is None or capture['source'] != source.name:
+        raise ExportError('The exact selected Hair source has no complete current export proof.')
+    requested = [part['part_id'] for part in identities['parts'] if part['object_name'] == source.name]
+    plan = reviewed.capture_plan(captured, hair_source_name=source.name,
+        hair_source_uid=capture['registry']['source_uid'], requested_mesh_ids=requested,
+        source_snapshot=rig_source_snapshot(rig, objects))
+    actual = _candidate_renderer_inventory(plan.bundle_manifest.parent / filename)
+    expected = [{key: part[key] for key in ('renderer_path', 'object_name', 'material_slots')} for part in identities['parts']]
+    if actual != expected:
+        raise ExportError('The reviewed FBX renderer/material mapping differs from this registered character.')
+    temporary = tempfile.TemporaryDirectory(prefix='cdesigner-reviewed-rig-')
+    root = Path(temporary.name); stage = root / 'out'; stage.mkdir()
+    job = {'candidate': True, 'reviewed_rig': True, 'rig_plan': plan,
+        'candidate_base': captured, 'identity_plan': identities,
+        'requested_selection': selection, 'native_objects': tuple(objects),
+        'mesh_ids': [part['part_id'] for part in identities['parts']],
+        'update_id': uuid.uuid4().hex, 'temporary': temporary, 'root': root, 'stage': stage,
+        'directory': directory, 'filename': filename, 'asset_id': config.asset_id,
+        'rig': rig, 'config': config, 'started': time.monotonic(), 'process': None,
+        'objects': [obj.name for obj in objects]}
+    _ACTIVE_JOB = job
+    return job
+
+
+def _poll_reviewed_rig_candidate(job):
+    """Copy sealed reviewed bytes and publish through the dedicated authority."""
+    from . import unity_rig_update as reviewed, unity_update_candidate as candidate
+    from . import unity_update_selection_ui as choices
+    try:
+        current = choices.get_selection(bpy.context, job['rig'])
+        original = job['requested_selection']
+        if (current['update_rig'] is not True or set(current['meshes']) != set(original['meshes'])
+                or set(current['eligible']) != set(original['eligible'])
+                or rig_candidate_source(current, job['rig']) is None):
+            raise ExportError('The explicit Rig + Hair request changed; send the current reviewed selection again.')
+        _validate_candidate_ids(job['identity_plan'])
+        plan = job['rig_plan']
+        reviewed.revalidate_plan(plan, source_snapshot=rig_source_snapshot(job['rig'], job['native_objects']))
+        complete, manifest_pin = candidate._read_json(plan.bundle_manifest)
+        if manifest_pin.sha256 != plan.candidate_manifest_sha256:
+            raise ExportError('The native-reviewed complete manifest changed.')
+        files = list(complete['files'])
+        for relative, expected in complete['files'].items():
+            pin = candidate._pin(candidate._owned(plan.bundle_manifest.parent, relative, payload=True))
+            if pin.sha256 != expected:
+                raise ExportError('A native-reviewed bundle payload changed: ' + relative)
+            candidate._copy_file(pin, candidate._owned(job['stage'], relative, payload=True))
+        candidate._copy_file(manifest_pin, job['stage'] / plan.bundle_manifest.name)
+        files.append(plan.bundle_manifest.name)
+        # The main-thread native definition is checked immediately before the
+        # pure publisher; no operator, evaluation, preview stop or author write.
+        reviewed.revalidate_plan(plan, source_snapshot=rig_source_snapshot(job['rig'], job['native_objects']))
+        published = reviewed.publish_candidate(plan, stage=job['stage'], model_file=job['filename'],
+            files=files, parts=job['identity_plan']['parts'], update_id=job['update_id'])
+        job['candidate_published'] = True
+        warnings, notices = report_messages(complete)
+        return {'candidate_path': str(published), 'update_id': job['update_id'], 'reviewed_rig': True,
+            'status': 'Reviewed Rig sent; Unity application is pending.',
+            'unity_status': 'Pending; the accepted source model is unchanged.',
+            'warnings': warnings, 'notices': notices, 'objects': job['objects'], 'mesh_ids': job['mesh_ids']}
+    finally:
+        _dispose(job)
 
 
 def report_messages(report):

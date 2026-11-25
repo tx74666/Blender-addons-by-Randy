@@ -22,7 +22,7 @@ class PreparedRiggingUI(unittest.TestCase):
         # canonical UI module. No native module or backend is imported here.
         _helpers.WorklistUI.setUp(self)
         self.main = SimpleNamespace(name='CoshaRig', type='ARMATURE', library=None,
-            animation_data=SimpleNamespace(action=None),
+            animation_data=SimpleNamespace(action=None, action_slot_handle=1),
             get=Mock(side_effect=lambda key: 'owned snapshot' if
                 key == 'character_designer_worklist_main_session_v1' else
                 'sealed rigging session' if key == 'character_designer_rigging_session_v1' else None))
@@ -36,8 +36,8 @@ class PreparedRiggingUI(unittest.TestCase):
         for item in self.state.items:
             item.rig = self.main
         self.item = self.state.items[0]
-        self.item.custom_action = SimpleNamespace(name='Walk Custom')
-        self.item.source_action = SimpleNamespace(name='Walk Source')
+        self.item.custom_action = _helpers.Action('Walk Custom')
+        self.item.source_action = _helpers.Action('Walk Source', linked=True)
         self.main.animation_data.action = self.item.custom_action
         self.session = dict(rig=self.main, scene=self.context.scene,
             base_action=self.item.custom_action, base_slot=4,
@@ -109,13 +109,14 @@ class PreparedRiggingUI(unittest.TestCase):
 
     def test_poll_and_draw_have_no_file_access_or_backend_authentication(self):
         before = self.cached_state()
+        self.state.show_advanced = True
         with self.no_file_access():
             self.assertTrue(self.attach_operator().poll(self.context))
             layout = _helpers.Layout()
             self.ui.draw_worklist(layout, self.context)
         buttons = [value[0] for kind, value, _ in layout.records if kind == 'operator']
         self.assertEqual(buttons.count(self.attach_operator().bl_idname), 1)
-        self.assertIn('character_designer.worklist_add_ready', buttons)
+        self.assertIn('character_designer.worklist_sync', buttons)
         self.assertIn('character_designer.worklist_sync_changed', buttons)
         self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_add_prepared_animation,
                       self.ui.WORKLIST_CLASSES)
@@ -125,6 +126,7 @@ class PreparedRiggingUI(unittest.TestCase):
 
     def test_busy_owning_context_disables_entry_without_reading_files(self):
         self.animation._link_idle.return_value = False
+        self.state.show_advanced = True
         with self.no_file_access():
             self.assertFalse(self.attach_operator().poll(self.context))
             layout = _helpers.Layout()
@@ -439,17 +441,19 @@ class OriginalInputsGunUI(unittest.TestCase):
                 with PreparedRiggingUI.no_file_access(self):
                     self.ui.draw_original_inputs(layout, self.context)
                 buttons = [(value, enabled) for kind, value, enabled in layout.records if kind == 'operator']
-                gun = [(value, enabled) for value, enabled in buttons if value[1].get('text') == 'Gun Motion']
-                keys = [(value, enabled) for value, enabled in buttons if value[1].get('text') == 'Key Gun Motion']
+                gun = [(value, enabled) for value, enabled in buttons if value[1].get('text') == 'Select Weapon Hand']
+                keys = [(value, enabled) for value, enabled in buttons
+                        if value[0] == self.ui.CHARACTERDESIGNER_OT_original_inputs_save.bl_idname]
                 self.assertEqual(len(gun), int(live and weapon))
-                self.assertEqual(len(keys), int(live and weapon))
+                self.assertEqual(len(keys), int(live))
+                if keys:
+                    self.assertEqual(self.ui.CHARACTERDESIGNER_OT_original_inputs_save.bl_label, 'Key Controls')
+                    self.assertEqual(keys[0][1], editable)
                 if gun:
                     self.assertEqual(gun[0][0][0], self.ui.CHARACTERDESIGNER_OT_original_inputs_edit.bl_idname)
                     self.assertTrue(gun[0][0][2].focus_gun_motion)
-                    self.assertEqual(keys[0][0][0], self.ui.CHARACTERDESIGNER_OT_original_inputs_save.bl_idname)
-                    self.assertEqual(keys[0][1], editable)
                 generic = [value for value, _enabled in buttons if value[0] == self.edit().bl_idname
-                           and value[1].get('text') != 'Gun Motion']
+                           and value[1].get('text') != 'Select Weapon Hand']
                 self.assertEqual(len(generic), 1)
                 self.assertFalse(generic[0][2].focus_gun_motion)
         self.weapon.validate_owned.assert_not_called()

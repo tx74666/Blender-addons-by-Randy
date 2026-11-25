@@ -76,7 +76,7 @@ def _require(value, message):
 
 
 def _fresh():
-    return {'version': 1, 'enabled': True, 'skirt_enabled': True,
+    return {'version': 1, 'enabled': False, 'skirt_enabled': True,
             'hair_enabled': True, 'suspended': []}
 
 
@@ -386,6 +386,7 @@ def apply_pending_skirt_modes(context, rig=None, *, include_unset=False, reconci
                     _write_skirt_choice(source, choice)
             elif SKIRT_CHOICE not in source:
                 continue
+            _module('skirt_bone_display').sync(context, source)
             if reconcile and not choice['pending'] and choice['mode'] != _mode(source, record):
                 _write_skirt_choice(source, dict(choice, pending=True))
                 choice = dict(choice, pending=True)
@@ -620,6 +621,56 @@ def _wiggle_pause_action(source, saved, paused):
             (wiggle.STATE_KEY, source.get(wiggle.STATE_KEY)))
 
 
+def _stopped_dress_actions(context, rig, source, record, entries):
+    actions = _recovery_action(context, source, 'SKIRT')
+    if not source.get(_module('skirt_wiggle').STATE_KEY):
+        return actions
+    item = next((item for item in entries if item['source'] == source.name), None)
+    if item is not None:
+        _require(item['kind'] == 'WIGGLE' and _source_for_entry(context, rig, item)[0] == source,
+                 'The stopped Dress changed ownership.')
+    output = _module('skirt_wiggle').stopped_output(source, record, suspended=item is not None)
+    if output:
+        actions.append(output)
+    return actions
+
+
+def restore_stopped_skirts(context):
+    """Reconcile old saved Off output after file load without starting a solver."""
+    scene = getattr(context, 'scene', None)
+    if scene is None or context.mode not in {'OBJECT', 'POSE'}:
+        return []
+    restored = []
+    wiggle = _module('skirt_wiggle')
+    for source in scene.objects:
+        if source.type != 'MESH' or not source.get(wiggle.STATE_KEY):
+            continue
+        rig = _owner(source, 'SKIRT')
+        try:
+            if rig is None or is_enabled(source, component='SKIRT'):
+                continue
+            _local(rig, context)
+            if source.as_pointer() in wiggle._SESSIONS or not wiggle.preview_state(source)['stopped_confirmed']:
+                continue
+            _, record = _raw_record(source)
+            if record.get('physics'):
+                continue
+            actions = _stopped_dress_actions(context, rig, source, record, _read(rig)['suspended'])
+            for action in actions:
+                _require(action[0] == 'DRESS_OUTPUT', 'Use the explicit control for native Dress recovery.')
+                try:
+                    _perform(context, action)
+                except Exception:
+                    _perform(context, action, reverse=True)
+                    raise
+                restored.append(source.name)
+        except (ValueError, TypeError, KeyError, ReferenceError, RuntimeError, AttributeError) as error:
+            _LAST_ERRORS[_error_key(rig, 'SKIRT', source)] = str(error)
+    if restored:
+        context.view_layer.update()
+    return restored
+
+
 def _prepare_dress_pause(context, rig, state):
     actions, entries = [], []
     wiggle, physics = _module('skirt_wiggle'), _module('skirt_physics')
@@ -645,7 +696,7 @@ def _prepare_dress_pause(context, rig, state):
                 entries.append(item)
                 actions.append(_wiggle_pause_action(source, saved, True))
             else:
-                actions.extend(_recovery_action(context, source, 'SKIRT'))
+                actions.extend(_stopped_dress_actions(context, rig, source, record, state['suspended']))
     return actions, entries
 
 
@@ -658,7 +709,7 @@ def _prepare_dress_off_recovery(context, rig, after):
             continue  # Already-paused Cloth keeps its original suspension.
         saved = _module('skirt_wiggle')._SESSIONS.get(source.as_pointer())
         if saved is None:
-            actions.extend(_recovery_action(context, source, 'SKIRT'))
+            actions.extend(_stopped_dress_actions(context, rig, source, record, after['suspended']))
         else:
             actions.append(_wiggle_pause_action(source, saved, True))
             if not any(item['source'] == source.name for item in after['suspended']):
@@ -749,7 +800,9 @@ def _hair_action(context, rig, pause):
 
 def _perform(context, action, *, reverse=False):
     kind, target, after, before, source = action
-    if kind == 'CLOTH':
+    if kind == 'DRESS_OUTPUT':
+        _module('skirt_wiggle')._apply_layer(*target, before if reverse else after)
+    elif kind == 'CLOTH':
         _set_flags(target, before if reverse else after)
         if not reverse and after != [False, False]:
             _module('skirt_physics').validate_physics(source)
@@ -1021,10 +1074,14 @@ def _set_skirt_mode(context, source_name, mode, *, expected_owner=''):
     # native application; they never force a Bone Display transition here.
     _skirt_choice(source, record)  # Refuse corrupt or foreign saved choices.
     old_raw = source.get(SKIRT_CHOICE)
+    display_undo = []
     try:
         _write_skirt_choice(source, {'version': 1, 'owner': record['owner'], 'mode': mode, 'pending': True})
+        _module('skirt_bone_display').sync(context, source, explicit=True, undo=display_undo)
         _apply_skirt_choice(context, rig, source, record)
     except Exception:
+        for undo in reversed(display_undo):
+            undo()
         if old_raw is None:
             source.pop(SKIRT_CHOICE, None)
         else:

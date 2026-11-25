@@ -175,8 +175,10 @@ def _valid_driver(armature, path, chest):
             and variable.targets[0].id == armature and variable.targets[0].data_path == property_path(chest))
 
 
-def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
-    if original_mutes is None:
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None, pose_only=False):
+    if type(pose_only) is not bool or pose_only and (original_mutes is not None or source_rest is not None):
+        raise _error('Current spine posing requires the live Rest and constraint state.')
+    if original_mutes is None and not pose_only:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     actual = {bone.name for bone in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)}
@@ -237,9 +239,12 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
                     or obj.data.name != entry['mesh'] or not _owned(obj.data, record, 'WIDGET_MESH')
                     or pb.custom_shape != obj or pb.custom_shape_transform is not None):
                 raise _error('A Spine IK/FK widget was replaced or removed.')
-        collection = bpy.data.collections.get(record['widget_collection'])
-        if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
-            raise _error('The Spine IK/FK widget collection is missing.')
+        # Native pose matching validates the actual shapes above. Rebuild and
+        # removal also require their original asset container.
+        if not pose_only:
+            collection = bpy.data.collections.get(record['widget_collection'])
+            if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
+                raise _error('The Spine IK/FK widget collection is missing.')
     except (KeyError, TypeError, AttributeError, IndexError) as exc:
         raise _error('Spine IK/FK recovery data no longer matches this rig.') from exc
     return record

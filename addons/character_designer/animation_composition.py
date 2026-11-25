@@ -1834,7 +1834,11 @@ def remove_weapon(context):
     rig = _host('animation_worklist').state(context).rig
     if rig is None:
         raise ValueError('Choose the owning Main Rig before removing its weapon context.')
-    return _service('animation_composition_weapon').remove_context(context, rig)
+    weapon = _service('animation_composition_weapon')
+    record = rig.get(weapon.RECORD)
+    if hasattr(record, 'keys') and 'rigging_session_owner' in record:
+        raise ValueError('Close the owning Rigging preview to remove its attachment.')
+    return weapon.remove_context(context, rig)
 
 
 def register_b(context, template_item_id=''):

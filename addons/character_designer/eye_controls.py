@@ -106,9 +106,11 @@ def resolve_eyes(context, armature, head_name=None, left_name=None, right_name=N
     return head_name, *result
 
 
-def validate(armature, inventory=None, *, original_mutes=None, source_rest=None):
+def validate(armature, inventory=None, *, original_mutes=None, source_rest=None, pose_only=False):
     """Check owned resources and native rest data without recursing into inventory."""
-    if original_mutes is None:
+    if pose_only and (original_mutes is not None or source_rest is not None):
+        raise _error('Current eye posing requires the live Rest and constraint state.')
+    if original_mutes is None and not pose_only:
         source_rest = _limb()._validation_source_rest(armature, source_rest)
     record = get_record(armature)
     actual = {b.name for b in validation_native.iter_owned_bones(armature, OWNER_KEY, OWNER_VALUE)}
@@ -152,7 +154,7 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None)
                     or pb.custom_shape != obj or pb.custom_shape_transform is not None):
                 raise _error('An Eye Controls widget was replaced or removed.')
         collection = bpy.data.collections.get(record['widget_collection'])
-        if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
+        if not pose_only and (collection is None or not _owned(collection, record, 'WIDGET_COLLECTION')):
             raise _error('The Eye Controls widget collection is missing.')
     except (KeyError, TypeError, AttributeError, IndexError) as exc:
         raise _error('Eye Controls recovery data no longer matches this rig.') from exc
