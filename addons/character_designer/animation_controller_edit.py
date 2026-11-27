@@ -547,8 +547,7 @@ def _is_fk(action):
 
 
 def _needs_full_ik(record):
-    return (_already_prepared(record) and _is_fk(record.controller_action)
-            and getattr(record, 'alternate_action', None) is None)
+    return _already_prepared(record) and _is_fk(record.controller_action)
 
 
 _POLE_LAYOUTS = {'knees': 'character_designer_knee_pole_layout',
@@ -580,7 +579,7 @@ def prepare_motion(context, home, clip_key, *, from_fk=False, align_knees=False,
         return _enqueue(context, home, rows, retry=True, daily_edit=False, pole_alignment=kind)
     if from_fk:
         if not _needs_full_ik(record):
-            raise ValueError('Choose a prepared FK edit without a full IK version.')
+            raise ValueError('Choose a prepared FK edit to convert to IK.')
         return _enqueue(context, home, rows, retry=True, daily_edit=False, from_fk=True)
     if _already_prepared(record):
         return dict(state='READY', message='Controllers already prepared. Open the motion to edit them.')
@@ -600,24 +599,6 @@ def prepare_missing(context, home):
         if fk_rows:
             result = _enqueue(context, home, fk_rows, daily_edit=False, from_fk=True)
     return result
-
-
-def open_alternate(context, home, clip_key):
-    """Swap the preferred and alternate Actions, retaining both editable versions."""
-    from . import animation_worklist_edit_scene as edit_scene
-    row = edit_scene._motion_row(home, clip_key)
-    record = _record(home, row, create=False) if row else None
-    if not _already_prepared(record) or record.alternate_action is None:
-        raise ValueError('This motion has no alternate controller version.')
-    current, alternate = (record.controller_action, record.controller_slot), (record.alternate_action, record.alternate_slot)
-    try:
-        record.controller_action, record.controller_slot = alternate
-        record.alternate_action, record.alternate_slot = current
-        return _activate(context, home, record)
-    except Exception:
-        record.controller_action, record.controller_slot = current
-        record.alternate_action, record.alternate_slot = alternate
-        raise
 
 
 def _row_for_pending(item):
@@ -784,12 +765,16 @@ def _discard_unpublished(action):
 
 
 def replace_aligned(context, home, record, expected, built, *, kind='knees'):
-    """Publish a verified replacement while retaining the prior Action and any alternate."""
+    """Publish a verified pole alignment while retaining the prior Action."""
+    if (not _needs_pole_alignment(record, kind) or (record.controller_action, record.controller_slot) != expected
+            or not built.action.get(_POLE_LAYOUTS[kind]) or built.action == expected[0]):
+        raise ValueError('The retained IK edit changed before the aligned Action could be attached.')
+    _replace_controller_action(context, home, record, expected, built, kind=kind)
+
+
+def _replace_controller_action(context, home, record, expected, built, *, kind, label=''):
     from .animation_local_motion_pins import assign_character_action
     old, old_slot = expected
-    if (not _needs_pole_alignment(record, kind) or (record.controller_action, record.controller_slot) != expected
-            or not built.action.get(_POLE_LAYOUTS[kind]) or built.action == old):
-        raise ValueError('The retained IK edit changed before the aligned Action could be attached.')
     rig = _target(home, record.target)
     ad = rig.animation_data
     active = ad and (ad.action, ad.action_slot_handle) == expected
@@ -797,9 +782,13 @@ def replace_aligned(context, home, record, expected, built, *, kind='knees'):
                    or ad.action_blend_type != 'REPLACE' or ad.action_influence != 1
                    or (ad.use_nla and any(not track.mute and track.strips for track in ad.nla_tracks))
                    or (context.screen and context.screen.is_animation_playing)):
-        raise ValueError('Stop playback and return to the character to replace its open IK edit.')
+        raise ValueError('Stop playback and return to the character to replace its open controller edit.')
     if active:
         from .animation_export_inputs import _curves
+        from .animation_original_inputs_ui import original_inputs_live
+        from . import animation_composition, unity_animation
+        if (original_inputs_live(context) or animation_composition.active(rig) or unity_animation.active_preview(rig)):
+            raise ValueError('Finish the active editing session before replacing the open motion.')
         frame = home.frame_current + home.frame_subframe
         for curve in _curves(old, old_slot):
             if curve.mute or (curve.group and curve.group.mute):
@@ -807,7 +796,7 @@ def replace_aligned(context, home, record, expected, built, *, kind='knees'):
             raw = rig.path_resolve(curve.data_path)
             value = raw if isinstance(raw, (int, float)) else raw[curve.array_index]
             if not math.isclose(value, curve.evaluate(frame), abs_tol=2.e-5, rel_tol=2.e-6):
-                raise ValueError('The character has an unkeyed control change. Key it before aligning the open motion.')
+                raise ValueError('The character has an unkeyed control change. Key it before replacing the open motion.')
     previous_fake = old.use_fake_user
     previous_name = old.name
     new_name = built.action.name
@@ -822,6 +811,12 @@ def replace_aligned(context, home, record, expected, built, *, kind='knees'):
         if active:
             assign_character_action(rig, built.action, built.slot)
             home.frame_set(home.frame_current, subframe=home.frame_subframe)
+        if kind == 'fk' and not any(
+                other != record and other.controller_action == old
+                for scene in bpy.data.scenes
+                for other in getattr(scene, 'character_designer_controller_motions', ())):
+            from . import animation_action_browser
+            animation_action_browser.classify_action(old, rig, role='ARCHIVED', label=label, clip_id=record.work_item_id)
     except Exception:
         if kind == 'elbows':
             built.action.name = new_name
@@ -900,19 +895,13 @@ def finalize_pending(context, key):
             return dict(state='READY', published=True,
                         message=pole_alignment[:-1].title() + ' poles aligned. The previous Action was retained.')
         if from_fk:
-            # The worker validates the retained FK Action and its slot. Only
-            # publish the independent alternate after that final check.
-            if not _needs_full_ik(record) or (record.controller_action, record.controller_slot) != item['entry']['retained_origin']:
-                raise ValueError('The FK edit changed before the IK version could be attached.')
-            previous_slot = record.alternate_slot
-            try:
-                record.alternate_slot = built.slot
-                record.alternate_action = created
-            except Exception:
-                record.alternate_slot = previous_slot
-                raise
+            expected = item['entry']['retained_origin']
+            if (not _needs_full_ik(record) or (record.controller_action, record.controller_slot) != expected
+                    or created == expected[0] or created.get('character_designer_controller_representation') != 'IK'):
+                raise ValueError('The verified IK result cannot replace this FK edit.')
+            _replace_controller_action(context, home, record, expected, built, kind='fk', label=row.name)
             outcome = 'READY'
-            return dict(state='READY', published=True, message='Full IK version prepared. Both edits are available.')
+            return dict(state='READY', published=True, message='Motion converted to IK.')
         if _already_prepared(record):
             if record.controller_action != created:
                 _discard_unpublished(created)

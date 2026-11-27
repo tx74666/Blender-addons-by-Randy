@@ -17,6 +17,9 @@ def panel_draw(scope):
     """Compile the actual panel and its extracted draw helpers, without registering any RNA."""
     scope.setdefault("animation_preview_ui", SimpleNamespace(
         draw=Mock(), session=SimpleNamespace(status=Mock(return_value=None))))
+    scope.setdefault("equipment_ui", SimpleNamespace(_target=lambda context: None))
+    scope.setdefault("animation_composition_local_ui", SimpleNamespace(
+        composition=SimpleNamespace(session=lambda rig: None)))
     tree = ast.parse((ROOT / "addons/character_designer/animation.py").read_text(encoding="utf8"))
     panel = next(node for node in tree.body if isinstance(node, ast.ClassDef)
                  and node.name == "CHARACTERDESIGNER_PT_animation")
@@ -175,6 +178,8 @@ class AnimationSectionsTests(unittest.TestCase):
         physics.draw, physics.section, physics.wrapped_label = Mock(), ui.section, ui.wrapped_label
         original = ModuleType(package + ".animation_original_inputs_ui")
         original.draw_original_inputs = Mock()
+        original._rig = Mock(return_value=object())
+        original.has_original_inputs = Mock(return_value=True)
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
@@ -227,6 +232,8 @@ class AnimationSectionsTests(unittest.TestCase):
         physics.draw, physics.section, physics.wrapped_label = Mock(), ui.section, ui.wrapped_label
         original = ModuleType(package + ".animation_original_inputs_ui")
         original.draw_original_inputs = Mock()
+        original._rig = Mock(return_value=None)
+        original.has_original_inputs = Mock(return_value=False)
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
@@ -301,13 +308,11 @@ class AnimationSectionsTests(unittest.TestCase):
     def test_unmanaged_empty_action_selector_does_not_create_animation_data_or_slots(self):
         for has_animation_data in (False, True):
             with self.subTest(has_animation_data=has_animation_data):
-                result = self.draw_unmanaged_animation(opened={"character_designer_animation_export": True},
-                                                       has_animation_data=has_animation_data, has_action=False)
+                result = self.draw_unmanaged_animation(has_animation_data=has_animation_data, has_action=False)
                 actions = [event for event in result.layout.events if event[0] == "template_action"]
                 self.assertEqual(len(actions), 1)
                 self.assertTrue(actions[0][2])
-                [manual] = [event for event in result.layout.events if event[0] == "character_designer.animation_export"]
-                self.assertFalse(manual[2])
+                self.assertFalse(any(event[0] == "character_designer.animation_export" for event in result.layout.events))
                 self.assertFalse(any(event[0] in {"template_search", "context_pointer"} for event in result.layout.events))
                 result.rig.animation_data_create.assert_not_called()
                 if has_animation_data:
@@ -334,16 +339,20 @@ class AnimationSectionsTests(unittest.TestCase):
                 self.assertEqual(result.unity.preview_time_seconds.call_count, int(name == "preview"))
                 result.folder.assert_not_called()
 
-    def test_unmanaged_unity_sources_expand_without_duplicating_local_export(self):
+    def test_import_animates_from_unity_without_showing_export_or_equipment_tools(self):
         result = self.draw_unmanaged_animation(opened={"character_designer_animation_export": True,
                                                       "character_designer_animation_unity": True})
         result.link.get_link.assert_called_once_with(result.rig)
         result.folder.assert_not_called()
         result.unity.preview_time_seconds.assert_not_called()
         operations = [event[0] for event in result.layout.events]
+        labels = [event[1] for event in result.layout.events]
+        self.assertIn("Import Animations", labels)
+        self.assertNotIn("Export Animations", labels)
+        self.assertNotIn("Upper-Body Composition", labels)
         self.assertIn("character_designer.animation_link_import", operations)
         self.assertIn("character_designer.animation_unity_import", operations)
-        self.assertEqual(operations.count("character_designer.animation_export"), 1)
+        self.assertNotIn("character_designer.animation_export", operations)
 
 
 if __name__ == "__main__":

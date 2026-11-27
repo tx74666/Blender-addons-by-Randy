@@ -103,13 +103,16 @@ class ControllerWorker(unittest.TestCase):
             held = json.loads(record.read_text())
             self.assertEqual((held['sample'], held['total'], held['round']), (2, 50, 1))
             self.assertEqual((held['updated'], held['heartbeat']), (1000.1, 1006.))
+            self.assertAlmostEqual(held['sample_elapsed'], .1)
             self.assertEqual(progress.timings(), {'Solve': 6.})
             tick.return_value = 6.1
             progress.report('Check', 1, 197, 1)
             self.assertEqual(json.loads(record.read_text())['phase'], 'Check')
             self.assertAlmostEqual(progress.timings()['Solve'], 6.1)
             progress.report('Check', 1, 199, 2)
-            self.assertEqual(json.loads(record.read_text())['round'], 2)
+            next_pass = json.loads(record.read_text())
+            self.assertEqual(next_pass['round'], 2)
+            self.assertEqual(next_pass['sample_elapsed'], 0.)
 
     def test_locked_progress_file_retries_latest_sample_and_keeps_nonsharing_errors_strict(self):
         with tempfile.TemporaryDirectory() as folder:

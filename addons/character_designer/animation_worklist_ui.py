@@ -1557,11 +1557,12 @@ def motion_picker_available(context):
     return bool(settings and settings.workspace_path and (settings.items or settings.catalog))
 
 
-def draw_motion_picker(layout, context):
+def draw_motion_picker(layout, context, *, include_edit_controls=True):
     settings = _state(context)
     if settings is None:
         return
-    edit_scene.draw_return(layout, context)
+    if include_edit_controls:
+        edit_scene.draw_return(layout, context)
     categories.draw_toolbar(layout, context)
     from . import animation_neutral_motion
     rows = settings.items if settings.items else settings.catalog
@@ -1575,10 +1576,11 @@ def draw_motion_picker(layout, context):
     elif rows:
         layout.template_list('CHARACTERDESIGNER_UL_prepared_motions', 'prepared', settings, 'catalog',
                              settings, 'list_cursor', rows=5, maxrows=5)
-    edit_scene.draw_mapping_options(layout, context)
-    if getattr(context, 'mode', '') == 'POSE':
-        from . import limb_ik_fk_pose_key
-        limb_ik_fk_pose_key.draw(layout, context)
+    if include_edit_controls:
+        edit_scene.draw_mapping_options(layout, context)
+        if getattr(context, 'mode', '') == 'POSE':
+            from . import limb_ik_fk_pose_key
+            limb_ik_fk_pose_key.draw(layout, context)
 
 
 def _draw_rigging(layout, context, item):
@@ -1708,7 +1710,7 @@ def draw_worklist_motion_tools(layout, context):
     limb_ik_fk_pose_key.draw(layout, context, advanced=True)
     box = layout.column()
     box.enabled = not original_inputs_live(context)
-    edit_scene.draw_source_motion(box, context)
+    edit_scene.draw_controller_motion_tools(box, context)
     settings = _state(context)
     if settings is not None and settings.workspace_path and settings.items:
         draw_controller_animation(box, context)
@@ -1814,6 +1816,7 @@ def draw_worklist_recovery(layout, context):
         return
     box = layout.column()
     box.enabled = not original_inputs_live(context)
+    edit_scene.draw_source_motion(box, context)
     rig = getattr(settings, 'rig', None)
     from . import animation_composition
     if not hasattr(rig, "get") or rig.get(animation_composition.SESSION) is None:

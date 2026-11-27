@@ -245,6 +245,7 @@ class ControllerEdit(unittest.TestCase):
             scene.tool_settings = SimpleNamespace(use_keyframe_insert_auto=True)
         self.context = Context(self.home)
         self.bpy.context = self.context
+        self.bpy.data.scenes = [self.home, self.source]
         self.edit.editing_scene = Mock(return_value=self.source)
         self.edit._local_row = Mock(return_value=self.row)
         self.work.add = Mock(return_value=self.row)

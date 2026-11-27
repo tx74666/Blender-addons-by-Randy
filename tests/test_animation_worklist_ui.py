@@ -1896,14 +1896,18 @@ class WorklistUI(unittest.TestCase):
         service = self.prepare_service()
         service.pending.return_value = dict(job_id='queue', phase='Solving controller poses', elapsed=62,
             cancelling=False, completed=0, failed=0, skipped=0, total=29, name='Wall Jump',
-            progress_detail=dict(sample=17, total=72, round=1))
+            progress_detail=dict(sample=17, total=72, round=1, sample_elapsed=40.))
         home = SimpleNamespace(character_designer_animation_worklist=self.state)
         with patch.object(self.ui.edit_scene, 'mapping_home', return_value=home), \
                 patch.object(self.ui.edit_scene, 'mapping_record', return_value=None):
             layout = Layout()
             self.ui.edit_scene.draw_mapping_options(layout, self.context)
         labels = [value['text'] for kind, value, _ in layout.records if kind == 'label']
+        self.assertIn('~2:20 left', labels)
         self.assertEqual(labels[-2:], ['Solving controller poses · 1:02', 'Sample 17 / 72 · Pass 1'])
+        self.assertEqual(self.ui.edit_scene._pass_eta(dict(sample=4, total=72, sample_elapsed=12.)), 'Estimating…')
+        self.assertEqual(self.ui.edit_scene._pass_eta(dict(sample=17, total=72)), 'Estimating…')
+        self.assertEqual(self.ui.edit_scene._pass_eta({}), '')
 
     def test_cancel_stays_in_first_progress_row_before_name_and_phase_appear(self):
         service = self.prepare_service()
@@ -1919,13 +1923,14 @@ class WorklistUI(unittest.TestCase):
                 self.assertEqual(layout.records[0], ('label', {'text': 'Preparing clips · 0 / 5', 'icon': 'POSE_HLT'}, True))
                 self.assertEqual(layout.records[1][0], 'operator')
                 self.assertEqual(layout.records[1][1][0], 'character_designer.cancel_controller_motion')
+                self.assertEqual(layout.records[1][1][1], {'text': '', 'icon': 'X'})
                 self.assertEqual(layout.records[2][1]['text'], name or 'Waiting to start')
                 self.assertEqual(layout.records[3][1]['text'], phase + ' · 0:02')
                 box = layout.children[0]
                 first_row = box.children[0]
                 cancel_column = first_row.children[0]
                 positions.append((len(box.children), len(first_row.children), cancel_column.ui_units_x))
-        self.assertEqual(positions, [(1, 1, 3.8)] * 3)
+        self.assertEqual(positions, [(1, 1, 1.5)] * 3)
 
     def test_explicit_prepare_operators_are_registered_once_and_never_open_motion(self):
         service = self.prepare_service()
@@ -2094,19 +2099,42 @@ class WorklistUI(unittest.TestCase):
         settings.catalog_index = 1
         layout = Layout()
         self.ui.edit_scene.draw_source_motion(layout, self.context)
-        self.assertEqual(layout.records[0], ('label', {'text': 'Run', 'icon': 'ACTION'}, True))
-        name, options, payload = layout.records[1][1]
-        self.assertEqual((name, options['text'], payload.clip_key),
-                         ('character_designer.open_source_motion', 'Open Source Motion', 'clip-Run'))
-        self.assertTrue(layout.records[1][2])
+        [(kind, (name, _options, payload), enabled)] = layout.records
+        self.assertEqual((kind, name, payload.clip_key),
+                         ('operator', 'character_designer.open_source_motion', 'clip-Run'))
+        self.assertTrue(enabled)
         settings.catalog.reverse()
         operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
+        self.assertEqual(operator.bl_label, 'Edit on Source Rig')
         operator.clip_key = payload.clip_key
         self.assertIn('Run', operator.description(self.context, operator))
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         service.open_source_motion.assert_called_once_with(self.context, home, 'clip-Run')
         service.open_motion.assert_not_called()
         service.prepare_motion.assert_not_called()
+
+    def test_motion_tools_offer_only_one_way_conversion_for_saved_fk(self):
+        service = self.prepare_service()
+        service.needs_knee_alignment = Mock(return_value=False)
+        service.needs_elbow_alignment = Mock(return_value=False)
+        home, editor = self.mapped_motion_home()
+        self.context.scene = editor
+        row = self.state.items[1]
+        record = SimpleNamespace(state='READY', controller_action=Action('Current edit'),
+                                 alternate_action=Action('Legacy alternate'))
+        for fk, expected in ((True, ['Convert to IK']), (False, [])):
+            with self.subTest(fk=fk), \
+                    patch.object(self.ui.edit_scene, 'selected_motion', return_value=(home, row)), \
+                    patch.object(self.ui.edit_scene, '_source_motion_row', return_value=row), \
+                    patch.object(self.ui.edit_scene, 'mapping_record', return_value=record):
+                service._is_fk.return_value = fk
+                layout = Layout()
+                self.ui.edit_scene.draw_controller_motion_tools(layout, self.context)
+                buttons = [value for kind, value, _ in layout.records if kind == 'operator']
+                self.assertEqual([button[1]['text'] for button in buttons], expected)
+                if fk:
+                    self.assertTrue(buttons[0][2].from_fk)
+                    self.assertEqual(buttons[0][2].clip_key, row.clip_key)
 
     def test_advanced_source_allows_ready_catalog_without_preparing_or_importing_from_draw(self):
         service = self.prepare_service()
@@ -2139,9 +2167,7 @@ class WorklistUI(unittest.TestCase):
         settings.catalog_index = len(settings.catalog) - 1
         layout = Layout()
         self.ui.edit_scene.draw_source_motion(layout, self.context)
-        buttons = [(value, enabled) for kind, value, enabled in layout.records if kind == 'operator']
-        self.assertFalse(buttons[0][1])
-        self.assertEqual(buttons[0][0][2].clip_key, '')
+        self.assertEqual(layout.records, [])
         operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
         operator.clip_key = 'blocked'
         self.assertEqual(operator.execute(self.context), {'CANCELLED'})

@@ -129,7 +129,7 @@ class BrowserTests(unittest.TestCase):
         self.rig.animation_data = AnimData(self.first)
         self.rig.animation_data_create = lambda: self.rig.animation_data
         self.rig.animation_data_clear = lambda: setattr(self.rig, 'animation_data', None)
-        self.bpy.data = NS(actions=IDList([self.first, self.idle]), objects=IDList([self.rig]))
+        self.bpy.data = NS(actions=IDList([self.first, self.idle]), objects=IDList([self.rig]), scenes=[])
         self.animation = ModuleType(self.package.__name__ + '.animation')
         self.animation._target = lambda context: self.rig
         self.animation._link_idle = lambda: True
@@ -353,6 +353,17 @@ class BrowserTests(unittest.TestCase):
         self.bpy.data.actions.append(copied)
         self.rig.animation_data.action = copied
         self.assertEqual([row['action'].session_uid for row in self.ui.daily_rows(self.rig)], [3, 2])
+
+    def test_saved_alternate_is_hidden_unless_it_is_also_a_primary_edit(self):
+        former = Action('Old FK edit', 3)
+        self.bpy.data.actions.append(former)
+        record = NS(target=self.rig, controller_action=self.first, alternate_action=former)
+        records = [record]
+        self.bpy.data.scenes.append(NS(character_designer_controller_motions=records))
+        self.assertEqual([row['action'].session_uid for row in self.ui.daily_rows(self.rig)], [1, 2])
+        self.assertIs(record.alternate_action, former)
+        records.append(NS(target=self.rig, controller_action=former, alternate_action=None))
+        self.assertEqual({row['action'].session_uid for row in self.ui.daily_rows(self.rig)}, {1, 2, 3})
 
     def test_uncertain_group_safely_expands_then_recent_choice_groups(self):
         self.mark(self.first)
@@ -583,6 +594,34 @@ class BrowserTests(unittest.TestCase):
         self.header._draw_action_selector(self.context, layout)
         self.assertEqual(len(self.native_events), 2)
         self.assertEqual(layout.events, [])
+
+    def test_managed_header_defaults_to_short_label_and_expands_native_action_and_slots(self):
+        self.mark(self.first, label='Walk Right')
+        self.ui.register()
+        saved = self.context.scene.character_designer_animation_worklist
+        saved.workspace_path, saved.catalog = 'connected', ['Walk Right', 'Walk_N']
+        layout = Layout()
+        self.header._draw_action_selector(self.context, layout)
+        self.assertEqual([event[0] for event in layout.events], ['label', 'prop'])
+        self.assertEqual(layout.events[0][1]['text'], 'Walk Right')
+        self.assertEqual(layout.events[1][2]['text'], 'All Actions')
+        self.assertFalse(self.native_events)
+        self.assertFalse(self.ui.can_select(self.context, self.rig))
+        self.assertIs(self.rig.animation_data.action, self.first)
+
+        setattr(self.context.window_manager, self.ui.SHOW_ALL, True)
+        layout = Layout()
+        self.header._draw_action_selector(self.context, layout)
+        self.assertEqual([event[0] for event in layout.events], ['prop'])
+        self.assertEqual(len(self.native_events), 1)
+        self.assertIs(self.native_events[0][2], layout)
+
+        setattr(self.context.window_manager, self.ui.SHOW_ALL, False)
+        self.rig.animation_data.use_tweak_mode = True
+        layout = Layout()
+        self.header._draw_action_selector(self.context, layout)
+        self.assertEqual(layout.events, [])
+        self.assertEqual(len(self.native_events), 2)
 
     def test_detached_legacy_markers_allow_browsing_but_refuse_daily_switch(self):
         self.mark(self.first, label='Short Walk')

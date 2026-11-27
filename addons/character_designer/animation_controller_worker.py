@@ -83,7 +83,7 @@ class _ChildProgress:
         self.lock = threading.Lock()
         self.phase = ''
         self.sample = self.total = self.round = 0
-        self.updated = self.written = 0.
+        self.updated = self.written = self.sample_elapsed = 0.
         self.phase_started = time.monotonic()
         self.elapsed_by_phase = {}
 
@@ -96,6 +96,7 @@ class _ChildProgress:
                 self.elapsed_by_phase[self.phase] = self.elapsed_by_phase.get(self.phase, 0.) + elapsed
             if changed:
                 self.phase_started = now
+            self.sample_elapsed = now - self.phase_started
             self.phase, self.sample, self.total, self.round = phase, sample, total, round_number
             self.updated = time.time()
             if changed or now - self.written >= 1.:
@@ -118,7 +119,7 @@ class _ChildProgress:
         self.written = now
         path = self.root / 'progress.json'
         _write(path, dict(job=self.root.name, phase=self.phase, sample=self.sample, total=self.total,
-                          round=self.round, updated=self.updated, heartbeat=time.time()), heartbeat=True)
+                          round=self.round, sample_elapsed=self.sample_elapsed, updated=self.updated, heartbeat=time.time()), heartbeat=True)
 
 
 def _package_hashes(package):
@@ -1610,7 +1611,7 @@ def poll(job):
                 value = json.loads(progress.read_text(encoding='utf8'))
                 if isinstance(value, dict) and value.get('job') == job['root'].name:
                     job['phase'] = str(value.get('phase') or 'Creating controls')
-                    job['progress_detail'] = {k: value[k] for k in ('sample', 'total', 'round', 'updated', 'heartbeat')
+                    job['progress_detail'] = {k: value[k] for k in ('sample', 'total', 'round', 'sample_elapsed', 'updated', 'heartbeat')
                                               if type(value.get(k)) in (int, float) and math.isfinite(value[k])}
             except (OSError, ValueError):
                 pass

@@ -77,6 +77,27 @@ def selected_paths(action, slot_handle, bone_names):
     return sorted(result)
 
 
+def key_counts(original, reduced, slot_handle, paths):
+    """Compare both sides of one selected transform scope by F-Curve and axis."""
+    original_keys = {key: len(curve.keyframe_points)
+                     for key, curve in _indexed(original, slot_handle, paths).items()}
+    reduced_keys = {key: len(curve.keyframe_points)
+                    for key, curve in _indexed(reduced, slot_handle, paths).items()}
+    reduced_before = reduced_after = same_count = added = 0
+    for key in original_keys.keys() | reduced_keys.keys():
+        before, after = original_keys.get(key, 0), reduced_keys.get(key, 0)
+        if before > after:
+            reduced_before += before
+            reduced_after += after
+        elif before == after:
+            same_count += before
+        else:
+            added += after - before
+    return dict(before=sum(original_keys.values()), after=sum(reduced_keys.values()),
+                reduced_before=reduced_before, reduced_after=reduced_after,
+                removed=reduced_before - reduced_after, same_count=same_count, added=added)
+
+
 def signature(action, slot_handle, paths=None):
     """Track relevant motion and edit policy while allowing normal viewport selection."""
     digest = hashlib.sha256()

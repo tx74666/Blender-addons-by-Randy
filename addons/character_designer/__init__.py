@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 265),
+    "version": (0, 77, 275),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -106,6 +106,8 @@ from .animation_worklist_ui import (
     stop_worklist_ui,
 )
 from .animation_composition_ui import COMPOSITION_CLASSES
+from .equipment_ui import EQUIPMENT_CLASSES
+from .control_pose_library_ui import LOCAL_POSE_LIBRARY_CLASSES
 from .animation_composition import (
     register_runtime as register_composition_runtime,
     unregister_runtime as unregister_composition_runtime,
@@ -117,6 +119,7 @@ from .unity_animation_rigging import (
 from .ui_constants import (
     SIDEBAR_CATEGORY,
     UI_PAGE_ANIMATION,
+    UI_PAGE_EQUIPMENT,
     UI_PAGE_DEFAULT,
     UI_PAGE_CLOTHING,
     UI_PAGE_HAIR,
@@ -8471,6 +8474,8 @@ class CHARACTERDESIGNER_OT_set_ui_page(Operator):
         elif self.page == UI_PAGE_HAIR:
             settings.ui_page = UI_PAGE_MODELING
             settings.curve_tools_mode = 'HAIR'
+        elif self.page == UI_PAGE_EQUIPMENT:
+            settings.ui_page = UI_PAGE_MISC
         else:
             settings.ui_page = self.page
         return {"FINISHED"}
@@ -8765,6 +8770,8 @@ CLASSES = (
     *COMPOSITION_CLASSES,
     *PHYSICS_CLASSES,
     *ANIMATION_CLASSES,
+    *EQUIPMENT_CLASSES,
+    *LOCAL_POSE_LIBRARY_CLASSES,
     *SELECTED_BONE_WEIGHT_CLASSES,
     *WEIGHT_CLEANUP_CLASSES,
     *BONE_COLLECTION_CLASSES,

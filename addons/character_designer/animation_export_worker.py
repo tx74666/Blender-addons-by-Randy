@@ -388,6 +388,9 @@ def export_job(job):
     export_name = _export_rig_name(job.get('export_rig_name', rig.name))
     snapshot_frame = source_scene.frame_current
     snapshot_subframe = source_scene.frame_subframe
+    composition_tracks = job.get('composition_tracks')
+    if composition_tracks is not None:
+        snapshot_frame, snapshot_subframe = job['composition_reference_frame']
     if rig.data.animation_data:
         raise AnimationExportError('Animated armature data is unsupported; only pose/control animation can be exported.')
     start = _number(job.get('frame_start'), 'frame_start', -1048574, 1048574)
@@ -442,6 +445,8 @@ def export_job(job):
     omitted = sorted(set(_omitted_channels(rig, action, slot) + job.get('unsupported_channels', [])))
     warnings = ['Animation-only export contains skeleton motion; meshes, materials, Shape Keys, cloth simulation, and animation events are not exported.',
                  'Only the selected Action/slot is evaluated; rig NLA is disabled. Unkeyed controls use the snapshot values.']
+    if composition_tracks is not None:
+        warnings[1] = 'The explicit Composition Base and upper-body NLA overlays are evaluated together.'
     if dress_surfaces:
         warnings.append('Dress surface simulation and its fitted bone rotations are omitted; '
                         'native manual/Original pose animation is retained.')
@@ -471,11 +476,21 @@ def export_job(job):
     ad = rig.animation_data_create()
     if ad.use_tweak_mode:
         raise AnimationExportError('Finish NLA Tweak Mode before exporting one Action.')
-    ad.action = action
-    if slot is not None:
-        ad.action_slot = slot
-    ad.use_nla, ad.action_blend_type, ad.action_influence = False, 'REPLACE', 1.0
-    ad.action_extrapolation = 'HOLD'
+    if composition_tracks is None:
+        ad.action = action
+        if slot is not None:
+            ad.action_slot = slot
+        ad.use_nla, ad.action_blend_type, ad.action_influence = False, 'REPLACE', 1.0
+        ad.action_extrapolation = 'HOLD'
+    else:
+        tracks = [track for track in ad.nla_tracks if track.strips and not track.mute]
+        if (ad.action is not None or not ad.use_nla or any(track.is_solo for track in ad.nla_tracks)
+                or any(len(track.strips) != 1 or track.strips[0].mute for track in tracks)
+                or [[track.name, track.strips[0].action.name, track.strips[0].action_slot_handle]
+                    for track in tracks] != composition_tracks):
+            raise AnimationExportError('The snapshot lost its explicit Composition NLA stack.')
+        curve_count += sum(_validate_action(rig, track.strips[0].action, track.strips[0].action_slot)
+                           for track in tracks[1:])
     samples = []
     for index in range(intervals + 1):
         frame = start + (end - start) * index / intervals
@@ -620,7 +635,8 @@ def export_job(job):
         'origin': list(origin), 'unit_scale': unit_scale, 'maximum_bake_matrix_error': maximum_error,
         'source_curve_count': curve_count, 'unsupported_channels': omitted, 'warnings': warnings,
         'dress_surfaces': dress_surfaces,
-        'limitation': 'One selected Action, baked skeleton motion only. No meshes, shape animation, physics or events.',
+        **({'composition_tracks': composition_tracks} if composition_tracks is not None else {}),
+        'limitation': 'Baked skeleton motion only. No meshes, shape animation, physics or events.',
         'sha256': _sha256(destination),
     }
 

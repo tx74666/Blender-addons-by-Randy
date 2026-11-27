@@ -22,6 +22,7 @@ from .unity_material_match_ui import CharacterDesignerUnityMaterialMatch, CHARAC
 
 _MODAL_EXPORTS = []
 _SIMPLE_MATERIAL_SEARCH = {}
+_CUSTOM_SHADER_WARNING = re.compile(r'Material "(.+)" uses a custom shader;')
 
 
 def stop_export_ui():
@@ -309,7 +310,7 @@ def _warning_summary(message):
     match = re.match(r'(.+): (\d+) exported vertices have no weight', message)
     if match:
         return f'{match[1]}: {match[2]} vertices need skin weights.'
-    match = re.match(r'Material "(.+)" uses a custom shader;', message)
+    match = _CUSTOM_SHADER_WARNING.match(message)
     if match:
         return f'{match[1]}: set up its shader in Unity.'
     if message.startswith('Blender-only forearm calibration corrections'):
@@ -348,7 +349,7 @@ def _warning_actions(layout, context, config, message):
                                  text='Locate Unweighted Vertices', icon='VIEWZOOM')
         action.object_name = match[1]
         return
-    match = re.match(r'Material "(.+)" uses a custom shader;', message)
+    match = _CUSTOM_SHADER_WARNING.match(message)
     if match:
         material = bpy.data.materials.get(match[1])
         if material is not None and not any(entry.material == material for entry in _simple_material_entries(config)):
@@ -890,6 +891,7 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
+    bl_options = {'DEFAULT_CLOSED'}
     bl_order = 1
 
     @classmethod
@@ -898,33 +900,61 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
 
     def draw(self, context):
         layout = self.layout
-        setup = character_setup.settings(context)
-        if setup is None:
-            layout.label(text='Character settings unavailable', icon='ERROR')
+        state = context.window_manager.character_designer_animation
+        layout.row(align=True).prop(state, 'unity_export_tab', expand=True)
+        if state.unity_export_tab == 'ANIMATIONS':
+            from .animation import draw_unity_animation_exports
+            draw_unity_animation_exports(layout, context)
             return
-        layout.prop(setup, 'rig', text='Main Rig')
-        rig = _rig(context)
-        if rig is None:
-            layout.label(text='Choose your character rig to begin.', icon='INFO')
-            return
-        config = rig.character_designer_unity_export
-        # DIR_PATH supplies the single directory picker.
-        layout.prop(config, 'directory', text='Folder')
 
-        objects, eligible, warnings, error, scope = [], [], [], '', None
+        setup = character_setup.settings(context)
+        rig = _rig(context) if setup is not None else None
+        config = rig.character_designer_unity_export if rig is not None else None
+        if setup is not None:
+            layout.prop(setup, 'rig', text='Main Rig')
+        if config is not None:
+            layout.prop(config, 'directory', text='Folder')
+
+        if config is None:
+            layout.label(text='Choose a Main Rig to begin.' if setup is not None else 'Character settings unavailable',
+                         icon='INFO' if setup is not None else 'ERROR')
+            return
+
+        warnings, error, scope = [], '', None
         full_config = config
         try:
             exporter = _exporter()
             scope = exporter._collection_scope(
                 context, rig, references=exporter._scope_references(config, setup))
-            eligible = scope['eligible']
             full_config = _full_update_config(context, rig, config, _scope=scope)
-            collected = _exporter().collect_character(context, rig, full_config, _scope=scope)
-            objects = collected['objects']
+            collected = exporter.collect_character(context, rig, full_config, _scope=scope)
             warnings = collected.get('warnings', [])
         except (ValueError, RuntimeError) as exc:
             error = str(exc)
 
+        running = _exporter().export_running()
+        reported = _panel_warnings(_last_report(config) or {'warnings': warnings})
+        if state.unity_export_tab == 'OBJECTS':
+            CHARACTERDESIGNER_PT_unity_export._draw_objects(
+                layout, context, rig, setup, config, full_config, scope, error, running)
+            object_warnings = [message for message in reported if not _CUSTOM_SHADER_WARNING.match(message)]
+            if object_warnings:
+                row = layout.row()
+                row.operator('character_designer.unity_export_section',
+                             text=f'Warnings · {len(object_warnings)}', emboss=False,
+                             icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT').section = 'WARNINGS'
+                if config.show_warnings:
+                    CHARACTERDESIGNER_PT_unity_export._draw_warnings(layout, context, config, object_warnings)
+        else:
+            CHARACTERDESIGNER_PT_unity_export._draw_materials(layout, context, rig, config, full_config, running)
+            material_warnings = [message for message in reported if _CUSTOM_SHADER_WARNING.match(message)
+                                 and not material_match_ui.warning_matched(rig, full_config, message, context=context)]
+            if material_warnings:
+                CHARACTERDESIGNER_PT_unity_export._draw_warnings(layout, context, config, material_warnings)
+
+    @staticmethod
+    def _draw_objects(layout, context, rig, setup, config, full_config, scope, error, running):
+        eligible = scope['eligible'] if scope is not None else ()
         selection = layout.box()
         capabilities, capability_error, full_error = None, '', ''
         try:
@@ -985,7 +1015,6 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
 
         row = layout.row()
         row.scale_y = 1.35
-        running = _exporter().export_running()
         ready = mode == 'FULL' and not full_error or mode in {'CANDIDATE', 'REVIEWED_RIG'} and capabilities is not None
         row.enabled = not running and ready and not error and context.mode in {'OBJECT', 'POSE'}
         row.operator_context = 'INVOKE_DEFAULT'
@@ -1002,6 +1031,8 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             layout.label(text=_short(config.last_status),
                          icon='ERROR' if config.last_status.startswith('Export failed') else 'INFO')
 
+    @staticmethod
+    def _draw_materials(layout, context, rig, config, full_config, running):
         material_match_ui.draw_matches(layout, context, rig, full_config, running)
         chosen = {entry.material for entry in _simple_material_entries(config)}
         row = layout.row()
@@ -1023,21 +1054,15 @@ class CHARACTERDESIGNER_PT_unity_export(Panel):
             if not chosen:
                 box.label(text='No simplified materials selected.')
 
-        report = _last_report(config)
-        reported_warnings = [message for message in _panel_warnings(report or {'warnings': warnings})
-                             if not material_match_ui.warning_matched(rig, full_config, message, context=context)]
-        if reported_warnings:
-            row = layout.row()
-            row.operator('character_designer.unity_export_section', text=f'Warnings · {len(reported_warnings)}', emboss=False,
-                         icon='TRIA_DOWN' if config.show_warnings else 'TRIA_RIGHT').section = 'WARNINGS'
-        if reported_warnings and config.show_warnings:
-            box = layout.box()
-            scale = context.preferences.system.ui_scale or 1.0
-            width = max(24, int(getattr(context.region, 'width', 300) / (7 * scale)) - 6)
-            for warning in reported_warnings:
-                for index, line in enumerate(textwrap.wrap(_warning_summary(warning), width)):
-                    box.label(text=line, icon='ERROR' if index == 0 else 'BLANK1')
-                _warning_actions(box, context, config, warning)
+    @staticmethod
+    def _draw_warnings(layout, context, config, warnings):
+        box = layout.box()
+        scale = context.preferences.system.ui_scale or 1.0
+        width = max(24, int(getattr(context.region, 'width', 300) / (7 * scale)) - 6)
+        for warning in warnings:
+            for index, line in enumerate(textwrap.wrap(_warning_summary(warning), width)):
+                box.label(text=line, icon='ERROR' if index == 0 else 'BLANK1')
+            _warning_actions(box, context, config, warning)
 
     @staticmethod
     def _draw_invalid_overrides(layout, context, rig, config, scope=None):

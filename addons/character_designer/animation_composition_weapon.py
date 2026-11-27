@@ -413,6 +413,8 @@ def validate_removal(rig):
 def remove_context(context, rig):
     import bpy
     record, objects = validate_removal(rig)
+    _require(not record.get('local_grip_constraints'),
+             'Detach this Weapon Profile from Equipment to release its Left Grip.')
     collection = record['collection']
     assets = {key: tuple(record.get('assets', {}).get(key, {}).values()) for key in _ASSET_TABLES}
     del rig[RECORD]

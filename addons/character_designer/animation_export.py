@@ -94,6 +94,20 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
             link_identity=link_identity)
 
 
+def begin_composition_export(context, rig, filepath, *, frame_start, frame_end, loop=False, sample_rate=None):
+    from . import animation_composition_local as local
+
+    local.weapons.require_idle(context, rig)
+    saved = local.session(rig)
+    if saved is None or saved['scene'] != context.scene:
+        raise AnimationExportError('Open the Composition in its owning Scene before exporting.')
+    tracks = local.tracks_for(rig, exact=True)
+    proof = [[track.name, track.strips[0].action.name, track.strips[0].action_slot_handle] for track in tracks]
+    return _begin_export(context, rig, tracks[0].strips[0].action, filepath,
+        frame_start=frame_start, frame_end=frame_end, loop=loop, sample_rate=sample_rate,
+        composition_tracks=proof)
+
+
 def _target_route(record):
     from .animation_workspace import target_slot_id
     try:
@@ -272,7 +286,7 @@ it is neither an arbitrary-external-target exception nor a determinism claim.
 
 
 def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
-                  export_rig_name=None, rigging_export=None, link_identity=None):
+                  export_rig_name=None, rigging_export=None, link_identity=None, composition_tracks=None):
     global _ACTIVE_JOB
     from . import unity_export
     target_route = _target_route({} if link_identity is None else link_identity)
@@ -284,11 +298,13 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         raise AnimationExportError('Leave Edit Mode and NLA Tweak Mode before exporting an Action.')
     if action is None or action.library:
         raise AnimationExportError('Choose a local editable Action.')
-    frame_fps, frame_fps_base = _action_frame_clock(context.scene, action)
+    slot = _slot(rig, action) if composition_tracks is None else composition_tracks[0][2]
+    frame_fps, frame_fps_base = (_action_frame_clock(context.scene, action) if composition_tracks is None
+                                 else (context.scene.render.fps, context.scene.render.fps_base))
     from . import dress_export_guard
     try:
         direct_admission = dress_export_guard.animation_host_admission(
-            bpy.data.objects, rig, action, _slot(rig, action))
+            bpy.data.objects, rig, action, slot)
     except (ValueError, TypeError) as error:
         raise AnimationExportError(str(error)) from error
     if not all(math.isfinite(value) for value in (frame_start, frame_end)) or frame_end <= frame_start:
@@ -305,7 +321,6 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
     metadata = destination.with_suffix('.animation.json')
     if destination.exists() or metadata.exists():
         raise AnimationExportError('That animation already exists. Choose a new filename to preserve it.')
-    slot = _slot(rig, action)
     from . import animation_export_inputs
     # Meshes refer to the rig, not the other way round, and are deliberately not
     # copied into this small skeletal snapshot. Audit those reverse links here.
@@ -325,7 +340,7 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
     # The established Rigging DTO and exact owned Dress closure retain their
     # specialized snapshot contracts. Neither adopts ordinary retained defaults.
     export_inputs = (animation_export_inputs.prepare(rig, action, slot, frame_start)
-                     if rigging_export is None and dress_contract is None else None)
+                     if rigging_export is None and dress_contract is None and composition_tracks is None else None)
     omitted = worker._omitted_channels(rig, action, next((s for s in action.slots if s.handle == slot), None))
     discarded = {bone.name for bone in rig.data.bones if bone.use_deform and _is_control(bone)}
     if discarded:
@@ -352,6 +367,10 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         'dress_surfaces': dress_surfaces,
         **target_route,
     }
+    if composition_tracks is not None:
+        spec['composition_tracks'] = composition_tracks
+        spec['name'] = destination.stem
+        spec['composition_reference_frame'] = [context.scene.frame_current, context.scene.frame_subframe]
     if export_rig_name is not None:
         spec['export_rig_name'] = export_rig_name
     job = {'temporary': temporary, 'root': root, 'stage': stage, 'destination': destination,
@@ -360,6 +379,9 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
            'source_blend': bpy.data.filepath, 'action': action.name, 'action_slot': slot,
            'process': None, 'log': None}
     job.update(target_route)
+    if composition_tracks is not None:
+        job['composition_tracks'] = composition_tracks
+        job['source_package'] = job['source_package_sha256'] = ''
     if export_inputs is not None:
         spec[animation_export_inputs.JOB_KEY] = export_inputs
         job[animation_export_inputs.JOB_KEY] = export_inputs
@@ -386,6 +408,9 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         if 'character_designer_rigging_session_v1' in rig:
             from . import unity_animation_rigging as rigging
             snapshot_boundary = rigging.snapshot_base_refs(rig, action)
+        if composition_tracks is not None:
+            from . import animation_composition_local as local
+            snapshot_boundary = local.snapshot_metadata(rig)
         with snapshot_boundary:
             bpy.data.libraries.write(str(snapshot), {rig, action} | dress_scene_roots,
                                     path_remap='ABSOLUTE', compress=True)
@@ -425,6 +450,8 @@ def _publish(job, result):
     returned_route = _target_route(result)
     if returned_route and returned_route != target_route:
         raise AnimationExportError('Worker animation routing differs from the frozen destination.')
+    if result.get('composition_tracks') != job.get('composition_tracks'):
+        raise AnimationExportError('Worker Composition tracks differ from the frozen export stack.')
     sealed = job.get(animation_export_inputs.JOB_KEY)
     if sealed is not None:
         expected = {'schema': animation_export_inputs.SCHEMA, 'sha256': sealed['sha256'],

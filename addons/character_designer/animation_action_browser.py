@@ -104,10 +104,19 @@ def daily_rows(target):
     ad = target.animation_data
     current = ad.action if ad else None
     current_handle = ad.action_slot.handle if ad and ad.action_slot else 0
+    primary, legacy_alternates = set(), set()
+    for scene in bpy.data.scenes:
+        for record in getattr(scene, 'character_designer_controller_motions', ()):
+            if record.target == target and record.controller_action is not None:
+                primary.add(_uid(record.controller_action))
+                if record.alternate_action is not None:
+                    legacy_alternates.add(_uid(record.alternate_action))
+    hidden = legacy_alternates - primary
     candidates = []
     for action in bpy.data.actions:
         active = action is current
-        if not active and (not _editable(action) or display_role(action, target) not in {'WORK', 'UNKNOWN'}):
+        if not active and (_uid(action) in hidden or not _editable(action)
+                           or display_role(action, target) not in {'WORK', 'UNKNOWN'}):
             continue
         candidates.append(action)
     groups = {}
@@ -390,6 +399,26 @@ def draw_selector(layout, context, target, *, render_all_native=True):
     return True
 
 
+def _draw_managed_header(layout, context, target):
+    """Show the current managed motion beside the existing Motions popover."""
+    saved = getattr(context.scene, 'character_designer_animation_worklist', None)
+    animation = _animation()
+    if (saved is None or not saved.workspace_path or not (saved.items or getattr(saved, 'catalog', ()))
+            or animation is None or target is None or target.type != 'ARMATURE' or not _editable(target)
+            or animation._target(context) is not target or context.mode not in {'OBJECT', 'POSE'}
+            or not hasattr(context.window_manager, SHOW_ALL)):
+        return False
+    ad = target.animation_data
+    if ad and ad.use_tweak_mode:
+        return False
+    row = layout.row(align=True)
+    show_all = getattr(context.window_manager, SHOW_ALL)
+    if not show_all and ad and ad.action:
+        row.label(text=display_label(ad.action, target), icon='ACTION')
+    row.prop(context.window_manager, SHOW_ALL, text='All Actions', toggle=True)
+    return not show_all
+
+
 CLASSES = (CHARACTERDESIGNER_OT_choose_working_action, CHARACTERDESIGNER_MT_working_actions)
 classes = CLASSES
 
@@ -407,6 +436,8 @@ def _install_header():
     def wrapper(cls, context, layout):
         if state['enabled'] and getattr(context.space_data, 'mode', None) == 'ACTION':
             target = context.object
+            if _draw_managed_header(layout, context, target):
+                return
             if _eligible(context, target):
                 if draw_selector(layout, context, target, render_all_native=False):
                     return

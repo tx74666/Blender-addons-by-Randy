@@ -112,7 +112,7 @@ class AsyncControllerEdit(unittest.TestCase):
         self.assertEqual(self.complete()['state'], 'READY')
         self.assertIs(self.target.animation_data.action, self.previous_action)
 
-    def test_generate_full_ik_from_current_fk_retains_both_variants(self):
+    def test_convert_fk_replaces_the_working_action_without_creating_an_alternate(self):
         self.context.window.scene = self.home
         self.home.render = SimpleNamespace(fps=30, fps_base=1.)
         fk = fixtures.Action('My edited FK')
@@ -120,24 +120,23 @@ class AsyncControllerEdit(unittest.TestCase):
         fk.data['artist'] = 44
         record = self.service._record(self.home, self.row)
         self.service._publish(record, self.row, SimpleNamespace(action=fk, slot=5, source_fingerprint='source'))
-        record.alternate_action, record.alternate_slot = None, 0
+        self.built.action.data['character_designer_controller_representation'] = 'IK'
         result = self.service.prepare_motion(self.context, self.home, self.row.clip_key, from_fk=True)
         self.key = result['job_id']
         self.service._poll_pending()
         self.service._poll_pending()
         self.worker.begin.assert_called_once_with(self.context, self.target, fk, 5, self.target,
                                                  source_fps=30., daily_edit=False)
-        self.assertEqual(self.complete()['state'], 'READY')
-        self.assertIs(record.controller_action, fk)
-        self.assertIs(record.alternate_action, self.built.action)
+        self.assertEqual(self.complete()['message'], 'Motion converted to IK.')
+        self.assertIs(record.controller_action, self.built.action)
+        self.assertEqual(record.controller_slot, self.built.slot)
+        self.assertIsNone(record.alternate_action)
+        self.assertTrue(fk.use_fake_user)
         self.assertEqual(fk.data['artist'], 44)
-        self.edit._motion_row = Mock(return_value=self.row)
-        self.service.open_alternate(self.context, self.home, self.row.clip_key)
-        self.assertIs(record.controller_action, self.target.animation_data.action)
-        self.assertIs(record.alternate_action, fk)
-        self.service.open_alternate(self.context, self.home, self.row.clip_key)
-        self.assertIs(self.target.animation_data.action, fk)
-        self.assertIs(record.alternate_action, self.built.action)
+        self.browser.classify_action.assert_called_with(fk, self.target, role='ARCHIVED',
+                                                       label=self.row.name, clip_id=self.row.work_item_id)
+        self.assertIs(self.target.animation_data.action, self.previous_action)
+        self.assertFalse(self.service._needs_full_ik(record))
 
     def test_switching_to_another_draft_before_full_ik_publication_keeps_edits(self):
         self.context.window.scene = self.home
@@ -146,7 +145,8 @@ class AsyncControllerEdit(unittest.TestCase):
         fk.get = {'character_designer_controller_representation': 'FK'}.get
         record = self.service._record(self.home, self.row)
         self.service._publish(record, self.row, SimpleNamespace(action=fk, slot=5, source_fingerprint='f'))
-        record.alternate_action, record.alternate_slot = None, 0
+        legacy = fixtures.Action('Old independent IK edit')
+        record.alternate_action, record.alternate_slot = legacy, 6
         self.service.prepare_motion(self.context, self.home, self.row.clip_key, from_fk=True)
         self.service._poll_pending()
         self.service._poll_pending()
@@ -155,7 +155,7 @@ class AsyncControllerEdit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'source work item changed'):
             self.service.finalize_pending(self.context, key)
         self.worker.finish.assert_not_called()
-        self.assertIsNone(record.alternate_action)
+        self.assertIs(record.alternate_action, legacy)
 
     def test_prepare_freezes_character_accuracy_when_the_batch_is_queued(self):
         settings = self.home.character_designer_animation_worklist

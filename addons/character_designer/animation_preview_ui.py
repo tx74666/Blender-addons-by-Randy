@@ -62,9 +62,11 @@ class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
             state = session.status(context)
             if state is None:
                 return {'CANCELLED'}
+            message = 'Apply the current Reduced preview.'
+            if 'before' in state:
+                message = f"Selected transform keys  {state['before']:,} → {state['after']:,}"
             return context.window_manager.invoke_confirm(
-                self, event, title='Apply Key Reduction?', confirm_text='Apply Reduction',
-                message=f"Selected transform keys: {state['before']:,} original, {state['after']:,} reduced")
+                self, event, title='Apply Key Reduction?', confirm_text='Apply Reduction', message=message)
         if self.operation == 'UPDATE':
             state = session.status(context)
             if state is None:
@@ -79,10 +81,16 @@ class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
         self.layout.prop(self, 'rotation_degrees')
         self.layout.label(text='Rebuilding from Original replaces edits in Reduced.')
         state = session.status(context)
+        if state and 'before' in state:
+            self.layout.label(text=f"Selected total  {state['before']:,} → {state['after']:,}")
+            if state['same_count']:
+                self.layout.label(text=f"Same key count  {state['same_count']:,}")
+            if state['added']:
+                self.layout.label(text=f"Added keys  {state['added']:,}")
         if state and state['skipped']:
-            self.layout.label(text='Unchanged curves in current preview')
+            self.layout.label(text='Curves skipped when building preview')
             for reason, count in sorted(state['skipped'].items()):
-                self.layout.label(text=f'{count:,}  {reason}')
+                self.layout.label(text=f'{count:,} curves · {reason}')
 
     def execute(self, context):
         try:
@@ -123,13 +131,15 @@ def draw(layout, context, state):
 
     box = layout.box()
     title = box.row(align=True)
-    title.label(text='Selected Transform Keys')
-    counts = box.row(align=True)
-    counts.label(text=f"Original {state['before']:,}")
-    counts.label(text=f"Reduced {state['after']:,}")
+    title.label(text='Key Reduction')
     _button(title, 'UPDATE', '', icon='PREFERENCES')
-    if state['before'] == state['after'] and state.get('skipped'):
-        box.label(text='No keys removed. See Adjust Reduction.', icon='INFO')
+    if 'before' not in state:
+        box.label(text='Key counts unavailable', icon='INFO')
+    elif state['removed']:
+        fraction = state['removed'] / state['reduced_before']
+        box.label(text=f"{state['reduced_before']:,} → {state['reduced_after']:,}  (−{fraction:.1%})")
+    else:
+        box.label(text='No keys removed')
     row = box.row(align=True)
     for view, label in (('ORIGINAL', 'Original'), ('REDUCED', 'Reduced')):
         _button(row, view, label, depress=state['view'] == view)

@@ -340,7 +340,7 @@ def write_shared_pose(action, directory, catalog_id, name):
     return output
 
 
-def _show_current_file(context, action=None, *, shared=False, asset_name=''):
+def _show_current_file(context, action=None, *, shared=False, asset_name='', only_area=None):
     """Show the saved pose in the current window's visible Asset Browsers.
 
     Hidden workspace browsers can have an uninitialized native runtime even
@@ -351,6 +351,8 @@ def _show_current_file(context, action=None, *, shared=False, asset_name=''):
     if window is None or window.screen is None:
         return
     for area in window.screen.areas:
+        if only_area is not None and area != only_area:
+            continue
         if area.type != 'FILE_BROWSER':
             continue
         space = area.spaces.active
@@ -382,6 +384,7 @@ class CHARACTERDESIGNER_OT_save_pose_asset(bpy.types.Operator):
     bl_options = {'UNDO'}
 
     name: StringProperty(name='Name', default='Pose')
+    current_file_only: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     destination: EnumProperty(name='Save To', items=(
         ('LOCAL', 'Current File', 'Keep the pose in the current blend file'),
         ('SHARED', 'Pose Library / Cosha', 'Write a separate asset to the shared Pose Library'),
@@ -410,17 +413,24 @@ class CHARACTERDESIGNER_OT_save_pose_asset(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, 'name')
-        layout.prop(self, 'destination')
+        if not self.current_file_only:
+            layout.prop(self, 'destination')
         layout.prop(self, 'scope')
         layout.prop(self, 'include_fingers')
-        if self.destination == 'SHARED':
+        if not self.current_file_only and self.destination == 'SHARED':
             layout.label(text='Writes a shared asset file immediately', icon='FILE_FOLDER')
 
     def execute(self, context):
         from . import bone_display
         try:
+            local_browser = getattr(self, 'current_file_only', False)
+            if local_browser:
+                from .control_pose_library_ui import current_file_params
+                if current_file_params(context) is None:
+                    raise ValueError('Open Current File in the project Asset Browser to save this Pose.')
             rig = bone_display.character_rig(context)
-            shared = _shared_pose_library(context) if getattr(self, 'destination', 'LOCAL') == 'SHARED' else None
+            shared = (_shared_pose_library(context)
+                      if not local_browser and getattr(self, 'destination', 'LOCAL') == 'SHARED' else None)
             # Shared captures are removed after serialization. They must not
             # have an asynchronous preview job reading the temporary Action.
             preview = {'generate_preview': False} if shared else {}
@@ -439,7 +449,10 @@ class CHARACTERDESIGNER_OT_save_pose_asset(bpy.types.Operator):
             _show_current_file(context, shared=True, asset_name=asset_name)
             self.report({'INFO'}, f'Saved Pose "{asset_name}" in Pose Library / Cosha.')
             return {'FINISHED'}
-        _show_current_file(context, action)
+        if local_browser:
+            _show_current_file(context, action, only_area=context.area)
+        else:
+            _show_current_file(context, action)
         self.report({'INFO'}, f'Saved Pose "{action.name}" in Current File; save the .blend to keep it.')
         return {'FINISHED'}
 

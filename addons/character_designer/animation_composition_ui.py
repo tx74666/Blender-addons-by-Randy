@@ -381,7 +381,7 @@ def draw_composition(layout, context):
             box.operator('character_designer.composition_weapon', text='Load Attachment', icon='IMPORT').remove = False
     elif not hasattr(record, 'keys'):
         box.label(text='The captured attachment needs validation before editing.', icon='ERROR')
-    elif 'rigging_session_owner' not in record:
+    elif 'rigging_session_owner' not in record and 'local_weapon_profile' not in record:
         box.operator('character_designer.composition_weapon', text='Remove Attachment', icon='X').remove = True
         try:
             import json

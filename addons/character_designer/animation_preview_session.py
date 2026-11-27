@@ -47,19 +47,21 @@ def status(context):
     if record is None:
         return None
     data = json.loads(record['settings'])
-    count = data['after']
-    preview = record.get('preview')
-    if preview and len(preview.layers) == 1 and len(preview.layers[0].strips) == 1:
-        strip = preview.layers[0].strips[0]
-        bag = next((bag for bag in getattr(strip, 'channelbags', ()) if bag.slot_handle == record['slot']), None)
-        if bag is not None:
-            # Count points without reading individual keys or hashing the Action during redraw.
-            paths = {f'pose.bones["{bpy.utils.escape_identifier(name)}"].{prop}'
+    original, reduced = record.get('source'), record.get('preview')
+    counts = {}
+    if original is not None and reduced is not None:
+        # Count both copies in the same scope, including channels added to Reduced.
+        # Only F-Curve headers and point collection lengths are read during redraw.
+        paths = set(data['scope'])
+        paths.update(f'pose.bones["{bpy.utils.escape_identifier(name)}"].{prop}'
                      for name in data['bone_names']
-                     for prop in ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale')}
-            count = sum(len(fc.keyframe_points) for fc in bag.fcurves if fc.data_path in paths)
-    return dict(view=_view(rig, record), after=count, skipped=data.get('skipped', {}), **{k: data[k] for k in (
-        'bone_names', 'position_mm', 'rotation_degrees', 'before')})
+                     for prop in ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale'))
+        try:
+            counts = curves.key_counts(original, reduced, record['slot'], paths)
+        except (ValueError, RuntimeError, ReferenceError):
+            pass  # A changed or missing channelbag makes comparison unavailable.
+    return dict(view=_view(rig, record), skipped=data.get('skipped', {}), **counts, **{
+        key: data[key] for key in ('bone_names', 'position_mm', 'rotation_degrees')})
 
 
 def _ready(context, rig):
@@ -181,6 +183,7 @@ def _initial_inputs(rig):
     # has no curve for it. Keep the real starting values, including non-unit scales.
     result = {}
     for owner in (rig, *rig.pose.bones):
+        prefix = '' if owner is rig else owner.path_from_id()
         for prop in ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale'):
             result[owner.path_from_id(prop)] = list(getattr(owner, prop))
         for key in owner.keys():
@@ -191,7 +194,7 @@ def _initial_inputs(rig):
                 values = list(value)
             else:
                 continue
-            result[owner.path_from_id() + '["' + bpy.utils.escape_identifier(key) + '"]'] = values
+            result[prefix + '["' + bpy.utils.escape_identifier(key) + '"]'] = values
     return json.dumps(result, separators=(',', ':'))
 
 

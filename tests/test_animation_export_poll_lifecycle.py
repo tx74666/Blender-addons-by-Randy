@@ -176,7 +176,7 @@ class ExportPollLifecycleTests(unittest.TestCase):
         exec(compile(ast.Module(body=[execute], type_ignores=[]), str(SOURCE / 'animation.py'), 'exec'),
              self.animation.__dict__)
         operator = NS(rig_name='CoshaRig', action_name=self.action.name, filepath=str(self.folder / 'out.fbx'),
-            frame_start=1., frame_end=61., loop=False, report=Mock())
+            frame_start=1., frame_end=61., loop=False, composition=False, poll=lambda _context: True, report=Mock())
         return self.animation.execute(operator, self.context), operator
 
     def new_action_sync(self):
