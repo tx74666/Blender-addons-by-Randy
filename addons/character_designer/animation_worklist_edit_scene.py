@@ -148,17 +148,6 @@ def draw_controller_motion_tools(layout, context):
         align.clip_key, align.align_elbows = row.clip_key, True
 
 
-def draw_source_motion(layout, context):
-    home, selected = selected_motion(context)
-    row = _source_motion_row(home, selected.clip_key) if selected is not None else None
-    if row is None:
-        return
-    controls = layout.row()
-    controls.enabled = getattr(context, 'mode', 'OBJECT') in {'OBJECT', 'POSE'}
-    button = controls.operator('character_designer.open_source_motion', icon='ACTION')
-    button.clip_key = row.clip_key
-
-
 def controller_motion_active(home, row):
     record = mapping_record(home, row)
     if record is None or record.state != 'READY' or record.controller_action is None:
@@ -384,7 +373,7 @@ class CHARACTERDESIGNER_OT_open_source_motion(Operator):
     bl_idname = 'character_designer.open_source_motion'
     bl_label = 'Edit on Source Rig'
     bl_description = 'Open the editable copy of the imported motion on its original rig'
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'INTERNAL', 'UNDO'}
 
     clip_key: StringProperty(options={'HIDDEN'})
 

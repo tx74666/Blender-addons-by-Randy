@@ -1809,6 +1809,7 @@ def _child(job_path):
             cleanup = importlib.import_module(package.name + '.animation_cleanup')
             progress.report('Cleaning prepared clip')
             receipt['cleanup'] = cleanup.clean(target, result.action, result.slot)
+            receipt['cleanup']['hidden_scale_curves'] = cleanup.hide_unused_scale(target, result.action, result.slot)
         output = root / 'controller.blend'
         progress.report('Writing verified Action')
         bpy.data.libraries.write(str(output), {result.action}, path_remap='ABSOLUTE', fake_user=True, compress=True)

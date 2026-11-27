@@ -301,15 +301,13 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         return operator
 
-    def test_base_pose_buttons_explicitly_pin_both_routes(self):
+    def test_base_pose_only_offers_recovery_for_an_existing_test(self):
         for active in (False, True):
             for advanced in (False, True):
                 with self.subTest(active=active, advanced=advanced), self.base_pose_modules(active):
                     self.state.show_advanced = advanced
                     buttons = self.base_pose_buttons()
-                    self.assertEqual('Test Base Pose' in buttons, advanced)
-                    if advanced:
-                        self.assertIs(getattr(buttons['Test Base Pose'], 'finish', None), False)
+                    self.assertNotIn('Test Base Pose', buttons)
                     self.assertEqual('Return to Animation' in buttons, active)
                     if active:
                         self.assertIs(buttons['Return to Animation'].finish, True)
@@ -410,19 +408,14 @@ class WorklistUI(unittest.TestCase):
             sys.modules[self.ui.__package__ + '.animation_rest_pose'].show_rest.assert_called_once_with(self.context)
             pose.start_or_reset.assert_not_called()
 
-    def test_base_pose_reentry_overrides_remembered_return_route(self):
+    def test_base_pose_recovery_overrides_a_remembered_start(self):
         self.state.show_advanced = True
-        with self.base_pose_modules() as (pose, state):
-            first = self.execute_pose_button(self.base_pose_buttons()['Test Base Pose'], True)
-            self.assertTrue(state['active'])
-            self.assertIn('Base Pose ready', first.last_report[1])
+        with self.base_pose_modules(active=True) as (pose, state):
             returned = self.execute_pose_button(self.base_pose_buttons()['Return to Animation'], False)
             self.assertFalse(state['active'])
             self.assertIn('Previous animation restored', returned.last_report[1])
-            reentered = self.execute_pose_button(self.base_pose_buttons()['Test Base Pose'], True)
-            self.assertTrue(state['active'])
-            self.assertIn('Base Pose ready', reentered.last_report[1])
-            self.assertEqual(pose.start_or_reset.call_count, 2)
+            self.assertNotIn('Return to Animation', self.base_pose_buttons())
+            pose.start_or_reset.assert_not_called()
             pose.finish.assert_called_once_with(self.context)
 
     def test_base_pose_finish_feedback_distinguishes_no_change(self):
@@ -1217,19 +1210,52 @@ class WorklistUI(unittest.TestCase):
                                           if kind == 'operator' and value[0] == 'character_designer.worklist_activate'],
                                          [action is local and not busy and mode in {'OBJECT', 'POSE'}])
 
-    def test_new_action_is_available_only_in_closed_by_default_advanced_fold(self):
+    def test_registration_is_searchable_without_a_sidebar_button(self):
         for opened in (False, True):
             with self.subTest(opened=opened):
                 self.state.show_advanced = opened
                 layout = Layout()
                 self.ui.draw_worklist(layout, self.context)
-                self.ui.draw_worklist_recovery(layout, self.context)
+                self.ui.draw_worklist_recovery(layout, self.context, show_original_inputs_entry=True)
                 buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
-                self.assertEqual('character_designer.worklist_register_new' in buttons, opened)
+                self.assertNotIn('character_designer.worklist_register_new', buttons)
+                self.assertNotIn('character_designer.open_source_motion', buttons)
+                self.assertNotIn('character_designer.worklist_package_dependencies', buttons)
+                self.assertNotIn('character_designer.worklist_locate_dependencies', buttons)
                 self.assertNotIn('character_designer.worklist_scan_changes', buttons)
                 self.assertNotIn('character_designer.worklist_sync', buttons)
                 self.assertNotIn('character_designer.worklist_sync_changed', buttons)
-        self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_register_new, self.ui.WORKLIST_CLASSES)
+        registration = self.ui.CHARACTERDESIGNER_OT_worklist_register_new
+        self.assertIn(registration, self.ui.WORKLIST_CLASSES)
+        self.assertNotIn('INTERNAL', getattr(registration, 'bl_options', ()))
+        self.assertEqual(registration.bl_label, 'Register Action in Worklist')
+
+    def test_empty_recovery_fold_is_hidden_but_original_inputs_can_still_use_it(self):
+        layout = Layout()
+        self.ui.draw_worklist_recovery(layout, self.context)
+        self.assertEqual(layout.records, [])
+        self.ui.draw_worklist_recovery(layout, self.context, show_original_inputs_entry=True)
+        [fold] = [value for kind, value, _enabled in layout.records if kind == 'prop']
+        self.assertEqual(fold[0], 'show_advanced')
+        self.assertEqual(fold[1]['text'], 'Editing & Recovery')
+
+    def test_editing_files_share_one_closed_export_group_and_preserve_their_guards(self):
+        for opened, idle, original in ((False, True, False), (True, True, False),
+                                       (True, False, False), (True, True, True)):
+            with self.subTest(opened=opened, idle=idle, original=original), \
+                    patch.object(self.ui, 'original_inputs_live', return_value=original):
+                layout = Layout()
+                layout.panel = Mock(side_effect=lambda *_args, **_kwargs:
+                                    (layout.row(), layout.column() if opened else None))
+                self.animation._link_idle.return_value = idle
+                self.ui.draw_worklist_editing_files(layout, self.context)
+                layout.panel.assert_called_once_with('character_designer_animation_editing_files',
+                                                     default_closed=True)
+                buttons = [(value[0], enabled) for kind, value, enabled in layout.records if kind == 'operator']
+                self.assertEqual(buttons, [
+                    ('character_designer.worklist_package_dependencies', idle and not original),
+                    ('character_designer.worklist_locate_dependencies', idle and not original),
+                ] if opened else [])
 
     def test_idle_success_feedback_is_hidden_and_errors_remain_visible(self):
         self.state.status = 'Library connected.'
@@ -2090,23 +2116,17 @@ class WorklistUI(unittest.TestCase):
         self.assertEqual(self.state.active_index, 0)
         service.open_motion.assert_not_called()
 
-    def test_advanced_source_button_names_and_keeps_the_drawn_clip_after_reorder(self):
+    def test_internal_source_operator_keeps_the_requested_clip_after_reorder(self):
         service = self.prepare_service()
         service.open_source_motion = Mock(return_value={'state': 'NATIVE'})
         home, _editor = self.mapped_motion_home()
         self.context.scene = home
         settings = home.character_designer_animation_worklist
         settings.catalog_index = 1
-        layout = Layout()
-        self.ui.edit_scene.draw_source_motion(layout, self.context)
-        [(kind, (name, _options, payload), enabled)] = layout.records
-        self.assertEqual((kind, name, payload.clip_key),
-                         ('operator', 'character_designer.open_source_motion', 'clip-Run'))
-        self.assertTrue(enabled)
         settings.catalog.reverse()
         operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
-        self.assertEqual(operator.bl_label, 'Edit on Source Rig')
-        operator.clip_key = payload.clip_key
+        self.assertIn('INTERNAL', operator.bl_options)
+        operator.clip_key = 'clip-Run'
         self.assertIn('Run', operator.description(self.context, operator))
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         service.open_source_motion.assert_called_once_with(self.context, home, 'clip-Run')
@@ -2136,7 +2156,7 @@ class WorklistUI(unittest.TestCase):
                     self.assertTrue(buttons[0][2].from_fk)
                     self.assertEqual(buttons[0][2].clip_key, row.clip_key)
 
-    def test_advanced_source_allows_ready_catalog_without_preparing_or_importing_from_draw(self):
+    def test_internal_source_operator_allows_ready_catalog_without_controller_preparation(self):
         service = self.prepare_service()
         service.open_source_motion = Mock(return_value={'state': 'NATIVE'})
         home, _editor = self.mapped_motion_home()
@@ -2144,14 +2164,8 @@ class WorklistUI(unittest.TestCase):
         settings = home.character_designer_animation_worklist
         settings.catalog.append(SimpleNamespace(clip_key='catalog-only', name='In Air', ready=True))
         settings.catalog_index = len(settings.catalog) - 1
-        layout = Layout()
-        self.ui.edit_scene.draw_source_motion(layout, self.context)
-        payload = next(value[2] for kind, value, _ in layout.records if kind == 'operator')
-        self.assertEqual(payload.clip_key, 'catalog-only')
-        service.open_source_motion.assert_not_called()
-        self.backend.add.assert_not_called()
         operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
-        operator.clip_key = payload.clip_key
+        operator.clip_key = 'catalog-only'
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         service.open_source_motion.assert_called_once_with(self.context, home, 'catalog-only')
         service.prepare_motion.assert_not_called()
@@ -2165,9 +2179,6 @@ class WorklistUI(unittest.TestCase):
         settings.selected_motion_clip = 'clip-Walk'
         settings.catalog.append(SimpleNamespace(clip_key='blocked', name='Blocked', ready=False))
         settings.catalog_index = len(settings.catalog) - 1
-        layout = Layout()
-        self.ui.edit_scene.draw_source_motion(layout, self.context)
-        self.assertEqual(layout.records, [])
         operator = self.ui.edit_scene.CHARACTERDESIGNER_OT_open_source_motion()
         operator.clip_key = 'blocked'
         self.assertEqual(operator.execute(self.context), {'CANCELLED'})

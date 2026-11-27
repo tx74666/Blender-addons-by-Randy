@@ -421,7 +421,8 @@ Restoration, switching versions and export retain their separate complete checks
 
 ## Portable editing files and explicit export inputs (0.77.144)
 
-Animation > Advanced adds **Package Editing Files** and **Locate Editing Files**.
+Open **Miscellaneous → Unity Export → Animations → Editing Files** for
+**Package Editing Files** and **Locate Editing Files**.
 Package the linked Source libraries and Main Rig recovery inputs into a new
 folder, then save the editing blend normally. Keep the blend and package in the
 same relative layout when moving them. Logical work-item and Current Rig

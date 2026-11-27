@@ -16,6 +16,13 @@ OPERATIONS = (
 )
 
 
+def _redraw_editors(context):
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type in {'VIEW_3D', 'DOPESHEET_EDITOR', 'GRAPH_EDITOR'}:
+                area.tag_redraw()
+
+
 class CHARACTERDESIGNER_OT_clean_animation_data(bpy.types.Operator):
     bl_idname = 'character_designer.clean_animation_data'
     bl_label = 'Clean Animation Data'
@@ -42,6 +49,35 @@ class CHARACTERDESIGNER_OT_clean_animation_data(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CHARACTERDESIGNER_OT_hide_unused_scale(bpy.types.Operator):
+    bl_idname = 'character_designer.hide_unused_scale'
+    bl_label = 'Hide Unused Scale Curves'
+    bl_description = 'Hide unused scale axes of selected controls in the Graph Editor'
+    bl_options = {'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        rig = context.active_object
+        return bool(context.mode == 'POSE' and rig and rig.type == 'ARMATURE' and
+                    session.SESSION not in rig and rig.animation_data and rig.animation_data.action
+                    and context.selected_pose_bones)
+
+    def execute(self, context):
+        try:
+            rig = session._rig(context)
+            session._ready(context, rig)
+            action, handle = session._binding(rig)
+            session._writable_source(rig, action, handle)
+            count = cleanup.hide_unused_scale(rig, action, handle,
+                                              bone_names=(bone.name for bone in context.selected_pose_bones))
+        except (ValueError, RuntimeError, ReferenceError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        _redraw_editors(context)
+        self.report({'INFO'}, f'Hid {count:,} unused scale curves')
+        return {'FINISHED'} if count else {'CANCELLED'}
+
+
 class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
     bl_idname = 'character_designer.key_reduction_preview'
     bl_label = 'Key Reduction Preview'
@@ -64,7 +100,7 @@ class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
                 return {'CANCELLED'}
             message = 'Apply the current Reduced preview.'
             if 'before' in state:
-                message = f"Selected transform keys  {state['before']:,} → {state['after']:,}"
+                message = f"Selected keys  {state['before']:,} → {state['after']:,}"
             return context.window_manager.invoke_confirm(
                 self, event, title='Apply Key Reduction?', confirm_text='Apply Reduction', message=message)
         if self.operation == 'UPDATE':
@@ -82,7 +118,10 @@ class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
         self.layout.label(text='Rebuilding from Original replaces edits in Reduced.')
         state = session.status(context)
         if state and 'before' in state:
-            self.layout.label(text=f"Selected total  {state['before']:,} → {state['after']:,}")
+            if state['removed']:
+                fraction = state['removed'] / state['reduced_before']
+                self.layout.label(
+                    text=f"Reduced curves  {state['reduced_before']:,} → {state['reduced_after']:,}  (−{fraction:.1%})")
             if state['same_count']:
                 self.layout.label(text=f"Same key count  {state['same_count']:,}")
             if state['added']:
@@ -107,10 +146,7 @@ class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
         except (ValueError, RuntimeError, ReferenceError) as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
-        for window in context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type in {'VIEW_3D', 'DOPESHEET_EDITOR', 'GRAPH_EDITOR'}:
-                    area.tag_redraw()
+        _redraw_editors(context)
         return {'FINISHED'}
 
 
@@ -126,7 +162,9 @@ def draw(layout, context, state):
         rig = context.object
         if (context.mode == 'POSE' and rig is not None and rig.animation_data
                 and rig.animation_data.action and context.selected_pose_bones):
-            _button(layout, 'START', 'Preview Key Reduction', icon='KEYFRAME_HLT')
+            row = layout.row(align=True)
+            _button(row, 'START', 'Preview Key Reduction', icon='KEYFRAME_HLT')
+            row.operator(CHARACTERDESIGNER_OT_hide_unused_scale.bl_idname, text='', icon='HIDE_ON')
         return
 
     box = layout.box()
@@ -135,11 +173,14 @@ def draw(layout, context, state):
     _button(title, 'UPDATE', '', icon='PREFERENCES')
     if 'before' not in state:
         box.label(text='Key counts unavailable', icon='INFO')
-    elif state['removed']:
-        fraction = state['removed'] / state['reduced_before']
-        box.label(text=f"{state['reduced_before']:,} → {state['reduced_after']:,}  (−{fraction:.1%})")
     else:
-        box.label(text='No keys removed')
+        before, after = state['before'], state['after']
+        summary = f"Selected keys  {before:,} → {after:,}"
+        if before:
+            delta = after - before
+            sign = '−' if delta < 0 else '+' if delta > 0 else ''
+            summary += f"  ({sign}{abs(delta) / before:.1%})"
+        box.label(text=summary)
     row = box.row(align=True)
     for view, label in (('ORIGINAL', 'Original'), ('REDUCED', 'Reduced')):
         _button(row, view, label, depress=state['view'] == view)

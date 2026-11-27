@@ -207,7 +207,7 @@ def draw_weapons(layout, context):
 
 
 class CHARACTERDESIGNER_PT_equipment(Panel):
-    bl_label = 'Equipment'
+    bl_label = 'Weapon'
     bl_idname = 'CHARACTERDESIGNER_PT_equipment'
     bl_parent_id = 'CHARACTERDESIGNER_PT_main'
     bl_space_type = 'VIEW_3D'
@@ -221,20 +221,27 @@ class CHARACTERDESIGNER_PT_equipment(Panel):
         return active_ui_page(context) == UI_PAGE_MISC
 
     def draw(self, context):
-        from . import animation_composition_local_ui, animation_preview_ui
+        from . import animation_composition_local_ui, animation_composition_ui, animation_preview_ui
+        from .animation_original_inputs_ui import original_inputs_live
         from .animation_physics_ui import section
 
         layout = self.layout
         draw_weapons(layout, context)
-        rig = _target(context)
-        if rig is None or rig.animation_data is None:
-            return
-        composition = animation_composition_local_ui.composition.session(rig)
-        overlay = section(layout, 'character_designer_animation_upper_body', 'Upper-Body Composition',
-                          icon='NLA', default_closed=composition is None)
-        if overlay is not None:
-            overlay.enabled = animation_preview_ui.session.status(context) is None
-            animation_composition_local_ui.draw_composition(overlay, context)
+        rig, preview = _target(context), animation_preview_ui.session.status(context)
+        local = None
+        if rig is not None and rig.animation_data is not None:
+            local = animation_composition_local_ui.composition.session(rig)
+            overlay = section(layout, 'character_designer_animation_upper_body', 'Upper-Body Composition',
+                              icon='NLA', default_closed=local is None)
+            if overlay is not None:
+                overlay.enabled = preview is None
+                animation_composition_local_ui.draw_composition(overlay, context)
+
+        worklist = getattr(context.scene, 'character_designer_animation_worklist', None)
+        if worklist is not None and worklist.workspace_path:
+            overlay = layout.column()
+            overlay.enabled = preview is None and local is None and not original_inputs_live(context)
+            animation_composition_ui.draw_composition(overlay, context)
 
 
 EQUIPMENT_CLASSES = (

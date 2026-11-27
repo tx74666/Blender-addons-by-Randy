@@ -1136,6 +1136,7 @@ def draw_unity_animation_exports(layout, context):
             else:
                 single = _draw_single_action(layout, context)
         _draw_animation_exports(layout, context, worklist, local, single)
+        worklist_ui.draw_worklist_editing_files(layout, context)
     job = active_job()
     if job and not (job.get('composition_job') or collection_running() or worklist_ui.scan_pending()):
         layout.operator('character_designer.animation_export_cancel', icon='CANCEL')
@@ -1284,9 +1285,11 @@ class CHARACTERDESIGNER_PT_animation(Panel):
                 _draw_local_motion(page, context)
             recovery = page.column()
             recovery.enabled = preview is None
-            worklist_ui.draw_worklist_recovery(recovery, context)
-            if (input_rig is not None and not retained_inputs and preview is None
-                    and worklist.workspace_path and worklist.show_advanced):
+            show_original_inputs_entry = (input_rig is not None and not retained_inputs and preview is None
+                                          and bool(worklist.workspace_path))
+            worklist_ui.draw_worklist_recovery(
+                recovery, context, show_original_inputs_entry=show_original_inputs_entry)
+            if show_original_inputs_entry and worklist.show_advanced:
                 input_layout = page
         draw_physics(layout, context)
         if input_layout is not None:
@@ -1299,6 +1302,7 @@ class CHARACTERDESIGNER_PT_animation(Panel):
 ANIMATION_CLASSES = (
     *animation_composition_local_ui.LOCAL_COMPOSITION_CLASSES,
     animation_preview_ui.CHARACTERDESIGNER_OT_clean_animation_data,
+    animation_preview_ui.CHARACTERDESIGNER_OT_hide_unused_scale,
     animation_preview_ui.CHARACTERDESIGNER_OT_key_reduction_preview,
     CHARACTERDESIGNER_OT_animation_link_import,
     CHARACTERDESIGNER_OT_animation_link_model,

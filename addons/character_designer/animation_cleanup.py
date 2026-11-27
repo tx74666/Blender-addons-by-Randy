@@ -59,22 +59,51 @@ def restore_defaults(rig, action, handle):
         raise
 
 
-def _flat(curve, default):
-    if not _editable(curve) or not curve.is_valid or not curve.keyframe_points:
+def _flat(curve, default, *, tolerance=0.):
+    if not _editable(curve) or not curve.is_valid or curve.modifiers or not curve.keyframe_points:
         return False
     previous_bezier = False
     for point in curve.keyframe_points:
-        if (point.co.y != default or point.interpolation not in {'LINEAR', 'CONSTANT', 'BEZIER'}
+        if (not abs(point.co.y - default) <= tolerance or point.interpolation not in {'LINEAR', 'CONSTANT', 'BEZIER'}
                 or point.type not in {'KEYFRAME', 'GENERATED'}):
             return False
         # The incoming handle belongs to the segment starting at the previous key.
         # Check both sides, including mixed interpolation and extrapolated ends.
         is_bezier = point.interpolation == 'BEZIER'
         if ((previous_bezier or (is_bezier and curve.extrapolation == 'LINEAR'))
-                and point.handle_left.y != default) or (is_bezier and point.handle_right.y != default):
+                and not abs(point.handle_left.y - default) <= tolerance
+                or is_bezier and not abs(point.handle_right.y - default) <= tolerance):
             return False
         previous_bezier = is_bezier
     return True
+
+
+def hide_unused_scale(rig, action, handle, *, bone_names=None):
+    """Hide constant, unused scale axes in the Graph Editor. Preserve curve evaluation."""
+    names = set(bone_names) if bone_names is not None else None
+    ad = rig.animation_data
+    driven = {(curve.data_path, curve.array_index) for curve in ad.drivers} if ad else set()
+    hidden = 0
+    for curve in export._curves(action, handle):
+        if curve.hide or not curve.data_path.endswith('.scale'):
+            continue
+        info = _curve_name(curve)
+        if not info:
+            continue
+        name, _, axis = info
+        bone = rig.pose.bones.get(name)
+        if (bone is None or not 0 <= axis < 3 or (names is not None and name not in names)
+                or (curve.data_path, axis) in driven or not curve.keyframe_points):
+            continue
+        locked = bone.lock_scale[axis]
+        default = curve.keyframe_points[0].co.y if locked else 1.
+        # Ignore tiny export rounding for display only. An unlocked axis with
+        # a non-neutral value or any meaningful motion stays visible.
+        tolerance = 1.e-6 if not locked and curve.extrapolation == 'CONSTANT' else 0.
+        if _flat(curve, default, tolerance=tolerance):
+            curve.hide = True
+            hidden += 1
+    return hidden
 
 
 def clean(rig, action, handle, *, published=False):

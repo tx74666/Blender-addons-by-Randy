@@ -1047,7 +1047,7 @@ class CHARACTERDESIGNER_OT_worklist_base_pose(Operator):
     bl_description = ('Return to the neutral Body pose and keep posing; keep the previous animation '
                       'and any keyed test drafts. Click again to reset the test pose. '
                       'Use Object or Pose Mode; selecting a control bone is not required')
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'INTERNAL', 'UNDO'}
 
     finish: BoolProperty(default=False, options={'HIDDEN'})
 
@@ -1175,7 +1175,7 @@ class CHARACTERDESIGNER_OT_worklist_scan_changes(Operator):
 
 class CHARACTERDESIGNER_OT_worklist_register_new(Operator):
     bl_idname = 'character_designer.worklist_register_new'
-    bl_label = 'Register New Action'
+    bl_label = 'Register Action in Worklist'
     bl_description = 'Add the local new Action on this workspace rig; no original clip or target purpose is invented'
 
     @classmethod
@@ -1705,6 +1705,22 @@ def draw_worklist_export(layout, context):
             clear.clear = True
 
 
+def draw_worklist_editing_files(layout, context):
+    settings = _state(context)
+    if settings is None or not settings.workspace_path:
+        return
+    from .animation_physics_ui import section
+
+    files = section(layout, 'character_designer_animation_editing_files', 'Editing Files',
+                    icon='FILE_FOLDER', default_closed=True)
+    if files is not None:
+        actions = files.column(align=True)
+        actions.enabled = _idle(context) and not original_inputs_live(context)
+        actions.operator_context = 'INVOKE_DEFAULT'
+        actions.operator('character_designer.worklist_package_dependencies', icon='PACKAGE')
+        actions.operator('character_designer.worklist_locate_dependencies', icon='FILE_FOLDER')
+
+
 def draw_worklist_motion_tools(layout, context):
     from . import limb_ik_fk_pose_key
     limb_ik_fk_pose_key.draw(layout, context, advanced=True)
@@ -1772,10 +1788,6 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
         else:
             _draw_empty_list(box, context, settings, main)
         _draw_rigging(box, context, _selected(settings))
-        from . import animation_composition
-        if hasattr(rig, "get") and rig.get(animation_composition.SESSION) is not None:
-            from .animation_composition_ui import draw_composition
-            draw_composition(box, context)
     if busy:
         box.operator('character_designer.worklist_cancel_collection', text='Cancel', icon='CANCEL')
     unresolved = any(
@@ -1806,9 +1818,15 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
             box.label(text=line, icon=('ERROR' if selected.scan_state == 'BLOCKED' else 'INFO') if index == 0 else 'BLANK1')
 
 
-def draw_worklist_recovery(layout, context):
+def draw_worklist_recovery(layout, context, *, show_original_inputs_entry=False):
     settings = _state(context)
     if settings is None or not settings.workspace_path:
+        return
+    retired = getattr(settings, 'retired_items', ())
+    rig = getattr(settings, 'rig', None)
+    can_restore = (rig is not None and hasattr(rig, 'get')
+                   and rig.get('character_designer_worklist_main_session_v1') is not None)
+    if not (retired or can_restore or show_original_inputs_entry):
         return
     layout.prop(settings, 'show_advanced', text='Editing & Recovery', emboss=False,
                 icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
@@ -1816,21 +1834,6 @@ def draw_worklist_recovery(layout, context):
         return
     box = layout.column()
     box.enabled = not original_inputs_live(context)
-    edit_scene.draw_source_motion(box, context)
-    rig = getattr(settings, 'rig', None)
-    from . import animation_composition
-    if not hasattr(rig, "get") or rig.get(animation_composition.SESSION) is None:
-        from .animation_composition_ui import draw_composition
-        draw_composition(box, context)
-    files = box.column(align=True)
-    files.enabled = _idle(context)
-    files.operator('character_designer.worklist_package_dependencies', text='Package Editing Files', icon='PACKAGE')
-    files.operator('character_designer.worklist_locate_dependencies', text='Locate Editing Files', icon='FILE_FOLDER')
-    base = box.operator('character_designer.worklist_base_pose', text='Test Base Pose',
-                        icon='LOOP_BACK')
-    base.finish = False
-    box.operator('character_designer.worklist_register_new', text='Register Action in Worklist', icon='ACTION')
-    retired = getattr(settings, 'retired_items', ())
     if retired:
         archive = box.box()
         archive.label(text='Retired Animations (' + str(len(retired)) + ')', icon='FILE_BACKUP')
@@ -1841,8 +1844,7 @@ def draw_worklist_recovery(layout, context):
             restore.item_id = item.item_id
             discard = row.operator('character_designer.worklist_discard_retired', text='Discard', icon='TRASH')
             discard.item_id = item.item_id
-    if (rig is not None and hasattr(rig, 'get')
-            and rig.get('character_designer_worklist_main_session_v1') is not None):
+    if can_restore:
         box.operator('character_designer.worklist_restore_main_rig',
                      text='Restore Main Rig', icon='LOOP_BACK')
 

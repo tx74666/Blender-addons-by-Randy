@@ -5,10 +5,13 @@ from bisect import bisect_left
 import hashlib
 import json
 import math
+import re
 
 from .animation_key_reduce_math import reduce_linear
 from .animation_worklist_fingerprint import _rna_settings, _MODIFIER_UI
 from .control_pose_offset import _bag, _curve_name
+
+_POSE_OWNER = re.compile(r'^(pose\.bones\["(?:[^"\\]|\\.)*"\])(?=[.\[])')
 
 
 # RNA column order matters on write: handle type and position changes can move handles.
@@ -54,13 +57,18 @@ def _replace(curve, columns, *, active_index=None):
     # those we just restored from an exact reference. foreach_set tags the ID.
 
 
-def _indexed(action, handle, paths=None):
+def _indexed(action, handle, paths=None, *, bone_paths=None):
     requested = None if paths is None else set(paths)
     curves = {}
     for curve in _bag(action, handle).fcurves:
-        if requested is not None and curve.data_path not in requested:
+        path = curve.data_path
+        if requested is not None and path not in requested:
             continue
-        key = (curve.data_path, curve.array_index)
+        if bone_paths is not None:
+            owner = _POSE_OWNER.match(path)
+            if owner is None or owner[1] not in bone_paths:
+                continue
+        key = (path, curve.array_index)
         if key in curves:
             raise ValueError('The selected slot contains duplicate animation channels.')
         curves[key] = curve
@@ -77,12 +85,12 @@ def selected_paths(action, slot_handle, bone_names):
     return sorted(result)
 
 
-def key_counts(original, reduced, slot_handle, paths):
-    """Compare both sides of one selected transform scope by F-Curve and axis."""
+def key_counts(original, reduced, slot_handle, bone_paths):
+    """Compare all keyed channels owned by the selected pose bones."""
     original_keys = {key: len(curve.keyframe_points)
-                     for key, curve in _indexed(original, slot_handle, paths).items()}
+                     for key, curve in _indexed(original, slot_handle, bone_paths=bone_paths).items()}
     reduced_keys = {key: len(curve.keyframe_points)
-                    for key, curve in _indexed(reduced, slot_handle, paths).items()}
+                    for key, curve in _indexed(reduced, slot_handle, bone_paths=bone_paths).items()}
     reduced_before = reduced_after = same_count = added = 0
     for key in original_keys.keys() | reduced_keys.keys():
         before, after = original_keys.get(key, 0), reduced_keys.get(key, 0)
@@ -226,20 +234,11 @@ def _quaternion_limit(rows, radians):
     return minimum * math.sin(min(math.pi, radians) / 2.) if minimum > 1.e-6 else 0.
 
 
-def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance, loop):
-    if not all(_editable(curve) for curve in curves):
-        return None, 'Locked, muted or sampled'
-    if any(len(curve.keyframe_points) <= 2 for curve in curves):
-        return None, 'Two or fewer keys on an axis'
-    modes = {_repeat_mode(curve) for curve in curves}
-    if 'UNSUPPORTED' in modes or len(modes) != 1:
-        return None, 'Unsupported or mixed modifiers'
-    coords = [_column(curve.keyframe_points, 'co', 'f', 2) for curve in curves]
-    times = coords[0][::2]
-    if any(axis[::2] != times for axis in coords[1:]) or any(b <= a for a, b in zip(times, times[1:])):
-        return None, 'Different key times across axes'
+def _retained_rows(curves, times, rows, guard_times, tolerance, *, preserve_seam):
+    if len(times) <= 2:
+        return list(range(len(times))), None
     guards = {0, len(times)-1}
-    if loop or 'REPEAT' in modes:
+    if preserve_seam:
         # Preserve the velocity on both sides of the seam as well as the period.
         guards.update((1, len(times)-2))
     for t in guard_times:
@@ -256,19 +255,9 @@ def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance,
                 return None, 'Nonlinear interpolation'
             if point.type not in {'KEYFRAME', 'GENERATED'}:
                 guards.add(i)
-    rows = list(zip(*(axis[1::2] for axis in coords)))
-    if prop == 'rotation_quaternion':
-        if len(curves) != 4 or [c.array_index for c in curves] != [0, 1, 2, 3]:
-            return None, 'Incomplete quaternion'
-        tolerance = _quaternion_limit(rows, rotation_tolerance)
-    elif prop == 'rotation_euler':
-        tolerance = rotation_tolerance / math.sqrt(len(curves))
-    elif prop == 'location':
-        tolerance = position_tolerance
-    elif prop == 'scale' and all(row == rows[0] for row in rows):
+    if tolerance is None:
+        # Constant scale axes need only their protected keys.
         return sorted(guards), None
-    else:
-        return None, 'Unsupported transform or varying scale'
     # Keep both boundaries of exact holds, including planted-foot segments.
     for i in range(1, len(rows)-1):
         if (rows[i] == rows[i-1]) != (rows[i] == rows[i+1]):
@@ -279,6 +268,54 @@ def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance,
         result = reduce_linear(times[first:last+1], rows[first:last+1], tolerance)
         keep.update(first + i for i in result.indices)
     return sorted(keep), None
+
+
+def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance, loop):
+    if not all(_editable(curve) for curve in curves):
+        return None, 'Locked, muted or sampled'
+    if all(len(curve.keyframe_points) <= 2 for curve in curves):
+        return None, 'Two or fewer keys per axis'
+    modes = {_repeat_mode(curve) for curve in curves}
+    if 'UNSUPPORTED' in modes or len(modes) != 1:
+        return None, 'Unsupported or mixed modifiers'
+    preserve_seam = loop or 'REPEAT' in modes
+    coords = [_column(curve.keyframe_points, 'co', 'f', 2) for curve in curves]
+    clocks = [axis[::2] for axis in coords]
+    if any(any(b <= a for a, b in zip(clock, clock[1:])) for clock in clocks):
+        return None, 'Duplicate or unordered key times'
+    if any(clock != clocks[0] for clock in clocks[1:]):
+        if prop not in {'location', 'rotation_euler'}:
+            return None, 'Different key times across axes'
+        # Position errors combine by Euclidean norm. Differences in the
+        # individual Euler rotations add at most their absolute angles.
+        tolerance = (position_tolerance / math.sqrt(len(curves)) if prop == 'location'
+                     else rotation_tolerance / len(curves))
+        retained = []
+        for curve, clock, axis in zip(curves, clocks, coords):
+            rows = [(value,) for value in axis[1::2]]
+            keep, reason = _retained_rows((curve,), clock, rows, guard_times, tolerance,
+                                          preserve_seam=preserve_seam)
+            if keep is None:
+                return None, reason
+            retained.append(keep)
+        return retained, None
+
+    rows = list(zip(*(axis[1::2] for axis in coords)))
+    if prop == 'rotation_quaternion':
+        if len(curves) != 4 or [c.array_index for c in curves] != [0, 1, 2, 3]:
+            return None, 'Incomplete quaternion'
+        tolerance = _quaternion_limit(rows, rotation_tolerance)
+    elif prop == 'rotation_euler':
+        tolerance = rotation_tolerance / math.sqrt(len(curves))
+    elif prop == 'location':
+        tolerance = position_tolerance
+    elif prop == 'scale' and all(row == rows[0] for row in rows):
+        tolerance = None
+    else:
+        return None, 'Unsupported transform or varying scale'
+    keep, reason = _retained_rows(curves, clocks[0], rows, guard_times, tolerance,
+                                  preserve_seam=preserve_seam)
+    return ([keep] * len(curves) if keep is not None else None), reason
 
 
 def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_tolerance, *, loop=False):
@@ -301,17 +338,20 @@ def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_
         before += count
         keep, reason = _retained(group, _curve_name(group[0])[1], guard_times, position_tolerance,
                                  rotation_tolerance, loop)
-        if keep is None or len(keep) == len(group[0].keyframe_points):
+        remaining = count if keep is None else sum(len(indices) for indices in keep)
+        if remaining == count:
             reason = reason or 'Tolerance or protected keys'
             skipped[reason] = skipped.get(reason, 0) + len(group)
             after += count
             continue
-        for curve in group:
+        for curve, indices in zip(group, keep):
+            if len(indices) == len(curve.keyframe_points):
+                continue
             values = _points(curve)
             for name, code, width in _FIELDS:
-                values[name] = array(code, (values[name][i*width+j] for i in keep for j in range(width)))
+                values[name] = array(code, (values[name][i*width+j] for i in indices for j in range(width)))
             _replace(curve, values)
-        after += len(group) * len(keep)
+        after += remaining
         changed.append(path)
     if changed:
         copy_action.update_tag()

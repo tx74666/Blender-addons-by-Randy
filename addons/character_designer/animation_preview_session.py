@@ -7,7 +7,7 @@ import bpy
 
 from . import animation_preview_curves as curves
 from . import natural_bind_mode
-from .animation_cleanup import DEFAULTS
+from .animation_cleanup import DEFAULTS, hide_unused_scale
 from .animation_loop_timing import LOOP, is_loop
 from .animation_export_inputs import _curves
 from .animation_local_motion_pins import assign_character_action
@@ -50,14 +50,11 @@ def status(context):
     original, reduced = record.get('source'), record.get('preview')
     counts = {}
     if original is not None and reduced is not None:
-        # Count both copies in the same scope, including channels added to Reduced.
+        # Compare every channel owned by the original control selection.
         # Only F-Curve headers and point collection lengths are read during redraw.
-        paths = set(data['scope'])
-        paths.update(f'pose.bones["{bpy.utils.escape_identifier(name)}"].{prop}'
-                     for name in data['bone_names']
-                     for prop in ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale'))
+        bone_paths = {f'pose.bones["{bpy.utils.escape_identifier(name)}"]' for name in data['bone_names']}
         try:
-            counts = curves.key_counts(original, reduced, record['slot'], paths)
+            counts = curves.key_counts(original, reduced, record['slot'], bone_paths)
         except (ValueError, RuntimeError, ReferenceError):
             pass  # A changed or missing channelbag makes comparison unavailable.
     return dict(view=_view(rig, record), skipped=data.get('skipped', {}), **counts, **{
@@ -321,6 +318,7 @@ def _make(context, rig, source, handle, names, position_mm, rotation_degrees):
         scope = curves.selected_paths(source, handle, names)
         if not scope:
             raise ValueError('The selected controls have no animated transforms in this Action slot.')
+        hide_unused_scale(rig, action, handle, bone_names=names)
         settings = dict(bone_names=list(names), position_mm=position_mm, rotation_degrees=rotation_degrees,
                         paths=list(result['paths']), before=result['before'], after=result['after'],
                         skipped=result['skipped'], loop=loop,

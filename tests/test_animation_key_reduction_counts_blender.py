@@ -26,12 +26,21 @@ for index, name in enumerate(('Moving "IK"', 'Protected IK', 'Excluded')):
     bone.head, bone.tail = (index, 0, 0), (index, 0, 1)
 bpy.ops.object.mode_set(mode='OBJECT')
 moving, protected, excluded = list(rig.pose.bones)
+constraint = moving.constraints.new('LIMIT_LOCATION')
+constraint.name = 'Limit "IK"'
+moving['Added preview property'] = 0.
 for frame in range(1, 10):
     for bone in rig.pose.bones:
         bone.location.x = frame * .001
         bone.keyframe_insert('location', frame=frame)
     rig['Control State'] = float(frame)
     rig.keyframe_insert('["Control State"]', frame=frame)
+    moving['ik_fk'] = 1.
+    moving.keyframe_insert('["ik_fk"]', frame=frame)
+    excluded['ik_fk'] = 1.
+    excluded.keyframe_insert('["ik_fk"]', frame=frame)
+    constraint.influence = frame * .1
+    constraint.keyframe_insert('influence', frame=frame)
 
 ad = rig.animation_data
 original, handle = ad.action, ad.action_slot_handle
@@ -43,6 +52,8 @@ for curve in bag.fcurves:
         point.interpolation = 'LINEAR'
     if curve.data_path == protected_path and curve.array_index == 0:
         curve.lock = True
+    if curve.data_path == moving.path_from_id('["ik_fk"]'):
+        curve.hide = True
 other = original.slots.new('OBJECT', 'Other object')
 other_curves = strip.channelbag(other, ensure=True).fcurves
 other_curve = other_curves.new(moving.path_from_id('location'), index=0)
@@ -74,7 +85,7 @@ def stats():
     return {key: shown[key] for key in properties}
 
 daily = stats()
-assert tuple(daily.values()) == (54, 33, 27, 6, 21, 27, 0), daily
+assert tuple(daily.values()) == (72, 51, 27, 6, 21, 45, 0), daily
 assert signature(clone, other.handle) == original_hashes[1]
 
 labels = []
@@ -95,20 +106,23 @@ class Layout:
         return SimpleNamespace()
 
 ui.draw(Layout(), ctx, preview.status(ctx))
-assert labels == ['Key Reduction', '27 → 6  (−77.8%)'], labels
+assert labels == ['Key Reduction', 'Selected keys  72 → 51  (−29.2%)'], labels
 compact_labels = list(labels)
 labels.clear()
 ui.CHARACTERDESIGNER_OT_key_reduction_preview.draw(SimpleNamespace(layout=Layout()), ctx)
-assert 'Same key count  27' in labels and 'Selected total  54 → 33' in labels, labels
+assert 'Same key count  45' in labels and 'Reduced curves  27 → 6  (−77.8%)' in labels, labels
 
 reduced_bag = clone.layers[0].strips[0].channelbag(ad.action_slot)
 new_curve = reduced_bag.fcurves.new(moving.path_from_id('rotation_euler'), index=0)
 new_curve.keyframe_points.insert(1, .125)
 new_curve.keyframe_points.insert(9, .5)
+new_prop = reduced_bag.fcurves.new(moving.path_from_id('["Added preview property"]'), index=0)
+new_prop.keyframe_points.insert(1, .25)
+new_prop.keyframe_points.insert(9, .5)
 victim = next(c for c in reduced_bag.fcurves if c.data_path == protected_path and c.array_index == 2)
 reduced_bag.fcurves.remove(victim)
 changed = stats()
-assert tuple(changed.values()) == (54, 26, 36, 6, 30, 18, 2), changed
+assert tuple(changed.values()) == (72, 46, 36, 6, 30, 36, 4), changed
 assert changed['before'] - changed['after'] == changed['removed'] - changed['added']
 assert op(operation='ORIGINAL') == {'FINISHED'}
 assert stats() == changed

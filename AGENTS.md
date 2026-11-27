@@ -7,8 +7,8 @@
 
 
 
-<!-- cd275-animation-panel-routes-20261127 -->
-Character Designer **0.77.275** 已安裝至 Blender 5.2 與 X，各 326 檔、0 差異。Unity Export 收進 Miscellaneous 並分為三個並排選項。Import Animations 留在 Animation，上半身疊加移入 Equipment，原骨架編輯移入 Editing & Recovery。正式 X 未刷新。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.275_animation_panel_routes_20261127.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/animation_panel_routes_20261127/delivery275.json>) · [完整投影](<C:/Users/Randy/AppData/Local/CodexBackups/addon-release/20261127-animation-panels-275/stage275_01/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/fk_to_ik_working_motion_20261127/delivery274.json>)
+<!-- cd278-editing-recovery-20261127 -->
+Character Designer **0.77.278** 已安裝至 Blender 5.2 與 X，各 326 檔、0 差異。Overlay Composition 移至 Weapon，Package 和 Locate 集中到 Unity Export 的 Editing Files。保留本機動作登記及原有恢復入口。正式 X 未刷新。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.278_editing_recovery_20261127.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/editing_recovery_organization_20261127/delivery278.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/editing_recovery_organization_20261127/stage278_01/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/selected_control_key_totals_20261127/delivery277.json>)
 
 <!-- cd114-compact-physics-20261029 -->
 
