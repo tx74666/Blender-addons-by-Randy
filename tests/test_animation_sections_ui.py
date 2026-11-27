@@ -178,7 +178,9 @@ class AnimationSectionsTests(unittest.TestCase):
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
-        worklist.draw_worklist, worklist.draw_worklist_tools = Mock(), Mock()
+        for name in ('draw_worklist', 'draw_worklist_export', 'draw_worklist_unity',
+                     'draw_worklist_motion_tools', 'draw_worklist_recovery'):
+            setattr(worklist, name, Mock())
         worklist.scan_pending = Mock(return_value=False)
         collection = ModuleType(package + ".animation_worklist_collection")
         collection.running = Mock(return_value=False)
@@ -189,8 +191,8 @@ class AnimationSectionsTests(unittest.TestCase):
         panel_draw(scope)
         self.context.scene = SimpleNamespace(character_designer_animation_worklist=SimpleNamespace(workspace_path="linked"))
         layout = PanelLayout(opened=opened)
-        with patch.dict(sys.modules, {module.__name__: module for module in
-                                     (physics, original, pose, worklist, collection, export)}):
+        modules = (ModuleType(package), physics, original, pose, worklist, collection, export)
+        with patch.dict(sys.modules, {module.__name__: module for module in modules}):
             scope["draw"](SimpleNamespace(layout=layout), self.context)
         return layout, physics, original, pose, worklist, export
 
@@ -198,9 +200,12 @@ class AnimationSectionsTests(unittest.TestCase):
         layout, physics, original, pose, worklist, export = self.draw_animation({})
         original.draw_original_inputs.assert_not_called()
         worklist.draw_worklist.assert_called_once()
-        self.assertEqual(worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False, "include_tools": False})
-        worklist.draw_worklist_tools.assert_called_once()
-        pose.draw.assert_not_called()  # No duplicate pose controls outside Advanced.
+        self.assertEqual(worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False})
+        worklist.draw_worklist_recovery.assert_called_once()
+        pose.draw.assert_called_once()
+        worklist.draw_worklist_export.assert_not_called()
+        worklist.draw_worklist_unity.assert_not_called()
+        worklist.draw_worklist_motion_tools.assert_not_called()
         self.assertIn("character_designer.animation_export_cancel", [event[0] for event in layout.events])
         original_panel = next(event for event in layout.events if event[1] == "character_designer_animation_original_inputs")
         self.assertTrue(original_panel[3]["default_closed"])
@@ -211,7 +216,7 @@ class AnimationSectionsTests(unittest.TestCase):
             "character_designer_animation_animations": False})
         original.draw_original_inputs.assert_called_once()
         worklist.draw_worklist.assert_not_called()
-        worklist.draw_worklist_tools.assert_not_called()
+        worklist.draw_worklist_recovery.assert_not_called()
         pose.draw.assert_not_called()
         export.active_job.assert_not_called()
 
@@ -225,7 +230,9 @@ class AnimationSectionsTests(unittest.TestCase):
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
-        worklist.draw_worklist, worklist.draw_worklist_tools = Mock(), Mock()
+        for name in ('draw_worklist', 'draw_worklist_export', 'draw_worklist_unity',
+                     'draw_worklist_motion_tools', 'draw_worklist_recovery'):
+            setattr(worklist, name, Mock())
         worklist.scan_pending = Mock(return_value=False)
         collection = ModuleType(package + ".animation_worklist_collection")
         collection.running = Mock(return_value=False)
@@ -257,7 +264,7 @@ class AnimationSectionsTests(unittest.TestCase):
         self.context.scene = SimpleNamespace(frame_current=6, frame_subframe=.25,
             character_designer_animation_worklist=SimpleNamespace(workspace_path="", show_advanced=advanced))
         layout = NativeActionLayout(opened=opened)
-        modules = (physics, original, pose, worklist, collection, export, unity, link, forearm)
+        modules = (ModuleType(package), physics, original, pose, worklist, collection, export, unity, link, forearm)
         with patch.dict(sys.modules, {module.__name__: module for module in modules}), \
                 patch.object(Path, "open", side_effect=AssertionError("Draw read a file")), \
                 patch.object(Path, "stat", side_effect=AssertionError("Draw inspected file metadata")):
@@ -280,15 +287,13 @@ class AnimationSectionsTests(unittest.TestCase):
         # Reading the saved link is how the primary panel determines the correct action.
         # Filesystem access remains forbidden by the draw harness.
         result.link.get_link.assert_called_once_with(result.rig)
-        self.assertFalse(any(event[1] == "character_designer_animation_unity_exchange" for event in result.layout.events))
+        result.worklist.draw_worklist_unity.assert_not_called()
         result.unity.preview_time_seconds.assert_not_called()
         result.folder.assert_not_called()
         result.rig.animation_data_create.assert_not_called()
         result.worklist.draw_worklist.assert_called_once()
-        self.assertEqual(result.worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False, "include_tools": False})
-        [manual] = [event for event in result.layout.events if event[0] == "character_designer.animation_export"]
-        self.assertTrue(manual[2])
-        self.assertEqual(manual[3]["text"], "Export Current Action as FBX…")
+        self.assertEqual(result.worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False})
+        self.assertFalse(any(event[0] == "character_designer.animation_export" for event in result.layout.events))
         self.assertFalse(any(event[0] in {"character_designer.animation_unity_import",
                                           "character_designer.animation_link_import",
                                           "character_designer.animation_link_sync"} for event in result.layout.events))
@@ -296,7 +301,8 @@ class AnimationSectionsTests(unittest.TestCase):
     def test_unmanaged_empty_action_selector_does_not_create_animation_data_or_slots(self):
         for has_animation_data in (False, True):
             with self.subTest(has_animation_data=has_animation_data):
-                result = self.draw_unmanaged_animation(has_animation_data=has_animation_data, has_action=False)
+                result = self.draw_unmanaged_animation(opened={"character_designer_animation_export": True},
+                                                       has_animation_data=has_animation_data, has_action=False)
                 actions = [event for event in result.layout.events if event[0] == "template_action"]
                 self.assertEqual(len(actions), 1)
                 self.assertTrue(actions[0][2])
@@ -323,13 +329,14 @@ class AnimationSectionsTests(unittest.TestCase):
                     [event] = [event for event in result.layout.events if event[0] == cancel]
                     self.assertTrue(event[2])
                 manual = [event for event in result.layout.events if event[0] == "character_designer.animation_export"]
-                self.assertEqual([event[2] for event in manual], [] if name == "preview" else [False])
+                self.assertEqual(manual, [])
                 result.link.get_link.assert_called_once_with(result.rig)
                 self.assertEqual(result.unity.preview_time_seconds.call_count, int(name == "preview"))
                 result.folder.assert_not_called()
 
     def test_unmanaged_unity_sources_expand_without_duplicating_local_export(self):
-        result = self.draw_unmanaged_animation(advanced=True)
+        result = self.draw_unmanaged_animation(opened={"character_designer_animation_export": True,
+                                                      "character_designer_animation_unity": True})
         result.link.get_link.assert_called_once_with(result.rig)
         result.folder.assert_not_called()
         result.unity.preview_time_seconds.assert_not_called()

@@ -7,8 +7,8 @@
 
 
 
-<!-- cd263-animation-limb-switch-20261127 -->
-Character Designer **0.77.263** 已安裝至 Blender 5.2 與 X。四肢 FK/IK 切換集中在 Animation，Rig 的 Body Controls 保留建置與恢復工具。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.263_animation_only_limb_switch_20261127.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/animation_only_limb_switch_20261127/delivery263.json>) · [原生驗收](<D:/Blender/Projects/Character/X/validation/animation_only_limb_switch_20261127/layout01.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/animation_only_limb_switch_20261127/stage263_01/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/original_bones_display_20261127/delivery262.json>)
+<!-- cd265-animation-panel-layout-20261127 -->
+Character Designer **0.77.265** 已安裝至 Blender 5.2 與 X，各 320 檔、0 差異。Save Pose 位於動作列表上方，Unity 同步與動畫導出分區，連線但無可發送條目時可見單動作 FBX。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.265_animation_export_entry_20261127.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/animation_panel_layout_20261127/delivery265.json>) · [原生驗收](<D:/Blender/Projects/Character/X/validation/animation_panel_layout_20261127/native265.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/animation_panel_layout_20261127/stage265_01/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/animation_panel_layout_20261127/delivery264.json>)
 
 <!-- cd114-compact-physics-20261029 -->
 

@@ -197,7 +197,8 @@ class WorklistUI(unittest.TestCase):
                                      workspace_identity='validated-workspace-identity',
                                      connection_check_failed=False,
                                      target_name='Cosha', show_catalog=True, status='', has_error=False,
-                                     collection_status='', scan_completed=False, show_advanced=False)
+                                     collection_status='', scan_completed=False, show_advanced=False,
+                                     align_loop_period=True, precise_imported_motions=False)
         scene = Scene()
         scene.name = 'Animation Worklist · Cosha'
         scene.character_designer_animation_worklist = self.state
@@ -286,6 +287,7 @@ class WorklistUI(unittest.TestCase):
     def base_pose_buttons(self):
         layout = Layout()
         self.ui.draw_worklist(layout, self.context)
+        self.ui.draw_worklist_recovery(layout, self.context)
         return {value[1]['text']: value[2] for kind, value, _enabled in layout.records
                 if kind == 'operator' and value[0] == 'character_designer.worklist_base_pose'}
 
@@ -305,9 +307,9 @@ class WorklistUI(unittest.TestCase):
                 with self.subTest(active=active, advanced=advanced), self.base_pose_modules(active):
                     self.state.show_advanced = advanced
                     buttons = self.base_pose_buttons()
-                    self.assertEqual('Base Pose' in buttons, advanced)
+                    self.assertEqual('Test Base Pose' in buttons, advanced)
                     if advanced:
-                        self.assertIs(getattr(buttons['Base Pose'], 'finish', None), False)
+                        self.assertIs(getattr(buttons['Test Base Pose'], 'finish', None), False)
                     self.assertEqual('Return to Animation' in buttons, active)
                     if active:
                         self.assertIs(buttons['Return to Animation'].finish, True)
@@ -411,13 +413,13 @@ class WorklistUI(unittest.TestCase):
     def test_base_pose_reentry_overrides_remembered_return_route(self):
         self.state.show_advanced = True
         with self.base_pose_modules() as (pose, state):
-            first = self.execute_pose_button(self.base_pose_buttons()['Base Pose'], True)
+            first = self.execute_pose_button(self.base_pose_buttons()['Test Base Pose'], True)
             self.assertTrue(state['active'])
             self.assertIn('Base Pose ready', first.last_report[1])
             returned = self.execute_pose_button(self.base_pose_buttons()['Return to Animation'], False)
             self.assertFalse(state['active'])
             self.assertIn('Previous animation restored', returned.last_report[1])
-            reentered = self.execute_pose_button(self.base_pose_buttons()['Base Pose'], True)
+            reentered = self.execute_pose_button(self.base_pose_buttons()['Test Base Pose'], True)
             self.assertTrue(state['active'])
             self.assertIn('Base Pose ready', reentered.last_report[1])
             self.assertEqual(pose.start_or_reset.call_count, 2)
@@ -600,35 +602,35 @@ class WorklistUI(unittest.TestCase):
                         patch.object(Path, 'is_file', side_effect=AssertionError('UI probed a file')), \
                         patch.object(Path, 'is_dir', side_effect=AssertionError('UI probed a folder')), \
                         patch.object(self.ui, '_backend', side_effect=AssertionError('UI called the backend')):
-                    self.ui.draw_worklist(layout, self.context)
+                    self.ui.draw_worklist_unity(layout, self.context)
                 buttons = [value for kind, value, _enabled in layout.records
                            if kind == 'operator' and value[0] == 'character_designer.worklist_connect']
                 self.assertEqual(len(buttons), 1)
                 self.assertEqual((buttons[0][1]['text'], buttons[0][1]['icon']), (text, icon))
 
-    def test_initial_empty_and_failed_setup_stay_reachable_without_requiring_a_daily_refresh(self):
+    def test_connections_are_in_unity_section_even_when_recovery_is_closed(self):
         self.state.rig = None
         self.context.scene.objects = []
         saved = self.state.items
-        for path, amount, failed, advanced, expected in (
-                ('', 0, False, False, []),
-                ('', 0, False, True, ['Connect Unity Action List']),
-                ('list.json', 0, False, False, ['Cosha', 'Sync List']),
-                ('list.json', 0, False, True, ['Cosha', 'Sync List']),
-                ('list.json', 1, False, False, []),
-                ('list.json', 1, False, True, ['Cosha', 'Sync List']),
-                ('list.json', 1, True, False, ['Check Failed', 'Sync List'])):
-            with self.subTest(path=path, amount=amount, failed=failed, advanced=advanced):
+        for path, amount, failed, expected in (
+                ('', 0, False, ['Connect Unity Action List']),
+                ('list.json', 0, False, ['Cosha', 'Sync List']),
+                ('list.json', 1, False, ['Cosha', 'Sync List']),
+                ('list.json', 1, True, ['Check Failed', 'Sync List'])):
+            with self.subTest(path=path, amount=amount, failed=failed):
                 self.state.workspace_path, self.state.items = path, saved[:amount]
-                self.state.connection_check_failed, self.state.show_advanced = failed, advanced
-                layout = Layout()
-                self.ui.draw_worklist(layout, self.context)
-                buttons = [value[1]['text'] for kind, value, _ in layout.records if kind == 'operator'
-                           and value[0] in ('character_designer.worklist_connect', 'character_designer.worklist_sync_list')]
-                self.assertEqual(buttons, expected)
+                self.state.connection_check_failed = failed
+                main, unity = Layout(), Layout()
+                self.ui.draw_worklist(main, self.context)
+                self.ui.draw_worklist_unity(unity, self.context)
+                routes = {'character_designer.worklist_connect', 'character_designer.worklist_sync_list'}
+                self.assertFalse(any(kind == 'operator' and value[0] in routes for kind, value, _ in main.records))
+                self.assertEqual([value[1]['text'] for kind, value, _ in unity.records
+                                  if kind == 'operator' and value[0] in routes], expected)
+                self.assertIn(('prop', ('align_loop_period', {}), True), unity.records)
                 if path and not amount:
                     self.assertTrue(any(kind == 'label' and value['text'] == '1 prepared in Unity · 0 local actions'
-                                        for kind, value, _ in layout.records))
+                                        for kind, value, _ in main.records))
 
     def test_connection_tooltip_identifies_saved_check_and_keeps_workspace_change_available(self):
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_connect
@@ -999,8 +1001,7 @@ class WorklistUI(unittest.TestCase):
         self.assertIn(self.ui.CHARACTERDESIGNER_UL_animation_worklist, self.ui.WORKLIST_CLASSES)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertEqual([(value[0], value[1]['text']) for value in buttons], [
-            ('character_designer.motion_category_create', ''),
-            ('character_designer.worklist_sync', 'Send Selected to Unity')])
+            ('character_designer.motion_category_create', '')])
         self.assertIn(('menu', ('CHARACTERDESIGNER_MT_motion_categories',
                                 {'text': 'Group1', 'icon': 'FILE_FOLDER'}), True), layout.records)
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
@@ -1035,7 +1036,7 @@ class WorklistUI(unittest.TestCase):
         animation = self.state.items[0].rig.animation_data
         def enabled():
             layout = Layout()
-            self.ui.draw_worklist(layout, self.context)
+            self.ui.draw_worklist_export(layout, self.context)
             return [allowed for kind, value, allowed in layout.records
                     if kind == 'operator' and value[0] == 'character_designer.animation_export_base_pose'
                     and value[1]['text'] == 'Capture Export Base Pose']
@@ -1056,7 +1057,7 @@ class WorklistUI(unittest.TestCase):
                      'CHARACTERDESIGNER_OT_worklist_compare_keys'):
             self.assertFalse(hasattr(self.ui, name))
         layout = Layout()
-        self.ui.draw_worklist(layout, self.context)
+        self.ui.draw_worklist_motion_tools(layout, self.context)
         buttons = {value[0] for kind, value, _enabled in layout.records if kind == 'operator'}
         self.assertTrue(removed.isdisjoint(buttons))
         self.assertIn('character_designer.make_controller_animation', buttons)
@@ -1222,11 +1223,12 @@ class WorklistUI(unittest.TestCase):
                 self.state.show_advanced = opened
                 layout = Layout()
                 self.ui.draw_worklist(layout, self.context)
+                self.ui.draw_worklist_recovery(layout, self.context)
                 buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
                 self.assertEqual('character_designer.worklist_register_new' in buttons, opened)
                 self.assertNotIn('character_designer.worklist_scan_changes', buttons)
-                self.assertEqual(buttons.count('character_designer.worklist_sync'), 1)
-                self.assertEqual('character_designer.worklist_sync_changed' in buttons, opened)
+                self.assertNotIn('character_designer.worklist_sync', buttons)
+                self.assertNotIn('character_designer.worklist_sync_changed', buttons)
         self.assertIn(self.ui.CHARACTERDESIGNER_OT_worklist_register_new, self.ui.WORKLIST_CLASSES)
 
     def test_idle_success_feedback_is_hidden_and_errors_remain_visible(self):
@@ -1260,6 +1262,7 @@ class WorklistUI(unittest.TestCase):
         self.state.status, self.state.has_error = 'Workspace identity changed.', True
         layout = Layout()
         self.ui.draw_worklist(layout, self.context)
+        self.ui.draw_worklist_export(layout, self.context)
         labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
         self.assertFalse(any(label.startswith(('Character:', 'Rig:', 'Scene:')) for label in labels))
         self.assertIn('Current Rig: local animation versions', labels)
@@ -1537,7 +1540,7 @@ class WorklistUI(unittest.TestCase):
                 self.assertIs(setup.rig, invalid)
                 self.assertIs(self.context.window_manager.character_designer_animation.target, fallback)
 
-    def draw_legacy_panel(self, animation):
+    def draw_legacy_panel(self, animation, *, open_unity=False):
         package_name = self.ui.__package__
         unity = ModuleType(package_name + '.unity_animation')
         unity.active_preview = Mock(return_value=None)
@@ -1546,8 +1549,15 @@ class WorklistUI(unittest.TestCase):
         link.ACTION_KEY = 'character_designer_animation_link_action'
         link.get_link = Mock(return_value=None)
         self.exporter.active_job.return_value = None
-        layout = Layout()
-        with patch.dict(sys.modules, {unity.__name__: unity, link.__name__: link}):
+        class LegacyLayout(Layout):
+            def panel(layout, identifier, *, default_closed=False):
+                opened = identifier == 'character_designer_animation_unity' and open_unity
+                body = LegacyLayout(layout.records, layout.enabled) if not default_closed or opened else None
+                return layout.row(), body
+
+        layout = LegacyLayout()
+        with patch.dict(sys.modules, {unity.__name__: unity, link.__name__: link}), \
+                patch.object(self.ui.edit_scene, 'mapping_home', return_value=None):
             animation.CHARACTERDESIGNER_PT_animation.draw(SimpleNamespace(layout=layout), self.context)
         return layout.records
 
@@ -1573,9 +1583,7 @@ class WorklistUI(unittest.TestCase):
                 self.assertEqual(any('Rig > Character Setup' in text for text in labels), not valid)
                 self.assertNotIn('character_designer.animation_unity_import',
                                  [value[0] for kind, value, _ in records if kind == 'operator'])
-                self.state.show_advanced = True
-                advanced = self.draw_legacy_panel(animation)
-                self.state.show_advanced = False
+                advanced = self.draw_legacy_panel(animation, open_unity=True)
                 self.assertIn('character_designer.animation_unity_import',
                               [value[0] for kind, value, _ in advanced if kind == 'operator'])
                 self.assertEqual((dict(vars(setup)), dict(vars(settings)), self.context.object, self.state.rig), before)
@@ -1724,6 +1732,7 @@ class WorklistUI(unittest.TestCase):
                 self.state.show_advanced = opened
                 layout = Layout()
                 self.ui.draw_worklist(layout, self.context)
+                self.ui.draw_worklist_recovery(layout, self.context)
                 buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
                 self.assertEqual('character_designer.worklist_restore_main_rig' in buttons, opened)
                 self.assertNotIn('character_designer.worklist_use_main_rig', buttons)

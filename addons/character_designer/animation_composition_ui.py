@@ -331,9 +331,9 @@ def draw_composition(layout, context):
     backend, selected = _backend(), _selected(context)
     box = layout.box()
     header = box.row(align=True)
-    header.label(text='Composition', icon='NLA')
+    header.label(text='Overlay Composition', icon='NLA')
     header.operator_context = 'INVOKE_DEFAULT'
-    header.operator('character_designer.composition_connect', text='Library', icon='FILE_FOLDER')
+    header.operator('character_designer.composition_connect', text='', icon='FILE_FOLDER')
     session = None
     if backend.active(saved.rig):
         try:
@@ -354,7 +354,7 @@ def draw_composition(layout, context):
         row.operator('character_designer.composition_view', text='Result', depress=not session['solo']).solo = False
         row.operator('character_designer.composition_view', text=('Overlay Only' if session['edit_target'] == 'B' else 'Base Only'), depress=session['solo']).solo = True
         if session['edit_target'] == 'B' and session['spec']['timeMode'] == 'HoldPose':
-            box.operator('character_designer.composition_capture_hold', icon='KEY_HLT')
+            box.operator('character_designer.composition_capture_hold', text='Capture Overlay Pose', icon='KEY_HLT')
         if not saved.rig.animation_data.use_tweak_mode:
             box.operator('character_designer.composition_resume', icon='PLAY')
         row = box.row(align=True)

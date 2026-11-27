@@ -42,7 +42,7 @@ class DiscardUI(unittest.TestCase):
             with self.subTest(advanced=advanced):
                 self.state.show_advanced = advanced
                 layout = ui_fixtures.Layout()
-                self.ui.draw_worklist(layout, self.context)
+                self.ui.draw_worklist_recovery(layout, self.context)
                 discards = [value for kind, value, _enabled in layout.records if kind == 'operator'
                     and value[0] == 'character_designer.worklist_discard_retired']
                 self.assertEqual(len(discards), int(advanced))

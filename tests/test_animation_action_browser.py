@@ -249,7 +249,7 @@ class BrowserTests(unittest.TestCase):
                     self.animation._link_idle = lambda: not busy
                     self.assertFalse(self.ui.can_select(self.context, self.rig))
                     layout = NativeActionLayout()
-                    self.assertTrue(draw(layout, self.context))
+                    self.assertEqual(draw(layout, self.context), (self.rig, None, not busy))
                     [native] = [event for event in layout.events if event[0] == 'template_action']
                     [slot] = [event for event in layout.events if event[0] == 'template_search']
                     self.assertIs(native[4], self.rig)
@@ -258,8 +258,7 @@ class BrowserTests(unittest.TestCase):
                     labels = ' '.join(event[1] for event in layout.events if event[0] == 'label')
                     self.assertIn('Archived link: Walk_N Custom.002', labels)
                     self.assertNotIn('Sync List', labels)
-                    [manual] = [event for event in layout.events if event[0] == 'character_designer.animation_export']
-                    self.assertEqual(manual[2], not busy)
+                    self.assertFalse(any(event[0] == 'character_designer.animation_export' for event in layout.events))
                     self.assertFalse(any(event[0] == 'character_designer.animation_link_sync' for event in layout.events))
                     self.assertNotIn(self.first.name, labels)
                     self.assertNotIn('Action Editor', labels)
@@ -276,23 +275,21 @@ class BrowserTests(unittest.TestCase):
         draw, modules = self.single_action_panel()
         with modules:
             layout = NativeActionLayout()
-            self.assertTrue(draw(layout, self.context))
+            self.assertEqual(draw(layout, self.context), (self.rig, None, True))
             named = {event[3].get('text', ''): event for event in layout.events if event[0].startswith('character_designer.')}
-            self.assertEqual(set(named), {'Open Linked Action', 'Export Current Action as FBX…'})
-            self.assertTrue(named['Export Current Action as FBX…'][2])
+            self.assertEqual(set(named), {'Open Linked Action'})
             self.assertIs(self.rig.animation_data.action, self.first)
             self.assertIs(self.rig[link.ACTION_KEY], self.idle)
             self.rig['character_designer_body_original_mode_v1'] = '{}'
             layout = NativeActionLayout()
-            self.assertTrue(draw(layout, self.context))
-            [manual] = [event for event in layout.events if event[0] == 'character_designer.animation_export']
-            self.assertFalse(manual[2])
+            self.assertEqual(draw(layout, self.context), (self.rig, None, False))
             del self.rig['character_designer_body_original_mode_v1']
             self.open_link(self.idle)
             layout = NativeActionLayout()
-            self.assertFalse(draw(layout, self.context))
-            names = [event[3].get('text', '') for event in layout.events if event[0].startswith('character_designer.')]
-            self.assertEqual(names, ['Send to Unity'])
+            target, send_key, export_ready = draw(layout, self.context)
+            self.assertIs(target, self.rig)
+            self.assertTrue(send_key and export_ready)
+            self.assertFalse(any(event[0] == 'character_designer.animation_link_sync' for event in layout.events))
             self.assertIs(self.rig.animation_data.action, self.idle)
 
     def test_classification_writes_only_strings_and_preserves_existing_identity(self):

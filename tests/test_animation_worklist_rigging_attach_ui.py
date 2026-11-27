@@ -22,6 +22,7 @@ class PreparedRiggingUI(unittest.TestCase):
         # canonical UI module. No native module or backend is imported here.
         _helpers.WorklistUI.setUp(self)
         self.main = SimpleNamespace(name='CoshaRig', type='ARMATURE', library=None,
+            session_uid=42,
             animation_data=SimpleNamespace(action=None, action_slot_handle=1),
             get=Mock(side_effect=lambda key: 'owned snapshot' if
                 key == 'character_designer_worklist_main_session_v1' else
@@ -113,7 +114,8 @@ class PreparedRiggingUI(unittest.TestCase):
         with self.no_file_access():
             self.assertTrue(self.attach_operator().poll(self.context))
             layout = _helpers.Layout()
-            self.ui.draw_worklist(layout, self.context)
+            self.ui.draw_worklist_unity(layout, self.context)
+            self.ui.draw_worklist_export(layout, self.context)
         buttons = [value[0] for kind, value, _ in layout.records if kind == 'operator']
         self.assertEqual(buttons.count(self.attach_operator().bl_idname), 1)
         self.assertIn('character_designer.worklist_sync', buttons)
@@ -130,7 +132,7 @@ class PreparedRiggingUI(unittest.TestCase):
         with self.no_file_access():
             self.assertFalse(self.attach_operator().poll(self.context))
             layout = _helpers.Layout()
-            self.ui.draw_worklist(layout, self.context)
+            self.ui.draw_worklist_unity(layout, self.context)
         button = [(value, enabled) for kind, value, enabled in layout.records
                   if kind == 'operator' and value[0] == self.attach_operator().bl_idname]
         self.assertEqual(len(button), 1)

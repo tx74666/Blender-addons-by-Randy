@@ -633,6 +633,8 @@ class WorklistSyncUI(unittest.TestCase):
                 patch.object(self.ui, '_backend', side_effect=AssertionError('Draw called backend')), \
                 patch.object(self.ui, '_reconcile', side_effect=AssertionError('Draw reconciled')):
             self.ui.draw_worklist(layout, self.context)
+            self.ui.draw_worklist_unity(layout, self.context)
+            self.ui.draw_worklist_recovery(layout, self.context)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertIn(('character_designer.worklist_sync_list', 'Sync List'),
                       [(value[0], value[1]['text']) for value in buttons])
@@ -649,7 +651,7 @@ class WorklistSyncUI(unittest.TestCase):
             with self.subTest(expanded=expanded):
                 self.state.show_advanced = expanded
                 layout = fixtures.Layout()
-                self.ui.draw_worklist(layout, self.context)
+                self.ui.draw_worklist_recovery(layout, self.context)
                 labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
                 self.assertEqual('Retired Animations (1)' in labels, expanded)
                 restores = [value for kind, value, _enabled in layout.records
