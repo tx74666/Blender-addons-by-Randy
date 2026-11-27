@@ -1263,14 +1263,14 @@ def _repair_leg_poles_with_transaction(context, armature, desired_pose, transact
     return transaction(context, armature, commit)
 
 
-def _curve_bookend(curve, frame):
+def _curve_bookend(curve, frame, *, inside_repeat=False):
     """Capture an exact cut through a channel before adding matching keys.
 
     Inserting an ordinary AUTO-handle key alters the preceding Bezier segment.
     Split its cubic instead, preserving the complete earlier curve rather than
     only its sampled value at the previous frame.
     """
-    if curve.lock or curve.mute or any(not modifier.mute for modifier in curve.modifiers):
+    if curve.lock or curve.mute or (not inside_repeat and any(not modifier.mute for modifier in curve.modifiers)):
         raise _error("IK/FK cannot safely key a locked, muted or modifier-driven transform channel.")
     points = list(curve.keyframe_points)
     if not points:

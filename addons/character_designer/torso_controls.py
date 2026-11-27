@@ -97,7 +97,8 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None,
         # ownership is additionally needed when removing or rebuilding controls.
         if not pose_only:
             collection = bpy.data.collections.get(record['widget_collection'])
-            if collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'):
+            if (not validation_native.missing_pose_asset(armature, collection)
+                    and (collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'))):
                 raise _error('The Torso Controls widget collection is missing.')
     except (KeyError, TypeError, AttributeError) as exc:
         raise _error('Torso Controls recovery data no longer matches this rig.') from exc

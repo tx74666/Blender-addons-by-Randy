@@ -320,7 +320,7 @@ class UnityUpdateSelectionTests(unittest.TestCase):
         self.assertEqual(frozen(self.rig), before)
         self.assertEqual(protected_state(), scene)
         self.assert_legacy()
-        self.assertIn('Selective export is not enabled yet.', layout.labels)
+        self.assertIn('Rig includes all listed parts.', layout.labels)
 
     def test_direct_native_false_choices_are_read_back_without_default_fallback(self):
         settings = self.choices()
@@ -336,12 +336,12 @@ class UnityUpdateSelectionTests(unittest.TestCase):
         self.assertEqual(self.intent(), before)
         self.assert_legacy()
 
-    def test_mesh_and_rig_all_none_mixed_are_independent(self):
+    def test_rig_includes_all_meshes_and_restores_individual_choices_when_off(self):
         self.set(False)
         selection = self.read()
-        self.assertEqual(selection['meshes'], ())
+        self.assertEqual(set(selection['meshes']), set(self.eligible))
         self.assertTrue(selection['update_rig'])
-        self.assertEqual(self.ui.selection_counts(self.rig, self.eligible), (0, 3, False))
+        self.assertEqual(self.ui.selection_counts(self.rig, self.eligible), (3, 3, False))
         self.set(False, objects=(), include_rig=True)
         self.assertFalse(self.read()['update_rig'])
         self.set(True, objects=(self.body,))
@@ -362,13 +362,35 @@ class UnityUpdateSelectionTests(unittest.TestCase):
         self.assert_legacy()
 
     def test_body_can_be_unchecked_without_writing_legacy_extras(self):
+        self.set(False, objects=(), include_rig=True)
         self.set(False, objects=(self.body,))
         self.assertEqual(set(self.read()['meshes']), {self.hair, self.dress})
-        self.assertTrue(self.read()['update_rig'])
+        self.set(True, objects=(), include_rig=True)
+        self.assertEqual(set(self.read()['meshes']), set(self.eligible))
+        self.set(False, objects=(), include_rig=True)
+        self.assertEqual(set(self.read()['meshes']), {self.hair, self.dress})
         self.assert_legacy()
         self.assertEqual(set(self.read()['eligible']), set(self.eligible))
 
+    def test_full_rig_collects_registered_bone_attachment_and_excludes_control_shapes(self):
+        jewel = self.unbound
+        guide = mesh('Hair Guide')
+        for obj in (jewel, guide):
+            obj.parent, obj.parent_type, obj.parent_bone = self.rig, 'BONE', 'Hand'
+        guide['character_designer_asset_role'] = 'GUIDE'
+        setup = SimpleNamespace(rig=self.rig, body=self.body, assets=[SimpleNamespace(object=o) for o in (jewel, guide)])
+        with mock.patch.object(SETUP, 'settings', return_value=setup):
+            config = EXPORT_UI._full_update_config(bpy.context, self.rig, self.config)
+            full = EXPORTER.collect_character(bpy.context, self.rig, config)['objects']
+            self.assertIn(jewel, full)
+            self.assertNotIn(guide, full)
+            self.assertNotIn(jewel, EXPORTER.collect_character(bpy.context, self.rig, self.config)['objects'])
+            jewel.parent_bone = 'Missing'
+            with self.assertRaisesRegex(ValueError, 'exported bone'):
+                EXPORTER.collect_character(bpy.context, self.rig, config)
+
     def test_duplicates_are_conservative_and_batch_synchronizes_them(self):
+        self.set(False, objects=(), include_rig=True)
         settings = self.choices()
         for selected in (True, False):
             entry = settings.meshes.add()
@@ -539,11 +561,14 @@ class UnityUpdateSelectionTests(unittest.TestCase):
         view, rows = self.ui._sync_view(bpy.context, self.rig, self.read()['eligible'])
         before = protected_state()
         row = next(item for item in rows if item.object == self.body)
+        view.rig_selected = False
         row.selected = False
         self.assertNotIn(self.body, self.read()['meshes'])
-        self.assertTrue(view.rig_selected)
+        self.assertFalse(view.rig_selected)
         view.mesh_selected = False
         self.assertEqual(self.read()['meshes'], ())
+        view.rig_selected = True
+        self.assertEqual(set(self.read()['meshes']), set(self.eligible))
         self.assertTrue(self.read()['update_rig'])
         view.rig_selected = False
         self.assertFalse(self.read()['update_rig'])
@@ -614,13 +639,14 @@ class UnityUpdateSelectionTests(unittest.TestCase):
                     bpy.context.view_layer.objects.active = active
                     if mode == 'POSE':
                         bpy.ops.object.mode_set(mode='POSE')
+                    self.set(False, objects=(), include_rig=True)
                     self.assertEqual(bpy.ops.ed.undo_push(message='Before Unity update checkbox'), {'FINISHED'})
                     before, before_intent = authored(), logical(self.intent())
                     legacy = logical(self.legacy_state())
                     view, rows = self.ui._sync_view(bpy.context, self.rig, self.read()['eligible'])
                     next(item for item in rows if item.object == self.body).selected = False
                     self.assertNotIn(self.body, self.read()['meshes'])
-                    self.assertTrue(self.read()['update_rig'])
+                    self.assertFalse(self.read()['update_rig'])
                     changed_intent = logical(self.intent())
                     self.assertNotEqual(changed_intent, before_intent)
                     self.assertEqual(authored(), before)
@@ -640,6 +666,7 @@ class UnityUpdateSelectionTests(unittest.TestCase):
             bpy.context.preferences.edit.use_global_undo = saved_undo
 
     def test_rename_deleted_reference_and_reused_name_do_not_retarget_cached_rows(self):
+        self.set(False, objects=(), include_rig=True)
         self.set(False, objects=(self.body,))
         view, rows = self.ui._sync_view(bpy.context, self.rig, self.read()['eligible'])
         original = next(item for item in rows if item.object == self.body)

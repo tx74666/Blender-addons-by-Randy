@@ -77,8 +77,13 @@ def assign_character_action(rig, action, slot_handle):
         ad.action, ad.action_slot = action, slot
         if ad.action != action or ad.action_slot != slot:
             raise ValueError('The original Action slot could not be assigned.')
+        from .animation_cleanup import restore_defaults
+        restore_defaults(rig, action, slot_handle)
         if previous and not previous.users:
             previous.use_fake_user = True
+        from . import bone_display
+        if bone_display.neutral_view(rig):
+            bone_display.restore_view(rig)
     except Exception:
         if created_animation_data:
             rig.animation_data_clear()
@@ -198,5 +203,8 @@ def draw_local_actions(layout, context, *, pinned_only):
     return bool(rows)
 
 
+from .animation_neutral_motion import CHARACTERDESIGNER_OT_open_neutral_motion
+
+
 CLASSES = (CharacterDesignerLocalMotionPin, CHARACTERDESIGNER_OT_toggle_local_motion_pin,
-           CHARACTERDESIGNER_OT_open_local_motion)
+           CHARACTERDESIGNER_OT_open_local_motion, CHARACTERDESIGNER_OT_open_neutral_motion)

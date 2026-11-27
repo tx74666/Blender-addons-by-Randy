@@ -48,14 +48,15 @@ class PoseBone:
 class LimbFKVisualTests(unittest.TestCase):
     def setUp(self):
         self.objects, self.meshes, self.collections = Named(), Named(), Named()
-        self.bpy = NS(data=NS(objects=self.objects, meshes=self.meshes,
+        self.bpy = NS(context=NS(), data=NS(objects=self.objects, meshes=self.meshes,
                               collections=self.collections))
         package = ModuleType('_fk_visuals_test')
-        package.__path__ = []
+        package.__path__ = [str(SOURCE)]
         package.generated_names = NS(
             collection_name=lambda rig, role: role,
             widget_name=lambda rig, role: role)
         package.validation_json = NS(decode=json.loads)
+        package.limb_ik_fk_pose_key = NS(active_record=Mock(return_value=None))
         # These transaction tests model the wrist planner as an independent
         # service. Its actual source/geometry guards have their own pure/native
         # tests; here the non-default vectors prove build uses its result.
@@ -271,6 +272,18 @@ class LimbFKVisualTests(unittest.TestCase):
             self.assertEqual({name: id(obj) for name, obj in self.objects.items()}, resources)
             was_native = native
         self.assertEqual(self.visuals.validate(self.rig, self.inventory), record)
+
+    def test_missing_collection_is_optional_only_inside_a_pose_transfer_on_this_rig(self):
+        record = self.build()
+        name = record['collection']
+        del self.collections[name]
+        with self.assertRaisesRegex(ValueError, 'collection'):
+            self.visuals.validate(self.rig)
+        with self.visuals.validation_native.original_pose_widgets(self.rig):
+            self.assertEqual(self.visuals.validate(self.rig), record)
+            self.collections[name] = ID(name=name)
+            with self.assertRaisesRegex(ValueError, 'collection'):
+                self.visuals.validate(self.rig)
 
     def test_fk_detach_guard_and_owned_artist_transform_refuse_without_partial_changes(self):
         record = self.build()

@@ -1,6 +1,6 @@
 """Selected-limb pose keys on a retained character controller Action and slot."""
 import math
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import bpy
 
@@ -82,21 +82,22 @@ def _values(rig, limb, mode, inventory):
 
 
 def _key_channels(bag, frame, values, mode_key, original, *, preserve_fk_mode, action=None, limb=None):
-    """Write only the active slot. Preserve authored interpolation for ordinary pose keys."""
-    from . import controller_animation_curves, limb_ik_wrist_keying as curves
+    """Plan from the displayed pose and the curves as they were before native insertion."""
+    from . import animation_preview_curves
     existing = {(c.data_path, c.array_index): c for c in bag.fcurves if (c.data_path, c.array_index) in values}
     mode_curve = existing.get(mode_key)
-    # Both current and historical controller Actions provide an explicit IK/FK switch curve.
-    if mode_curve is None or not mode_curve.keyframe_points:
-        raise ValueError('This Action has no animated limb mode. Prepare the character controller Action first.')
-    previous_mode = float(mode_curve.evaluate(frame))
+    # Deleting all keys of an IK foot also removes its mode channel. The actual
+    # pre-switch pose is the only known previous mode; do not reconstruct a
+    # guessed historical mode from the Action's FK/IK version label.
+    has_mode_keys = bool(mode_curve and mode_curve.keyframe_points)
+    previous_mode = float(mode_curve.evaluate(frame)) if has_mode_keys else original[mode_key][0]
     changing = abs(previous_mode - values[mode_key][0]) > 1e-5
     span = {}
     if changing and action is not None and limb is not None:
         from . import knee_pole_keying
         mode = 'IK' if values[mode_key][0] >= .5 else 'FK'
         span = knee_pole_keying.range_values(action, bag, limb, mode, frame, mode_curve)
-    if not changing and preserve_fk_mode:
+    if not changing and preserve_fk_mode and has_mode_keys:
         # A temporary IK pose committed to an already-FK section is a pure FK
         # pose edit. Leave the complete mode curve and its interpolation alone.
         values = {key: state for key, state in values.items() if key != mode_key}
@@ -116,15 +117,31 @@ def _key_channels(bag, frame, values, mode_key, original, *, preserve_fk_mode, a
         # A fractional or consecutive switch must respect nearer authored keys.
         for curve in existing.values():
             cut = max((p.co.x for p in curve.keyframe_points if cut < p.co.x < frame - 1e-5), default=cut)
-    snapshots, splits = {}, {}
-    budget = [0]
+    splits = {}
+    first_loop_keys = set()
     for key, curve in existing.items():
-        if (curve.lock or curve.mute or (curve.group and (curve.group.lock or curve.group.mute))
-                or curve.sampled_points or any(not m.mute for m in curve.modifiers)):
-            raise ValueError('Unlock the animated limb channels and remove active curve modifiers before keying.')
-        snapshots[key] = curves._point_snapshot(curve, budget)
-        if changing:
-            splits[key] = match._curve_bookend(curve, cut)
+        repeats = animation_preview_curves._repeat_mode(curve) == 'REPEAT'
+        if (not animation_preview_curves._editable(curve)
+                or (not repeats and any(not m.mute for m in curve.modifiers))):
+            raise ValueError('Unlock the limb channels and use plain curves or Repeat Motion before keying.')
+        if repeats:
+            points = curve.keyframe_points
+            if not points or not points[0].co.x <= frame <= points[-1].co.x:
+                raise ValueError('Key the limb switch inside the original cycle of each repeating channel.')
+            if cut < points[0].co.x:
+                first_loop_keys.add(key)
+        if changing and key not in first_loop_keys and curve.keyframe_points:
+            splits[key] = match._curve_bookend(curve, cut, inside_repeat=repeats)
+    return _write_channels(bag, frame, values, mode_key, original, changing, cut, splits, first_loop_keys, span)
+
+
+@contextmanager
+def _write_channels(bag, frame, values, mode_key, original, changing, cut, splits, first_loop_keys, span):
+    from . import controller_animation_curves, limb_ik_wrist_keying as curves
+    # Native I may have created a formerly missing selected-bone curve.
+    existing = {(c.data_path, c.array_index): c for c in bag.fcurves if (c.data_path, c.array_index) in values}
+    budget = [0]
+    snapshots = {key: curves._point_snapshot(curve, budget) for key, curve in existing.items()}
     groups = {g.name for g in bag.groups}
     created = []
     try:
@@ -133,14 +150,14 @@ def _key_channels(bag, frame, values, mode_key, original, *, preserve_fk_mode, a
             if curve is None:
                 curve = bag.fcurves.new(key[0], index=key[1], group_name=group)
                 created.append(curve)
-            if changing:
+            if changing and key not in first_loop_keys:
                 plan = splits.get(key)
                 before = plan['value'] if plan else original[key][0]
                 curve.keyframe_points.insert(cut, before)
             point = curve.keyframe_points.insert(frame, value)
             if key == mode_key:
                 point.interpolation = 'CONSTANT'
-            if changing:
+            if changing and key not in first_loop_keys:
                 if plan:
                     match._restore_bookend(curve, cut, plan)
                 cut_key = next(k for k in curve.keyframe_points if abs(k.co.x - cut) < 1e-5)
@@ -175,6 +192,7 @@ def _key_channels(bag, frame, values, mode_key, original, *, preserve_fk_mode, a
                 curve.update()
             if not math.isclose(curve.evaluate(frame), value, abs_tol=2.e-5, rel_tol=2.e-6):
                 raise ValueError('The current limb key could not reproduce its control value.')
+        yield
     except Exception:
         for curve in created:
             bag.fcurves.remove(curve)
@@ -227,7 +245,7 @@ def _without_temporary_keys(bag, frame, temporary):
             continue
         previous, outside = original.get(key, (None, ()))
         if _other_points(c, frame) != outside or (previous and c.as_pointer() != previous['pointer']):
-            raise ValueError('The temporary IK channels also changed on another frame. Use Key Pose to keep those edits.')
+            raise ValueError('The temporary IK channels also changed on another frame. Press I in the 3D Viewport to keep the IK pose.')
         if previous is None:
             created.append(c)
         else:
@@ -247,9 +265,8 @@ def _without_temporary_keys(bag, frame, temporary):
             bag.groups.remove(group)
 
 
-def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk=False):
-    """Capture the displayed pose, then switch and/or explicitly key this limb."""
-    from . import body_original_mode, bone_display, control_pose_offset, controller_animation
+def _editable_record(context, rig, record_key):
+    from . import body_original_mode
     record = active_record(context, rig)
     if not record or context.mode != 'POSE' or context.view_layer.objects.active != rig:
         raise ValueError('Open the controller Action on its character and select a limb in Pose Mode.')
@@ -268,6 +285,72 @@ def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk
                (r != record and ad.action in (r.controller_action, getattr(r, 'alternate_action', None)))
                for r in context.scene.character_designer_controller_motions):
             raise ValueError('This Action also belongs to another motion or a source clip.')
+    return record
+
+
+def _finish(tokens):
+    for token in tokens:
+        _PENDING.pop(token, None)
+        _TEMPORARY.pop(token, None)
+    if not _PENDING:
+        clear_pending()
+
+
+def selected_pending(context):
+    if (not _PENDING or context.mode != 'POSE' or not context.area or context.area.type != 'VIEW_3D'
+            or not context.region or context.region.type != 'WINDOW'):
+        return ()
+    rig = context.object
+    record = active_record(context, rig)
+    if not record:
+        return ()
+    scene = context.scene
+    frame = scene.frame_current + scene.frame_subframe
+    prefix = (scene.session_uid, rig.session_uid, record.controller_action.session_uid, record.controller_slot)
+    selected = {bone.name for bone in context.selected_pose_bones or () if bone.id_data == rig}
+    return tuple(token for token, inputs in _PENDING.items()
+                 if token[:4] == prefix and token[-1] == frame
+                 and any(group in selected for _, group in inputs.values()))
+
+
+def insert_with_switches(context, tokens):
+    """Commit the matched inputs and run Blender's selected/keying-set insertion in one undo step."""
+    from . import control_pose_offset
+    rig = context.object
+    record = _editable_record(context, rig, True)
+    inventory = match._limb()._validate_inventory(rig, limb_pose_only=True)
+    action = record.controller_action
+    bag = control_pose_offset._bag(action, record.controller_slot)
+    plans = []
+    for token in tokens:
+        key, frame = token[-2:]
+        limb = inventory['rigs'][key]
+        mode = match.mode_for_rig(rig, limb)
+        if mode not in ('FK', 'IK'):
+            raise ValueError('Choose FK or IK before keying a blended limb.')
+        values, mode_key = _values(rig, limb, mode, inventory)
+        plans.append(_key_channels(bag, frame, values, mode_key, _PENDING[token],
+                                   preserve_fk_mode=False, action=action, limb=limb))
+    # Blender reads still-unkeyed edits (also on other selected controls) here.
+    # Writing ANY Action curve first can reevaluate those edits away.
+    if 'FINISHED' not in bpy.ops.anim.keyframe_insert('EXEC_DEFAULT', False):
+        raise ValueError('Blender could not insert the selected keys. The limb switch is still pending.')
+    try:
+        with ExitStack() as changes:
+            for plan in plans:
+                changes.enter_context(plan)
+    except Exception as exc:
+        # Ordinary insertion succeeded. Retain its undo step and allow a retry;
+        # the compound switch write has been rolled back for every limb.
+        return f'Blender inserted the selected keys. The mode switch is still pending: {exc}'
+    _finish(tokens)
+
+
+def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk=False):
+    """Capture the displayed pose, then switch and/or explicitly key this limb."""
+    from . import bone_display, control_pose_offset, controller_animation
+    record = _editable_record(context, rig, record_key)
+    ad = rig.animation_data
     inventory = match._limb()._validate_inventory(rig, limb_pose_only=True)
     if key not in inventory['rigs']:
         raise ValueError('Build the selected limb controls first.')
@@ -300,14 +383,12 @@ def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk
             values, mode_key = _values(rig, limb, output_mode, inventory)
             previous = before.copy()
             previous.update(_PENDING.get(token, {}))
-            with _without_temporary_keys(bag, frame, _TEMPORARY.get(token) if output_mode == 'FK' else None):
-                _key_channels(bag, frame, values, mode_key, previous,
-                              preserve_fk_mode=store_as_fk or (output_mode == 'FK' and token in _TEMPORARY),
-                              action=ad.action, limb=limb)
-            _PENDING.pop(token, None)
-            _TEMPORARY.pop(token, None)
-            if not _PENDING:
-                clear_pending()
+            with ExitStack() as changes:
+                changes.enter_context(_without_temporary_keys(bag, frame, _TEMPORARY.get(token) if output_mode == 'FK' else None))
+                changes.enter_context(_key_channels(bag, frame, values, mode_key, previous,
+                                      preserve_fk_mode=store_as_fk or (output_mode == 'FK' and token in _TEMPORARY),
+                                      action=ad.action, limb=limb))
+            _finish((token,))
         elif old_mode != output_mode:
             _remember(token, before)
             if temporary is not None:
@@ -321,37 +402,112 @@ def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk
         raise
 
 
-def draw(layout, context):
-    from . import controller_animation_ui as ui, limb_ik, limb_ik_ui_state
+def edit_group(context, rig, keys, mode):
+    """Match a set of limbs before writing any keys on the retained Action."""
+    from . import control_pose_offset, forearm_twist, limb_ik_fk_batch as batch
+    keyed = context.scene.tool_settings.use_keyframe_insert_auto
+    record = _editable_record(context, rig, keyed)
+    inventory = match._limb()._validate_inventory(rig, limb_pose_only=True)
+    keys = batch._keys(inventory, keys)
+    action = record.controller_action
+    bag = control_pose_offset._bag(action, record.controller_slot)
+    frame = context.scene.frame_current + context.scene.frame_subframe
+    previous, desired, tokens = {}, {}, {}
+    driver_paths = set()
+    for key in keys:
+        limb = inventory['rigs'][key]
+        old_mode = match.mode_for_rig(rig, limb)
+        token = (context.scene.session_uid, rig.session_uid, action.session_uid, record.controller_slot, key, frame)
+        if old_mode == mode and token not in _PENDING:
+            continue
+        tokens[key] = token
+        previous[key] = _values(rig, limb, mode, inventory)[0]
+        previous[key].update(_values(rig, limb, old_mode, inventory)[0])
+        previous[key].update(_PENDING.get(token, {}))
+        if old_mode != mode:
+            desired[key] = match._matrices(rig, match.pose_names(limb))
+            driver_paths.update(con.path_from_id('influence') for pb, con, record_data in limb['entries']
+                                if match.is_switch_constraint(rig, pb, con, record_data))
+    if not tokens:
+        return
+    with forearm_twist.defer_runtime(context, flush_on_exit=False):
+        saved = batch._checkpoint(context, rig, None)
+        try:
+            for key, pose in desired.items():
+                match.switch_limb(context, rig, key, mode, keyframe=False, desired_pose=pose, limb_pose_only=True)
+            if keyed:
+                plans = []
+                for key in tokens:
+                    limb = inventory['rigs'][key]
+                    values, mode_key = _values(rig, limb, mode, inventory)
+                    plans.append(_key_channels(bag, frame, values, mode_key, previous[key],
+                                               preserve_fk_mode=False, action=action, limb=limb))
+                with ExitStack() as changes:
+                    for plan in plans:
+                        changes.enter_context(plan)
+        except Exception:
+            batch._rollback(context, rig, saved, driver_paths)
+            raise
+    if keyed:
+        _finish(tokens.values())
+    else:
+        for key, token in tokens.items():
+            _remember(token, previous[key])
+            _TEMPORARY.pop(token, None)
+    # The regular viewport I command now sees every matched target, even when
+    # the group switch started from one selected bone or from the master.
+    for bone in context.selected_pose_bones or ():
+        bone.select = False
+    destinations = [rig.pose.bones[limb['target'].name if mode == 'IK' else limb['chain'][-1]]
+                    for limb in (inventory['rigs'][key] for key in keys)]
+    for bone in destinations:
+        bone.select = True
+    rig.data.bones.active = destinations[0].bone
+
+
+def draw(layout, context, *, advanced=False):
+    from . import controller_animation_ui as ui, limb_ik, limb_ik_ui_state, limb_ik_fk_batch as batch
     rig = context.object
     if context.mode != 'POSE' or not active_record(context, rig):
         return
     try:
         inventory = limb_ik_ui_state.inventory(rig)
         selected = ui._selected_limb_keys(context, rig, inventory)
-        if len(selected) > 1:
-            return
         settings = limb_ik._settings(context)
-        if not selected:
-            layout.prop(settings, 'selected_limb', text='Limb')
-        key = selected[0] if selected else limb_ik.SELECTED_LIMBS.get(settings.selected_limb)
-        if key not in inventory['rigs']:
+        scope = settings.animation_limb_scope
+        if scope == 'ALL':
+            keys = tuple(inventory['rigs'])
+        elif scope == 'AUTO' and selected:
+            keys = selected
+        else:
+            keys = (limb_ik.SELECTED_LIMBS.get(settings.selected_limb if scope == 'AUTO' else scope),)
+        keys = tuple(key for key in keys if key in inventory['rigs'])
+        if not keys:
+            if not advanced:
+                layout.prop(settings, 'animation_limb_scope', text='Limb')
             return
-        limb_id = next(k for k, v in limb_ik.SELECTED_LIMBS.items() if v == key)
-        mode = match.mode_for_rig(rig, inventory['rigs'][key])
+        if scope == 'ALL' or len(keys) > 1:
+            if advanced:
+                return
+            limb_id, label = ('ALL', 'All Limbs') if scope == 'ALL' else ('SELECTION', 'Selected Limbs')
+            mode = batch.mode_for_keys(rig, inventory, keys)
+        else:
+            key, = keys
+            limb_id = next(k for k, v in limb_ik.SELECTED_LIMBS.items() if v == key)
+            label = ui._LIMB_LABELS[key]
+            mode = match.mode_for_rig(rig, inventory['rigs'][key])
     except (KeyError, RuntimeError, ValueError, AttributeError):
         return
     row = layout.row(align=True)
-    row.label(text=ui._LIMB_LABELS[key])
-    for choice in ('FK', 'IK'):
-        op = row.operator('character_designer.controller_limb_pose', text=choice, depress=mode == choice)
-        op.operation, op.limb_id = choice, limb_id
-    row = layout.row(align=True)
-    op = row.operator('character_designer.controller_limb_pose', text='Key Pose', icon='KEY_HLT')
-    op.operation, op.limb_id = 'KEY', limb_id
+    if not advanced:
+        row.prop_menu_enum(settings, 'animation_limb_scope', text=label + (' · Mixed' if mode == 'MIXED' else ''))
+        for choice in ('FK', 'IK'):
+            op = row.operator('character_designer.controller_limb_pose', text=choice, depress=mode == choice)
+            op.operation, op.limb_id = choice, limb_id
+        return
     if mode == 'IK':
         op = row.operator('character_designer.controller_limb_pose', text='Key as FK')
         op.operation, op.limb_id = 'KEY_FK', limb_id
     elif mode == 'FK':
-        op = row.operator('character_designer.controller_limb_pose', text='Pose with IK')
+        op = row.operator('character_designer.controller_limb_pose', text='Pose in IK for FK')
         op.operation, op.limb_id = 'POSE_IK', limb_id

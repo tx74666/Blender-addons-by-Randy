@@ -6,6 +6,7 @@ import math
 import uuid
 
 import bpy
+from . import validation_native
 
 from . import generated_names, validation_json
 
@@ -153,17 +154,18 @@ def restore_native_display(armature, saved):
 
 
 def sync_native_display(armature, inventory, *, keys=None):
-    """Display native FK segments and retain the wrist's owned control ring.
+    """Use native FK bones during clip editing, preserving the rig's other display setups.
 
     ``inventory`` must already have passed the operator's strict preflight.
     The handoff audits only these bindings, never rescans scene objects.
     Artist shapes and animated display channels are not overridden.
     """
-    from . import limb_ik_fk
+    from . import limb_ik_fk, limb_ik_fk_pose_key
     record = get_record(armature)
     before = _native_display(armature, record)
     if record is None:
         return 0
+    editing_clip = limb_ik_fk_pose_key.active_record(bpy.context, armature) is not None
     selected = set(inventory['rigs']) if keys is None else set(keys)
     desired = dict(before)
     pending = {}
@@ -174,16 +176,18 @@ def sync_native_display(armature, inventory, *, keys=None):
         rig = inventory['rigs'].get(key)
         pb = armature.pose.bones.get(name)
         widget = bpy.data.objects.get(entry['object'])
+        # A saved clip may have shed an unused, already detached FK widget.
+        # Editing in native display needs neither its object nor a new binding.
+        detached = editing_clip and name in before and widget is None
         if (rig is None or list(rig['chain']) != entry['chain'] or pb is None
-                or not _owned(widget, record, name)
+                or (not detached and not _owned(widget, record, name))
                 or pb.custom_shape != (None if name in before else widget)
                 or not _same_display(pb, entry['generated'])):
             raise _error(f"The owned FK display on '{name}' changed; preserve that setup first.")
-        # Upper/lower segments use native FK bones; the wrist keeps its ring
-        # on the same native hand bone and its existing rotation/keying channels.
-        # A saved older wrist detach is restored by this same guarded handoff.
+        # The action editor uses the actual limb bones for FK and the separate
+        # targets for IK. Never reattach an inactive FK widget during a switch.
         wrist = entry['kind'] == 'ARM' and name == entry['chain'][2]
-        native = limb_ik_fk.mode_for_rig(armature, rig) == 'FK' and not wrist
+        native = editing_clip or (limb_ik_fk.mode_for_rig(armature, rig) == 'FK' and not wrist)
         shape = None if native else widget
         if pb.custom_shape != shape:
             if _animated_display(armature, pb):
@@ -220,17 +224,20 @@ def validate(armature, inventory=None):
             raise _error('FK ring widgets have lost their recovery data.')
         return None
     try:
-        if owned_objects != {entry['object'] for entry in record['bindings'].values()}:
+        detached = {entry['object'] for name, entry in record['bindings'].items()
+                    if name in native_display and validation_native.missing_pose_asset(
+                        armature, bpy.data.objects.get(entry['object']))}
+        if owned_objects != {entry['object'] for entry in record['bindings'].values()} - detached:
             raise _error('FK ring widgets were added, removed or renamed.')
         collection = bpy.data.collections.get(record['collection'])
-        if not _owned(collection, record, 'COLLECTION'):
+        if not validation_native.missing_pose_asset(armature, collection) and not _owned(collection, record, 'COLLECTION'):
             raise _error('The FK ring widget collection is missing or was replaced.')
         for name, entry in record['bindings'].items():
             pb = armature.pose.bones.get(name)
             obj = bpy.data.objects.get(entry['object'])
             if (pb is None or pb.bone.get(OWNER_KEY) in _limb().GENERATED_CONTROL_OWNERS
-                    or not _owned(obj, record, name) or obj.type != 'MESH'
-                    or obj.data.name != entry['mesh'] or not _owned(obj.data, record, name)
+                    or (entry['object'] not in detached and (not _owned(obj, record, name) or obj.type != 'MESH'
+                        or obj.data.name != entry['mesh'] or not _owned(obj.data, record, name)))
                     or pb.custom_shape != (None if name in native_display else obj)
                     or not _same_display(pb, entry['generated'])):
                 raise _error(f"FK ring assignment or display on '{name}' was edited; preserve that setup first.")

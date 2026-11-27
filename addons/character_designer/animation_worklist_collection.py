@@ -712,6 +712,8 @@ def begin_add_ready(context, *, _clip_keys=None, _main_rig=None, _input_pins=Non
     request = workspace.prepare_request(catalog)
     requested = set(request[1]) if request is not None else None
     included = {item.clip_key for item in saved.items}
+    from .animation_catalog_exclusions import keys_for
+    included.update(keys_for(catalog))
     explicit = set(_clip_keys) if _clip_keys is not None else None
     entries = [QueueItem(worklist._clip_key(clip)) for clip in catalog['clips']
                if ((worklist._clip_key(clip) in explicit) if explicit is not None else

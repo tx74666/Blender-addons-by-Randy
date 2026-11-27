@@ -66,6 +66,7 @@ def _config(context):
 class _FullUpdateConfig:
     """Temporary full-model scope with writes forwarded to saved settings."""
     __slots__ = ('_saved_config', '_extras')
+    include_bone_attachments = True
 
     def __init__(self, config, extras):
         object.__setattr__(self, '_saved_config', config)
@@ -97,7 +98,7 @@ def _full_update_config(context, rig, config, _scope=None):
         setup = character_setup.settings(context)
         _scope = exporter._collection_scope(
             context, rig, references=exporter._scope_references(config, setup))
-    eligible = set(_scope['eligible'])
+    eligible = set(_scope['eligible']).union(_scope.get('attachments', ()))
     extras = tuple(SimpleNamespace(object=entry.object,
                                    enabled=True if entry.object in eligible else entry.enabled)
                    for entry in config.extras)
@@ -151,7 +152,8 @@ def _full_update_ledger_guard(context, rig, config):
                 or helper._io(model.with_suffix('.cdesigner.json')).exists()):
             raise ValueError('The existing Unity model needs its saved character identity before a full update.')
         return
-    helper.require_full_update_allowed(model, asset_id=config.asset_id, unity_project=project)
+    if not _exporter().rig_review_ledger(model, config.asset_id):
+        helper.require_full_update_allowed(model, asset_id=config.asset_id, unity_project=project)
 
 
 def _candidate_capabilities(context, rig, config):
@@ -435,6 +437,11 @@ class CHARACTERDESIGNER_OT_unity_export(Operator):
 
     def _result(self, config, result):
         candidate = result.get('candidate_path')
+        if result.get('rig_review') and candidate:
+            config.last_report = candidate
+            config.last_status = 'Rig pending Unity review'
+            self.report({'INFO'}, 'Rig and bound parts exported for review in Unity.')
+            return
         if isinstance(candidate, str) and candidate:
             config.last_report = candidate
             config.last_status = 'Reviewed Rig pending Unity' if result.get('reviewed_rig') else 'Pending Unity review'

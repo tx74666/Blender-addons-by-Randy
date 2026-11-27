@@ -222,9 +222,17 @@ def _plan(context, workspace_path=None):
         old_project = old[1].get('projectId') if isinstance(old, list) and len(old) == 2 else None
         if old_project and old_project != record.get('projectId'):
             raise ValueError('The Unity list belongs to another project; existing drafts were kept.')
-    prepared, pins, blocked = _prepared(context, record, rig)
+    from .animation_catalog_exclusions import keys_for
+    omitted = keys_for(record)
+    # Keep validating every materialized work item, including any with local edits.
+    catalog_only = omitted.difference(row.clip_key for row in saved.items)
+    incoming_record = record
+    if catalog_only:
+        incoming_record = dict(record, clips=[clip for clip in record['clips']
+                                              if worklist._clip_key(clip) not in catalog_only])
+    prepared, pins, blocked = _prepared(context, incoming_record, rig)
     retained, extras = [], []
-    incoming = {worklist._clip_key(clip): clip for clip in record['clips']
+    incoming = {worklist._clip_key(clip): clip for clip in incoming_record['clips']
                 if clip.get('compositionReferenceSource') is not True and clip.get('sourceOnly') is not True}
     for row in saved.items:
         match = prepared.get(row.clip_key)

@@ -13,6 +13,23 @@ from contextvars import ContextVar
 _ACTIVE = ContextVar('character_designer_validation_native', default=None)
 
 
+_ORIGINAL_POSE_RIG = ContextVar('character_designer_original_pose_rig', default=None)
+
+
+@contextmanager
+def original_pose_widgets(rig):
+    """A pose round trip reads shape bindings without managing widget datablocks."""
+    token = _ORIGINAL_POSE_RIG.set(rig)
+    try:
+        yield
+    finally:
+        _ORIGINAL_POSE_RIG.reset(token)
+
+
+def missing_pose_asset(rig, asset):
+    return asset is None and _ORIGINAL_POSE_RIG.get() is rig
+
+
 @contextmanager
 def read_scope():
     """Create a separate read snapshot, including for nested validation calls."""

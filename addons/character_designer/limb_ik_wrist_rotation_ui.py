@@ -42,8 +42,13 @@ def _owned_wrist(pose_bone):
 class CHARACTERDESIGNER_OT_limb_ik_clear_wrist_rotation(Operator):
     bl_idname = 'character_designer.limb_ik_clear_wrist_rotation'
     bl_label = 'Reset IK Wrist Rotation'
-    bl_description = 'Match each IK wrist to its hand orientation in Edit Mode. Pose Mirror includes both hands.'
+    bl_description = 'Restore each IK wrist to its rest orientation in the chosen reference space. Pose Mirror includes both hands.'
     bl_options = {'REGISTER', 'UNDO'}
+
+    reference: EnumProperty(
+        name='Rotation Reference',
+        items=(('ARMATURE', 'Edit Pose', ''), ('FOREARM', 'Posed Limb', 'Use the posed forearm or shin')),
+        default='ARMATURE', options={'SKIP_SAVE'})
 
     @classmethod
     def poll(cls, context):
@@ -99,11 +104,11 @@ class CHARACTERDESIGNER_OT_limb_ik_clear_wrist_rotation(Operator):
             if feet:
                 from . import limb_ik_foot_rotation, selected_limb_rotation
                 if selected_limb_rotation.supports(context, wrists, feet):
-                    selected_limb_rotation.reset(context, wrists, feet)
+                    selected_limb_rotation.reset(context, wrists, feet, follow_shin=self.reference == 'FOREARM')
                     self.report({'INFO'}, 'Cleared selected limb rotations.')
                     return {'FINISHED'}
                 if len(feet) == len(selected):
-                    limb_ik_foot_rotation.reset_rotation(context, feet)
+                    limb_ik_foot_rotation.reset_rotation(context, feet, follow_shin=self.reference == 'FOREARM')
                     self.report({'INFO'}, 'Cleared selected foot rotations.')
                     return {'FINISHED'}
             if len(wrists) not in (1, 2):
@@ -113,9 +118,9 @@ class CHARACTERDESIGNER_OT_limb_ik_clear_wrist_rotation(Operator):
                 from . import controller_transform_clear
                 result = controller_transform_clear.reset_mixed_rotation(context, wrists, companions)
             elif len(wrists) == 1:
-                result = _backend().reset_wrist_neutral(context, target=wrists[0])
+                result = _backend().reset_wrist_neutral(context, target=wrists[0], follow_forearm=self.reference == 'FOREARM')
             else:
-                result = _backend().reset_wrist_neutral(context, targets=wrists)
+                result = _backend().reset_wrist_neutral(context, targets=wrists, follow_forearm=self.reference == 'FOREARM')
             if context.scene.tool_settings.use_keyframe_insert_auto and result['keyed']:
                 from . import natural_bind_mode
                 names = result.get('targets') or (result['target'],)
@@ -163,6 +168,7 @@ def _register_keymap():
     if km.space_type != 'EMPTY' or km.region_type != 'WINDOW':
         raise RuntimeError('The Pose keymap has an unexpected editor context.')
     item = km.keymap_items.new(CLASSES[0].bl_idname, 'R', 'PRESS', alt=True, head=True)
+    item.properties.reference = 'FOREARM'
     _KEYMAPS.append((km, item))
     return True
 

@@ -595,9 +595,8 @@ def activate(context, item_id, side='CUSTOM'):
         ad.action, ad.action_slot = action, slot
         ad.use_nla, ad.action_blend_type, ad.action_influence = False, 'REPLACE', 1.0
         context.scene.tool_settings.use_keyframe_insert_auto = False
-        context.scene.frame_start = context.scene.frame_preview_start = math.floor(start)
-        context.scene.frame_end = context.scene.frame_preview_end = max(math.ceil(end), math.floor(start))
-        context.scene.use_preview_range = True
+        from . import animation_playback_range as playback
+        playback.set_ranges(context.scene, start, end, playback.is_loop(action))
         api.ua._set_frame(context.scene, start)
         for selected in tuple(context.selected_objects):
             selected.select_set(False)

@@ -51,11 +51,10 @@ and curve handles.
 ## Clear pose controls
 
 In Pose Mode, select a generated hand IK control in the 3D Viewport and press
-**Alt R** to return the palm to the hand bone's Edit Mode orientation. This
-removes twist around the wrist's local Y axis as well as rotation on the other
-axes. A posed arm can require a nonzero rotation on the control to put the
-palm at that angle. With other controls selected too, their editable rotations
-clear in the same operation.
+**Alt R** to restore the hand's natural angle relative to the current forearm.
+The arm keeps its pose and the wrist stays at its target position. Select both
+IK wrists to reset each hand relative to its own forearm. With Pose Mirror
+enabled, selecting one wrist resets both.
 
 **Alt G** clears local location and **Alt S** restores unit scale. To store
 the result on the active Action, move the pointer to the 3D Viewport and press
@@ -380,8 +379,8 @@ target, then use **Apply Move Across Clip** before inserting a key. This offsets
 the complete target-local trajectory while preserving timing and handles.
 The world direction follows the target parent. A normal Insert still edits
 the current time. Conversion and Apply Move Across Clip retain an earlier
-Custom. **All IK / All FK** describe the existing whole-body switch. The current
-frame status separately reports the selected limb, including blended weights.
+Custom. In **Animation**, choose a limb or **All Limbs**, then select **FK** or
+**IK**. **Follow Selection** uses the limbs selected in the viewport.
 
 Insert or use Auto Key to record pose changes into the active Custom, then save
 the blend file normally to continue editing later. A moved but unkeyed control

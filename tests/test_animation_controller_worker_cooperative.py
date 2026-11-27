@@ -79,6 +79,7 @@ class CooperativeWorkerTests(unittest.TestCase):
                 self.override_depth -= 1
         self.bpy.context = NS(temp_override=override)
         self.inputs = ['unchanged']
+        self.real_light_inputs = self.worker._light_inputs
         self.worker._light_inputs = Mock(side_effect=lambda job: tuple(self.inputs))
         self.worker._write = Mock()
         self.worker._navigation = Mock(return_value={'scene': 1, 'dirty': False})
@@ -110,6 +111,20 @@ class CooperativeWorkerTests(unittest.TestCase):
             self.assertIs(self.worker.conflicting(self.source, object()), job)
             self.assertIsNone(self.worker.conflicting(object(), object()))
             spawn.assert_not_called()
+        self.worker.close(job)
+
+    def test_changing_loop_metadata_before_snapshot_rejects_the_queued_motion(self):
+        self.worker._light_inputs = self.real_light_inputs
+        self.worker._binding = Mock(return_value=None)
+        self.worker._scene_inputs = Mock(return_value={})
+        self.source.mode = self.target.mode = 'OBJECT'
+        metadata = {'unity_loop_time': True}
+        self.action.get = metadata.get
+        job = self.begin()
+        self.worker._guard(job)
+        metadata['unity_loop_time'] = False
+        with self.assertRaisesRegex(self.worker.StaleInputs, 'timing changed'):
+            self.worker._guard(job)
         self.worker.close(job)
 
     def test_real_transaction_reaches_verified_handoff_without_hidden_sync_capture(self):

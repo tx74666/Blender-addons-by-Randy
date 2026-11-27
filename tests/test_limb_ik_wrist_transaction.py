@@ -61,7 +61,7 @@ def backend(f):
 
 
 def prepare(f, **arguments):
-    def reference(api, rig, end):
+    def reference(end, forearm, follow_forearm):
         return {f.hand.name: 'left-zero' if end is f.hand else 'left-before',
                 f.right_hand.name: 'right-zero' if end is f.right_hand else 'right-before'}
     with backend(f), patch.object(service, '_reference', side_effect=reference), \

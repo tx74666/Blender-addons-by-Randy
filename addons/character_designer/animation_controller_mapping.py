@@ -11,6 +11,8 @@ import hashlib
 import json
 import math
 
+from . import animation_loop_timing
+
 
 SCHEMA = 'character-designer.controller-mapping/1'
 RECORD = 'character_designer_controller_mapping_v1'
@@ -201,7 +203,7 @@ def _rest_fingerprint(rig):
     })
 
 
-def _prepare(context, source, action, slot, target, source_fps, *, action_hash=None):
+def _prepare(context, source, action, slot, target, source_fps, *, action_hash=None, align_loop_period=True):
     from . import animation_retarget as retarget
     from . import controller_animation as controller
     from . import limb_ik
@@ -242,7 +244,10 @@ def _prepare(context, source, action, slot, target, source_fps, *, action_hash=N
     source_times = _source_channels(source, action, slot, names)
     input_fps, output_fps = _source_fps(source, source_fps), _scene_fps(context.scene)
     first = source_times[0]
-    output_times = tuple(1. + (frame - first) * output_fps / input_fps for frame in source_times)
+    loop = animation_loop_timing.is_loop(action)
+    frame_scale = animation_loop_timing.frame_scale(source_times[-1] - first, input_fps, output_fps,
+                                                   loop and align_loop_period)
+    output_times = tuple(1. + (frame - first) * frame_scale for frame in source_times)
     source_world, target_world = _current_world(source), _current_world(target)
     source_q, target_q = source_world.to_quaternion(), target_world.to_quaternion()
     rotations, angles = {}, {}
@@ -276,6 +281,8 @@ def _prepare(context, source, action, slot, target, source_fps, *, action_hash=N
         'retained_target_secondary_bones': sorted(secondary),
         'target_control_bones': sorted(controls), 'target_dependency_bones': sorted(closure),
         'source_fps': input_fps, 'target_fps': output_fps,
+        'source_loop': loop, 'align_loop_period': loop and align_loop_period,
+        'output_frames_per_source_frame': frame_scale,
         'target_meters_per_unit': float(context.scene.unit_settings.scale_length),
         'source_range': [source_times[0], source_times[-1]],
         'output_range': [output_times[0], output_times[-1]],
@@ -296,16 +303,16 @@ def _prepare(context, source, action, slot, target, source_fps, *, action_hash=N
                        inventory, secondary, controls, diagnostics, source_fingerprint, target_fingerprint)
 
 
-def prepare(context, source_rig, source_action, source_slot, target_rig, *, source_fps=None, action_hash=None):
+def prepare(context, source_rig, source_action, source_slot, target_rig, *, source_fps=None, action_hash=None,
+            align_loop_period=True):
     """Validate read-only inputs and describe a bounded mapping candidate.
 
-    Source fractional key times and whole-frame samples retain their original
-    duration at the target scene frame rate. Preparation never proves native
-    playback or publishes a Custom Action.
+    Preserve the source sample phases. Imported loops can use the nearest
+    whole-frame period at the target scene frame rate.
     """
     try:
         return _prepare(context, source_rig, source_action, source_slot, target_rig, source_fps,
-                        action_hash=action_hash)
+                        action_hash=action_hash, align_loop_period=align_loop_period)
     except MappingNeeded:
         raise
     except (ValueError, TypeError, KeyError, AttributeError, ZeroDivisionError) as error:
@@ -698,8 +705,14 @@ def _set_desired(context, target, control_plan, desired):
     context.view_layer.update()
 
 
+def _frame_scale(plan):
+    if 'output_frames_per_source_frame' in plan.diagnostics:
+        return plan.diagnostics['output_frames_per_source_frame']
+    return plan.diagnostics['target_fps'] / plan.diagnostics['source_fps']
+
+
 def _output_time(plan, frame):
-    return 1. + (frame - plan.source_times[0]) * plan.diagnostics['target_fps'] / plan.diagnostics['source_fps']
+    return 1. + (frame - plan.source_times[0]) * _frame_scale(plan)
 
 
 def _verification_times(plan, reference_times, controller_times):
@@ -710,7 +723,7 @@ def _verification_times(plan, reference_times, controller_times):
     source and target frame rates differ. The caller's normal quarter probes
     then cover each interval of this complete union.
     """
-    ratio = plan.diagnostics['source_fps'] / plan.diagnostics['target_fps']
+    ratio = 1. / _frame_scale(plan)
     first = plan.source_times[0]
     converted = []
     for frame in controller_times:
@@ -939,11 +952,11 @@ def _verify_mapping(context, source, target, plan, action, slot, times, *, stric
 
 
 def _build_private(context, source_rig, source_action, source_slot, target, *, source_fps=None, progress=None,
-                   daily_edit=False, action_hash=None):
+                   daily_edit=False, action_hash=None, align_loop_period=True):
     import bpy
     from . import controller_animation as controller, unity_animation_controls as controls
     plan = prepare(context, source_rig, source_action, source_slot, target, source_fps=source_fps,
-                   action_hash=action_hash)
+                   action_hash=action_hash, align_loop_period=align_loop_period)
     control_plan = _body_control_plan(plan)
     source_copy = source_data = reference = result_action = None
     complete = False
@@ -1101,6 +1114,7 @@ def _build_private(context, source_rig, source_action, source_slot, target, *, s
         final_hash = (action_hash(source_action, source_slot) if action_hash
                       else offset._action_hash(api, source_action, source_slot))
         _require(final_hash == plan.source_fingerprint
+                 and animation_loop_timing.is_loop(source_action) == plan.diagnostics['source_loop']
                  and _rest_fingerprint(source_rig) == plan.diagnostics['source_rest_sha256'],
                  'The source motion or its Rest changed during controller mapping.')
         _require(_rest_fingerprint(target) == plan.target_fingerprint,
@@ -1114,6 +1128,9 @@ def _build_private(context, source_rig, source_action, source_slot, target, *, s
                                if daily_edit else 'Reference source samples remain strict; intervals use the playback budget'))
         if daily_edit:
             diagnostics.update(control_representation='FK', whole_clip_ik=False)
+        if diagnostics['source_loop']:
+            result_action[animation_loop_timing.LOOP] = True
+            result_action['unity_loop_time'] = True
         result_action[RECORD] = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True,
                                            separators=(',', ':'), allow_nan=False)
         _require(result_action.users == 0, 'The new controller Action gained an unexpected user.')
@@ -1145,7 +1162,7 @@ def _build_private(context, source_rig, source_action, source_slot, target, *, s
 
 
 def _build_isolated(context, source_rig, source_action, source_slot, target_rig, *, source_fps=None, progress=None,
-                    daily_edit=False, action_hash=None):
+                    daily_edit=False, action_hash=None, align_loop_period=True):
     """Worker-only native build; other rigs in this process may be evaluated.
 
     Blender can write Action inputs to originals while another scene is being
@@ -1165,7 +1182,7 @@ def _build_isolated(context, source_rig, source_action, source_slot, target_rig,
                 with _isolate_target(context, target_rig) as private:
                     result = _build_private(private.context, source_rig, source_action, source_slot,
                                             private.rig, source_fps=source_fps, progress=progress, daily_edit=daily_edit,
-                                            action_hash=action_hash)
+                                            action_hash=action_hash, align_loop_period=align_loop_period)
                     result.diagnostics['isolation'] = dict(private.diagnostics)
         except IsolationError as error:
             raise MappingNeeded('Controller mapping needs an isolated target graph: ' + str(error)) from error

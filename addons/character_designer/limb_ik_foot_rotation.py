@@ -1,4 +1,4 @@
-"""Match selected foot and toe rotations to the evaluated Original Bones' Edit axes."""
+"""Match selected foot and toe rotations in their requested reference space."""
 import math
 
 from mathutils import Matrix, Quaternion, Vector
@@ -37,21 +37,30 @@ def _turn(desired, actual):
     return axis * (2. * math.atan2(length, delta.w) / length) if length else axis
 
 
-def _orientation(pb):
-    return pb.matrix.to_quaternion().normalized()
+def _orientation(plan, *, rest=False):
+    field = 'matrix_local' if rest else 'matrix'
+    end, shin = plan['end'], plan['shin']
+    def read(bone):
+        matrix = getattr(bone.bone if rest else bone, field)
+        if not rotation._matrix_finite(matrix):
+            raise ValueError(f'{bone.name} has an invalid rotation reference.')
+        return matrix.to_quaternion().normalized()
+    foot = read(end)
+    return read(shin).conjugated() @ foot if shin is not None else foot
 
 
 def _match_rotation(context, plan):
-    rig, target, end = plan['rig'], plan['target'], plan['end']
+    rig, target = plan['rig'], plan['target']
     path = plan['rotation_path']
-    desired = end.bone.matrix_local.to_quaternion().normalized()
+    desired = _orientation(plan, rest=True)
     # The calibrated Stable graph often maps exact local zero to Bind.
     # The direct ankle can also inherit the native shin's animated twist.
-    setattr(target, path, tuple(target.bl_rna.properties[path].default_array))
-    match._update(context, rig)
+    if plan['shin'] is None:
+        setattr(target, path, tuple(target.bl_rna.properties[path].default_array))
+        match._update(context, rig)
     step = .003
     for _ in range(9):
-        actual = _orientation(end)
+        actual = _orientation(plan)
         error = _turn(desired, actual)
         if error.length < 2e-6:
             return
@@ -60,9 +69,9 @@ def _match_rotation(context, plan):
         for axis in ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.)):
             rotation._assign_rotation(target, base @ Quaternion(axis, step))
             match._update(context, rig)
-            columns.append(_turn(_orientation(end), actual) / step)
-        # Input axes are local to the public control. Measured columns are
-        # armature-space turns of the actual deformer after its constraints.
+            columns.append(_turn(_orientation(plan), actual) / step)
+        # Measure the evaluated ankle in the same space as the requested angle.
+        # Rotating the target can also change the shin through the foot rig.
         jacobian = Matrix(columns).transposed()
         try:
             delta = jacobian.inverted() @ error
@@ -72,11 +81,11 @@ def _match_rotation(context, plan):
             break
         rotation._assign_rotation(target, base @ Quaternion(delta.normalized(), min(delta.length, math.pi / 2)))
         match._update(context, rig)
-    if _turn(desired, _orientation(end)).length >= 2e-6:
-        raise ValueError(f'{target.name} could not match the Edit orientation with rotation alone.')
+    if _turn(desired, _orientation(plan)).length >= 2e-6:
+        raise ValueError(f'{target.name} could not reach its neutral angle with rotation alone.')
 
 
-def _plans(context, rig, controls, records):
+def _plans(context, rig, controls, records, *, follow_shin):
     requested = set()
     for p in controls:
         role = _role(rig, p)
@@ -110,8 +119,9 @@ def _plans(context, rig, controls, records):
             if any(c.data_path == target.path_from_id(path) for c in getattr(rig.animation_data, 'drivers', ())):
                 raise ValueError(f'{target.name} has driven rotation.')
             end = None if field == 'roll' else rig.pose.bones[record['chain'][-1] if field == 'target' else record['toe']]
+            shin = rig.pose.bones[record['chain'][1]] if field == 'target' and follow_shin else None
             raw = tuple(getattr(target, path))
-            plan = dict(rig=rig, target=target, end=end, rotation_path=path, raw=raw,
+            plan = dict(rig=rig, target=target, end=end, shin=shin, rotation_path=path, raw=raw,
                         rotation_size=len(raw), action=owner['action'], slot=owner['slot'],
                         variant=owner, autokey=owner['autokey'], transaction=shared, frame=owner['frame'])
             if hinge:
@@ -121,7 +131,7 @@ def _plans(context, rig, controls, records):
     return owner, plans
 
 
-def reset_rotation(context, controls):
+def reset_rotation(context, controls, *, follow_shin=False):
     """Reset the supplied generated foot controls in a single undoable caller."""
     from . import natural_bind_mode
     controls = tuple(controls)
@@ -130,7 +140,7 @@ def reset_rotation(context, controls):
             or any(obj != rig for obj in context.objects_in_mode)):
         raise ValueError('Choose foot controls on one posing armature.')
     feet.validate(rig, limb_pose_only=True)
-    owner, plans = _plans(context, rig, controls, feet.records(rig))
+    owner, plans = _plans(context, rig, controls, feet.records(rig), follow_shin=follow_shin)
     try:
         for plan in plans:
             if plan['end'] is None:
@@ -145,8 +155,8 @@ def reset_rotation(context, controls):
         for plan in plans:
             keying.key_rotation(context, plan)
         for plan in plans:
-            if plan['end'] and _turn(plan['end'].bone.matrix_local.to_quaternion().normalized(), _orientation(plan['end'])).length > 2e-6:
-                raise ValueError(f"{plan['target'].name} lost the Edit orientation after evaluation.")
+            if plan['end'] and _turn(_orientation(plan, rest=True), _orientation(plan)).length > 2e-6:
+                raise ValueError(f"{plan['target'].name} lost the requested orientation after evaluation.")
         names = tuple(plan['target'].name for plan in plans)
         if owner['autokey']:
             natural_bind_mode.note_rotation_keys(context, rig, names)

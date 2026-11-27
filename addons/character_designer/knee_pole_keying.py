@@ -90,7 +90,8 @@ def range_values(action, bag, limb, mode, frame, mode_curve):
     path, data = matches[0]
     before, after = (data['ik'],data['fk']) if mode=='FK' else (data['fk'],data['ik'])
     left_times, right_times = [r[0] for r in before],[r[0] for r in after]
-    stop = next((float(p.co.x) for p in mode_curve.keyframe_points if p.co.x > frame+1.e-5), None)
+    mode_keys = mode_curve.keyframe_points if mode_curve is not None else ()
+    stop = next((float(p.co.x) for p in mode_keys if p.co.x > frame+1.e-5), None)
     last = min(stop, max(left_times[-1],right_times[-1])) if stop is not None else max(left_times[-1],right_times[-1])
     if last-frame <= .0101:
         return {}

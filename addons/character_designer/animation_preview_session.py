@@ -7,6 +7,8 @@ import bpy
 
 from . import animation_preview_curves as curves
 from . import natural_bind_mode
+from .animation_cleanup import DEFAULTS
+from .animation_loop_timing import LOOP, is_loop
 from .animation_export_inputs import _curves
 from .animation_local_motion_pins import assign_character_action
 
@@ -45,8 +47,19 @@ def status(context):
     if record is None:
         return None
     data = json.loads(record['settings'])
-    return dict(view=_view(rig, record), **{k: data[k] for k in (
-        'bone_names', 'position_mm', 'rotation_degrees', 'before', 'after')})
+    count = data['after']
+    preview = record.get('preview')
+    if preview and len(preview.layers) == 1 and len(preview.layers[0].strips) == 1:
+        strip = preview.layers[0].strips[0]
+        bag = next((bag for bag in getattr(strip, 'channelbags', ()) if bag.slot_handle == record['slot']), None)
+        if bag is not None:
+            # Count points without reading individual keys or hashing the Action during redraw.
+            paths = {f'pose.bones["{bpy.utils.escape_identifier(name)}"].{prop}'
+                     for name in data['bone_names']
+                     for prop in ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale')}
+            count = sum(len(fc.keyframe_points) for fc in bag.fcurves if fc.data_path in paths)
+    return dict(view=_view(rig, record), after=count, skipped=data.get('skipped', {}), **{k: data[k] for k in (
+        'bone_names', 'position_mm', 'rotation_degrees', 'before')})
 
 
 def _ready(context, rig):
@@ -163,14 +176,76 @@ def _refresh(context, rig, held):
         context.view_layer.update()
 
 
+def _initial_inputs(rig):
+    # Blender leaves the last animated value on an input when the next Action
+    # has no curve for it. Keep the real starting values, including non-unit scales.
+    result = {}
+    for owner in (rig, *rig.pose.bones):
+        for prop in ('location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale'):
+            result[owner.path_from_id(prop)] = list(getattr(owner, prop))
+        for key in owner.keys():
+            value = owner[key]
+            if isinstance(value, (float, int)):
+                values = [value]
+            elif getattr(value, 'typecode', '') in ('f', 'd', 'i'):
+                values = list(value)
+            else:
+                continue
+            result[owner.path_from_id() + '["' + bpy.utils.escape_identifier(key) + '"]'] = values
+    return json.dumps(result, separators=(',', ':'))
+
+
+def _channels(action, slot):
+    return {(fc.data_path, fc.array_index) for fc in _curves(action, slot)
+            if not fc.mute and not (fc.group and fc.group.mute) and not fc.is_empty}
+
+
+def _unkeyed_inputs(rig, record, side, keys, *, capture=False):
+    if not keys:
+        return []
+    driven = {(fc.data_path, fc.array_index) for fc in rig.animation_data.drivers if not fc.mute}
+    name = side + '_unkeyed'
+    saved = json.loads(record.get(name, '{}'))
+    initial = {} if capture else json.loads(record.get('initial_inputs', '{}'))
+    held = []
+    for path, axis in keys - driven:
+        try:
+            prop = rig.path_resolve(path)
+            scalar = isinstance(prop, (int, float))
+            value = prop if scalar else prop[axis]
+        except (ValueError, TypeError, IndexError, KeyError):
+            continue
+        if not isinstance(value, (int, float)):
+            continue
+        if capture:
+            saved.setdefault(path, {})[str(axis)] = value
+            continue
+        fallback = initial.get(path, ())
+        expected = saved.get(path, {}).get(str(axis), fallback[axis] if 0 <= axis < len(fallback) else None)
+        leaf = _LEAF.search(path) if scalar else None
+        if expected is not None and (not scalar or leaf):
+            held.append((path, axis, expected, leaf))
+    if capture:
+        record[name] = json.dumps(saved)
+    return held
+
+
 def _bind(context, rig, target, slot):
     previous, old_slot = _binding(rig)
     if (previous, old_slot) == (target, slot):
         return
     held = _held(context, rig) if previous else []
+    target_values = []
+    record = rig.get(SESSION)
+    if previous and record is not None and previous in (record.get('source'), record.get('preview')):
+        old_keys, new_keys = _channels(previous, old_slot), _channels(target, slot)
+        old_side = 'original' if previous == record['source'] else 'reduced'
+        new_side = 'reduced' if target == record.get('preview') else 'original'
+        _unkeyed_inputs(rig, record, old_side, new_keys - old_keys, capture=True)
+        target_values = _unkeyed_inputs(rig, record, new_side, old_keys - new_keys)
     try:
         assign_character_action(rig, target, slot)
-        _refresh(context, rig, held)
+        _refresh(context, rig, held + target_values)
     except Exception:
         if previous:
             assign_character_action(rig, previous, old_slot)
@@ -188,11 +263,14 @@ def _signature(action):
     strip = layer.strips[0]
     if strip.type != 'KEYFRAME':
         raise ValueError('The preview Action strip changed. Discard this comparison.')
-    return dict(curves=[[bag.slot_handle, curves.signature(action, bag.slot_handle)]
+    result = dict(curves=[[bag.slot_handle, curves.signature(action, bag.slot_handle)]
                         for bag in strip.channelbags],
                 slots=[[slot.handle, slot.identifier] for slot in action.slots],
                 markers=[[p.name, p.frame] for p in action.pose_markers],
                 range=[action.use_frame_range, action.frame_start, action.frame_end, action.use_cyclic])
+    if DEFAULTS in action:
+        result['clean_defaults'] = action[DEFAULTS]
+    return result
 
 
 def _release(action, rig):
@@ -201,6 +279,18 @@ def _release(action, rig):
     del action[TEMP]
     if not action.users:
         bpy.data.actions.remove(action, do_unlink=False)
+
+
+def _loop(context, rig, action, handle):
+    if action.use_cyclic or is_loop(action):
+        return True
+    if LOOP in action:
+        return False
+    # Older prepared and alternate takes only recorded loop intent on the imported clip.
+    return any(record.target == rig and (action, handle) in (
+                   (record.controller_action, record.controller_slot), (record.alternate_action, record.alternate_slot))
+               and is_loop(record.source_action)
+               for record in getattr(context.scene, 'character_designer_controller_motions', ()))
 
 
 def _make(context, rig, source, handle, names, position_mm, rotation_degrees):
@@ -219,16 +309,18 @@ def _make(context, rig, source, handle, names, position_mm, rotation_degrees):
         # A comparison take has no catalog, export, pose-asset or recovery
         # identity of its own. Curves, slots, layers and groups stay native.
         for key in list(action.keys()):
-            if key.startswith('character_designer_'):
+            if key.startswith('character_designer_') and key != DEFAULTS:
                 del action[key]
         action[TEMP] = rig
+        loop = _loop(context, rig, source, handle)
         result = curves.simplify(action, handle, names, position_mm * .001 / units,
-                                 math.radians(rotation_degrees))
+                                 math.radians(rotation_degrees), loop=loop)
         scope = curves.selected_paths(source, handle, names)
         if not scope:
             raise ValueError('The selected controls have no animated transforms in this Action slot.')
         settings = dict(bone_names=list(names), position_mm=position_mm, rotation_degrees=rotation_degrees,
                         paths=list(result['paths']), before=result['before'], after=result['after'],
+                        skipped=result['skipped'], loop=loop,
                         scope=scope, source_hash=curves.signature(source, handle, scope),
                         original_view_hash=_signature(source), preview_hash=_signature(action))
         return action, json.dumps(settings, ensure_ascii=False)
@@ -250,7 +342,8 @@ def start(context, position_mm=2., rotation_degrees=1.):
         raise ValueError('Select the controls whose keys you want to simplify.')
     action, settings = _make(context, rig, source, handle, names, position_mm, rotation_degrees)
     try:
-        rig[SESSION] = dict(source=source, preview=action, scene=context.scene, slot=handle, settings=settings)
+        rig[SESSION] = dict(source=source, preview=action, scene=context.scene, slot=handle,
+                            settings=settings, initial_inputs=_initial_inputs(rig))
         _bind(context, rig, action, handle)
     except Exception:
         if SESSION in rig:
@@ -279,11 +372,13 @@ def _checked(context):
         raise ValueError('The active Action or slot changed. Discard this preview to start again.')
     source, preview, slot = record['source'], record['preview'], record['slot']
     data = json.loads(record['settings'])
+    if 'loop' in data and data['loop'] != _loop(context, rig, source, slot):
+        raise ValueError('The loop setting changed. Discard this preview and start again.')
     scope = curves.selected_paths(source, slot, data['bone_names'])
     if list(scope) != data['scope'] or curves.signature(source, slot, scope) != data['source_hash']:
         raise ValueError('The original controls were edited. Discard the preview and start from those edits.')
-    if _signature(preview) != data['preview_hash']:
-        raise ValueError('The temporary Action was edited. Keep a copy of those edits or discard the preview.')
+    if source.get(DEFAULTS) != data['original_view_hash'].get('clean_defaults'):
+        raise ValueError('The original clip defaults changed. Discard this preview and start again.')
     return rig, record, data
 
 
@@ -297,6 +392,8 @@ def regenerate(context, position_mm, rotation_degrees):
         _release(action, rig)
         raise
     record['preview'], record['settings'] = action, settings
+    if 'reduced_unkeyed' in record:
+        del record['reduced_unkeyed']
     _release(previous, rig)
     return status(context)
 
@@ -326,11 +423,29 @@ def apply(context):
     rig, record, data = _checked(context)
     source, preview, slot = record['source'], record['preview'], record['slot']
     _writable_source(rig, source, slot)
+    current = _signature(preview)
+    initial = data['preview_hash']
+    edited = current != initial
+    if edited:
+        # Older saved previews already contain these whole-slot signatures.
+        # Only the current character slot is ours to publish.
+        def other_data(state):
+            return dict(state, curves=[entry for entry in state['curves'] if entry[0] != slot])
+        if other_data(current) != other_data(initial):
+            raise ValueError('Apply Reduction copies curves in the current Action slot. Other slots or clip settings were also edited.')
+        if curves.signature(source, slot) != dict(data['original_view_hash']['curves']).get(slot):
+            raise ValueError('The original Action slot was edited during the preview. Your Reduced edits are still available.')
     previous, _ = _binding(rig)
     held = _held(context, rig)
+    missing = _channels(source, slot) - _channels(preview, slot) if edited else set()
+    if previous == preview:
+        _unkeyed_inputs(rig, record, 'reduced', missing, capture=True)
+    committed_pose = held + _unkeyed_inputs(rig, record, 'reduced', missing)
     _bind(context, rig, source, slot)
     try:
-        if data['paths']:
+        if edited:
+            curves.copy_edited_slot(preview, source, slot, after_write=lambda: _refresh(context, rig, committed_pose))
+        elif data['paths']:
             curves.copy_keys(preview, source, slot, data['paths'],
                              after_write=lambda: _refresh(context, rig, held))
     except Exception:

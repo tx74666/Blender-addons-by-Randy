@@ -127,9 +127,12 @@ def register_animation_runtime():
     if added_handler:
         bpy.app.handlers.load_pre.append(_animation_load_pre)
     try:
-        from . import animation_action_browser
+        from . import animation_action_browser, animation_catalog_exclusions
+        animation_catalog_exclusions.register()
         animation_action_browser.register()
     except Exception:
+        from . import animation_catalog_exclusions
+        animation_catalog_exclusions.unregister()
         if added_handler and _animation_load_pre in bpy.app.handlers.load_pre:
             bpy.app.handlers.load_pre.remove(_animation_load_pre)
         raise
@@ -140,6 +143,9 @@ def unregister_animation_runtime():
     if _animation_load_pre in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(_animation_load_pre)
     import sys
+    exclusions = sys.modules.get(__package__ + '.animation_catalog_exclusions')
+    if exclusions is not None:
+        exclusions.unregister()
     browser = sys.modules.get(__package__ + '.animation_action_browser')
     if browser is not None:
         browser.unregister()
@@ -1182,6 +1188,7 @@ class CHARACTERDESIGNER_PT_animation(Panel):
 
 
 ANIMATION_CLASSES = (
+    animation_preview_ui.CHARACTERDESIGNER_OT_clean_animation_data,
     animation_preview_ui.CHARACTERDESIGNER_OT_key_reduction_preview,
     CHARACTERDESIGNER_OT_animation_link_import,
     CHARACTERDESIGNER_OT_animation_link_model,

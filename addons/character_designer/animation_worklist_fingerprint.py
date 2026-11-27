@@ -12,6 +12,7 @@ import json
 import math
 
 
+CLEAN_DEFAULTS = 'character_designer_clean_transform_defaults_v1'
 SCHEMA = 'character-designer.animation-worklist-fingerprint/1'
 PROOF_POLICY = 'plain-fk-slot-v2-stream'
 MAX_ITEMS = 1_000_000
@@ -378,6 +379,14 @@ def _action_view(action, slot_handle, *, streamed):
     settings = _rna_settings(action, schema_cache=schema_cache, exclude=_ID_METADATA | {'slots', 'layers',
             'fcurves', 'groups', 'pose_markers', 'is_action_layered', 'is_action_legacy',
             'is_empty', 'curve_frame_range'})
+
+    # Sparse prepared clips carry neutral inputs that affect playback as much
+    # as native keys. Preserve legacy hashes for slots without those inputs.
+    raw = getattr(action, 'get', lambda key: None)(CLEAN_DEFAULTS)
+    if raw:
+        defaults = json.loads(raw).get(str(slot_handle))
+        if defaults:
+            settings[CLEAN_DEFAULTS] = defaults
 
     def sequence(values):
         return _StreamSequence(values) if streamed else list(values)

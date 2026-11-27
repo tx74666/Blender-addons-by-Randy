@@ -526,7 +526,7 @@ def _cleanup_owned(folder, parent):
     shutil.rmtree(_io(folder))
 
 
-def publish_candidate(base, *, stage, model_file, files, parts, mesh_ids, update_rig, update_id):
+def publish_candidate(base, *, stage, model_file, files, parts, mesh_ids, update_rig, update_id, full_rig_review=False):
     """Publish a complete candidate under the existing Unity project inbox.
 
     ``stage`` is the isolated worker output directory, ``model_file`` its FBX's
@@ -552,6 +552,15 @@ def publish_candidate(base, *, stage, model_file, files, parts, mesh_ids, update
         hashes[relative] = pin.sha256
     record = build_candidate(base, model_file=model_file, file_hashes=hashes, parts=parts,
                              mesh_ids=mesh_ids, update_rig=update_rig, update_id=update_id)
+    if full_rig_review:
+        _need(update_rig and set(mesh_ids) == {part['part_id'] for part in record['parts']},
+              'Full Rig review requires every registered part.')
+        stem = Path(model_file).stem
+        _need(stem + '.cdesigner.json' in hashes, 'Full Rig review requires a complete model manifest.')
+        companions = [name for name in hashes if name.endswith(('.forearm.json', '.hair-motion.json'))]
+        record['rig_update'] = {'schema': 'cdesigner.rig-update/1', 'requested_mesh_ids': list(mesh_ids),
+                                'dependency_mesh_ids': [], 'required_sidecars': companions or [stem + '.cdesigner.json'],
+                                'review_current_meshes': True}
     model_pin = next(pin for relative, pin in pins if relative == record['model_file'])
     _need(model_pin.size > 32, 'The worker context FBX is incomplete.')
     inbox = _guard_path(base.unity_project / '.codex' / 'character-update-inbox' / base.asset_id)

@@ -30,6 +30,8 @@ def _assign(rig, action, slot):
     animation = rig.animation_data
     animation.action = action
     animation.action_slot = next(s for s in action.slots if s.handle == slot)
+    from .animation_cleanup import restore_defaults
+    restore_defaults(rig, action, slot)
 
 
 def _set_frame(scene, frame):

@@ -77,7 +77,7 @@ def backend(f):
 
 def prepare(f, **kwargs):
     with backend(f), patch.object(service, '_matrix_finite', return_value=True), \
-         patch.object(service, '_reference', side_effect=lambda api, rig, end: {end.name: tuple(end.rotation_euler)}):
+         patch.object(service, '_reference', side_effect=lambda end, forearm, follow_forearm: {end.name: tuple(end.rotation_euler)}):
         return service.prepare_wrist_neutral(f.context, **kwargs)
 
 
@@ -121,7 +121,7 @@ def execute(f, plan, *, fault=None, key_failure=None, after_key=None, neutral_le
 
     with backend(f), patch.object(service, '_solve', side_effect=solve), \
          patch.object(service, '_verify', side_effect=verify), \
-         patch.object(service, '_reference', side_effect=lambda api, rig, end: {end.name: tuple(end.rotation_euler)}), \
+         patch.object(service, '_reference', side_effect=lambda end, forearm, follow_forearm: {end.name: tuple(end.rotation_euler)}), \
          patch.object(service, '_key_rotation', side_effect=key), patch.object(service, '_fault', side_effect=fault):
         return service.apply_wrist_neutral(f.context, plan)
 

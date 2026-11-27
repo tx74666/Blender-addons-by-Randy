@@ -29,12 +29,36 @@ class Action:
     def get(self, key, default=None):
         return self.data.get(key, default)
 
+    def __contains__(self, key):
+        return key in self.data
 
-class Record(SimpleNamespace):
+
+class PropertyGroup(SimpleNamespace):
+    def __init__(self, **fields):
+        super().__init__(_custom={}, **fields)
+
+    def get(self, key, default=None):
+        return self._custom.get(key, default)
+
+    def __contains__(self, key):
+        return key in self._custom
+
+    def __getitem__(self, key):
+        return self._custom[key]
+
+    def __setitem__(self, key, value):
+        self._custom[key] = value
+
+    def __delitem__(self, key):
+        del self._custom[key]
+
+
+class Record(PropertyGroup):
     def __init__(self):
         super().__init__(workspace_identity='', work_item_id='', clip_key='', target=None,
                          source_rig=None, source_action=None, source_slot=0, source_fingerprint='',
-                         controller_action=None, controller_slot=0, state='UNTRIED', error='')
+                         controller_action=None, controller_slot=0, alternate_action=None, alternate_slot=0,
+                         state='UNTRIED', error='')
 
     def __setattr__(self, name, value):
         if getattr(self, 'fail_field', None) == name:
@@ -75,6 +99,17 @@ class Rig(SimpleNamespace):
 
 class Objects(dict):
     active = None
+
+
+class AnimationData(SimpleNamespace):
+    @property
+    def action_slot_handle(self):
+        return self.action_slot.handle if self.action_slot else 0
+
+    @action_slot_handle.setter
+    def action_slot_handle(self, handle):
+        if self.action_slot_handle != handle:
+            self.action_slot = SimpleNamespace(handle=handle) if handle else None
 
 
 class Context:
@@ -174,11 +209,11 @@ class ControllerEdit(unittest.TestCase):
         self.target = Rig('CoshaRig')
         self.previous_action = Action('Previous Character Action')
         self.previous_slot = SimpleNamespace(handle=13)
-        self.target.animation_data = SimpleNamespace(action=self.previous_action, action_slot=self.previous_slot,
-                                                     use_nla=True, action_blend_type='ADD', action_influence=.35)
+        self.target.animation_data = AnimationData(action=self.previous_action, action_slot=self.previous_slot,
+                                                  use_nla=True, action_blend_type='ADD', action_influence=.35)
         def assign(rig, action, slot):
             if rig.animation_data is None:
-                rig.animation_data = SimpleNamespace(use_nla=True, action_blend_type='ADD', action_influence=.35)
+                rig.animation_data = AnimationData(action_slot=None, use_nla=True, action_blend_type='ADD', action_influence=.35)
             rig.animation_data.action = action
             rig.animation_data.action_slot = SimpleNamespace(handle=slot)
         self.local.assign_character_action.side_effect = assign
@@ -191,7 +226,7 @@ class ControllerEdit(unittest.TestCase):
             library=None, override_library=None, objects={'CoshaRig': self.target},
             character_designer_setup=SimpleNamespace(rig=self.target),
             character_designer_controller_motions=self.records,
-            character_designer_animation_worklist=SimpleNamespace(
+            character_designer_animation_worklist=PropertyGroup(
                 workspace_identity='workspace', convert_imported_to_controls=True,
                 target_name='Cosha', catalog=[], items=[], catalog_index=0, active_index=-1, status='', has_error=False))
         self.source = SimpleNamespace(render=SimpleNamespace(fps=24, fps_base=1.0),

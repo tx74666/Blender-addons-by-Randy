@@ -131,6 +131,9 @@ def draw_source_motion(layout, context):
         layout.label(text=row.name, icon='ACTION')
         record = mapping_record(home, row)
         if record and record.state == 'READY' and record.controller_action:
+            from . import animation_playback_range as playback
+            if context.scene == home and playback.active_record(home) == record and playback.custom_range(home, record):
+                layout.operator('character_designer.reset_motion_preview_range', icon='LOOP_BACK')
             if record.alternate_action:
                 title = 'Open FK Version' if animation_controller_edit._is_fk(record.alternate_action) else 'Open Full IK Version'
                 version = layout.operator('character_designer.open_controller_version', text=title, icon='ACTION')
@@ -168,15 +171,13 @@ def controller_motion_active(home, row):
                 and animation.action_slot_handle == record.controller_slot)
 
 
-def motion_row(layout):
-    """Reserve the same status and category columns for every motion."""
-    row = layout.row(align=True)
-    name = row.row(align=True)
-    status = row.row(align=True)
-    status.ui_units_x = 5.5
-    manage = row.row(align=True)
-    manage.ui_units_x = 1.3
-    return name, status, manage
+def motion_row(layout, item):
+    """Tag both columns with the clicked motion, independently of the list cursor."""
+    from .animation_motion_pins import row_key
+    # The native UIList also copies the outer layout context to its row hit target.
+    layout.context_string_set('cd_category_motion_key', row_key(item))
+    row = layout.split(factor=0.66, align=True)
+    return row.row(align=True), row.row(align=True)
 
 
 def draw_mapping_state(layout, context, row):
@@ -200,9 +201,8 @@ def draw_mapping_state(layout, context, row):
         layout.label(text='Review', icon='ERROR')
         return
     retry = record is not None and record.state == 'MAPPING_NEEDED'
-    precise = getattr(getattr(home, 'character_designer_animation_worklist', None), 'precise_imported_motions', False)
     prepare = layout.operator('character_designer.prepare_controller_motion',
-                              text='Retry' if retry else ('Full IK' if precise else 'Prepare'),
+                              text='Retry' if retry else 'Prepare',
                               icon='FILE_REFRESH' if retry else 'POSE_HLT')
     prepare.clip_key = row.clip_key
 
@@ -218,7 +218,7 @@ def draw_mapping_options(layout, context):
         box = layout.box()
         done = running['completed'] + running['failed'] + running['skipped']
         line = box.row(align=True)
-        line.label(text='Preparing controls · %d / %d' % (done, running['total']), icon='POSE_HLT')
+        line.label(text='Preparing clips · %d / %d' % (done, running['total']), icon='POSE_HLT')
         cancel_column = line.row(align=True)
         cancel_column.ui_units_x = 3.8
         cancel = cancel_column.operator('character_designer.cancel_controller_motion', text='Cancel', icon='CANCEL')
@@ -239,11 +239,9 @@ def draw_mapping_options(layout, context):
         count = len(animation_controller_edit.missing_motions(home))
         if precise:
             count += len(animation_controller_edit._missing_full_ik(home))
-        line = layout.row()
-        line.enabled = count > 0
-        line.operator('character_designer.prepare_missing_controller_motions',
-                      text=('Prepare Missing Full IK (%d)' if precise else 'Prepare Missing FK (%d)') % count,
-                      icon='POSE_HLT', depress=count > 0)
+        if count:
+            layout.operator('character_designer.prepare_missing_controller_motions',
+                            text='Prepare Remaining Clips (%d)' % count, icon='ACTION', depress=True)
     _home, row = selected_motion(context)
     record = mapping_record(home, row)
     if record is not None and record.state == 'MAPPING_NEEDED' and record.error:
@@ -254,10 +252,25 @@ def draw_mapping_options(layout, context):
         wrapped_label(layout, context, settings.status, icon='ERROR')
 
 
+class CHARACTERDESIGNER_OT_reset_motion_preview_range(Operator):
+    bl_idname = 'character_designer.reset_motion_preview_range'
+    bl_label = 'Reset Preview Range'
+    bl_description = 'Restore the automatic playback range for this prepared clip'
+    bl_options = {'UNDO'}
+
+    def execute(self, context):
+        from . import animation_playback_range as playback
+        record = playback.active_record(context.scene)
+        if record is None:
+            return {'CANCELLED'}
+        playback.reset(context.scene, record)
+        return {'FINISHED'}
+
+
 class CHARACTERDESIGNER_OT_prepare_controller_motion(Operator):
     bl_idname = 'character_designer.prepare_controller_motion'
     bl_label = 'Prepare Controller Animation'
-    bl_description = 'Prepare this motion for character controls without opening it; keep existing controller edits'
+    bl_description = 'Prepare this clip for editing with the character’s controls.'
 
     clip_key: StringProperty(options={'HIDDEN'})
     from_fk: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
@@ -306,7 +319,7 @@ class CHARACTERDESIGNER_OT_prepare_controller_motion(Operator):
 class CHARACTERDESIGNER_OT_prepare_missing_controller_motions(Operator):
     bl_idname = 'character_designer.prepare_missing_controller_motions'
     bl_label = 'Prepare Missing Controller Animations'
-    bl_description = ('Prepare missing imported motions across every category in this workspace; '
+    bl_description = ('Map missing imported clips onto the existing character controls in every category; '
                       'keep existing controller edits and leave known mapping issues for explicit Retry')
 
     def execute(self, context):
@@ -466,11 +479,10 @@ class CHARACTERDESIGNER_UL_prepared_motions(UIList):
         layout.prop(self, 'filter_name', text='', icon='VIEWZOOM')
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index=0, flt_flag=0):
-        from . import animation_worklist_categories as categories
         scene = editing_scene(context.scene)
         local = _local_row(scene, item.clip_key) if scene else None
         label = local.name if local else item.name
-        name_column, status, manage = motion_row(layout)
+        name_column, status = motion_row(layout, item)
         if scene and (local or item.ready):
             active = controller_motion_active(context.scene, local or item)
             button = name_column.operator('character_designer.edit_prepared_motion', text=label,
@@ -480,7 +492,6 @@ class CHARACTERDESIGNER_UL_prepared_motions(UIList):
         else:
             name_column.label(text=label, icon='ACTION')
             status.label(text='Source' if item.ready else 'Review', icon='ACTION' if item.ready else 'INFO')
-        categories.draw_move(manage, context, item)
 
 
 def home_scenes(scene):
@@ -496,6 +507,7 @@ def draw_return(layout, context):
 
 
 CLASSES = (CharacterDesignerControllerMotion,
+           CHARACTERDESIGNER_OT_reset_motion_preview_range,
            CHARACTERDESIGNER_OT_finish_controller_motion, CHARACTERDESIGNER_OT_cancel_controller_motion,
            CHARACTERDESIGNER_OT_prepare_controller_motion, CHARACTERDESIGNER_OT_prepare_missing_controller_motions,
            CHARACTERDESIGNER_OT_edit_prepared_motion, CHARACTERDESIGNER_OT_open_controller_version,

@@ -6,7 +6,6 @@ read-only Actions, while custom Actions remain local and editable.
 """
 
 import json
-import math
 from pathlib import Path
 import uuid
 
@@ -95,11 +94,15 @@ def _validate_route(saved, clip, link, item=None):
 
 
 def _fill_catalog(saved, record):
+    from .animation_catalog_exclusions import keys_for
+    omitted = keys_for(record)
     previous = saved.catalog[saved.catalog_index].clip_key if 0 <= saved.catalog_index < len(saved.catalog) else ''
     saved.catalog.clear()
     for clip in record['clips']:
         if clip.get('compositionReferenceSource') is True or clip.get('sourceOnly') is True:
             continue  # Read-only A companions are consumed by Composition/Create A Work Copy.
+        if _clip_key(clip) in omitted:
+            continue
         entry = saved.catalog.add()
         entry.clip_key, entry.name = _clip_key(clip), clip['clipName']
         entry.work_item_id = workspace.work_item_id(clip)
@@ -1022,9 +1025,8 @@ def _activate_worklist_action(context, item_id, side='CUSTOM', *, _collection=Fa
         context.scene.tool_settings.use_keyframe_insert_auto = False
         start, end = map(float, action.frame_range)
         scene = context.scene
-        scene.frame_start = scene.frame_preview_start = math.floor(start)
-        scene.frame_end = scene.frame_preview_end = max(math.ceil(end), scene.frame_start)
-        scene.use_preview_range = True
+        from . import animation_playback_range as playback
+        playback.set_ranges(scene, start, end, playback.is_loop(action))
         ua._set_frame(scene, start)
         for selected in context.selected_objects:
             selected.select_set(False)

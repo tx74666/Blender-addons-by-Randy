@@ -154,7 +154,8 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None,
                     or pb.custom_shape != obj or pb.custom_shape_transform is not None):
                 raise _error('An Eye Controls widget was replaced or removed.')
         collection = bpy.data.collections.get(record['widget_collection'])
-        if not pose_only and (collection is None or not _owned(collection, record, 'WIDGET_COLLECTION')):
+        if (not pose_only and not validation_native.missing_pose_asset(armature, collection)
+                and (collection is None or not _owned(collection, record, 'WIDGET_COLLECTION'))):
             raise _error('The Eye Controls widget collection is missing.')
     except (KeyError, TypeError, AttributeError, IndexError) as exc:
         raise _error('Eye Controls recovery data no longer matches this rig.') from exc

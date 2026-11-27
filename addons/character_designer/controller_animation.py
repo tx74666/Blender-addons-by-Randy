@@ -617,6 +617,8 @@ def _clone(scene, plan, owned):
     clone.animation_data_create()
     clone.animation_data.action = plan['action']
     clone.animation_data.action_slot = next(slot for slot in plan['action'].slots if slot.handle == plan['slot'])
+    from .animation_cleanup import restore_defaults
+    restore_defaults(clone, plan['action'], plan['slot'])
     clone.animation_data.use_nla = False
     clone.animation_data.action_blend_type, clone.animation_data.action_influence = 'REPLACE', 1.
     settings = getattr(clone, 'wiggle', None)

@@ -943,7 +943,9 @@ def _display_frame_state(armature, collection):
                   if (pb.bone.get(limb_ik.OWNER_KEY) == limb_ik.OWNER_VALUE
                       and pb.bone.get(limb_ik.ROLE_KEY) in {"HAND_IK", "FOOT_IK"})
                   or (pb.bone.get(limb_ik.OWNER_KEY) == spine_ik_fk.OWNER_VALUE and "ik_fk" in pb))
-    return modes, tuple(sorted(collection.bones.keys())), armature.data.get(limb_fk_visuals.NATIVE_DISPLAY_KEY)
+    ad = getattr(armature, 'animation_data', None)
+    binding = (ad.action.session_uid, ad.action_slot_handle) if ad and ad.action else None
+    return modes, tuple(sorted(collection.bones.keys())), armature.data.get(limb_fk_visuals.NATIVE_DISPLAY_KEY), binding
 
 
 @bpy.app.handlers.persistent
@@ -1009,7 +1011,20 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
                 and monotonic() < rejected[2]):
             continue
         _FRAME_OWNER_REJECTIONS.pop(key, None)
-        if not _single_data_user(armature):
+        editing_clip = False
+        if state[-1] and scene == bpy.context.scene:
+            from . import limb_ik_fk_pose_key
+            editing_clip = limb_ik_fk_pose_key.active_record(bpy.context, armature) is not None
+        display_allowed = _single_data_user(armature)
+        if not display_allowed and editing_clip:
+            from . import bone_display
+            try:
+                bone_display._controls_editable(bpy.context, armature)
+            except ValueError:
+                pass
+            else:
+                display_allowed = True
+        if not display_allowed:
             _FRAME_OWNER_REJECTIONS[key] = (state, token, monotonic() + _FRAME_OWNER_RETRY_SECONDS)
             continue
         # Cache unsuccessful cases too: no repeated errors or retries per frame.
@@ -1017,10 +1032,14 @@ def _frame_visibility(scene, _depsgraph=None, *, objects=None, verified_inventor
         try:
             # A synchronous single-rig transaction may reuse its immediately
             # preceding strict validation. Playback still validates for itself.
-            inventory = (verified_inventory if verified_inventory is not None
-                         and objects is not None and len(objects) == 1 else
-                         limb_ik._validate_inventory(armature))
-            sync_limb_display(armature, inventory, force_flags=bool(previous and previous[0] != modes))
+            if verified_inventory is not None and objects is not None and len(objects) == 1:
+                inventory = verified_inventory
+            elif editing_clip:
+                inventory = limb_ik._validate_inventory(armature, limb_pose_only=True)
+            else:
+                inventory = limb_ik._validate_inventory(armature)
+            entering_clip = editing_clip and (previous is None or previous[-1] != state[-1])
+            sync_limb_display(armature, inventory, force_flags=entering_clip or bool(previous and previous[0] != modes))
             _FRAME_CACHE[key] = _display_frame_state(armature, collection)
         except Exception:
             # The explicit rig tools report validation errors. Playback stays uninterrupted.

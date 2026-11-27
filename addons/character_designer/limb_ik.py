@@ -22,6 +22,7 @@ from mathutils import Euler, Matrix, Vector
 from .ui_constants import SIDEBAR_CATEGORY, rig_page_active
 from . import bone_collections as bone_groups
 from . import limb_ik_fk
+from .limb_pose_insert import CHARACTERDESIGNER_OT_insert_limb_switch
 from . import foot_controls
 from . import torso_controls
 from . import spine_ik_fk
@@ -517,6 +518,14 @@ class CharacterDesignerLimbIKState(PropertyGroup):
         ),
         default="LEFT_ARM",
         options={"SKIP_SAVE"},
+    )
+    animation_limb_scope: EnumProperty(
+        name="Limb Scope",
+        items=(("AUTO", "Follow Selection", "Use the selected limb controls"),
+               ("ALL", "All Limbs", "Match the installed arms and legs together on this frame"),
+               ("LEFT_ARM", "Left Arm", "Edit the left arm"), ("RIGHT_ARM", "Right Arm", "Edit the right arm"),
+               ("LEFT_LEG", "Left Leg", "Edit the left leg"), ("RIGHT_LEG", "Right Leg", "Edit the right leg")),
+        default="AUTO", options={"SKIP_SAVE"},
     )
     build_method: EnumProperty(
         name="Build Method",
@@ -7059,11 +7068,13 @@ class CHARACTERDESIGNER_OT_controller_limb_pose(Operator):
 
     @classmethod
     def description(cls, context, properties):
+        if properties.limb_id == 'ALL':
+            return 'Match the arms and legs on this frame. With Auto Key off, press I in the 3D Viewport to record the switch'
         return {
             'KEY': 'Record this limb’s adjusted pose and IK/FK mode on this frame, including its pole',
             'KEY_FK': 'Record the visible pose as FK rotations and continue in FK',
             'POSE_IK': 'Move the IK target to pose this limb, then choose Key as FK. The FK mode track stays active in the Action',
-        }.get(properties.operation, 'Match this limb on the current frame. With Auto Key off, use Key Pose to record it')
+        }.get(properties.operation, 'Match this limb on the current frame. With Auto Key off, press I in the 3D Viewport to record it')
 
     def execute(self, context):
         from . import controller_animation_ui, limb_ik_fk_pose_key, limb_ik_ui_state
@@ -7073,9 +7084,19 @@ class CHARACTERDESIGNER_OT_controller_limb_pose(Operator):
                 raise LimbIKError('Open a controller Action on the character in Pose Mode.')
             inventory = limb_ik_ui_state.inventory(rig)
             selected = controller_animation_ui._selected_limb_keys(context, rig, inventory)
+            scope = _settings(context).animation_limb_scope
+            if self.limb_id in {'ALL', 'SELECTION'}:
+                if self.operation not in {'FK', 'IK'}:
+                    raise LimbIKError('Choose FK or IK for this group of limbs.')
+                if self.limb_id == 'ALL':
+                    selected = tuple(inventory['rigs'])
+                elif len(selected) < 2:
+                    raise LimbIKError('Select the limbs to switch together.')
+                limb_ik_fk_pose_key.edit_group(context, rig, selected, self.operation)
+                return {'FINISHED'}
             if self.limb_id:
                 explicit = SELECTED_LIMBS.get(self.limb_id)
-                if explicit not in inventory['rigs'] or (selected and selected != (explicit,)):
+                if explicit not in inventory['rigs'] or (scope != self.limb_id and selected and selected != (explicit,)):
                     raise LimbIKError('The limb selection changed. Choose the current arm or leg again.')
                 selected = (explicit,)
             if len(selected) != 1:
@@ -7092,14 +7113,14 @@ class CHARACTERDESIGNER_OT_controller_limb_pose(Operator):
                                             store_as_fk=self.operation == 'KEY_FK')
             if old_mode != mode:
                 destination = rig.pose.bones[limb['target'].name if mode == 'IK' else limb['chain'][-1]]
-                for bone in previous_controls:
+                for bone in (list(context.selected_pose_bones or ()) if scope == self.limb_id else previous_controls):
                     bone.select = False
                 rig.data.bones.active = destination.bone
                 destination.select = True
         except (LimbIKError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             self.report({'WARNING'}, str(exc))
             return {'CANCELLED'}
-        message = f'{mode} pose keyed.' if keyed else f'{mode} pose matched. Use Key Pose to record it.'
+        message = f'{mode} pose keyed.' if keyed else f'{mode} pose matched. Press I in the 3D Viewport to key it.'
         self.report({'INFO'}, 'Move the IK target, then use Key as FK.' if self.operation == 'POSE_IK' else message)
         return {'FINISHED'}
 
@@ -9238,26 +9259,6 @@ class CHARACTERDESIGNER_OT_limb_ik_reset_control_visual(Operator):
             return {"CANCELLED"}
 
 
-def _draw_body_limb_modes(layout, context, armature):
-    from . import controller_animation_ui, body_original_mode, limb_ik_ui_state
-    if armature is None or armature.type != "ARMATURE":
-        layout.label(text="Select the main armature.", icon="INFO")
-        return None
-    inventory = None
-    try:
-        original = body_original_mode.active(armature)
-        if not original:
-            inventory = limb_ik_ui_state.inventory(armature)
-        controller_animation_ui.draw_current_frame_modes(layout, context, armature, inventory,
-            original=original, enabled=context.active_object == armature and context.mode in {"OBJECT", "POSE"})
-        if not original:
-            from . import limb_ik_fk_pose_key
-            limb_ik_fk_pose_key.draw(layout, context)
-    except (LimbIKError, ReferenceError, RuntimeError, ValueError) as exc:
-        layout.label(text=str(exc), icon="ERROR")
-    return inventory
-
-
 class CHARACTERDESIGNER_PT_limb_ik(Panel):
     bl_label = "Body Controls"
     bl_idname = "CHARACTERDESIGNER_PT_limb_ik"
@@ -9282,7 +9283,6 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         from .control_pose_capture import draw as draw_pose_capture
         draw_pose_capture(layout, context)
         if body_original_mode.active(armature):
-            _draw_body_limb_modes(layout, context, armature)
             return
         if body_calibration_ui.draw(layout, context):
             # Native mapping remains reachable before Generate. The stored old
@@ -9303,7 +9303,6 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                 kind, side = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
                 _draw_limb_fields(fields, settings, armature, kind, side)
             return
-        _draw_body_limb_modes(layout, context, armature)
         layout.prop(settings, "show_body_setup_advanced", text="Body Setup & Recovery",
                     icon="TRIA_DOWN" if settings.show_body_setup_advanced else "TRIA_RIGHT", emboss=False)
         if not settings.show_body_setup_advanced:
@@ -9321,73 +9320,64 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
                 display = limb_ik_ui_state.inventory(active, include_foot=True)
                 selected_key = SELECTED_LIMBS.get(settings.selected_limb, ("ARM", "L"))
                 rig = display["rigs"].get(selected_key)
-                if rig is not None:
+                if rig is not None and selected_key[0] == "LEG":
                     raw_weight = active.pose.bones[rig["target"].name].get(limb_ik_fk.PROPERTY, 1.0)
                     if (type(raw_weight) not in (int, float) or not math.isfinite(raw_weight)
                             or not 0.0 <= raw_weight <= 1.0):
                         raise LimbIKError("The selected limb IK/FK weight is outside its supported range.")
                     mode = limb_ik_fk.mode_for_rig(active, rig)
-                    row = layout.row(align=True)
-                    for choice in ("IK", "FK"):
-                        label = "Match to " + choice if mode == "BLEND" else choice
-                        op = row.operator("character_designer.limb_ik_fk_switch", text=label, depress=mode == choice)
-                        op.mode = choice
-                    if mode == "BLEND":
-                        layout.label(text="IK / FK mixed: targets may differ.", icon="ERROR")
-                    layout.label(text="Switch keeps the current pose", icon="CON_ROTLIKE")
-                    if selected_key[0] == "LEG":
-                        foot_box = layout.box()
-                        foot = rig.get("foot_controls")
-                        if foot:
+                    foot_box = layout.box()
+                    foot = rig.get("foot_controls")
+                    if foot:
+                        row = foot_box.row(align=True)
+                        roll_select = row.row(align=True)
+                        roll_select.enabled = mode == "IK"
+                        roll_select.operator("character_designer.foot_controls", text="Foot Roll", icon="CON_ROTLIKE").action = "SELECT_ROLL"
+                        row.operator("character_designer.foot_controls", text="Toe Bend", icon="BONE_DATA").action = "SELECT_TOE"
+                        hinge = foot.get("roll_hinge") == 1
+                        if hinge and settings.show_body_setup_advanced:
+                            from . import character_setup
+                            mapping = character_setup._mapping(character_setup.settings(context), active)
+                            if mapping is not None:
+                                foot_box.prop(mapping, "footwear", text="Footwear")
+                        if not hinge or not foot.get('footwear_display') or settings.show_body_setup_advanced:
+                            foot_box.operator("character_designer.foot_controls", text="Fit Foot Controls" if hinge else "Set Up Heel Lift",
+                                              icon="FILE_REFRESH").action = "HEEL_LIFT"
+                        if not hinge and settings.show_body_setup_advanced and foot.get("rotation_direction") != "NATURAL":
+                            foot_box.operator("character_designer.foot_controls", text="Fix Roll Direction", icon="FILE_REFRESH").action = "FIX_DIRECTION"
+                        if not hinge and settings.show_body_setup_advanced:
+                            foot_box.prop(settings, "show_foot_visual_options", icon="TRIA_DOWN" if settings.show_foot_visual_options else "TRIA_RIGHT", emboss=False)
+                        if not hinge and settings.show_body_setup_advanced and settings.show_foot_visual_options:
+                            from . import character_setup
+                            mapping = character_setup._mapping(character_setup.settings(context), active)
+                            if mapping is not None:
+                                foot_box.prop(mapping, "footwear", text="Footwear")
+                            fit_error = None
+                            try:
+                                shoe = character_setup.footwear_reference(context, active)
+                            except ValueError as exc:
+                                shoe, fit_error = None, str(exc)
+                            foot_box.label(text=fit_error or "Reference: " + (shoe.name if shoe else "Foot bones"), icon="ERROR" if fit_error else "OUTLINER_OB_MESH" if shoe else "BONE_DATA")
                             row = foot_box.row(align=True)
-                            roll_select = row.row(align=True)
-                            roll_select.enabled = mode == "IK"
-                            roll_select.operator("character_designer.foot_controls", text="Foot Roll", icon="CON_ROTLIKE").action = "SELECT_ROLL"
-                            row.operator("character_designer.foot_controls", text="Toe Bend", icon="BONE_DATA").action = "SELECT_TOE"
-                            hinge = foot.get("roll_hinge") == 1
-                            if hinge and settings.show_body_setup_advanced:
-                                from . import character_setup
-                                mapping = character_setup._mapping(character_setup.settings(context), active)
-                                if mapping is not None:
-                                    foot_box.prop(mapping, "footwear", text="Footwear")
-                            if not hinge or not foot.get('footwear_display') or settings.show_body_setup_advanced:
-                                foot_box.operator("character_designer.foot_controls", text="Fit Foot Controls" if hinge else "Set Up Heel Lift",
-                                                  icon="FILE_REFRESH").action = "HEEL_LIFT"
-                            if not hinge and settings.show_body_setup_advanced and foot.get("rotation_direction") != "NATURAL":
-                                foot_box.operator("character_designer.foot_controls", text="Fix Roll Direction", icon="FILE_REFRESH").action = "FIX_DIRECTION"
-                            if not hinge and settings.show_body_setup_advanced:
-                                foot_box.prop(settings, "show_foot_visual_options", icon="TRIA_DOWN" if settings.show_foot_visual_options else "TRIA_RIGHT", emboss=False)
-                            if not hinge and settings.show_body_setup_advanced and settings.show_foot_visual_options:
-                                from . import character_setup
-                                mapping = character_setup._mapping(character_setup.settings(context), active)
-                                if mapping is not None:
-                                    foot_box.prop(mapping, "footwear", text="Footwear")
-                                fit_error = None
-                                try:
-                                    shoe = character_setup.footwear_reference(context, active)
-                                except ValueError as exc:
-                                    shoe, fit_error = None, str(exc)
-                                foot_box.label(text=fit_error or "Reference: " + (shoe.name if shoe else "Foot bones"), icon="ERROR" if fit_error else "OUTLINER_OB_MESH" if shoe else "BONE_DATA")
-                                row = foot_box.row(align=True)
-                                fit_row = row.row(align=True)
-                                fit_row.enabled = fit_error is None
-                                fit_row.operator("character_designer.foot_controls", text="Fit Arrow", icon="FULLSCREEN_EXIT").action = "FIT_VISUAL"
-                                if foot_controls.has_roll_visual_backup(active, selected_key):
-                                    row.operator("character_designer.foot_controls", text="Restore", icon="LOOP_BACK").action = "RESTORE_VISUAL"
-                            if settings.show_body_setup_advanced:
-                                row = foot_box.row()
-                                row.alert = True
-                                row.operator("character_designer.foot_controls", text="Remove Foot Controls", icon="TRASH").action = "REMOVE"
-                        elif settings.show_body_setup_advanced:
-                            toe_field = "left_foot_toe" if selected_key[1] == "L" else "right_foot_toe"
-                            toe_candidates = [bone for bone in active.data.bones[rig["chain"][2]].children if bone.use_deform and not bone.get(OWNER_KEY)]
-                            if not getattr(settings, toe_field) and len(toe_candidates) == 1:
-                                foot_box.label(text="Toe: " + toe_candidates[0].name, icon="BONE_DATA")
-                            else:
-                                foot_box.prop_search(settings, toe_field, active.data, "bones", text="Toe Bone")
-                            foot_box.operator("character_designer.foot_controls", text="Add Foot Controls", icon="CON_KINEMATIC").action = "BUILD"
+                            fit_row = row.row(align=True)
+                            fit_row.enabled = fit_error is None
+                            fit_row.operator("character_designer.foot_controls", text="Fit Arrow", icon="FULLSCREEN_EXIT").action = "FIT_VISUAL"
+                            if foot_controls.has_roll_visual_backup(active, selected_key):
+                                row.operator("character_designer.foot_controls", text="Restore", icon="LOOP_BACK").action = "RESTORE_VISUAL"
+                        if settings.show_body_setup_advanced:
+                            row = foot_box.row()
+                            row.alert = True
+                            row.operator("character_designer.foot_controls", text="Remove Foot Controls", icon="TRASH").action = "REMOVE"
+                    elif settings.show_body_setup_advanced:
+                        toe_field = "left_foot_toe" if selected_key[1] == "L" else "right_foot_toe"
+                        toe_candidates = [bone for bone in active.data.bones[rig["chain"][2]].children if bone.use_deform and not bone.get(OWNER_KEY)]
+                        if not getattr(settings, toe_field) and len(toe_candidates) == 1:
+                            foot_box.label(text="Toe: " + toe_candidates[0].name, icon="BONE_DATA")
                         else:
-                            foot_box.label(text="Included in Body Setup", icon="INFO")
+                            foot_box.prop_search(settings, toe_field, active.data, "bones", text="Toe Bone")
+                        foot_box.operator("character_designer.foot_controls", text="Add Foot Controls", icon="CON_KINEMATIC").action = "BUILD"
+                    else:
+                        foot_box.label(text="Included in Body Setup", icon="INFO")
             except (LimbIKError, ReferenceError, RuntimeError, ValueError) as exc:
                 layout.label(text=str(exc), icon="ERROR")
         auto_available, auto_enabled = _global_auto_align_ui_state(context, settings)
@@ -9609,6 +9599,7 @@ LIMB_IK_CLASSES = (
     CHARACTERDESIGNER_OT_limb_ik_rebuild,
     CHARACTERDESIGNER_OT_limb_ik_fk_switch,
     CHARACTERDESIGNER_OT_controller_limb_pose,
+    CHARACTERDESIGNER_OT_insert_limb_switch,
     CHARACTERDESIGNER_OT_body_ik_fk_switch,
     CHARACTERDESIGNER_OT_foot_controls,
     CHARACTERDESIGNER_OT_limb_ik_default_pole_direction,

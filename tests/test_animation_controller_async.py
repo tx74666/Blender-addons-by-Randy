@@ -169,6 +169,16 @@ class AsyncControllerEdit(unittest.TestCase):
     def test_existing_character_defaults_to_daily_edit_accuracy(self):
         self.start(bulk=True)
         self.assertTrue(self.worker.begin.call_args.kwargs['daily_edit'])
+        self.assertTrue(self.worker.begin.call_args.kwargs['align_loop_period'])
+
+    def test_prepare_preserves_the_loop_timing_selected_for_the_batch(self):
+        settings = self.home.character_designer_animation_worklist
+        settings.align_loop_period = False
+        self.start(bulk=True, capture=False)
+        settings.align_loop_period = True
+        self.service._poll_pending()
+        self.service._poll_pending()
+        self.assertFalse(self.worker.begin.call_args.kwargs['align_loop_period'])
 
     def test_prepare_enqueues_and_draws_before_import_or_capture(self):
         result = self.start(capture=False)

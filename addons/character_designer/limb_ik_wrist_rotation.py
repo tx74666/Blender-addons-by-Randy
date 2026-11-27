@@ -1,8 +1,7 @@
 """Explicit IK wrist neutral, preserving native FK inputs and the existing rig.
 
-Only the visible target's active rotation representation is written. Raw target
-zero is not redefined: the hand returns to its own Edit Mode orientation
-in armature space, at its current position and evaluated scale.
+Only the visible target's active rotation representation is written. The
+hand's rest orientation can be matched relative to the armature or forearm.
 """
 import math
 
@@ -54,7 +53,7 @@ def _difference(first, second):
 
 def _refresh_reference(context, plan):
     rig, target, forearm = plan['rig'], plan['target'], plan['forearm']
-    plan['wanted_native'] = _reference(plan['api'], rig, plan['end'])
+    plan['wanted_native'] = _reference(plan['end'], forearm, plan['follow_forearm'])
     plan['target_position'] = target.matrix.translation.copy()
     plan['forearm_matrix'] = forearm.matrix.copy()
     plan['pole_matrix'] = rig.pose.bones[plan['limb']['pole'].name].matrix.copy()
@@ -446,16 +445,21 @@ def _matrix_finite(matrix):
     return all(math.isfinite(value) for row in matrix for value in row) and math.isfinite(determinant) and determinant > 1e-12
 
 
-def _reference(api, rig, end):
+def _reference(end, forearm, follow_forearm):
     from mathutils import Matrix
     posed = end.matrix
     _require(_matrix_finite(posed), 'The current hand transform is singular, reflected or non-finite.')
-    wanted = Matrix.LocRotScale(posed.translation, end.bone.matrix_local.to_quaternion(), posed.to_scale())
+    orientation = end.bone.matrix_local.to_quaternion()
+    if follow_forearm:
+        _require(_matrix_finite(forearm.matrix), 'The current forearm transform is singular, reflected or non-finite.')
+        rest_to_pose = forearm.matrix.to_quaternion() @ forearm.bone.matrix_local.to_quaternion().inverted()
+        orientation = rest_to_pose @ orientation
+    wanted = Matrix.LocRotScale(posed.translation, orientation, posed.to_scale())
     _require(_matrix_finite(wanted), 'The wrist neutral reference is singular, reflected or non-finite.')
     return {end.name: wanted}
 
 
-def _prepare_single(context, *, target=None, _batch_side=False, _shared=None):
+def _prepare_single(context, *, target=None, follow_forearm=False, _batch_side=False, _shared=None):
     """Prepare only this target's local rotation and local keying domain."""
     if _shared is None:
         admission = _admission(context, target, mirror_allowed=_batch_side)
@@ -471,7 +475,7 @@ def _prepare_single(context, *, target=None, _batch_side=False, _shared=None):
     plan = dict(plan_api=PLAN_API, phase='prepared', context=context, api=api, offset=offset,
         transaction=shared, owner=shared['owner'], variant=shared['owner'], batch_side=bool(_batch_side),
         mirror_flags=shared['mirror_flags'], rig=rig, data=rig.data, target=target, target_bone=target.bone,
-        end=end, forearm=forearm, key=key, inventory=inventory, limb=entry,
+        end=end, forearm=forearm, follow_forearm=follow_forearm, key=key, inventory=inventory, limb=entry,
         frame=shared['frame'], autokey=shared['autokey'], action=shared['action'], slot=shared['slot'],
         rotation_mode=target.rotation_mode, rotation_path=path, rotation_size=3 if path == 'rotation_euler' else 4,
         target_raw=raw, before_raw={target.name: raw}, written_rotation=False, had_key_recovery=False,
@@ -484,13 +488,13 @@ def _prepare_single(context, *, target=None, _batch_side=False, _shared=None):
     return plan
 
 
-def prepare_wrist_neutral(context, *, target=None, targets=None):
+def prepare_wrist_neutral(context, *, target=None, targets=None, follow_forearm=False):
     """Prepare one wrist, or the atomic pair required by selection/mirroring."""
     rig = getattr(context, 'object', None)
     if targets is not None or (rig is not None and getattr(getattr(rig, 'pose', None), 'use_mirror_x', False)):
         from . import limb_ik_wrist_batch
-        return limb_ik_wrist_batch.prepare(context, target=target, targets=targets)
-    return _prepare_single(context, target=target)
+        return limb_ik_wrist_batch.prepare(context, target=target, targets=targets, follow_forearm=follow_forearm)
+    return _prepare_single(context, target=target, follow_forearm=follow_forearm)
 
 
 def _unchanged_inputs(plan, *, allow_target_rotation):
@@ -609,7 +613,7 @@ def _verify(context, plan):
     _require(all(math.isfinite(value) for value in measurements.values())
              and measurements['matrix'] <= MATRIX_TOLERANCE and measurements['position'] <= POSITION_TOLERANCE
              and measurements['rotation'] <= ROTATION_TOLERANCE and measurements['scale'] <= SCALE_TOLERANCE,
-             'The wrist cannot reach its Edit Mode orientation without another change; its original input was kept.')
+             'The wrist cannot reach the requested orientation without another change; its original input was kept.')
     _require((plan['target'].matrix.translation - plan['target_position']).length <= POSITION_TOLERANCE
              and _difference(plan['forearm'].matrix, plan['forearm_matrix']) <= MATRIX_TOLERANCE
              and _difference(rig.pose.bones[plan['limb']['pole'].name].matrix, plan['pole_matrix']) <= MATRIX_TOLERANCE,
@@ -669,5 +673,6 @@ def apply_wrist_neutral(context, plan):
         raise
 
 
-def reset_wrist_neutral(context, *, target=None, targets=None):
-    return apply_wrist_neutral(context, prepare_wrist_neutral(context, target=target, targets=targets))
+def reset_wrist_neutral(context, *, target=None, targets=None, follow_forearm=False):
+    plan = prepare_wrist_neutral(context, target=target, targets=targets, follow_forearm=follow_forearm)
+    return apply_wrist_neutral(context, plan)

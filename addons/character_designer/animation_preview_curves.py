@@ -97,8 +97,21 @@ def signature(action, slot_handle, paths=None):
 
 
 def _editable(curve):
-    return (not curve.modifiers and not curve.sampled_points and not curve.lock
+    return (not curve.sampled_points and not curve.lock
             and not curve.mute and not (curve.group and (curve.group.lock or curve.group.mute)))
+
+
+def _repeat_mode(curve):
+    """Distinguish ordinary extrapolation and unbounded Repeat Motion from unsupported stacks."""
+    if not curve.modifiers:
+        return 'PLAIN'
+    mod = curve.modifiers[0]
+    if (len(curve.modifiers) == 1 and mod.type == 'CYCLES' and not mod.mute
+            and mod.mode_before == mod.mode_after == 'REPEAT'
+            and mod.cycles_before == mod.cycles_after == 0 and not mod.use_restricted_range
+            and (not mod.use_influence or mod.influence == 1.0)):
+        return 'REPEAT'
+    return 'UNSUPPORTED'
 
 
 def copy_keys(source_action, destination_action, slot_handle, paths, *, after_write=None):
@@ -109,6 +122,10 @@ def copy_keys(source_action, destination_action, slot_handle, paths, *, after_wr
     if (source.keys() != destination.keys() or paths != {path for path, _ in source}
             or not all(_editable(c) for c in (*source.values(), *destination.values()))):
         raise ValueError('The selected curves changed or are no longer editable.')
+    for key, curve in source.items():
+        mode = _repeat_mode(curve)
+        if mode == 'UNSUPPORTED' or mode != _repeat_mode(destination[key]):
+            raise ValueError('The selected curve modifiers changed or are unsupported.')
     edits = [(destination[key], _points(source[key]), _points(destination[key]),
               getattr(destination[key], 'active_keyframe_index', None)) for key in source]
     attempted = []
@@ -124,6 +141,41 @@ def copy_keys(source_action, destination_action, slot_handle, paths, *, after_wr
             _replace(curve, backup, active_index=active_index)
         destination_action.update_tag()
         raise
+
+
+def _replace_slot_curves(target, source, handle):
+    """Copy the native curves and their groups, keeping the destination Action and slot."""
+    original = _bag(source, handle)
+    bag = _bag(target, handle)
+    bag.fcurves.clear()
+    for group in reversed(list(bag.groups)):
+        bag.groups.remove(group)
+    for group in original.groups:
+        copied = bag.groups.new(group.name)
+        for field in ('lock', 'mute', 'select', 'show_expanded', 'show_expanded_graph', 'use_pin', 'color_set'):
+            setattr(copied, field, getattr(group, field))
+        if group.is_custom_color_set:
+            for field in ('normal', 'select', 'active', 'show_colored_constraints'):
+                setattr(copied.colors, field, getattr(group.colors, field))
+    for curve in original.fcurves:
+        copied = bag.fcurves.new_from_fcurve(curve)
+        if curve.group:
+            copied.group = bag.groups[curve.group.name]
+    target.update_tag()
+
+
+def copy_edited_slot(preview, source, handle, *, after_write):
+    """Commit the artist's actual keys, handles, modifiers, added and deleted channels."""
+    import bpy
+    backup = source.copy()
+    try:
+        _replace_slot_curves(source, preview, handle)
+        after_write()
+    except Exception:
+        _replace_slot_curves(source, backup, handle)
+        raise
+    finally:
+        bpy.data.actions.remove(backup)
 
 
 def _switch_guards(curves):
@@ -153,14 +205,22 @@ def _quaternion_limit(rows, radians):
     return minimum * math.sin(min(math.pi, radians) / 2.) if minimum > 1.e-6 else 0.
 
 
-def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance):
-    if not all(_editable(curve) and len(curve.keyframe_points) > 2 for curve in curves):
-        return None
+def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance, loop):
+    if not all(_editable(curve) for curve in curves):
+        return None, 'Locked, muted or sampled'
+    if any(len(curve.keyframe_points) <= 2 for curve in curves):
+        return None, 'Two or fewer keys on an axis'
+    modes = {_repeat_mode(curve) for curve in curves}
+    if 'UNSUPPORTED' in modes or len(modes) != 1:
+        return None, 'Unsupported or mixed modifiers'
     coords = [_column(curve.keyframe_points, 'co', 'f', 2) for curve in curves]
     times = coords[0][::2]
     if any(axis[::2] != times for axis in coords[1:]) or any(b <= a for a, b in zip(times, times[1:])):
-        return None
+        return None, 'Different key times across axes'
     guards = {0, len(times)-1}
+    if loop or 'REPEAT' in modes:
+        # Preserve the velocity on both sides of the seam as well as the period.
+        guards.update((1, len(times)-2))
     for t in guard_times:
         i = bisect_left(times, t)
         if i < len(times) and t == times[i]:
@@ -172,22 +232,22 @@ def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance)
             guards.update((1, len(times)-2))
         for i, point in enumerate(curve.keyframe_points):
             if point.interpolation != 'LINEAR':
-                return None
+                return None, 'Nonlinear interpolation'
             if point.type not in {'KEYFRAME', 'GENERATED'}:
                 guards.add(i)
     rows = list(zip(*(axis[1::2] for axis in coords)))
     if prop == 'rotation_quaternion':
         if len(curves) != 4 or [c.array_index for c in curves] != [0, 1, 2, 3]:
-            return None
+            return None, 'Incomplete quaternion'
         tolerance = _quaternion_limit(rows, rotation_tolerance)
     elif prop == 'rotation_euler':
         tolerance = rotation_tolerance / math.sqrt(len(curves))
     elif prop == 'location':
         tolerance = position_tolerance
     elif prop == 'scale' and all(row == rows[0] for row in rows):
-        return sorted(guards)
+        return sorted(guards), None
     else:
-        return None
+        return None, 'Unsupported transform or varying scale'
     # Keep both boundaries of exact holds, including planted-foot segments.
     for i in range(1, len(rows)-1):
         if (rows[i] == rows[i-1]) != (rows[i] == rows[i+1]):
@@ -197,10 +257,10 @@ def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance)
     for first, last in zip(ordered, ordered[1:]):
         result = reduce_linear(times[first:last+1], rows[first:last+1], tolerance)
         keep.update(first + i for i in result.indices)
-    return sorted(keep)
+    return sorted(keep), None
 
 
-def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_tolerance):
+def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_tolerance, *, loop=False):
     """Simplify an isolated Action copy. Tolerances are local units and radians."""
     if not all(math.isfinite(v) and v >= 0 for v in (position_tolerance, rotation_tolerance)):
         raise ValueError('Reduction tolerances must be finite and nonnegative.')
@@ -210,6 +270,7 @@ def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_
     guard_times.update(marker.frame for marker in copy_action.pose_markers)
     before = after = 0
     changed = []
+    skipped = {}
     groups = {path: [] for path in paths}
     for (path, _axis), curve in sorted(curves.items()):
         if path in groups:
@@ -217,8 +278,11 @@ def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_
     for path, group in groups.items():
         count = sum(len(curve.keyframe_points) for curve in group)
         before += count
-        keep = _retained(group, _curve_name(group[0])[1], guard_times, position_tolerance, rotation_tolerance)
+        keep, reason = _retained(group, _curve_name(group[0])[1], guard_times, position_tolerance,
+                                 rotation_tolerance, loop)
         if keep is None or len(keep) == len(group[0].keyframe_points):
+            reason = reason or 'Tolerance or protected keys'
+            skipped[reason] = skipped.get(reason, 0) + len(group)
             after += count
             continue
         for curve in group:
@@ -230,4 +294,4 @@ def simplify(copy_action, slot_handle, bone_names, position_tolerance, rotation_
         changed.append(path)
     if changed:
         copy_action.update_tag()
-    return dict(paths=changed, before=before, after=after)
+    return dict(paths=changed, before=before, after=after, skipped=skipped)

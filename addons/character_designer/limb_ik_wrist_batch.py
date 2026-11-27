@@ -45,13 +45,14 @@ def _targets(context, target, targets):
     return ((first, counterpart) if first_key[1] == 'L' else (counterpart, first)), admission
 
 
-def prepare(context, *, target=None, targets=None):
+def prepare(context, *, target=None, targets=None, follow_forearm=False):
     service = _service()
     wrists, admission = _targets(context, target, targets)
     shared = service._transaction().prepare(context, admission, mirror_allowed=len(wrists) == 2)
     if len(wrists) == 1:
-        return service._prepare_single(context, target=wrists[0], _shared=shared)
-    sides = tuple(service._prepare_single(context, target=pb, _batch_side=True, _shared=shared) for pb in wrists)
+        return service._prepare_single(context, target=wrists[0], follow_forearm=follow_forearm, _shared=shared)
+    sides = tuple(service._prepare_single(context, target=pb, follow_forearm=follow_forearm,
+                                          _batch_side=True, _shared=shared) for pb in wrists)
     first, second = sides
     service._require(first['key'] == ('ARM', 'L') and second['key'] == ('ARM', 'R')
         and first['owner'] is second['owner'] and first['rig'] is second['rig'] and first['data'] is second['data']

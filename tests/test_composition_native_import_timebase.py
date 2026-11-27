@@ -3,6 +3,7 @@ import ast
 import base64
 from copy import deepcopy
 import hashlib
+import importlib.util
 import inspect
 import json
 import math
@@ -10,7 +11,6 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-import time
 from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
@@ -22,8 +22,6 @@ SOURCE = Path(__file__).resolve().parents[1] / 'addons' / 'character_designer'
 
 def functions(filename, names, environment):
     source = SOURCE / filename
-    if filename == 'animation_export.py' and os.environ.get('CHARACTER_DESIGNER_TEST_ANIMATION_EXPORT_SOURCE'):
-        source = Path(os.environ['CHARACTER_DESIGNER_TEST_ANIMATION_EXPORT_SOURCE'])
     tree = ast.parse(source.read_text(encoding='utf-8'))
     selected = [node for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name in names]
@@ -61,7 +59,7 @@ class NativeImportTimebaseTests(unittest.TestCase):
     def setUp(self):
         self.error = type('UnityAnimationError', (ValueError,), {})
         self.ua = functions('unity_animation.py',
-            {'_import_sample_frames', '_import_package_action'},
+            {'_import_sample_frames', '_import_package_action', 'import_test_action'},
             dict(math=math, json=json, UnityAnimationError=self.error,
                  **constants('unity_animation.py')))
         self.frames = self.ua['_import_sample_frames']
@@ -102,10 +100,10 @@ class NativeImportTimebaseTests(unittest.TestCase):
             with self.subTest(option=option), self.assertRaises(self.error):
                 self.ua['_import_package_action'](None, None, self.packet, native_timebase=option)
 
-    def import_action(self, scene_rate, packet_rate, native, scene_base=1.):
+    def import_action(self, scene_rate, packet_rate, native, scene_base=1., *, standalone=False, align=True):
         package_name = '_native_clock_' + uuid.uuid4().hex
         package = ModuleType(package_name)
-        package.__path__ = []
+        package.__path__ = [str(SOURCE)]
         original = ModuleType(package_name + '.body_original_mode')
         original.active = Mock(return_value=False)
         controls = ModuleType(package_name + '.unity_animation_controls')
@@ -114,7 +112,8 @@ class NativeImportTimebaseTests(unittest.TestCase):
             needs_joint_translation=False))
         self.packet['sampleRate'] = packet_rate
         packet_before = deepcopy(self.packet)
-        scene = NS(render=NS(fps=scene_rate, fps_base=scene_base), unit_settings=NS(scale_length=1.))
+        scene = NS(render=NS(fps=scene_rate, fps_base=scene_base), unit_settings=NS(scale_length=1.),
+                   character_designer_animation_worklist=NS(align_loop_period=align))
         target = Rig()
         target.name, target.type = 'Rig', 'ARMATURE'
         target.data, target.pose = NS(bones={}), NS(bones={})
@@ -125,6 +124,7 @@ class NativeImportTimebaseTests(unittest.TestCase):
         context = NS(object=None, scene=scene, view_layer=NS(update=Mock()))
         action, writes = Action(), []
         self.ua.update(__package__=package_name, active_preview=Mock(return_value=False),
+            load_package=Mock(return_value=self.packet),
             _mapping=Mock(return_value=NS(indices={}, controls=NS(delegated_names=frozenset()), error_metres=0.)),
             _snapshot=Mock(return_value=dict(fps=scene_rate, fps_base=scene_base, control_properties={})),
             _world_samples=Mock(return_value=[]),
@@ -135,13 +135,27 @@ class NativeImportTimebaseTests(unittest.TestCase):
             _set_playing=Mock(), _set_frame=Mock(), PreviewResult=lambda *args: NS(values=args))
         with patch.dict(sys.modules, {package_name: package, original.__name__: original,
                                      controls.__name__: controls}):
-            result = self.ua['_import_package_action'](
-                context, target, self.packet, native_timebase=native)
+            if standalone:
+                result = self.ua['import_test_action'](context, target, self.packet['_path'])
+            else:
+                result = self.ua['_import_package_action'](context, target, self.packet, native_timebase=native)
         self.assertIs(result.values[0], action)
         self.assertEqual((scene.render.fps, scene.render.fps_base), (scene_rate, scene_base))
         self.assertEqual(self.packet, packet_before)
         self.assertEqual(action['unity_sample_rate'], packet_rate)
         return writes, action
+
+    def test_standalone_loop_fits_scene_period_while_worklist_sources_keep_packet_phase(self):
+        duration = 58. / 60.
+        self.packet.update(loopTime=True, duration=duration,
+                           frames=[dict(time=0.), dict(time=duration / 4.), dict(time=duration)])
+        fitted, _ = self.import_action(24, 60., False, standalone=True)
+        self.assertEqual(fitted[0][2], [1., 6.75, 24.])
+        for standalone in (True, False):
+            exact, _ = self.import_action(24, 60., False, standalone=standalone, align=False)
+            self.assertAlmostEqual(exact[0][2][-1], 24.2)
+        native, _ = self.import_action(24, 60., True)
+        self.assertEqual(native[0][2], [1., 15.5, 59.])
 
     def test_actual_importer_writes_native_frame_x_and_only_native_provenance(self):
         for scene_rate, scene_base, packet_rate in ((24, 1., 60.), (30, 1., 60.),
@@ -320,11 +334,14 @@ class ExportNativeClockTests(unittest.TestCase):
         destination = Path(temporary.name) / 'A.fbx'
         package_name = '_export_native_clock_' + uuid.uuid4().hex
         package = ModuleType(package_name)
-        package.__path__ = []
+        export_source = Path(os.environ.get('CHARACTER_DESIGNER_TEST_ANIMATION_EXPORT_SOURCE',
+                                            SOURCE / 'animation_export.py'))
+        package.__path__ = [str(export_source.parent), str(SOURCE)]
         host = ModuleType(package_name + '.unity_animation')
         host.native_action_frame_rate = self.ua['native_action_frame_rate']
         unity_export = ModuleType(package_name + '.unity_export')
         unity_export._ACTIVE_JOB = None
+        unity_export._filename = lambda name, _rig: name
         guard = ModuleType(package_name + '.dress_export_guard')
         guard.animation_host_admission = Mock(return_value={})
         guard.bind_animation_snapshot = Mock(return_value={})
@@ -338,6 +355,9 @@ class ExportNativeClockTests(unittest.TestCase):
         skeleton._is_control = Mock(return_value=False)
         hair = ModuleType(package_name + '.hair_wiggle_adapter')
         hair.status = Mock(return_value={})
+        inputs = ModuleType(package_name + '.animation_export_inputs')
+        inputs.JOB_KEY = 'test_export_inputs'
+        inputs.prepare = Mock(return_value={})
         rig = Rig()
         rig.name, rig.type, rig.mode = 'Rig', 'ARMATURE', 'POSE'
         rig.data = NS(bones=[])
@@ -347,26 +367,23 @@ class ExportNativeClockTests(unittest.TestCase):
                    unit_settings=NS(scale_length=1.))
         popen = Mock(return_value=NS(pid=0))  # Native/process creation is never executed.
         libraries_write = Mock()
-        environment = functions('animation_export.py', {'_action_frame_clock', '_slot', 'begin_export'},
-            dict(__package__=package_name, __file__=str(SOURCE / 'animation_export.py'),
-                math=math, Path=Path, tempfile=tempfile, time=time, json=json, _ACTIVE_JOB=None,
-                AnimationExportError=type('AnimationExportError', (ValueError,), {}),
-                _filename=lambda name, _rig: name, _dispose=Mock(),
-                subprocess=NS(Popen=popen, STDOUT=-2),
-                bpy=NS(path=NS(abspath=lambda path: path), app=NS(binary_path='never-launched.exe'),
-                       data=NS(objects=[], filepath='protected-artist.blend',
-                               libraries=NS(write=libraries_write)))))
-        modules = {package_name: package}
+        native = NS(path=NS(abspath=lambda path: path), app=NS(binary_path='never-launched.exe'),
+                    data=NS(objects=[], filepath='protected-artist.blend', libraries=NS(write=libraries_write)))
+        modules = {package_name: package, 'bpy': native}
         modules.update({module.__name__: module for module in
-                        (host, unity_export, guard, surfaces, worker, skeleton, hair)})
+                        (host, unity_export, guard, surfaces, worker, skeleton, hair, inputs)})
         try:
             with patch.dict(sys.modules, modules):
-                job = environment['begin_export'](NS(scene=scene), rig, action, destination,
-                                                  frame_start=1., frame_end=end)
+                spec = importlib.util.spec_from_file_location(package_name + '.animation_export', export_source)
+                exporter = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(exporter)
+                exporter.subprocess = NS(Popen=popen, STDOUT=-2)
+                job = exporter.begin_export(NS(scene=scene), rig, action, destination, frame_start=1., frame_end=end)
         except Exception:
             popen.assert_not_called()
             libraries_write.assert_not_called()
             guard.animation_host_admission.assert_not_called()
+            inputs.prepare.assert_not_called()
             raise
         self.addCleanup(job['temporary'].cleanup)
         self.addCleanup(job['log'].close)

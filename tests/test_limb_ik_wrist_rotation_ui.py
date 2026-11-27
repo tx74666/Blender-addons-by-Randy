@@ -107,6 +107,7 @@ class WristRotationUI(unittest.TestCase):
         spec.loader.exec_module(self.ui)
         self.addCleanup(self.ui.unregister)
         self.operator = self.ui.CLASSES[0]
+        self.operator.reference = self.operator.__annotations__['reference']['default']
         self.rig = ID(type='ARMATURE', data=ID())
         self.rig.data.properties[self.limb.ARMATURE_ID_KEY] = 'owned-rig'
         self.hand = self.bone('Hand.L')
@@ -194,8 +195,10 @@ class WristRotationUI(unittest.TestCase):
         # Selection, rather than a stale active-bone value, identifies the target.
         self.context.active_pose_bone = self.bone('Other', 'ARM_FK')
         operator = self.operator()
+        self.ui.register()
+        operator.reference = self.ui._KEYMAPS[0][1].properties.reference
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
-        self.backend.reset_wrist_neutral.assert_called_once_with(self.context, target=self.hand)
+        self.backend.reset_wrist_neutral.assert_called_once_with(self.context, target=self.hand, follow_forearm=True)
         self.bpy.ops.pose.rot_clear.assert_not_called()
         self.assertIn('UNDO', self.operator.bl_options)
 
@@ -221,7 +224,7 @@ class WristRotationUI(unittest.TestCase):
         self.context.selected_pose_bones = [self.hand, self.bone('Hand.R')]
         self.assertEqual(self.operator().execute(self.context), {'FINISHED'})
         self.backend.reset_wrist_neutral.assert_called_once_with(
-            self.context, targets=tuple(self.context.selected_pose_bones))
+            self.context, targets=tuple(self.context.selected_pose_bones), follow_forearm=False)
         self.bpy.ops.pose.rot_clear.assert_not_called()
 
     def test_selection_or_context_changed_after_poll_is_rechecked(self):

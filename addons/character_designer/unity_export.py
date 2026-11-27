@@ -250,8 +250,18 @@ def _collection_scope(context, rig, *, references=()):
     bindings = {obj: _binding_armatures(obj) for obj in scene.objects if obj.type == 'MESH'}
     candidates = {obj for obj, bound in bindings.items() if bound & rigs}
     candidates.update(obj for obj in references if obj is not None and obj.name in scene.objects)
+    setup = character_setup.settings(context)
+    attachments = set()
+    if setup and getattr(setup, 'rig', None) == rig:
+        for item in setup.assets:
+            obj = item.object
+            if (obj in bindings and obj.parent_type == 'BONE' and obj.parent in rigs
+                    and obj.parent_bone and not bindings[obj]):
+                attachments.add(obj)
+    candidates.update(attachments)
     helpers = _helpers(scene, candidates=candidates)
     return {'rigs': rigs, 'helpers': helpers,
+            'attachments': sorted(attachments - helpers, key=lambda obj: obj.name),
             'bindings': bindings,
             'eligible': _bound_meshes(scene, rigs, helpers, _bindings=bindings)}
 
@@ -275,6 +285,14 @@ def collect_character(context, rig, config, *, _scope=None):
     scope = _collection_scope(context, rig, references=_scope_references(config, setup)) if _scope is None else _scope
     rigs, helpers = scope['rigs'], scope['helpers']
     eligible = set(scope['eligible'])
+    attachments = set(scope.get('attachments', ())) if getattr(config, 'include_bone_attachments', False) else set()
+    if attachments:
+        from .unity_export_worker import _is_control
+        for obj in attachments:
+            bone = obj.parent.data.bones.get(obj.parent_bone)
+            if bone is None or _is_control(bone):
+                raise ExportError(f'{obj.name}: choose an exported bone for this character attachment.')
+    eligible.update(attachments)
     objects = set(eligible)
     warnings = []
     for entry in config.extras:
@@ -308,6 +326,8 @@ def collect_character(context, rig, config, *, _scope=None):
         if not obj.data.vertices:
             raise ExportError(f'{obj.name}: mesh has no vertices.')
         objects.update(scope['bindings'][obj])
+        if obj in attachments:
+            objects.add(obj.parent)
     # Only keep accessory rigs used by selected meshes, plus their rig ancestors.
     # A character may contain other attached helper rigs without exportable skins.
     for arm in tuple(objects):
@@ -503,6 +523,28 @@ def _capture_hair_motion(objects):
             'tool_version': '.'.join(str(part) for part in bl_info['version'])}
 
 
+def rig_review_ledger(model, asset_id):
+    if not isinstance(asset_id, str) or not re.fullmatch('[0-9a-f]{32}', asset_id):
+        return None
+    for parent in model.parents:
+        if parent.name.casefold() == 'assets' and (parent.parent / 'ProjectSettings').is_dir():
+            ledger = parent.parent / '.codex' / 'character-update-state' / (asset_id + '.json')
+            return ledger if os.path.lexists(ledger) else None
+    return None
+
+
+def _rig_review_base(context, rig, config, model):
+    from . import unity_update_candidate as candidate
+    objects = collect_character(context, rig, config)['objects']
+    meshes = [obj for obj in objects if obj.type == 'MESH']
+    identities = _candidate_identity_plan(rig, meshes, _candidate_renderer_inventory(model))
+    if identities['writes']:
+        raise ExportError('Review new or unregistered parts in Character Setup before replacing this rig.')
+    _validate_candidate_ids(identities)
+    return candidate.capture_base(model, model.with_suffix('.cdesigner.json'), asset_id=config.asset_id,
+                                  rig_id=identities['rig_id'], parts=identities['parts']), identities
+
+
 def begin_export(context, rig, config):
     global _ACTIVE_JOB
     if export_running():
@@ -510,7 +552,12 @@ def begin_export(context, rig, config):
     if context.mode not in {'OBJECT', 'POSE'}:
         raise ExportError('Finish Edit Mode before exporting; the current pose is preserved.')
     guard_directory, guard_filename = _target(config, rig, context)
-    _full_update_ledger_guard(guard_directory / guard_filename, config.asset_id)
+    model = guard_directory / guard_filename
+    rig_review = None
+    if getattr(config, 'include_bone_attachments', False) and rig_review_ledger(model, config.asset_id):
+        rig_review = _rig_review_base(context, rig, config, model)
+    else:
+        _full_update_ledger_guard(model, config.asset_id)
     # Direct refusal must precede even transient author preview restoration.
     from . import dress_export_guard
     try:
@@ -551,6 +598,7 @@ def begin_export(context, rig, config):
     stage.mkdir()
     manifest = directory / (Path(filename).stem + '.cdesigner.json')
     job = {'temporary': temporary, 'root': root, 'stage': stage,
+           'rig_review': rig_review,
            'directory': directory, 'filename': filename, 'asset_id': asset_id,
            'prior': prior, 'manifest_hash': _hash(manifest) if manifest.exists() else None,
            'rig': rig, 'config': config, 'started': time.monotonic(), 'process': None,
@@ -1353,7 +1401,14 @@ def report_messages(report):
 
 def _publish(job, result):
     directory, stage, filename = job['directory'], job['stage'], job['filename']
-    _full_update_ledger_guard(directory / filename, job['asset_id'])
+    rig_review = job.get('rig_review')
+    if rig_review is None:
+        _full_update_ledger_guard(directory / filename, job['asset_id'])
+    else:
+        from . import unity_update_candidate as candidate
+        base, identities = rig_review
+        candidate.revalidate_base(base)
+        _validate_candidate_ids(identities)
     manifest_name = Path(filename).stem + '.cdesigner.json'
     manifest = directory / manifest_name
     # A second export or an artist edit during the worker run must not be lost.
@@ -1427,6 +1482,14 @@ def _publish(job, result):
     report['warnings'], report['notices'] = report_messages(report)
     (stage / manifest_name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     files = files + [manifest_name]
+    if rig_review is not None:
+        if stale:
+            raise ExportError('The existing bundle contains additional files. Review their ownership before updating the Rig.')
+        parts = identities['parts']
+        marker = candidate.publish_candidate(base, stage=stage, model_file=filename, files=files,
+            parts=parts, mesh_ids=[part['part_id'] for part in parts], update_rig=True,
+            update_id=uuid.uuid4().hex, full_rig_review=True)
+        return {'candidate_path': str(marker), 'rig_review': True, 'warnings': report['warnings']}
     directory.mkdir(parents=True, exist_ok=True)
     backup_root = Path(bpy.utils.user_resource('DATAFILES', path='character_designer/export_backups', create=True))
     backup = backup_root / (time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:8])

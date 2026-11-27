@@ -77,7 +77,8 @@ class ControllerClearPolicyTests(unittest.TestCase):
             view_layer=NS(update=Mock(), objects=NS(active=h.rig)))
         h.bpy.utils.flip_name = lambda name: name[:-2] + ('.R' if name.endswith('.L') else '.L')
         events = []
-        h.backend.prepare_wrist_neutral.side_effect = lambda *args, **kwargs: events.append('prepare') or {'phase': 'prepared'}
+        h.backend.prepare_wrist_neutral.side_effect = lambda context, target: (
+            events.append('prepare') or {'phase': 'prepared', 'target': target})
         h.backend.apply_wrist_neutral.side_effect = lambda *args: events.append('wrist')
 
         def native(*args):

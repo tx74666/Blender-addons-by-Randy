@@ -365,6 +365,24 @@ class ReferenceTests(unittest.TestCase):
         w.set_frame(w.scene, 49.)
         self.assertEqual(w.ns['_time'](w.context, w.session), 2.)
 
+    def test_loop_playback_omits_the_seam_and_both_tracks_keep_exact_capture_time(self):
+        w = self.world
+        w.capture.update(duration=58. / 60., loopTime=True)
+        session = dict(w.session, tracks={})
+        package = ModuleType('reference_test')
+        package.__path__ = [str(SOURCE)]
+        with patch.dict(sys.modules, {'reference_test': package}):
+            w.ns['_make_tracks'](w.context, session)
+        self.assertTrue(w.scene.use_preview_range)
+        self.assertEqual((w.scene.frame_end, w.scene.frame_preview_start, w.scene.frame_preview_end), (25, 1, 23))
+        for track in session['tracks'].values():
+            fields = track['fields']
+            self.assertEqual((fields['action_frame_start'], fields['action_frame_end']), (1., 59.))
+            self.assertAlmostEqual(fields['frame_end'], 24.2)
+            self.assertAlmostEqual(fields['scale'], .4)
+        w.set_frame(w.scene, 24.2)
+        self.assertAlmostEqual(w.ns['_time'](w.context, session), 58. / 60.)
+
     def test_restore_original_keeps_identity_and_controls_exact(self):
         w = self.world
         before = w.dto()

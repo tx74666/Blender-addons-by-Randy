@@ -570,8 +570,13 @@ def _read_transported_current_native(source, *, check_layers):
     if not isinstance(rig, bpy.types.Object) or rig.type != 'ARMATURE':
         return None
     from . import animation_worklist_target, hair_bones_binding, hair_replace_authority
+    # Starting from the current character retires the motion session. Model
+    # export can still verify the saved strands against this rig's actual Rest.
+    current_export_base = (check_layers and rig.get(animation_worklist_target.CURRENT_BASE) == True
+                           and animation_worklist_target.SESSION not in rig
+                           and animation_worklist_target.RESTORED not in rig)
     if (type(rig.get(hair_replace_authority.RECORD)) is not str
-            or type(rig.get(animation_worklist_target.SESSION)) is not str
+            or not (type(rig.get(animation_worklist_target.SESSION)) is str or current_export_base)
             or hair_replace_authority.REFS in rig or animation_worklist_target.REFS in rig
             or not hair_bones_binding.is_bound(source)
             or any(item.library is not None or item.override_library is not None or not item.is_editable

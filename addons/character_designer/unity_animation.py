@@ -556,7 +556,9 @@ def import_test_action(context, target, filepath, *, start_frame=1):
         raise UnityAnimationError("Restore the current Unity test before importing another clip.")
     if context.object and context.object.mode == "EDIT":
         raise UnityAnimationError("Leave Edit Mode before importing a test Action.")
-    return _import_package_action(context, target, load_package(filepath), start_frame=start_frame)
+    settings = getattr(context.scene, 'character_designer_animation_worklist', None)
+    return _import_package_action(context, target, load_package(filepath), start_frame=start_frame,
+                                  align_loop_period=getattr(settings, 'align_loop_period', True))
 
 
 def native_action_frame_rate(action):
@@ -583,8 +585,8 @@ def native_action_frame_rate(action):
     return rate
 
 
-def _import_sample_frames(data, start_frame, scene_fps, *, native_timebase=False):
-    """Keep ordinary previews on the Scene clock; explicit native imports use packet seconds."""
+def _import_sample_frames(data, start_frame, scene_fps, *, native_timebase=False, align_loop_period=False):
+    """Use packet seconds for native references and optionally fit a standalone scene loop."""
     if type(native_timebase) is not bool:
         raise UnityAnimationError("The native import timebase option must be true or false.")
     fps = scene_fps
@@ -595,10 +597,16 @@ def _import_sample_frames(data, start_frame, scene_fps, *, native_timebase=False
             raise UnityAnimationError("Native import sample rate must be between 1 and 240 Hz.")
     if not math.isfinite(start_frame):
         raise UnityAnimationError("The test start frame must be finite.")
-    return [start_frame + frame["time"] * fps for frame in data["frames"]]
+    samples = data["frames"]
+    if align_loop_period and not native_timebase and data.get("loopTime", False):
+        from .animation_loop_timing import frame_scale
+        first = samples[0]["time"]
+        fps = frame_scale(samples[-1]["time"] - first, 1., fps, True)
+        return [start_frame + (frame["time"] - first) * fps for frame in samples]
+    return [start_frame + frame["time"] * fps for frame in samples]
 
 
-def _import_package_action(context, target, data, *, start_frame=1, native_timebase=False):
+def _import_package_action(context, target, data, *, start_frame=1, native_timebase=False, align_loop_period=False):
     """Apply this operation's validated packet without parsing a second copy.
 
     Internal callers must pass load_package's result. Link import retains its
@@ -630,7 +638,7 @@ def _import_package_action(context, target, data, *, start_frame=1, native_timeb
     previous = target.animation_data.action if target.animation_data else None
     if frames is None:
         fps = snapshot["fps"] / snapshot["fps_base"]
-        frames = _import_sample_frames(data, start_frame, fps)
+        frames = _import_sample_frames(data, start_frame, fps, align_loop_period=align_loop_period)
     names = sorted(mapping.indices, key=lambda n: len(target.data.bones[n].parent_recursive))
     world_inv = target.matrix_world.inverted()
     world_scale = target.matrix_world.to_3x3().col[0].length
@@ -735,9 +743,8 @@ def _import_package_action(context, target, data, *, start_frame=1, native_timeb
         ad.action, ad.action_slot = action, slot
         target[ACTIVE_KEY] = action
         scene = context.scene
-        scene.frame_start = scene.frame_preview_start = math.floor(frames[0])
-        scene.frame_end = scene.frame_preview_end = max(math.ceil(frames[-1]), scene.frame_start)
-        scene.use_preview_range = True
+        from . import animation_playback_range as playback
+        playback.set_ranges(scene, frames[0], frames[-1], playback.is_loop(action))
         _set_frame(scene, frames[0])
         context.view_layer.update()
     except Exception:

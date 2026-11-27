@@ -905,8 +905,13 @@ def _make_tracks(context, session):
     start = context.scene.frame_start
     scene_rate = context.scene.render.fps / context.scene.render.fps_base
     _require(math.isfinite(scene_rate) and scene_rate > 0, 'The owning Scene has no valid frame clock.')
-    context.scene.frame_end = start + max(1, math.ceil(session['capture']['duration'] * scene_rate))
-    context.scene.frame_preview_start, context.scene.frame_preview_end = start, context.scene.frame_end
+    duration_frames = session['capture']['duration'] * scene_rate
+    if session['capture'].get('loopTime') and duration_frames > 0.:
+        from . import animation_playback_range as playback
+        playback.set_ranges(context.scene, start, start + duration_frames, True)
+    else:
+        context.scene.frame_end = start + max(1, math.ceil(duration_frames))
+        context.scene.frame_preview_start, context.scene.frame_preview_end = start, context.scene.frame_end
     session['scene_clock'] = [context.scene.render.fps, context.scene.render.fps_base]
     session['scene_start'] = start
     for role, action, slot in (('BASE', session['base_action'], session['base_slot']),

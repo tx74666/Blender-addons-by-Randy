@@ -292,12 +292,23 @@ def view_mode(main):
         raise ValueError('The saved bone display view is invalid; recover its saved file.') from exc
 
 
+def neutral_view(main):
+    raw = main.data.get(VIEW_KEY) if main else None
+    return bool(raw and json.loads(raw).get('neutral_motion'))
+
+
+def _view_editable(rig, neutral, original_pose=None):
+    if neutral and original_pose is None and not _single_data_user(rig):
+        # Exact local data-user proof; the view only changes display, never pose.
+        from . import body_original_owner
+        original_pose = body_original_owner.pose_capability(bpy.context, rig, entering=True)
+    _editable(rig, _original_pose=original_pose)
+
+
 def restore_view(main, *, _original_pose=None):
     """Restore display only; artist weight and pose edits made in this view survive."""
-    if _original_pose is None:
-        _editable(main)
-    else:
-        _editable(main, _original_pose=_original_pose)
+    neutral = neutral_view(main)
+    _view_editable(main, neutral, _original_pose)
     if VIEW_KEY not in main.data:
         return False
     saved = json.loads(main.data[VIEW_KEY])
@@ -307,10 +318,7 @@ def restore_view(main, *, _original_pose=None):
         rig = references.get(key)
         if rig is None:
             raise ValueError('A rig used by the saved display view was removed; restore it first.')
-        if _original_pose is None:
-            _editable(rig)
-        else:
-            _editable(rig, _original_pose=_original_pose)
+        _view_editable(rig, neutral, _original_pose)
         _check_object_restore(rig, state)
         targets.append((rig, state))
     before = [(rig, _snapshot(rig)) for rig, _state in targets]
@@ -366,19 +374,19 @@ def _native_targets(context, main, mode):
     return {main: set(original.bones.keys())}
 
 
-def show_native(context, main, mode):
+def show_native(context, main, mode, *, neutral_motion=False):
     if 'character_designer_body_original_mode_v1' in main:
         raise ValueError('Choose Controls in Bone Display before opening another display preset.')
     if mode not in {'ORIGINAL', 'HAIR', 'DRESS'}:
         raise ValueError('Choose Original, Hair Bones or Dress Bones.')
-    _editable(main)
+    _view_editable(main, neutral_motion)
     targets = _native_targets(context, main, mode)
     if not any(targets.values()):
         raise ValueError('This character has no bound bones in that group yet.')
     rigs = _affected(context, main)
     for rig in rigs:
         if rig is not main:
-            _editable(rig)
+            _view_editable(rig, neutral_motion)
     checkpoint = _checkpoint(rigs)
     try:
         if VIEW_KEY in main.data:
@@ -408,7 +416,7 @@ def show_native(context, main, mode):
                 _set_hidden(rig, bone, bone.name not in names)
                 if bone.name in names:
                     bone.hide_select = False
-        payload = json.dumps({'version': 1, 'mode': mode, 'rigs': snapshots}, separators=(',', ':'))
+        payload = json.dumps({'version': 1, 'mode': mode, 'rigs': snapshots, 'neutral_motion': neutral_motion}, separators=(',', ':'))
         refs = {str(i): rig for i, rig in enumerate(rigs)}
         # Mark every affected armature so a frame change or rig lifecycle cannot
         # overwrite this temporary visibility, including independent dress rigs.

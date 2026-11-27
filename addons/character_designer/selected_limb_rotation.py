@@ -32,7 +32,7 @@ def _rotation_row(pb):
     return pb, {field: tuple(getattr(pb, field))}
 
 
-def reset(context, wrists, feet):
+def reset(context, wrists, feet, *, follow_shin=False):
     """Use the same native pole clear and evaluated end-effector solves as single selections."""
     if not supports(context, wrists, feet):
         raise ValueError('Select a foot control with an IK wrist or a generated pole on this rig.')
@@ -66,7 +66,7 @@ def reset(context, wrists, feet):
                 native._clear_native_companions(context, rig, poles)
                 if other_keys is not None:
                     native._restore_keys(rig, other_keys)
-            foot.reset_rotation(context, feet)
+            foot.reset_rotation(context, feet, follow_shin=follow_shin)
             if wrist_plan is not None:
                 wrist.apply_wrist_neutral(context, wrist_plan)
             names = tuple(pb.name for pb, _ in rows)

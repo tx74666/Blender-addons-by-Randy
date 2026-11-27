@@ -183,7 +183,9 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None,
         collection = bpy.data.collections.get(record['widget_collection'])
         entry = record['widgets']['MASTER']
         obj = bpy.data.objects.get(entry['object'])
-        if ((not pose_only and not _owned(collection, record, 'WIDGET_COLLECTION')) or not _owned(obj, record, 'WIDGET')
+        invalid_collection = (not pose_only and not validation_native.missing_pose_asset(armature, collection)
+                              and not _owned(collection, record, 'WIDGET_COLLECTION'))
+        if (invalid_collection or not _owned(obj, record, 'WIDGET')
                 or obj.type != 'MESH' or obj.data.name != entry['mesh']
                 or not _owned(obj.data, record, 'WIDGET_MESH') or pb.custom_shape != obj):
             raise _error('Root Control widget was replaced or removed.')

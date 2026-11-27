@@ -61,7 +61,13 @@ class Layout:
 
     def split(self, **kwargs):
         self.records.append(('split', kwargs, self.enabled))
-        return Layout(self.records, self.enabled)
+        return self.row()
+
+    def context_string_set(self, name, value):
+        self.records.append(('context_string', (name, value), self.enabled))
+
+    def separator(self, **kwargs):
+        self.records.append(('separator', kwargs, self.enabled))
 
     def label(self, **kwargs):
         self.records.append(('label', kwargs, self.enabled))
@@ -141,6 +147,8 @@ class WorklistUI(unittest.TestCase):
         # tests exercise Worklist controls and retain all their assertions.
         pose_capture = ModuleType(package_name + '.control_pose_capture')
         pose_capture.draw = Mock()
+        limb_pose_key = ModuleType(package_name + '.limb_ik_fk_pose_key')
+        limb_pose_key.draw = Mock()
         # Composition has its own renderer/session fixture. Keep these tests
         # on the actual Worklist drawing, operators and callback guards.
         composition_ui = ModuleType(package_name + '.animation_composition_ui')
@@ -153,6 +161,7 @@ class WorklistUI(unittest.TestCase):
             animation.__name__: animation, self.backend.__name__: self.backend,
             self.collection.__name__: self.collection,
             pose_capture.__name__: pose_capture,
+            limb_pose_key.__name__: limb_pose_key,
             composition_ui.__name__: composition_ui, composition.__name__: composition,
         })
         modules.start()
@@ -207,7 +216,7 @@ class WorklistUI(unittest.TestCase):
         self.context.window_manager.windows = [self.window]
         self.timers = SimpleNamespace(register=Mock(), is_registered=Mock(return_value=True), unregister=Mock())
         bpy.app = SimpleNamespace(timers=self.timers)
-        bpy.data = SimpleNamespace(scenes=[self.context.scene])
+        bpy.data = SimpleNamespace(scenes=[self.context.scene], filepath='')
         bpy.context = self.context
 
         @contextmanager
@@ -303,40 +312,35 @@ class WorklistUI(unittest.TestCase):
                     if active:
                         self.assertIs(buttons['Return to Animation'].finish, True)
 
-    def test_native_rest_and_pose_buttons_pin_and_execute_opposite_display_routes(self):
+    def test_rest_recovery_returns_to_animation_and_disappears(self):
         self.state.show_advanced = True
-        with self.base_pose_modules() as (pose, state):
+        with self.base_pose_modules():
             rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
             rig = rest.get_rig(self.context)
+            rig.data.pose_position = 'REST'
             for current in ('REST', 'POSE'):
-                rig.data.pose_position = current
+                self.assertEqual(rig.data.pose_position, current)
                 layout = Layout()
                 self.ui.draw_worklist(layout, self.context)
-                buttons = {value[1]['text']: (value, enabled)
-                           for kind, value, enabled in layout.records
-                           if kind == 'operator'
-                           and value[0] == 'character_designer.worklist_pose_position'}
-                self.assertEqual(set(buttons), {'Rest Pose', 'Pose'})
-                for label, position in (('Rest Pose', 'REST'), ('Pose', 'POSE')):
-                    with self.subTest(current=current, label=label):
-                        value, enabled = buttons[label]
-                        self.assertTrue(enabled)
-                        self.assertEqual(value[2].position, position)
-                        self.assertEqual(value[1]['depress'], current == position)
-                        operator = self.ui.CHARACTERDESIGNER_OT_worklist_pose_position()
-                        operator.position = 'POSE' if position == 'REST' else 'REST'
-                        for name, setting in vars(value[2]).items():
-                            setattr(operator, name, setting)
-                        self.assertEqual(operator.execute(self.context), {'FINISHED'})
-                        self.assertEqual(rig.data.pose_position, position)
-            pose.start_or_reset.assert_not_called()
-            pose.finish.assert_not_called()
-            self.assertFalse(state['active'])
+                buttons = [(value, enabled) for kind, value, enabled in layout.records
+                           if kind == 'operator' and value[0] == 'character_designer.worklist_pose_position']
+                if current == 'POSE':
+                    self.assertEqual(buttons, [])
+                else:
+                    (value, enabled), = buttons
+                    self.assertTrue(enabled)
+                    self.assertEqual(value[1]['text'], 'Return to Animation')
+                    self.assertEqual(value[2].position, 'POSE')
+                    operator = self.ui.CHARACTERDESIGNER_OT_worklist_pose_position()
+                    operator.position = value[2].position
+                    self.assertEqual(operator.execute(self.context), {'FINISHED'})
 
     def test_native_display_remains_available_when_base_pose_admission_refuses(self):
         self.state.show_advanced = True
         with self.base_pose_modules() as (pose, _state):
             pose.can_start.return_value = False
+            rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
+            rest.get_rig(self.context).data.pose_position = 'REST'
             self.assertFalse(self.ui.CHARACTERDESIGNER_OT_worklist_base_pose.poll(self.context))
             self.assertTrue(self.ui.CHARACTERDESIGNER_OT_worklist_pose_position.poll(self.context))
             layout = Layout()
@@ -344,13 +348,14 @@ class WorklistUI(unittest.TestCase):
             buttons = {value[1]['text']: enabled for kind, value, enabled in layout.records
                        if kind == 'operator'
                        and value[0] == 'character_designer.worklist_pose_position'}
-            self.assertEqual(buttons, {'Rest Pose': True, 'Pose': True})
+            self.assertEqual(buttons, {'Return to Animation': True})
             pose.start_or_reset.assert_not_called()
 
     def test_native_display_keeps_its_own_admission_and_busy_guards(self):
         self.state.show_advanced = True
         with self.base_pose_modules():
             rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
+            rest.get_rig(self.context).data.pose_position = 'REST'
             for admitted, idle in ((True, True), (False, True), (True, False)):
                 with self.subTest(admitted=admitted, idle=idle):
                     rest.can_show.return_value = admitted
@@ -363,7 +368,7 @@ class WorklistUI(unittest.TestCase):
                     buttons = [(value, enabled) for kind, value, enabled in layout.records
                                if kind == 'operator'
                                and value[0] == 'character_designer.worklist_pose_position']
-                    self.assertEqual(len(buttons), 2 if admitted else 0)
+                    self.assertEqual(len(buttons), 1 if admitted else 0)
                     self.assertTrue(all(enabled == idle for _value, enabled in buttons))
             rest.show_rest.assert_not_called()
             rest.show_pose.assert_not_called()
@@ -371,12 +376,14 @@ class WorklistUI(unittest.TestCase):
     def test_live_original_inputs_still_disable_native_display_controls(self):
         self.state.show_advanced = True
         with self.base_pose_modules(), patch.object(self.ui, 'original_inputs_live', return_value=True):
+            rest = sys.modules[self.ui.__package__ + '.animation_rest_pose']
+            rest.get_rig(self.context).data.pose_position = 'REST'
             layout = Layout()
             self.ui.draw_worklist(layout, self.context)
         buttons = [(value, enabled) for kind, value, enabled in layout.records
                    if kind == 'operator'
                    and value[0] == 'character_designer.worklist_pose_position']
-        self.assertEqual(len(buttons), 2)
+        self.assertEqual(len(buttons), 1)
         self.assertTrue(all(not enabled for _value, enabled in buttons))
 
     def test_rest_from_base_delegates_transition_to_rest_service(self):
@@ -387,10 +394,10 @@ class WorklistUI(unittest.TestCase):
                        if kind == 'operator'
                        and value[0] in {'character_designer.worklist_pose_position',
                                         'character_designer.worklist_base_pose'}}
-            self.assertEqual(set(buttons), {'Rest Pose', 'Return to Animation'})
+            self.assertEqual(set(buttons), {'Return to Animation'})
             self.assertIs(buttons['Return to Animation'][2].finish, True)
             operator = self.ui.CHARACTERDESIGNER_OT_worklist_pose_position()
-            operator.position = buttons['Rest Pose'][2].position
+            operator.position = 'REST'  # Legacy operator calls remain supported.
             self.assertEqual(operator.execute(self.context), {'FINISHED'})
             # Approved editable-Rest behavior belongs to the Rest service.
             # This Worklist fixture isolates that boundary; the UI must not
@@ -453,7 +460,12 @@ class WorklistUI(unittest.TestCase):
         exporter.active_job, exporter.poll_export, exporter.cancel_export = Mock(), Mock(), Mock()
         model_exporter = ModuleType(package_name + '.unity_export')
         model_exporter.export_running = Mock(return_value=False)
-        for module in (runtime, exporter, model_exporter):
+        preview = ModuleType(package_name + '.animation_preview_ui')
+        preview.session = SimpleNamespace(status=Mock(return_value=None))
+        preview.draw = Mock()
+        preview.CHARACTERDESIGNER_OT_clean_animation_data = type('Clean', (), {})
+        preview.CHARACTERDESIGNER_OT_key_reduction_preview = type('Preview', (), {})
+        for module in (runtime, exporter, model_exporter, preview):
             sys.modules[module.__name__] = module
             setattr(sys.modules[package_name], module.__name__.rsplit('.', 1)[1], module)
         name = package_name + '.animation'
@@ -990,7 +1002,7 @@ class WorklistUI(unittest.TestCase):
             ('character_designer.motion_category_create', ''),
             ('character_designer.worklist_sync', 'Send Selected to Unity')])
         self.assertIn(('menu', ('CHARACTERDESIGNER_MT_motion_categories',
-                                {'text': 'Uncategorized', 'icon': 'FILE_FOLDER'}), True), layout.records)
+                                {'text': 'Group1', 'icon': 'FILE_FOLDER'}), True), layout.records)
         self.assertEqual((self.state.active_index, [(item.side, item.rig.animation_data.action)
                                                    for item in self.state.items]), before)
         self.assertFalse(any(kind == 'prop' and value[0] in {'search', 'show_catalog', 'sync_selected'}
@@ -1151,12 +1163,15 @@ class WorklistUI(unittest.TestCase):
         create = categories.CHARACTERDESIGNER_OT_motion_category_create()
         create.name, create.target = 'Locomotion', ''
         self.assertEqual(create.execute(self.context), {'FINISHED'})
-        self.assertEqual(categories.category_label(scene), 'Uncategorized')
+        self.assertEqual(categories.category_label(scene), 'Group1')
         item = self.state.items[1]
         original = self.state.active_index, item.rig.animation_data.action
         row = self.draw_action_row(item)
-        move_name, move_options, move_payload = [value for kind, value, _enabled in row.records
-                                                 if kind == 'operator'][-1]
+        self.assertFalse(any(value[0].endswith('motion_category_move') for kind,value,_ in row.records if kind=='operator'))
+        self.context.cd_category_motion_key = next(value[1] for kind,value,_ in row.records if kind=='context_string')
+        menu = Layout()
+        categories.draw_motion_context_menu(SimpleNamespace(layout=menu), self.context)
+        move_name, move_options, move_payload = next(value for kind,value,_ in menu.records if kind=='operator')
         self.assertEqual((move_name, move_options['icon'], move_payload.key),
                          ('character_designer.motion_category_move', 'FILE_FOLDER', item.clip_key))
         popup = Layout()
@@ -1166,13 +1181,14 @@ class WorklistUI(unittest.TestCase):
 
         self.context.window_manager.popup_menu = draw_popup
         move = categories.CHARACTERDESIGNER_OT_motion_category_move()
-        move.key = move_payload.key
+        move.key, move.target = move_payload.key, move_payload.target
         self.assertEqual(move.invoke(self.context, None), {'FINISHED'})
         destinations = [(value[1]['text'], value[2]) for kind, value, _enabled in popup.records
                         if kind == 'operator' and value[0] == 'character_designer.motion_category_assign']
-        self.assertEqual([label for label, _payload in destinations], ['Uncategorized', 'Locomotion'])
+        self.assertEqual([label for label, _payload in destinations], ['Basic', 'Group1', 'Locomotion'])
+        self.assertEqual(categories.category_for(scene, categories.NEUTRAL_ROW), destinations[0][1].category_id)
         assign = categories.CHARACTERDESIGNER_OT_motion_category_assign()
-        vars(assign).update(vars(destinations[1][1]))
+        vars(assign).update(vars(dict(destinations)['Locomotion']))
         self.assertEqual(assign.execute(self.context), {'FINISHED'})
         ui_list = self.ui.CHARACTERDESIGNER_UL_animation_worklist()
         visible = ui_list.bitflag_filter_item
@@ -1845,7 +1861,7 @@ class WorklistUI(unittest.TestCase):
         self.assertFalse(any(kind == 'prop' and value[0] == 'convert_imported_to_controls' for kind, value, _ in layout.records))
         operator = next(value for kind, value, _ in layout.records if kind == 'operator')
         self.assertEqual(operator[0], 'character_designer.prepare_missing_controller_motions')
-        self.assertEqual(operator[1]['text'], 'Prepare Missing FK (3)')
+        self.assertEqual(operator[1]['text'], 'Prepare Remaining Clips (3)')
         service.missing_motions.assert_called_once_with(home)
         service.prepare_missing.assert_not_called()
 
@@ -1859,7 +1875,7 @@ class WorklistUI(unittest.TestCase):
             layout = Layout()
             self.ui.edit_scene.draw_mapping_options(layout, self.context)
         labels = [value['text'] for kind, value, _ in layout.records if kind == 'label']
-        self.assertEqual(labels, ['Preparing controls · 2 / 5', 'Walk', 'Preparing inputs · 0:02'])
+        self.assertEqual(labels, ['Preparing clips · 2 / 5', 'Walk', 'Preparing inputs · 0:02'])
         buttons = [value for kind, value, _ in layout.records if kind == 'operator']
         self.assertEqual(len(buttons), 1)
         self.assertEqual(buttons[0][0], 'character_designer.cancel_controller_motion')
@@ -1891,7 +1907,7 @@ class WorklistUI(unittest.TestCase):
                     cancelling=phase == 'Cancelling', completed=0, failed=0, skipped=0, total=5, name=name)
                 layout = Layout()
                 self.ui.edit_scene.draw_mapping_options(layout, self.context)
-                self.assertEqual(layout.records[0], ('label', {'text': 'Preparing controls · 0 / 5', 'icon': 'POSE_HLT'}, True))
+                self.assertEqual(layout.records[0], ('label', {'text': 'Preparing clips · 0 / 5', 'icon': 'POSE_HLT'}, True))
                 self.assertEqual(layout.records[1][0], 'operator')
                 self.assertEqual(layout.records[1][1][0], 'character_designer.cancel_controller_motion')
                 self.assertEqual(layout.records[2][1]['text'], name or 'Waiting to start')
@@ -1948,7 +1964,7 @@ class WorklistUI(unittest.TestCase):
         catalog = SimpleNamespace(clip_key='clip-Walk', name=name, ready=True)
         imported = SimpleNamespace(**vars(self.state.items[0]))
         imported.name = name
-        widths = []
+        splits = []
         with patch.object(self.ui.edit_scene, 'mapping_home', return_value=object()), \
                 patch.object(self.ui.edit_scene, 'mapping_record', return_value=None), \
                 patch.object(self.ui.edit_scene, 'editing_scene', return_value=self.context.scene):
@@ -1958,9 +1974,8 @@ class WorklistUI(unittest.TestCase):
                     self.ui.edit_scene.CHARACTERDESIGNER_UL_prepared_motions().draw_item(
                         self.context, layout, self.state, catalog, 0, self.state, 'catalog_index')
                 columns = layout.children[0].children
-                self.assertEqual(len(columns), 3)
-                self.assertFalse(hasattr(columns[0], 'ui_units_x'))
-                widths.append((columns[1].ui_units_x, columns[2].ui_units_x))
+                self.assertEqual(len(columns), 2)
+                splits.append(next(value for kind,value,_ in layout.records if kind == 'split'))
                 labels = [value['text'] for kind, value, _ in layout.records if kind == 'label']
                 self.assertNotIn('Import', labels)
                 buttons = [value for kind, value, _ in layout.records if kind == 'operator']
@@ -1971,15 +1986,18 @@ class WorklistUI(unittest.TestCase):
             self.ui.CHARACTERDESIGNER_UL_animation_worklist().draw_item(
                 self.context, layout, self.state, imported, 0, self.state, 'list_cursor')
             columns = layout.children[0].children
-            widths.append((columns[1].ui_units_x, columns[2].ui_units_x))
-        self.assertEqual(widths, [(5.5, 1.3)] * 3)
+            self.assertEqual(len(columns), 2)
+            splits.append(next(value for kind,value,_ in layout.records if kind == 'split'))
+        self.assertEqual(splits, [dict(factor=0.66, align=True)] * 3)
 
-    def test_motion_rows_reserve_the_same_status_and_category_columns(self):
+    def test_row_menu_uses_the_motion_under_the_pointer(self):
         layout = Layout()
-        name, status, manage = self.ui.edit_scene.motion_row(layout)
-        self.assertFalse(hasattr(name, 'ui_units_x'))
-        self.assertEqual(status.ui_units_x, 5.5)
-        self.assertEqual(manage.ui_units_x, 1.3)
+        item = self.state.items[0]
+        self.ui.edit_scene.motion_row(layout, item)
+        self.assertIn(('context_string', ('cd_category_motion_key', item.clip_key), True), layout.records)
+        menu = Layout()
+        self.ui.categories.draw_motion_context_menu(SimpleNamespace(layout=menu), self.context)
+        self.assertEqual(menu.records, [])
 
     def mapped_motion_home(self):
         editor = self.context.scene

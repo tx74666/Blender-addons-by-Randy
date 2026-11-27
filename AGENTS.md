@@ -7,9 +7,8 @@
 
 
 
-<!-- cd246-key-preview-20261125 -->
-Character Designer **0.77.246** 已部署至 Blender 5.2 與 X，各 314 檔、0 差異。姿態模式支援選取控制骨的關鍵幀精簡預覽，可在同一視口切換 Original 與 Reduced，再決定套用或捨棄。Animation 已在正式 X 窗口完成熱刷新，In Air 第 5 幀的姿勢、選取及未保存狀態等 12 項核對一致。
-[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.246_key_reduction_preview_20261125.md>) · [磁碟交付](<D:/Blender/Projects/Character/X/validation/key_preview_delivery_20261125/delivery246.json>) · [現場刷新](<D:/Blender/Projects/Character/X/validation/key_preview_20261125/live246.json>) · [功能驗收](<D:/Blender/Projects/Character/X/validation/key_preview_20261125/acceptance246.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/key_preview_20261125/stage246_02/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/hand_pose_20261125/delivery245.json>)。
+<!-- cd263-animation-limb-switch-20261127 -->
+Character Designer **0.77.263** 已安裝至 Blender 5.2 與 X。四肢 FK/IK 切換集中在 Animation，Rig 的 Body Controls 保留建置與恢復工具。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.263_animation_only_limb_switch_20261127.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/animation_only_limb_switch_20261127/delivery263.json>) · [原生驗收](<D:/Blender/Projects/Character/X/validation/animation_only_limb_switch_20261127/layout01.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/animation_only_limb_switch_20261127/stage263_01/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/original_bones_display_20261127/delivery262.json>)
 
 <!-- cd114-compact-physics-20261029 -->
 

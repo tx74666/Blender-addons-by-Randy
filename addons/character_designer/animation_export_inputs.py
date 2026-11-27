@@ -173,6 +173,8 @@ def _inventory(rig, action, handle):
                      'Muted Action groups need a baked export input contract.')
     keyed = {(curve.data_path, curve.array_index) for curve in curves if not curve.mute}
     _require(keyed, 'The selected Action slot has no enabled channels.')
+    from .animation_cleanup import missing_defaults
+    keyed.update(missing_defaults(rig, action, handle, curves))
     drivers, driven = _driver_shape(rig)
     blocked = keyed | driven
     inputs, transforms, main_missing, has_custom = [], 0, 0, False
@@ -375,6 +377,8 @@ def apply(rig, action, sealed):
         ad.action_slot = next(slot for slot in action.slots if slot.handle == sealed['slot'])
     ad.use_nla, ad.action_blend_type, ad.action_influence = False, 'REPLACE', 1.
     ad.action_extrapolation = 'HOLD'
+    from .animation_cleanup import restore_defaults
+    restore_defaults(rig, action, sealed['slot'])
     for row in sealed['inputs']:
         path, index, value = row['path'], row['index'], row['value']
         if index is not None:

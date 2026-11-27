@@ -1,16 +1,19 @@
 """Workspace-scoped categories for the managed animation picker."""
 
 from hashlib import sha256
+from itertools import islice
 from uuid import uuid4
 
 from bpy.props import StringProperty
 from bpy.types import Menu, Operator
 
 from .animation_motion_pins import pin_owner, redraw_lists, row_key
+from .animation_neutral_motion import ROW as NEUTRAL_ROW
 
 
 _STORAGE = 'character_designer_motion_categories_v1'
-_UNCATEGORIZED = 'Uncategorized'
+_BASIC = 'builtin_basic'
+_GROUP1 = 'builtin_group1'
 
 
 def _hash(value):
@@ -35,53 +38,67 @@ def _view(scene):
     return owner.get(_STORAGE, {}).get(scope, {}) if scope else {}
 
 
-def _selected(view):
-    category_id = view.get('selected', '')
-    return category_id if category_id in view.get('names', {}) else ''
+class _Folders:
+    """Resolve defaults in memory, including existing user folders with the same names."""
+
+    def __init__(self, view):
+        self.names = dict(view.get('names', {}))
+        existing = {label.casefold(): key for key, label in self.names.items()}
+        self.basic = existing.get('basic', _BASIC)
+        self.group1 = existing.get('group1', _GROUP1)
+        self.names.setdefault(self.basic, 'Basic')
+        self.names.setdefault(self.group1, 'Group1')
+        selected = view.get('selected', '')
+        self.selected = selected if selected in self.names else self.group1
+        self.assignments = view.get('assignments', {})
+
+    def choices(self):
+        defaults = (self.basic, self.group1)
+        others = sorted((k for k in self.names if k not in defaults), key=lambda k: self.names[k].casefold())
+        return tuple((k, self.names[k]) for k in (*defaults, *others))
+
+    def default(self, key):
+        return self.basic if key == NEUTRAL_ROW.clip_key else self.group1
+
+    def assigned(self, key):
+        category_id = self.assignments.get(_hash(key)) if key and self.assignments else None
+        return category_id if category_id in self.names else self.default(key)
 
 
 def categories(scene):
-    names = _view(scene).get('names', {})
-    return tuple(sorted(names.items(), key=lambda entry: entry[1].casefold()))
+    return _Folders(_view(scene)).choices()
 
 
 def current_category(scene):
-    return _selected(_view(scene))
+    return _Folders(_view(scene)).selected
 
 
 def category_label(scene):
-    view = _view(scene)
-    return view.get('names', {}).get(_selected(view), _UNCATEGORIZED)
-
-
-def _assigned(key, assignments, names):
-    category_id = assignments.get(_hash(key), '') if key else ''
-    return category_id if category_id in names else ''
+    folders = _Folders(_view(scene))
+    return folders.names[folders.selected]
 
 
 def category_for(scene, row):
-    view = _view(scene)
-    return _assigned(row_key(row), view.get('assignments', {}), view.get('names', {}))
+    return _Folders(_view(scene)).assigned(row_key(row))
 
 
-def has_members(context, rows):
-    view = _view(context.scene)
-    selected = _selected(view)
-    assignments, names = view.get('assignments', {}), view.get('names', {})
-    return any(_assigned(row_key(row), assignments, names) == selected for row in rows)
+def member_count(context, rows, *, limit):
+    folders = _Folders(_view(context.scene))
+    # Native rows are managed clips. The local Neutral entry is drawn separately.
+    if not folders.assignments:
+        return min(limit, len(rows)) if folders.selected == folders.group1 else 0
+    members = (row for row in rows if folders.assigned(row_key(row)) == folders.selected)
+    return sum(1 for _ in islice(members, limit))
 
 
 def filter_rows(ui_list, context, data, propname):
-    view = _view(context.scene)
-    selected = _selected(view)
-    assignments = view.get('assignments', {})
-    names = view.get('names', {})
+    folders = _Folders(_view(context.scene))
     terms = ui_list.filter_name.casefold().split()
-    if not assignments and not selected and not terms:
+    if not folders.assignments and folders.selected == folders.group1 and not terms:
         return [], []
     flags = []
     for row in getattr(data, propname):
-        matches = (_assigned(row_key(row), assignments, names) == selected
+        matches = (folders.assigned(row_key(row)) == folders.selected
                    and all(term in row.name.casefold() for term in terms))
         flags.append(ui_list.bitflag_filter_item if matches else 0)
     return flags, []
@@ -92,8 +109,7 @@ def _validated_name(names, name, current=''):
     if not name or not name.isprintable() or len(name) > 64:
         raise ValueError('Enter a category name of up to 64 characters.')
     folded = name.casefold()
-    if folded == _UNCATEGORIZED.casefold() or any(
-            category_id != current and label.casefold() == folded for category_id, label in names.items()):
+    if any(category_id != current and label.casefold() == folded for category_id, label in names.items()):
         raise ValueError('That category name is already in use.')
     return name
 
@@ -115,7 +131,7 @@ class _CategoryEdit:
             store = owner.get(_STORAGE)
             previous = store.get(scope, {}) if store is not None else {}
             view = dict(names=dict(previous.get('names', {})), assignments=dict(previous.get('assignments', {})),
-                        selected=_selected(previous))
+                        selected=previous.get('selected', ''))
             if self._update(scene, view):
                 if store is None:
                     owner[_STORAGE] = {scope: view}
@@ -141,7 +157,7 @@ class CHARACTERDESIGNER_OT_motion_category_create(_CategoryEdit, Operator):
 
     def _update(self, _scene, view):
         names = view['names']
-        name = _validated_name(names, self.name)
+        name = _validated_name(_Folders(view).names, self.name)
         names[uuid4().hex] = name
         return True
 
@@ -163,7 +179,7 @@ class CHARACTERDESIGNER_OT_motion_category_rename(_CategoryEdit, Operator):
         names = view['names']
         if self.category_id not in names:
             raise ValueError('The category is no longer available.')
-        name = _validated_name(names, self.name, current=self.category_id)
+        name = _validated_name(_Folders(view).names, self.name, current=self.category_id)
         if names[self.category_id] == name:
             return False
         names[self.category_id] = name
@@ -173,7 +189,7 @@ class CHARACTERDESIGNER_OT_motion_category_rename(_CategoryEdit, Operator):
 class CHARACTERDESIGNER_OT_motion_category_remove(_CategoryEdit, Operator):
     bl_idname = 'character_designer.motion_category_remove'
     bl_label = 'Remove Category'
-    bl_description = 'Remove this category and return its motions to Uncategorized'
+    bl_description = 'Remove this category and return its motions to their default folders'
 
     category_id: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
     target: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
@@ -181,7 +197,7 @@ class CHARACTERDESIGNER_OT_motion_category_remove(_CategoryEdit, Operator):
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(
             self, event, title='Remove Category?', confirm_text='Remove',
-            message='The motions in this category will return to Uncategorized.',
+            message='Neutral returns to Basic. All other motions return to Group1.',
         )
 
     def _update(self, _scene, view):
@@ -204,11 +220,13 @@ class CHARACTERDESIGNER_OT_motion_category_select(_CategoryEdit, Operator):
     target: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
 
     def _update(self, _scene, view):
-        if self.category_id and self.category_id not in view['names']:
+        folders = _Folders(view)
+        category_id = self.category_id or folders.group1
+        if category_id not in folders.names:
             raise ValueError('The category is no longer available.')
-        if view['selected'] == self.category_id:
+        if folders.selected == category_id:
             return False
-        view['selected'] = self.category_id
+        view['selected'] = category_id
         return True
 
 
@@ -224,16 +242,23 @@ class CHARACTERDESIGNER_OT_motion_category_assign(_CategoryEdit, Operator):
     def _update(self, scene, view):
         state = scene.character_designer_animation_worklist
         rows = state.items if state.items else state.catalog
-        if not self.key or sum(row_key(row) == self.key for row in rows) != 1:
+        from . import animation_neutral_motion as neutral
+        matches = sum(row_key(row) == self.key for row in rows)
+        if self.key == neutral.ROW.clip_key and neutral.available(scene):
+            matches += 1
+        if not self.key or matches != 1:
             raise ValueError('The motion is no longer unique in this list.')
-        if self.category_id and self.category_id not in view['names']:
+        folders = _Folders(view)
+        default = folders.default(self.key)
+        category_id = self.category_id or default
+        if category_id not in folders.names:
             raise ValueError('The category is no longer available.')
         assignments = view['assignments']
         key = _hash(self.key)
-        if assignments.get(key, '') == self.category_id:
+        if folders.assigned(self.key) == category_id:
             return False
-        if self.category_id:
-            assignments[key] = self.category_id
+        if category_id != default:
+            assignments[key] = category_id
         else:
             assignments.pop(key, None)
         return True
@@ -245,15 +270,18 @@ class CHARACTERDESIGNER_OT_motion_category_move(Operator):
     bl_description = 'Choose a category for this motion'
 
     key: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    target: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, _event):
         scene = context.scene
         workspace = _target(scene)
+        if not workspace or self.target and self.target != workspace:
+            self.report({'ERROR'}, 'This animation workspace has changed. Reopen the motion menu.')
+            return {'CANCELLED'}
         key = self.key
-        view = _view(scene)
-        names = view.get('names', {})
-        current = _assigned(key, view.get('assignments', {}), names)
-        choices = (('', _UNCATEGORIZED), *categories(scene))
+        folders = _Folders(_view(scene))
+        current = folders.assigned(key)
+        choices = folders.choices()
 
         def draw(menu, _context):
             for category_id, label in choices:
@@ -269,11 +297,21 @@ class CHARACTERDESIGNER_MT_motion_categories(Menu):
     bl_idname = 'CHARACTERDESIGNER_MT_motion_categories'
     bl_label = 'Animation Categories'
 
+    @classmethod
+    def register(cls):
+        from bpy.types import UI_MT_button_context_menu
+        UI_MT_button_context_menu.prepend(draw_motion_context_menu)
+
+    @classmethod
+    def unregister(cls):
+        from bpy.types import UI_MT_button_context_menu
+        UI_MT_button_context_menu.remove(draw_motion_context_menu)
+
     def draw(self, context):
         scene = context.scene
         workspace = _target(scene)
         selected = current_category(scene)
-        for category_id, label in (('', _UNCATEGORIZED), *categories(scene)):
+        for category_id, label in categories(scene):
             button = self.layout.operator('character_designer.motion_category_select', text=label,
                                           icon='CHECKMARK' if category_id == selected else 'BLANK1')
             button.category_id, button.target = category_id, workspace
@@ -301,17 +339,22 @@ def draw_toolbar(layout, context):
     bar.operator_context = 'INVOKE_DEFAULT'
     bar.menu('CHARACTERDESIGNER_MT_motion_categories', text=category_label(context.scene), icon='FILE_FOLDER')
     bar.operator('character_designer.motion_category_create', text='', icon='ADD').target = workspace
-    if current_category(context.scene):
+    if current_category(context.scene) in _view(context.scene).get('names', {}):
         bar.menu('CHARACTERDESIGNER_MT_manage_motion_category', text='', icon='PREFERENCES')
 
 
-def draw_move(layout, context, item):
-    key = row_key(item)
-    if not key or not categories(context.scene):
+def draw_motion_context_menu(menu, context):
+    key = getattr(context, 'cd_category_motion_key', '')
+    if not key:
         return
-    line = layout.row(align=True)
+    workspace = _target(context.scene)
+    if not workspace:
+        return
+    line = menu.layout.row()
     line.operator_context = 'INVOKE_DEFAULT'
-    line.operator('character_designer.motion_category_move', text='', icon='FILE_FOLDER', emboss=False).key = key
+    move = line.operator('character_designer.motion_category_move', text='Move to Category…', icon='FILE_FOLDER')
+    move.key, move.target = key, workspace
+    menu.layout.separator()
 
 
 CLASSES = (

@@ -71,6 +71,8 @@ def _eligible(context, rig):
 
 
 def _selected(settings, obj):
+    if settings.update_rig:
+        return True
     # Duplicate legacy records are conservative; an explicit false wins until
     # the next explicit action synchronizes every matching record.
     return all(entry.selected for entry in settings.meshes if entry.object == obj)
@@ -280,7 +282,7 @@ class CharacterDesignerUnityUpdateView(PropertyGroup):
     mesh_selected: BoolProperty(name='Update Meshes', get=_group_mesh_get, set=_group_mesh_set,
                                 description='Select or deselect every mesh update', options={'SKIP_SAVE'})
     rig_selected: BoolProperty(name='Update Rig', get=_group_rig_get, set=_group_rig_set,
-                               description='Update the character skeleton independently of mesh choices',
+                               description='Include the rig and all its exportable parts. Turn off for individual mesh updates',
                                options={'SKIP_SAVE'})
 
 
@@ -459,24 +461,30 @@ def draw_selection(layout, context, rig, eligible, scope=None, *, pipeline_ready
             row = column.row(align=True)
             row.separator(factor=3.0)
             row.label(text=armature.name, icon='ARMATURE_DATA')
-    total = len(eligible)
+    attachments = (scope or {}).get('attachments', ()) if settings.update_rig else ()
+    total = len(eligible) + len(attachments)
     _header(tree, context, rig, view, 'MESH', total,
-            enabled=can_write and bool(total) and all_meshes_editable)
+            enabled=can_write and not settings.update_rig and bool(total) and all_meshes_editable)
     if settings.show_meshes:
         column = tree.column(align=True)
         for item in rows:
             row = column.row(align=True)
             row.separator(factor=3.0)
             check = row.row(align=True)
-            check.enabled = can_write and _editable(item.object) and _editable(item.object.data)
+            check.enabled = can_write and not settings.update_rig and _editable(item.object) and _editable(item.object.data)
             check.prop(item, 'selected', text='')
             row.label(text=item.object.name, icon='MESH_DATA')
             if not _editable(item.object) or not _editable(item.object.data):
                 row.label(text='Linked', icon='LINKED')
-        if not rows:
+        for obj in attachments:
+            column.label(text=f'{obj.name} ({obj.parent_bone})', icon='BONE_DATA')
+        if not rows and not attachments:
             column.label(text='No bound meshes.', icon='INFO')
-    layout.label(text=('Unchecked items stay unchanged in Unity.' if pipeline_ready
-                       else 'Selective export is not enabled yet.'), icon='INFO')
+    if settings.update_rig:
+        layout.label(text='Rig includes all listed parts.', icon='INFO')
+    else:
+        layout.label(text=('Unchecked items stay unchanged in Unity.' if pipeline_ready
+                           else 'Selective export is not enabled yet.'), icon='INFO')
 
 
 CLASSES = (

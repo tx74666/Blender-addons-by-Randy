@@ -43,7 +43,7 @@ class OriginalPoseEntryTests(unittest.TestCase):
     def setUp(self):
         prefix = '_original_pose_entry_' + uuid.uuid4().hex
         package = ModuleType(prefix)
-        package.__path__ = []
+        package.__path__ = [str(SOURCE.parent)]
         bpy, props = ModuleType('bpy'), ModuleType('bpy.props')
         bpy.types = NS(Operator=object)
         props.EnumProperty = Mock(return_value=None)
@@ -191,7 +191,7 @@ class OriginalPoseEntryTests(unittest.TestCase):
         self.assertEqual([b.text for b in buttons], ['Original Bones', 'Controls'])
         self.assertEqual([b.action for b in buttons], ['ORIGINAL', 'CONTROLS'])
         self.assertTrue(all(not hasattr(b, 'icon') for b in buttons))
-        self.assertFalse(any(b.depress for b in buttons))
+        self.assertEqual([b.depress for b in buttons], [True, False])
 
     def test_weight_idle_original_bones_is_the_native_paint_entry(self):
         layout = Layout()

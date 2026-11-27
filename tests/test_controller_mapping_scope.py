@@ -99,6 +99,20 @@ class WorkerBoundaryTests(unittest.TestCase):
 
 
 class VerificationTimeTests(unittest.TestCase):
+    def test_explicit_loop_timing_rounds_only_the_period_and_verifies_at_source_phase(self):
+        timing = mapping.animation_loop_timing
+        self.assertTrue(timing.is_loop({'unity_loop_time': 1}))
+        self.assertFalse(timing.is_loop({timing.LOOP: False, 'unity_loop_time': True}))
+        self.assertFalse(timing.is_loop({'name': 'Walk_N'}))
+        self.assertEqual(timing.round_period(24.5), 25)
+        self.assertEqual(timing.round_period(.2), 1)
+        self.assertEqual(timing.frame_scale(58, 60, 24, False), .4)
+        scale = timing.frame_scale(58, 60, 24, True)
+        plan = NS(source_times=(10., 68.), diagnostics={'output_frames_per_source_frame': scale})
+        self.assertEqual(mapping._output_time(plan, 68.), 24.)
+        self.assertAlmostEqual(mapping._output_time(plan, 24.5), 6.75)
+        self.assertEqual(mapping._verification_times(plan, plan.source_times, (6.75,)), (10., 24.5, 68.))
+
     def test_expansion_keeps_original_strict_samples_and_original_quarters(self):
         native = types.ModuleType(PACKAGE + '.controller_animation')
         scene = NS(frame=0.)

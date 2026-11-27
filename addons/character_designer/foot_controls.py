@@ -127,6 +127,11 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None,
                 source_con = source_pb.constraints[ref['name']]
                 source_mute = _limb()._validation_mute(source_pb, source_con, original_mutes)
                 expected_mute = ref.get('original_ik_mute', source_mute)
+                # A mirror driver reads its source's live mute, including while
+                # Original temporarily pauses that source. The source itself
+                # was authenticated against the saved mute view above.
+                if original_mutes is not None and 'original_ik_mute' not in ref:
+                    expected_mute = source_con.mute
                 if (_limb()._validation_mute(pb, con, original_mutes) != expected_mute
                         or abs(con.influence - source_con.influence) > 1e-6
                         or con.type == 'IK' and con.pole_target != armature):
@@ -173,7 +178,8 @@ def validate(armature, inventory=None, *, original_mutes=None, source_rest=None,
         # extension also needs authority over the original asset collection.
         if not limb_pose_only:
             collection = bpy.data.collections.get(record['widget_collection'])
-            if collection is None or collection.get(ID_KEY) != record['id']:
+            if (not validation_native.missing_pose_asset(armature, collection)
+                    and (collection is None or collection.get(ID_KEY) != record['id'])):
                 raise _error('Foot Controls widget collection is missing.')
         for role, entry in record['widgets'].items():
             obj = bpy.data.objects.get(entry['object'])

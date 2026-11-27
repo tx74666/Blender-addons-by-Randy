@@ -1040,9 +1040,10 @@ def _unwatch_jobs():
 
 
 def _light_inputs(job):
+    from .animation_loop_timing import is_loop
     source, target = job['owners']
     return (source.as_pointer(), source.data.as_pointer(), target.as_pointer(), target.data.as_pointer(),
-            job['action'].as_pointer(), int(job['slot']), _binding(source), _binding(target),
+            job['action'].as_pointer(), int(job['slot']), is_loop(job['action']), _binding(source), _binding(target),
             _scene_inputs(job['scene']), source.mode == 'EDIT', target.mode == 'EDIT')
 
 
@@ -1389,6 +1390,7 @@ def _conversion(job):
         blender_version=list(bpy.app.version), home=job['scene'].name, source=source.name,
         target=target.name, action=action.name, slot=int(slot), source_fps=job['source_fps'],
         daily_edit=job.get('daily_edit', False),
+        align_loop_period=job.get('align_loop_period', True),
         align_knees=job.get('align_knees', False),
         align_elbows=job.get('align_elbows', False),
         frame=float(job['scene'].frame_current + job['scene'].frame_subframe),
@@ -1488,7 +1490,7 @@ def _conversion(job):
 
 
 def begin(context, source_rig, source_action, source_slot, target_rig, *, source_fps=None, daily_edit=False,
-          align_knees=False, align_elbows=False):
+          align_knees=False, align_elbows=False, align_loop_period=None):
     """Register the pending owner immediately; the first heavy read happens in poll."""
     global _ACTIVE
     from . import animation_controller_mapping as mapping
@@ -1497,6 +1499,9 @@ def begin(context, source_rig, source_action, source_slot, target_rig, *, source
     _require(context.window is not None and any(obj == target_rig for obj in context.scene.objects.values()),
              'Open controller preparation from the character scene.')
     source_fps = mapping._source_fps(source_rig, source_fps)
+    if align_loop_period is None:
+        worklist = getattr(context.scene, 'character_designer_animation_worklist', None)
+        align_loop_period = getattr(worklist, 'align_loop_period', True)
     if (align_knees or align_elbows) and (source_rig != target_rig or daily_edit or (align_knees and align_elbows)):
         raise ValueError('Align one kind of pole on a retained controller Action on its character.')
     parent = Path(bpy.utils.user_resource('DATAFILES', path='character_designer/controller_jobs', create=True)).resolve()
@@ -1505,6 +1510,7 @@ def begin(context, source_rig, source_action, source_slot, target_rig, *, source
     (root / 'CONFIG').mkdir()
     job = dict(root=root, process=None, log=None, owners=(source_rig, target_rig),
         action=source_action, slot=source_slot, source_fps=source_fps, daily_edit=daily_edit,
+        align_loop_period=align_loop_period,
         align_knees=align_knees, align_elbows=align_elbows, scene=context.scene,
         layer=context.view_layer, window=context.window, state='PREPARING', phase='Preparing inputs',
         started=time.monotonic(), cancel_requested=False, watched=set(), epoch=0, proof_epoch=0,
@@ -1774,6 +1780,8 @@ def _child(job_path):
         progress.report('Preparing bone mapping')
         daily_edit = request.get('daily_edit', False)
         _require(type(daily_edit) is bool, 'Invalid imported motion accuracy in the worker request.')
+        align_loop_period = request.get('align_loop_period', True)
+        _require(type(align_loop_period) is bool, 'Invalid loop timing option in the worker request.')
         align_knees = request.get('align_knees', False)
         align_elbows = request.get('align_elbows', False)
         _require(type(align_knees) is bool and type(align_elbows) is bool and not (align_knees and align_elbows),
@@ -1791,10 +1799,15 @@ def _child(job_path):
         else:
             result = mapping._build_isolated(bpy.context, source, action, request['slot'], target,
                                              source_fps=request['source_fps'], progress=progress.report,
-                                             daily_edit=daily_edit, action_hash=action_hash)
+                                             daily_edit=daily_edit, action_hash=action_hash,
+                                             align_loop_period=align_loop_period)
         _require(result.action.users == 0, 'The worker output Action is still assigned.')
         slot = next((s for s in result.action.slots if s.handle == result.slot), None)
         _require(slot is not None, 'The controller output lost its slot.')
+        if not (align_knees or align_elbows):
+            cleanup = importlib.import_module(package.name + '.animation_cleanup')
+            progress.report('Cleaning prepared clip')
+            receipt['cleanup'] = cleanup.clean(target, result.action, result.slot)
         output = root / 'controller.blend'
         progress.report('Writing verified Action')
         bpy.data.libraries.write(str(output), {result.action}, path_remap='ABSOLUTE', fake_user=True, compress=True)

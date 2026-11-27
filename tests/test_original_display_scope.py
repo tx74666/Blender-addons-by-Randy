@@ -178,8 +178,8 @@ class OriginalEditableScopeTests(unittest.TestCase):
         self.strict.assert_not_called()
 
     def test_missing_view_still_validates_before_returning(self):
-        restore = function_namespace(self.package_name, {'restore_view'},
-                                     _editable=self.ns['_editable'], VIEW_KEY='view')['restore_view']
+        restore = function_namespace(self.package_name, {'restore_view', 'neutral_view', '_view_editable'},
+                                     _editable=self.ns['_editable'], VIEW_KEY='view', json=json)['restore_view']
         with self.assertRaisesRegex(ValueError, 'single-user'):
             restore(self.main)
         self.assertFalse(restore(self.main, _original_pose=self.cap))
@@ -190,7 +190,7 @@ class OriginalEditableScopeTests(unittest.TestCase):
                               refs={'0': self.main, '1': self.other})
         groups = NS(_FRAME_CACHE={'other': 'keep'}, _frame_visibility=Mock())
         scene = object()
-        restore = function_namespace(self.package_name, {'restore_view'},
+        restore = function_namespace(self.package_name, {'restore_view', 'neutral_view', '_view_editable'},
                                      _editable=self.ns['_editable'], VIEW_KEY='view', REFS_KEY='refs',
                                      _check_object_restore=Mock(), _snapshot=Mock(return_value={}),
                                      _restore=Mock(), _completed=Mock(), groups=groups, json=json,

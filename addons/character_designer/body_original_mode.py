@@ -8,7 +8,7 @@ import bpy
 from bpy.props import EnumProperty
 from . import bone_display as display, bone_collections as groups, limb_ik, limb_ik_fk as match
 from . import control_pose_assets as poses
-from . import skirt_original_mode as dress_pose
+from . import skirt_original_mode as dress_pose, validation_native
 
 SESSION = 'character_designer_body_original_mode_v1'
 DISPLAY_REFS = 'character_designer_original_display_refs_v1'
@@ -513,7 +513,8 @@ def enter(context, rig):
     _require_no_paint_session(context, rig)
     from . import forearm_twist, body_original_owner as owner
     capability = owner.pose_capability(context, rig, entering=True)
-    with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
+    with (validation_native.original_pose_widgets(rig),
+          forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh):
         entered = _enter(context, rig, refresh, _original_pose=capability)
     if entered:
         # The Original transaction has fully published and verified its native
@@ -688,7 +689,16 @@ def leave(context, rig):
     _require_no_paint_session(context, rig)
     from . import forearm_twist, body_original_owner
     def transfer(finalize=None, *, _original_pose=None):
-        with forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
+        from contextlib import nullcontext
+        widgets = nullcontext()
+        if active(rig):
+            try:
+                _validate_session_rest(rig)
+            except ValueError:
+                pass  # Rest adaptation requires the full asset inventory.
+            else:
+                widgets = validation_native.original_pose_widgets(rig)
+        with widgets, forearm_twist.defer_runtime(context, flush_on_exit=False) as refresh:
             return _leave(context, rig, refresh, finalize=finalize,
                           _original_pose=_original_pose)
     returned = body_original_owner.run_return(context, rig, transfer)
@@ -936,7 +946,7 @@ def draw(layout, context):
     controls = row.row(align=True)
     pose_operator = 'character_designer.body_original_mode'
     original_operator = controls_operator = pose_operator
-    original_selected = formal
+    original_selected = formal or temporary == 'ORIGINAL'
     controls_selected = not formal and temporary is None and context.mode == 'POSE'
     message = None
     if painting:
@@ -960,6 +970,8 @@ def draw(layout, context):
         controls.enabled = formal or bool(groups.body_collection(rig)) or temporary is not None
         if formal:
             message = 'Edit the current pose; return to Controls before keying animation.'
+        elif temporary == 'ORIGINAL':
+            message = 'Original bones visible. Click Original Bones to pose constrained joints.'
 
     button = original.operator(original_operator, text='Original Bones', depress=original_selected)
     if original_operator == pose_operator:
