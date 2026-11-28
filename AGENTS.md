@@ -7,8 +7,8 @@
 
 
 
-<!-- cd278-editing-recovery-20261127 -->
-Character Designer **0.77.278** 已安裝至 Blender 5.2 與 X，各 326 檔、0 差異。Overlay Composition 移至 Weapon，Package 和 Locate 集中到 Unity Export 的 Editing Files。保留本機動作登記及原有恢復入口。正式 X 未刷新。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.278_editing_recovery_20261127.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/editing_recovery_organization_20261127/delivery278.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/editing_recovery_organization_20261127/stage278_01/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/selected_control_key_totals_20261127/delivery277.json>)
+<!-- cd291-equip-action-20261128 -->
+Character Designer **0.77.291** 已安裝至 Blender 5.2 與 X，各 329 檔、0 差異。Animation → Upper-Body Composition 增加一鍵裝備，可由 Weapon Profile 的 Equip Action 自動加入上半身動作。正式 X 未刷新。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.291_equip_action_20261128.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/weapon_equip_20261127/delivery291.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/weapon_equip_20261127/stage291/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/scale_cleanup_20261127/delivery290.json>)
 
 <!-- cd114-compact-physics-20261029 -->
 

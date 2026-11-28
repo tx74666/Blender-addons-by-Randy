@@ -145,6 +145,11 @@ def context_rig(context):
     return setup.rig if setup and setup.body==obj else None
 
 
+def context_part(context):
+    rig = context_rig(context)
+    return calibration.selected_part(rig) if rig is not None else 'ARMS'
+
+
 def fingers_visible(context):
     rig=context_rig(context)
     # An unbound mesh still needs initial Capture/Basic Setup access.

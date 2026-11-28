@@ -137,8 +137,10 @@ class ExportInputs(unittest.TestCase):
         fake_worker.export_job = export
         with patch.dict(sys.modules, {'bpy': fake_bpy}):
             wrapper = load('_test_export_inputs_worker', 'animation_export_inputs_worker.py')
-        wrapper._load = lambda _name, filename: fake_inputs if filename == 'animation_export_inputs.py' else fake_worker
-        result = wrapper.export_job({'rig': 'Rig', 'action': 'Custom', 'base': {}})
+        wrapper._load = lambda _name, _filename: fake_worker
+        input_module = '_cdesigner_export_base_services.animation_export_inputs'
+        with patch.dict(sys.modules, {input_module: fake_inputs}):
+            result = wrapper.export_job({'rig': 'Rig', 'action': 'Custom', 'base': {}})
         self.assertEqual(calls, ['Direct', 'Wiggle', 'Dress', 'apply', 'frame', 'sample'])
         self.assertEqual(result['base'], receipt)
         self.assertFalse(any('snapshot values' in value for value in result['warnings']))
@@ -154,6 +156,7 @@ class ExportInputs(unittest.TestCase):
         self.rig.type, self.rig.library, self.rig.override_library = 'ARMATURE', None, None
         self.rig.mode, self.rig.is_editable = 'OBJECT', True
         self.rig.data = NS(library=None, is_editable=True)
+        self.rig.animation_data.action_slot_handle = 0
         self.action.asset_data, self.action.override_library, self.action.is_editable = None, None, True
         item = NS(rig=self.rig, side='CUSTOM', custom_action=self.action, composition_json='',
                   new_animation=True, source_action=None)
@@ -163,6 +166,7 @@ class ExportInputs(unittest.TestCase):
                      view_layer=NS(objects=named), screen=None, object=self.rig, window=None)
         modules = {'animation_pose_test': pose,
                    'animation_worklist': NS(current=lambda _context: item, _rigging_module=lambda *_args: None),
+                   'animation_playback_range': NS(active_record=lambda _scene: None),
                    'animation_rest_pose': NS(is_rest=lambda _rig: False),
                    'body_original_mode': NS(active=lambda _rig: False),
                    'animation_composition': NS(active=lambda _rig: False),
@@ -182,6 +186,12 @@ class ExportInputs(unittest.TestCase):
             self.assertEqual(owner(context, self.rig, self.action), 0)
             self.assertEqual(calls[-1], {'_purpose': 'ANIMATION'})
             item.side = 'SOURCE'
+            with self.assertRaisesRegex(ValueError, 'Source'):
+                owner(context, self.rig, self.action)
+            record = NS(state='READY', target=self.rig, controller_action=self.action, controller_slot=0)
+            modules['animation_playback_range'].active_record = lambda _scene: record
+            self.assertEqual(owner(context, self.rig, self.action), 0)
+            record.controller_slot = 1
             with self.assertRaisesRegex(ValueError, 'Source'):
                 owner(context, self.rig, self.action)
             item.side = 'CUSTOM'

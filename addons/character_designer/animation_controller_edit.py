@@ -322,6 +322,13 @@ def _open_context(context, rig):
             animation_controller_worker._binding(rig), controller_animation._raw(rig, rig.pose.bones.keys()))
 
 
+def _remember_open_request(context, result, rig, clip_key, before):
+    item = _PENDING[result['job_id']]
+    if not item['cancel_requested'] and item['window'] == context.window:
+        ad = rig.animation_data
+        item['open_request'] = (clip_key, before, ad.action if ad else None)
+
+
 def open_motion(context, home, clip_key, *, asynchronous=False, prepare_on_open=False):
     """Open an existing edit or, on a home-scene click, prepare the missing FK edit."""
     global _OPENING
@@ -355,11 +362,7 @@ def open_motion(context, home, clip_key, *, asynchronous=False, prepare_on_open=
             rig = _target(home, home.character_designer_setup.rig)
             before = _open_context(context, rig)
             result = _enqueue(context, home, [row], daily_edit=True)
-            pending_job = _PENDING[result['job_id']]
-            if not pending_job['cancel_requested'] and pending_job['window'] == context.window:
-                ad = rig.animation_data
-                active_action = ad.action if ad else None
-                pending_job['open_request'] = (clip_key, before, active_action)
+            _remember_open_request(context, result, rig, clip_key, before)
             return result
         message = 'Click Prepare to use this motion on the character.'
         if record is not None and record.state == 'MAPPING_NEEDED':
@@ -580,7 +583,14 @@ def prepare_motion(context, home, clip_key, *, from_fk=False, align_knees=False,
     if from_fk:
         if not _needs_full_ik(record):
             raise ValueError('Choose a prepared FK edit to convert to IK.')
-        return _enqueue(context, home, rows, retry=True, daily_edit=False, from_fk=True)
+        before = None
+        if context.window is not None and context.scene == home and pending(home, clip_key) is None:
+            rig = _target(home, record.target)
+            before = _open_context(context, rig)
+        result = _enqueue(context, home, rows, retry=True, daily_edit=False, from_fk=True)
+        if before is not None:
+            _remember_open_request(context, result, rig, clip_key, before)
+        return result
     if _already_prepared(record):
         return dict(state='READY', message='Controllers already prepared. Open the motion to edit them.')
     return _enqueue(context, home, rows, retry=True)
@@ -772,6 +782,17 @@ def replace_aligned(context, home, record, expected, built, *, kind='knees'):
     _replace_controller_action(context, home, record, expected, built, kind=kind)
 
 
+def _require_keyed_inputs(rig, action, slot, frame):
+    from .animation_export_inputs import _curves
+    for curve in _curves(action, slot):
+        if curve.mute or (curve.group and curve.group.mute):
+            continue
+        raw = rig.path_resolve(curve.data_path)
+        value = raw if isinstance(raw, (int, float)) else raw[curve.array_index]
+        if not math.isclose(value, curve.evaluate(frame), abs_tol=2.e-5, rel_tol=2.e-6):
+            raise ValueError('The character has an unkeyed control change. Key it before switching motions.')
+
+
 def _replace_controller_action(context, home, record, expected, built, *, kind, label=''):
     from .animation_local_motion_pins import assign_character_action
     old, old_slot = expected
@@ -784,19 +805,12 @@ def _replace_controller_action(context, home, record, expected, built, *, kind, 
                    or (context.screen and context.screen.is_animation_playing)):
         raise ValueError('Stop playback and return to the character to replace its open controller edit.')
     if active:
-        from .animation_export_inputs import _curves
         from .animation_original_inputs_ui import original_inputs_live
         from . import animation_composition, unity_animation
         if (original_inputs_live(context) or animation_composition.active(rig) or unity_animation.active_preview(rig)):
             raise ValueError('Finish the active editing session before replacing the open motion.')
         frame = home.frame_current + home.frame_subframe
-        for curve in _curves(old, old_slot):
-            if curve.mute or (curve.group and curve.group.mute):
-                continue
-            raw = rig.path_resolve(curve.data_path)
-            value = raw if isinstance(raw, (int, float)) else raw[curve.array_index]
-            if not math.isclose(value, curve.evaluate(frame), abs_tol=2.e-5, rel_tol=2.e-6):
-                raise ValueError('The character has an unkeyed control change. Key it before replacing the open motion.')
+        _require_keyed_inputs(rig, old, old_slot, frame)
     previous_fake = old.use_fake_user
     previous_name = old.name
     new_name = built.action.name
@@ -827,9 +841,10 @@ def _replace_controller_action(context, home, record, expected, built, *, kind, 
             home.frame_set(home.frame_current, subframe=home.frame_subframe)
         old.use_fake_user = previous_fake
         raise
+    return bool(active)
 
 
-def _open_requested(context, item, record):
+def _open_requested(context, item, record, *, from_fk=False):
     request = item.get('open_request')
     if not request or request[0] != item['clip_key']:
         return None
@@ -842,8 +857,19 @@ def _open_requested(context, item, record):
                 and settings.catalog[settings.catalog_index].clip_key != request[0])):
         return None
     try:
-        if _open_context(context, item['target']) == request[1]:
-            return _activate(context, home, record)
+        rig = item['target']
+        if _open_context(context, rig) != request[1]:
+            return None
+        if from_fk:
+            ad = rig.animation_data
+            if context.screen and context.screen.is_animation_playing:
+                return None
+            if ad and ad.action is not None:
+                if (ad.use_tweak_mode or ad.action_blend_type != 'REPLACE' or ad.action_influence != 1
+                        or (ad.use_nla and any(not track.mute and track.strips for track in ad.nla_tracks))):
+                    return None
+                _require_keyed_inputs(rig, ad.action, ad.action_slot_handle, home.frame_current + home.frame_subframe)
+        return _activate(context, home, record)
     except (ValueError, RuntimeError, ReferenceError) as error:
         # Publication already succeeded. A delayed open can fail independently.
         item['error'] = 'Open the prepared motion when ready. ' + str(error)
@@ -899,8 +925,12 @@ def finalize_pending(context, key):
             if (not _needs_full_ik(record) or (record.controller_action, record.controller_slot) != expected
                     or created == expected[0] or created.get('character_designer_controller_representation') != 'IK'):
                 raise ValueError('The verified IK result cannot replace this FK edit.')
-            _replace_controller_action(context, home, record, expected, built, kind='fk', label=row.name)
+            active = _replace_controller_action(context, home, record, expected, built, kind='fk', label=row.name)
             outcome = 'READY'
+            if not active:
+                opened = _open_requested(context, item, record, from_fk=True)
+                if opened is not None:
+                    return dict(opened, published=True)
             return dict(state='READY', published=True, message='Motion converted to IK.')
         if _already_prepared(record):
             if record.controller_action != created:

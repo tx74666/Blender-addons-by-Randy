@@ -1,8 +1,8 @@
 """Miscellaneous sidebar controls for local Weapon Profiles."""
 
 import bpy
-from bpy.props import BoolProperty, FloatVectorProperty, StringProperty
-from bpy.types import Operator, Panel
+from bpy.props import BoolProperty, FloatVectorProperty, IntProperty, StringProperty
+from bpy.types import Menu, Operator, Panel
 
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_MISC, active_ui_page
 
@@ -51,6 +51,41 @@ class CHARACTERDESIGNER_OT_weapon_import(Operator):
         except (ValueError, RuntimeError, OSError) as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_weapon_import_unity_library(Operator):
+    bl_idname = 'character_designer.weapon_import_unity_library'
+    bl_label = 'Import Unity Library'
+    bl_description = 'Add the captured Unity weapon models as reusable profiles and keep existing grip settings'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default='*.json', options={'HIDDEN'})
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        from . import animation_weapon_library
+
+        try:
+            imported, reused, issues = animation_weapon_library.import_library(context, self.filepath)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        if not imported and not reused:
+            self.report({'ERROR'}, issues[0] if issues else 'The Unity library contains no weapons.')
+            return {'CANCELLED'}
+        settings = _settings(context)
+        if settings.weapon_profile is None:
+            settings.weapon_profile = (imported or reused)[0]
+        summary = f'Imported {len(imported)} weapons, reused {len(reused)}.'
+        if issues:
+            self.report({'WARNING'}, f'{summary} {len(issues)} unavailable. {issues[0]}')
+        else:
+            self.report({'INFO'}, summary)
         return {'FINISHED'}
 
 
@@ -108,6 +143,57 @@ class CHARACTERDESIGNER_OT_weapon_detach(Operator):
         return {'FINISHED'}
 
 
+class CHARACTERDESIGNER_OT_weapon_equip(Operator):
+    bl_idname = 'character_designer.weapon_equip'
+    bl_label = 'Equip'
+    bl_description = 'Mount this weapon and add its Equip Action at the current frame when configured'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    profile_name: StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, context):
+        return _target(context) is not None
+
+    def execute(self, context):
+        from . import animation_composition_local as composition
+
+        rig = _target(context)
+        profile = bpy.data.collections.get(self.profile_name)
+        try:
+            if not profiles.is_profile(profile):
+                raise ValueError('Choose an available Weapon Profile.')
+            current = profiles.attachment(rig)
+            if current is None or current['scene'] != context.scene or current[profiles.LOCAL] != profile:
+                with profiles.equip(context, rig, profile):
+                    action = profile.get(profiles.EQUIP_ACTION)
+                    if action is not None:
+                        frame = context.scene.frame_current + context.scene.frame_subframe
+                        composition.add_overlay(context, rig, action, handle=profile[profiles.EQUIP_SLOT],
+                                                frame=frame, hold=True)
+        except (ValueError, RuntimeError, TypeError, KeyError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        _settings(context).weapon_profile = profile
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_MT_weapon_equip(Menu):
+    bl_idname = 'CHARACTERDESIGNER_MT_weapon_equip'
+    bl_label = 'Equip'
+
+    def draw(self, _context):
+        choices = sorted((p for p in bpy.data.collections if profiles.is_profile(p)),
+                         key=lambda p: p.name.casefold())
+        if not choices:
+            self.layout.label(text='Import a Weapon Profile in Miscellaneous → Weapon.')
+        self.layout.operator_context = 'EXEC_DEFAULT'
+        for profile in choices:
+            action = profile.get(profiles.EQUIP_ACTION)
+            text = f'{profile.name} · {action.name}' if action is not None else profile.name
+            self.layout.operator('character_designer.weapon_equip', text=text).profile_name = profile.name
+
+
 class CHARACTERDESIGNER_OT_weapon_calibrate(Operator):
     bl_idname = 'character_designer.weapon_calibrate'
     bl_label = 'Edit Weapon Profile'
@@ -121,6 +207,9 @@ class CHARACTERDESIGNER_OT_weapon_calibrate(Operator):
     mount_rotation: FloatVectorProperty(name='Mount Rotation', subtype='EULER', unit='ROTATION')
     grip_location: FloatVectorProperty(name='Grip Position', subtype='TRANSLATION', unit='LENGTH')
     grip_rotation: FloatVectorProperty(name='Grip Rotation', subtype='EULER', unit='ROTATION')
+    equip_action: StringProperty(name='Equip Action',
+                                 description='Upper-body Action to add when equipping this weapon')
+    equip_slot: IntProperty(name='Object Slot Handle', min=0)
 
     def invoke(self, context, _event):
         profile = _selected(context)
@@ -129,6 +218,9 @@ class CHARACTERDESIGNER_OT_weapon_calibrate(Operator):
             return {'CANCELLED'}
         self.profile_name = self.label = profile.name
         self.two_handed = bool(profile.get('two_handed'))
+        action = profile.get(profiles.EQUIP_ACTION)
+        self.equip_action = action.name if action is not None else ''
+        self.equip_slot = profile.get(profiles.EQUIP_SLOT, 0)
         for field, value in profiles._calibration(profile).items():
             setattr(self, field, value)
         return context.window_manager.invoke_props_dialog(self)
@@ -141,13 +233,33 @@ class CHARACTERDESIGNER_OT_weapon_calibrate(Operator):
         if self.two_handed:
             self.layout.prop(self, 'grip_location')
             self.layout.prop(self, 'grip_rotation')
+        self.layout.prop_search(self, 'equip_action', bpy.data, 'actions')
+        action = bpy.data.actions.get(self.equip_action)
+        if action and sum(slot.target_id_type == 'OBJECT' for slot in action.slots) > 1:
+            for slot in action.slots:
+                if slot.target_id_type == 'OBJECT':
+                    self.layout.label(text=f'{slot.identifier} ({slot.handle})')
+            self.layout.prop(self, 'equip_slot')
 
     def execute(self, context):
+        from . import animation_composition_local as composition
+
         try:
             profile = bpy.data.collections.get(self.profile_name) if self.profile_name else _selected(context)
+            edit_action = self.properties.is_property_set('equip_action')
+            action = bpy.data.actions.get(self.equip_action) if edit_action and self.equip_action else None
+            if edit_action and self.equip_action and (action is None or action.library or action.get(composition.DRAFT)):
+                raise ValueError('Choose a local source Action for Equip Action.')
+            multi_slot = action is not None and sum(slot.target_id_type == 'OBJECT' for slot in action.slots) > 1
+            handle = composition._unique_slot(action, self.equip_slot if multi_slot else 0) if action is not None else 0
             profiles.update_profile(context, _target(context), profile,
                 {field: getattr(self, field) for field in profiles.CALIBRATION},
                 two_handed=self.two_handed)
+            if action is not None:
+                profile[profiles.EQUIP_ACTION], profile[profiles.EQUIP_SLOT] = action, handle
+            elif edit_action:
+                profile.pop(profiles.EQUIP_ACTION, None)
+                profile.pop(profiles.EQUIP_SLOT, None)
             if self.label.strip():
                 profile.name = self.label.strip()
         except (ValueError, RuntimeError) as error:
@@ -182,12 +294,22 @@ class CHARACTERDESIGNER_OT_weapon_grip(Operator):
         return {'FINISHED'}
 
 
+def draw_equip(layout, rig):
+    record = profiles.attachment(rig)
+    row = layout.row(align=True)
+    row.menu(CHARACTERDESIGNER_MT_weapon_equip.bl_idname,
+             text=record[profiles.LOCAL].name if record else 'Equip', icon='OUTLINER_COLLECTION')
+    if record is not None:
+        row.operator('character_designer.weapon_detach', text='', icon='X')
+
+
 def draw_weapons(layout, context):
     rig = _target(context)
     record = profiles.attachment(rig)
     row = layout.row(align=True)
     row.prop(_settings(context), 'weapon_profile', text='')
     row.operator('character_designer.weapon_import', text='', icon='IMPORT')
+    layout.operator('character_designer.weapon_import_unity_library', icon='ASSET_MANAGER')
     if _selected(context) is not None:
         row = layout.row(align=True)
         row.operator('character_designer.weapon_calibrate', text='Edit Profile')
@@ -223,7 +345,6 @@ class CHARACTERDESIGNER_PT_equipment(Panel):
     def draw(self, context):
         from . import animation_composition_local_ui, animation_composition_ui, animation_preview_ui
         from .animation_original_inputs_ui import original_inputs_live
-        from .animation_physics_ui import section
 
         layout = self.layout
         draw_weapons(layout, context)
@@ -231,11 +352,6 @@ class CHARACTERDESIGNER_PT_equipment(Panel):
         local = None
         if rig is not None and rig.animation_data is not None:
             local = animation_composition_local_ui.composition.session(rig)
-            overlay = section(layout, 'character_designer_animation_upper_body', 'Upper-Body Composition',
-                              icon='NLA', default_closed=local is None)
-            if overlay is not None:
-                overlay.enabled = preview is None
-                animation_composition_local_ui.draw_composition(overlay, context)
 
         worklist = getattr(context.scene, 'character_designer_animation_worklist', None)
         if worklist is not None and worklist.workspace_path:
@@ -246,8 +362,11 @@ class CHARACTERDESIGNER_PT_equipment(Panel):
 
 EQUIPMENT_CLASSES = (
     CHARACTERDESIGNER_OT_weapon_import,
+    CHARACTERDESIGNER_OT_weapon_import_unity_library,
     CHARACTERDESIGNER_OT_weapon_attach,
     CHARACTERDESIGNER_OT_weapon_detach,
+    CHARACTERDESIGNER_OT_weapon_equip,
+    CHARACTERDESIGNER_MT_weapon_equip,
     CHARACTERDESIGNER_OT_weapon_calibrate,
     CHARACTERDESIGNER_OT_weapon_grip,
     CHARACTERDESIGNER_PT_equipment,

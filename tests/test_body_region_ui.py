@@ -12,13 +12,19 @@ def load_subject():
     props = ModuleType('bpy.props')
     props.EnumProperty = lambda **kwargs: kwargs
     types = ModuleType('bpy.types')
+    types.Menu = type('Menu', (), {})
     types.Operator = type('Operator', (), {})
     types.PropertyGroup = type('PropertyGroup', (), {})
     path = Path(__file__).resolve().parents[1] / 'addons/character_designer/body_region_ui.py'
-    spec = importlib.util.spec_from_file_location('_test_body_region_ui_subject', path)
+    pkg = ModuleType('_test_body_region_package')
+    calibration = ModuleType(pkg.__name__ + '.body_calibration')
+    calibration.selected_part = lambda rig: rig.part
+    spec = importlib.util.spec_from_file_location(pkg.__name__ + '.body_region_ui', path)
     module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {'bpy': bpy, 'bpy.props': props, 'bpy.types': types}):
+    with patch.dict(sys.modules, {'bpy': bpy, 'bpy.props': props, 'bpy.types': types,
+                                 pkg.__name__: pkg, calibration.__name__: calibration}):
         spec.loader.exec_module(module)
+    sys.modules[calibration.__name__] = calibration
     return module
 
 
@@ -35,6 +41,12 @@ class Layout:
     def prop(self, owner, name, **kwargs):
         self.records.append(('prop', name, getattr(owner, name)))
 
+    def menu(self, name, *, text, **_kwargs):
+        self.records.append(('menu', name, text))
+
+    def prop_enum(self, _owner, _name, value, **_kwargs):
+        self.records.append(('choice', value))
+
     def label(self, **kwargs):
         self.records.append(('label', kwargs.get('text', '')))
 
@@ -47,7 +59,8 @@ class Layout:
 def context(region='LEGS', mode='POSE'):
     data = SimpleNamespace(library=None, users=1, is_editable=True)
     rig = SimpleNamespace(type='ARMATURE', is_editable=True, library=None,
-                          override_library=None, data=data)
+                          override_library=None, data=data,
+                          part='ARMS' if region in {'ARMS', 'LEFT_ARM', 'RIGHT_ARM'} else 'LEGS')
     return SimpleNamespace(object=rig, mode=mode, scene=SimpleNamespace(
         character_designer_body_region=SimpleNamespace(region=region)))
 
@@ -72,7 +85,7 @@ class RegionalControlsUITests(unittest.TestCase):
         self.assertEqual(button[2:4], ('Rebuild Controls', True))
         self.assertEqual((button[4].region, button[4].action), ('RIGHT_LEG', 'REBUILD'))
         self.assertEqual(len([row for row in records if row[0] == 'operator']), 1)
-        self.assertIn(('prop', 'region', 'RIGHT_LEG'), records)
+        self.assertIn(('menu', self.ui.CHARACTERDESIGNER_MT_body_regions.bl_idname, 'Right Leg'), records)
         self.assertIn(('label', 'Controls Ready'), records)
 
     def test_main_panel_omits_routine_help_and_stale_animation_paragraphs(self):
@@ -80,7 +93,20 @@ class RegionalControlsUITests(unittest.TestCase):
         warning = 'Saved animations retain earlier body proportions; check target compatibility before reuse.'
         _, records, _button = self.draw('BOUND', reason=hint + ' ' + warning)
         labels = [row[1] for row in records if row[0] == 'label']
-        self.assertEqual(labels, ['Body Part', 'Controls Ready'])
+        self.assertEqual(labels, ['Controls Ready'])
+
+    def test_tabs_limit_region_choices_without_rewriting_the_saved_selection(self):
+        ctx = context('RIGHT_LEG')
+        for part, choices in (
+                ('ARMS', ['ARMS', 'LEFT_ARM', 'RIGHT_ARM']),
+                ('LEGS', ['LEGS', 'LEFT_LEG', 'RIGHT_LEG', 'FEET', 'LEFT_FOOT', 'RIGHT_FOOT']),
+                ('FINGERS', [])):
+            with self.subTest(part=part):
+                ctx.object.part = part
+                layout = Layout()
+                self.ui.CHARACTERDESIGNER_MT_body_regions.draw(SimpleNamespace(layout=layout), ctx)
+                self.assertEqual(layout.records, [('choice', value) for value in choices])
+                self.assertEqual(ctx.scene.character_designer_body_region.region, 'RIGHT_LEG')
 
     def test_advanced_release_uses_the_same_selected_part(self):
         ctx, layout = context('RIGHT_LEG'), Layout()

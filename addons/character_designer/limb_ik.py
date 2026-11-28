@@ -9279,12 +9279,14 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
             layout.label(text="Limb IK state is unavailable.", icon="ERROR")
             return
         from . import body_setup_ui, body_calibration_ui, body_original_mode, limb_ik_ui_state
+        from .body_calibration_hands import context_part
         armature = body_original_mode.display.character_rig(context)
-        from .control_pose_capture import draw as draw_pose_capture
-        draw_pose_capture(layout, context)
         if body_original_mode.active(armature):
             return
-        if body_calibration_ui.draw(layout, context):
+        show_setup = body_calibration_ui.draw(layout, context)
+        if context_part(context) == 'FINGERS':
+            return
+        if show_setup:
             # Native mapping remains reachable before Generate. The stored old
             # Setup/Controls choice no longer gates this workflow.
             layout.prop(settings, "show_body_setup_advanced", text="Body Setup & Recovery",
@@ -9428,58 +9430,6 @@ class CHARACTERDESIGNER_PT_limb_ik(Panel):
         restore_colors.operator("character_designer.control_colors", text="Restore Colors", icon="LOOP_BACK").action = "RESTORE"
 
 
-class CHARACTERDESIGNER_PT_limb_ik_target_rotation(Panel):
-    bl_label = "Target Rotation"
-    bl_idname = "CHARACTERDESIGNER_PT_limb_ik_target_rotation"
-    bl_parent_id = "CHARACTERDESIGNER_PT_limb_ik"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = SIDEBAR_CATEGORY
-
-    @classmethod
-    def poll(cls, context):
-        return (
-            rig_page_active(context, "BODY")
-            and _has_active_limb_target(context)
-        )
-
-    def draw(self, context):
-        resolved = _active_limb_target(context)
-        if resolved is None:
-            return
-        _armature, target, inventory, rig = resolved
-        layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = True
-        layout.label(text=target.name, icon="CON_ROTLIKE")
-        if inventory["target_rotation_version"] != TARGET_ROTATION_VERSION:
-            layout.label(
-                text="Rebuild Rig once to enable aligned Target rotation",
-                icon="INFO",
-            )
-            return
-        if target.rotation_mode != "XYZ":
-            layout.label(text="Rotation mode must be XYZ", icon="ERROR")
-            return
-        is_arm = rig["target"].get(KIND_KEY) == "ARM"
-        labels = (
-            ("Flex / Extend (X)", "Twist (Y)", "Side / Wave (Z)")
-            if is_arm
-            else ("Toe Up / Down (X)", "Bank (Y)", "Turn (Z)")
-        )
-        for index, label in enumerate(labels):
-            layout.prop(target, "rotation_euler", index=index, text=label)
-            if is_arm and index == 1:
-                from . import forearm_twist
-                active, message = forearm_twist.controller_status(_armature, target.name)
-                layout.label(text=message, icon="CHECKMARK" if active else "INFO")
-        layout.operator(
-            "character_designer.limb_ik_reset_target_rotation",
-            text="Reset Rotation",
-            icon="LOOP_BACK",
-        )
-
-
 class CHARACTERDESIGNER_PT_limb_ik_control_visual(Panel):
     bl_label = "Control Visual"
     bl_idname = "CHARACTERDESIGNER_PT_limb_ik_control_visual"
@@ -9491,7 +9441,9 @@ class CHARACTERDESIGNER_PT_limb_ik_control_visual(Panel):
 
     @classmethod
     def poll(cls, context):
+        from .body_calibration_hands import context_part
         return (rig_page_active(context, "BODY") and bool(getattr(_settings(context), "show_body_setup_advanced", False))
+                and context_part(context) != 'FINGERS'
                 and _active_control_visual(context) is not None)
 
     def draw(self, context):
@@ -9535,12 +9487,14 @@ class CHARACTERDESIGNER_PT_limb_ik_direct_preroll(Panel):
 
     @classmethod
     def poll(cls, context):
+        from .body_calibration_hands import context_part
         settings = _settings(context)
         return (
             rig_page_active(context, "BODY")
             and settings is not None
             and settings.show_body_setup_advanced
             and settings.build_method == "DIRECT_PREROLL"
+            and context_part(context) != 'FINGERS'
         )
 
     def draw(self, context):
@@ -9610,7 +9564,6 @@ LIMB_IK_CLASSES = (
     CHARACTERDESIGNER_OT_limb_ik_direct_preroll_check,
     CHARACTERDESIGNER_OT_limb_ik_flip_pole,
     CHARACTERDESIGNER_PT_limb_ik,
-    CHARACTERDESIGNER_PT_limb_ik_target_rotation,
     CHARACTERDESIGNER_PT_limb_ik_control_visual,
     CHARACTERDESIGNER_PT_limb_ik_direct_preroll,
 )

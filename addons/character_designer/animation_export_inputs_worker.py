@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 import traceback
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import bpy
 
@@ -21,7 +21,14 @@ def _load(name, filename):
 
 
 def export_job(job):
-    inputs = _load('_cd_export_base_inputs', 'animation_export_inputs.py')
+    # Allow the isolated worker to load cleanup defaults without importing the
+    # add-on entry point or registering any UI.
+    package_name = '_cdesigner_export_base_services'
+    if package_name not in sys.modules:
+        package = ModuleType(package_name)
+        package.__path__ = [str(Path(__file__).parent)]
+        sys.modules[package_name] = package
+    inputs = importlib.import_module(package_name + '.animation_export_inputs')
     worker = _load('_cd_export_base_worker', 'animation_export_worker.py')
     rig = bpy.data.objects.get(job.get('rig', ''))
     action = bpy.data.actions.get(job.get('action', ''))

@@ -1,5 +1,6 @@
 """Reusable local weapon assets and their mount on the Animation rig."""
 
+from contextlib import contextmanager
 from pathlib import Path
 import math
 import uuid
@@ -10,6 +11,10 @@ from mathutils import Euler, Matrix
 from . import animation_composition_weapon as display
 
 PROFILE = 'character_designer_weapon_profile_v1'
+UNITY_PREFAB = 'unity_weapon_prefab_guid'
+UNITY_CONTEXT = 'unity_weapon_context_sha256'
+EQUIP_ACTION = 'equip_action'
+EQUIP_SLOT = 'equip_action_slot'
 LOCAL = 'local_weapon_profile'
 IMPORTERS = {
     '.fbx': lambda path: bpy.ops.import_scene.fbx(filepath=path, use_anim=False),
@@ -49,6 +54,15 @@ def require_idle(context, rig=None):
         raise ValueError('Close the current rigging or Composition edit session before editing weapons.')
 
 
+def new_profile(name):
+    profile = bpy.data.collections.new(name)
+    profile[PROFILE] = str(uuid.uuid4())
+    for field in CALIBRATION:
+        profile[field] = (0.0, 0.0, 0.0)
+    profile['two_handed'] = False
+    return profile
+
+
 def import_profile(context, filepath):
     """Keep the imported meshes in a persistent Blender collection asset."""
     require_idle(context)
@@ -71,11 +85,7 @@ def import_profile(context, filepath):
         meshes = sorted((obj for obj in imported if obj.type == 'MESH'), key=lambda obj: obj.name)
         if not any(obj.data.polygons for obj in meshes):
             raise ValueError('The weapon file contains no mesh surfaces.')
-        profile = bpy.data.collections.new(source.stem)
-        profile[PROFILE] = str(uuid.uuid4())
-        for field in CALIBRATION:
-            profile[field] = (0.0, 0.0, 0.0)
-        profile['two_handed'] = False
+        profile = new_profile(source.stem)
         matrices = [(obj, obj.matrix_world.copy()) for obj in meshes]
         for obj, matrix in matrices:
             obj.animation_data_clear()
@@ -188,6 +198,63 @@ def attach(context, rig, profile, hand):
         bpy.data.collections.remove(collection)
         raise
     return weapon, grip
+
+
+@contextmanager
+def equip(context, rig, profile):
+    """Equip at the existing mount and roll back if an optional Action cannot be added."""
+    require_idle(context, rig)
+    if rig is None or not is_profile(profile):
+        raise ValueError('Choose a local character rig and a Weapon Profile.')
+    record = attachment(rig)
+    if record is None:
+        attach(context, rig, profile, right_hand(rig))
+        try:
+            yield
+        except Exception:
+            detach(context, rig)
+            raise
+        return
+    if record['scene'] != context.scene:
+        raise ValueError('Return to the scene that owns the current weapon mount.')
+    from . import animation_weapon_grip
+
+    display.validate_owned(rig)
+    weapon, grip = record['geometry_root'], record['grip']
+    if (weapon.instance_collection != record[LOCAL] or weapon.parent != record['anchor']
+            or grip.parent != weapon or weapon.animation_data or grip.animation_data):
+        raise ValueError('This weapon mount was edited directly. Detach it before changing equipment.')
+    values = _calibration(profile)
+    previous = record[LOCAL], record['identity'], weapon.name, grip.name, record['collection'].name
+    matrices = weapon.matrix_basis.copy(), grip.matrix_basis.copy()
+    visibility = [(layer, grip.hide_get(view_layer=layer)) for layer in record_view_layers(grip)]
+    bindings = [(constraint, constraint.mute) for _, constraint in animation_weapon_grip.constraints(rig, record)]
+    try:
+        weapon.instance_collection = record[LOCAL] = profile
+        record['identity'] = profile[PROFILE]
+        weapon.name, grip.name = profile.name, 'Left Grip · ' + profile.name
+        record['collection'].name = 'Weapon · ' + profile.name
+        weapon.matrix_basis = _transform(values['mount_location'], values['mount_rotation'])
+        grip.matrix_basis = _transform(values['grip_location'], values['grip_rotation'])
+        two_handed = bool(profile.get('two_handed'))
+        for layer, _ in visibility:
+            grip.hide_set(not two_handed, view_layer=layer)
+        for constraint, _ in bindings:
+            constraint.mute = not two_handed
+        context.view_layer.update()
+        yield
+    except Exception:
+        profile_before, identity, weapon_name, grip_name, collection_name = previous
+        weapon.instance_collection = record[LOCAL] = profile_before
+        record['identity'] = identity
+        weapon.name, grip.name, record['collection'].name = weapon_name, grip_name, collection_name
+        weapon.matrix_basis, grip.matrix_basis = matrices
+        for layer, hidden in visibility:
+            grip.hide_set(hidden, view_layer=layer)
+        for constraint, muted in bindings:
+            constraint.mute = muted
+        context.view_layer.update()
+        raise
 
 
 def update_profile(context, rig, profile, values, *, two_handed):

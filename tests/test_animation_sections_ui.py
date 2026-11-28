@@ -20,6 +20,7 @@ def panel_draw(scope):
     scope.setdefault("equipment_ui", SimpleNamespace(_target=lambda context: None))
     scope.setdefault("animation_composition_local_ui", SimpleNamespace(
         composition=SimpleNamespace(session=lambda rig: None)))
+    scope.setdefault("animation_export_queue", SimpleNamespace(running=lambda: False))
     tree = ast.parse((ROOT / "addons/character_designer/animation.py").read_text(encoding="utf8"))
     panel = next(node for node in tree.body if isinstance(node, ast.ClassDef)
                  and node.name == "CHARACTERDESIGNER_PT_animation")
@@ -172,19 +173,19 @@ class AnimationSectionsTests(unittest.TestCase):
         with patch.object(ui, "_service", return_value=SimpleNamespace(status=lambda context: state)):
             ui.draw(FullWidthLayout(), self.context)
 
-    def draw_animation(self, opened):
+    def draw_animation(self, opened, *, retained_inputs=True):
         package = "_animation_section_draw_fixture"
         physics = ModuleType(package + ".animation_physics_ui")
         physics.draw, physics.section, physics.wrapped_label = Mock(), ui.section, ui.wrapped_label
         original = ModuleType(package + ".animation_original_inputs_ui")
         original.draw_original_inputs = Mock()
         original._rig = Mock(return_value=object())
-        original.has_original_inputs = Mock(return_value=True)
+        original.has_original_inputs = Mock(return_value=retained_inputs)
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
         for name in ('draw_worklist', 'draw_worklist_export', 'draw_worklist_unity',
-                     'draw_worklist_motion_tools', 'draw_worklist_recovery'):
+                     'draw_worklist_motion_tools'):
             setattr(worklist, name, Mock())
         worklist.scan_pending = Mock(return_value=False)
         collection = ModuleType(package + ".animation_worklist_collection")
@@ -206,7 +207,6 @@ class AnimationSectionsTests(unittest.TestCase):
         original.draw_original_inputs.assert_not_called()
         worklist.draw_worklist.assert_called_once()
         self.assertEqual(worklist.draw_worklist.call_args.kwargs, {"include_original_inputs": False})
-        worklist.draw_worklist_recovery.assert_called_once()
         pose.draw.assert_called_once()
         worklist.draw_worklist_export.assert_not_called()
         worklist.draw_worklist_unity.assert_not_called()
@@ -221,9 +221,14 @@ class AnimationSectionsTests(unittest.TestCase):
             "character_designer_animation_animations": False})
         original.draw_original_inputs.assert_called_once()
         worklist.draw_worklist.assert_not_called()
-        worklist.draw_worklist_recovery.assert_not_called()
         pose.draw.assert_not_called()
         export.active_job.assert_not_called()
+
+    def test_animation_panel_has_no_recovery_fold_or_unused_original_inputs(self):
+        layout, _physics, original, _pose, _worklist, _export = self.draw_animation({}, retained_inputs=False)
+        self.assertNotIn("Editing & Recovery", repr(layout.events))
+        self.assertNotIn("character_designer_animation_original_inputs", repr(layout.events))
+        original.draw_original_inputs.assert_not_called()
 
     def draw_unmanaged_animation(self, *, opened=None, has_animation_data=True, has_action=True,
                                  tweak=False, preview=False, generation_job=None, export_job=False, advanced=False):
@@ -238,7 +243,7 @@ class AnimationSectionsTests(unittest.TestCase):
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
         for name in ('draw_worklist', 'draw_worklist_export', 'draw_worklist_unity',
-                     'draw_worklist_motion_tools', 'draw_worklist_recovery'):
+                     'draw_worklist_motion_tools'):
             setattr(worklist, name, Mock())
         worklist.scan_pending = Mock(return_value=False)
         collection = ModuleType(package + ".animation_worklist_collection")

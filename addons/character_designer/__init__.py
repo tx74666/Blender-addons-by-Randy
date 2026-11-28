@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Character Designer",
     "author": "Randy & Codex",
-    "version": (0, 77, 279),
+    "version": (0, 77, 291),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Character Designer",
     "description": "Personal modeling, rig-setup, and generic reference-view tools.",
@@ -8724,7 +8724,6 @@ class CHARACTERDESIGNER_PT_rig_sections(Panel):
         return active_ui_page(context) == UI_PAGE_RIG
 
     def draw(self, context):
-        self.layout.label(text='Create and adjust character controls.', icon='ARMATURE_DATA')
         row = self.layout.row(align=True)
         section = active_rig_section(context)
         for value, label, _description in UI_RIG_SECTION_ITEMS:

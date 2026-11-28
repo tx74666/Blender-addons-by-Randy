@@ -386,13 +386,13 @@ class CHARACTERDESIGNER_OT_quick_bind(Operator):
 
 
 class CHARACTERDESIGNER_PT_character_setup(Panel):
-    bl_label = 'Character & Bone Mapping'
+    bl_label = 'Character Setup'
     bl_idname = 'CHARACTERDESIGNER_PT_character_setup'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = SIDEBAR_CATEGORY
     bl_options = {'DEFAULT_CLOSED'}
-    bl_parent_id = 'CHARACTERDESIGNER_PT_rig_sections'
+    bl_parent_id = 'CHARACTERDESIGNER_PT_main'
     bl_order = 0
 
     @classmethod
@@ -403,7 +403,7 @@ class CHARACTERDESIGNER_PT_character_setup(Panel):
         layout = self.layout
         state = settings(context)
         layout.prop(state, 'rig')
-        layout.prop(state, 'body')
+        layout.prop(state, 'body', text='Weight Mesh')
         for role, label, _description in BONE_ROLES:
             row = layout.row(align=True)
             field = role.lower() + '_bone'

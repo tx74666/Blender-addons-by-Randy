@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import Mock
 
 import test_animation_worklist_sync_ui as sync_fixtures
-import test_animation_worklist_ui as ui_fixtures
 
 
 class DiscardUI(unittest.TestCase):
@@ -25,7 +24,7 @@ class DiscardUI(unittest.TestCase):
         operator.plan_token, operator.workspace_path = token, path
         return operator
 
-    def test_review_and_advanced_buttons_have_distinct_exact_routes(self):
+    def test_review_buttons_have_distinct_exact_routes(self):
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_sync_review()
         operator.plan_token, operator.workspace_path = 'review-token', 'review-path'
         operator.extras_json = json.dumps([{'name': 'Old', 'reason': 'Outside Unity.'}])
@@ -37,17 +36,6 @@ class DiscardUI(unittest.TestCase):
             _name, options, payload = buttons['character_designer.worklist_' + suffix]
             self.assertEqual(options['text'], title)
             self.assertEqual((payload.plan_token, payload.workspace_path), ('review-token', 'review-path'))
-        self.state.retired_items = [SimpleNamespace(name='Old', item_id='exact-old-id')]
-        for advanced in (False, True):
-            with self.subTest(advanced=advanced):
-                self.state.show_advanced = advanced
-                layout = ui_fixtures.Layout()
-                self.ui.draw_worklist_recovery(layout, self.context)
-                discards = [value for kind, value, _enabled in layout.records if kind == 'operator'
-                    and value[0] == 'character_designer.worklist_discard_retired']
-                self.assertEqual(len(discards), int(advanced))
-                if advanced:
-                    self.assertEqual(discards[0][2].item_id, 'exact-old-id')
         for cls in (self.ui.CHARACTERDESIGNER_OT_worklist_sync_discard_confirm,
                     self.ui.CHARACTERDESIGNER_OT_worklist_discard_retired):
             self.assertIn(cls, self.ui.WORKLIST_CLASSES)

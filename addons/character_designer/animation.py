@@ -8,7 +8,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from bpy.app.handlers import persistent
 
 from .animation_runtime import DEFAULT_RUNTIME_ROOT, LocalMotionJob, read_runtime
-from . import animation_composition_local_ui, animation_preview_ui, equipment_ui
+from . import animation_composition_local_ui, animation_export_queue, animation_preview_ui, equipment_ui
 from .ui_constants import SIDEBAR_CATEGORY, UI_PAGE_ANIMATION, active_ui_page
 
 
@@ -107,6 +107,7 @@ def stop_animation_runtime():
     global _job, _job_window_manager, _export_window_manager
     from . import animation_export
     from .animation_worklist_collection import stop as stop_collection
+    animation_export_queue.stop()
     stop_collection()
     if bpy.app.timers.is_registered(_poll_action_export):
         bpy.app.timers.unregister(_poll_action_export)
@@ -325,7 +326,7 @@ def _link_idle(*, include_collection=True):
     from .animation_worklist_ui import scan_pending
     return (_job is None and animation_export.active_job() is None
             and not unity_export.export_running() and not scan_pending()
-            and (not include_collection or not collection_running()))
+            and (not include_collection or not (collection_running() or animation_export_queue.running())))
 
 
 class CHARACTERDESIGNER_OT_animation_link_import(Operator):
@@ -484,11 +485,18 @@ def _export_base_owner(context, rig, action):
         raise ValueError('Return to ordinary Controls animation editing before capturing the export base pose.')
     saved = getattr(context.scene, 'character_designer_animation_worklist', None)
     if saved is not None and (saved.workspace_path or saved.items):
+        from .animation_playback_range import active_record
+
         item = worklist.current(context)
-        if (item is None or item.rig is not rig or item.side != 'CUSTOM' or item.custom_action is not action
-                or getattr(item, 'composition_json', '')
-                or action.is_action_layered and (ad.action_slot is None or ad.action_slot.handle != item.custom_slot)):
-            raise ValueError('Select the active ordinary Custom entry; Source and separate input drafts are protected.')
+        slot = ad.action_slot_handle
+        record = active_record(context.scene)
+        controller = (record is not None and record.state == 'READY' and record.target == rig
+                      and record.controller_action == action and record.controller_slot == slot)
+        custom = (item is not None and item.rig is rig and item.side == 'CUSTOM' and item.custom_action is action
+                  and not getattr(item, 'composition_json', '')
+                  and (not action.is_action_layered or slot == item.custom_slot))
+        if not (controller or custom):
+            raise ValueError('Activate the editable controller or ordinary Custom Action. Source and separate inputs are protected.')
         if any(row.source_action is action for row in saved.items):
             raise ValueError('Source is read-only; capture an export base pose on its Custom copy.')
     from . import animation_physics as physics
@@ -549,7 +557,8 @@ class CHARACTERDESIGNER_OT_animation_export(Operator):
     @classmethod
     def poll(cls, context):
         from .animation_export import active_job
-        return equipment_ui._target(context) is not None and active_job() is None and _job is None
+        return (equipment_ui._target(context) is not None and active_job() is None and _job is None
+                and not animation_export_queue.running())
 
     def invoke(self, context, _event):
         rig = equipment_ui._target(context) if self.composition else _target(context)
@@ -636,6 +645,10 @@ class CHARACTERDESIGNER_OT_animation_export_cancel(Operator):
         global _export_window_manager
         from . import animation_export
         from . import animation_worklist_collection as collection
+        if animation_export_queue.running():
+            animation_export_queue.cancel()
+            _redraw()
+            return {'FINISHED'}
         if collection.running():
             collection.cancel(context)
             _redraw()
@@ -1087,41 +1100,43 @@ def _draw_local_fbx(layout, target, *, enabled=True):
     export.operator('character_designer.animation_export', text='Export Current Action as FBX…', icon='EXPORT')
 
 
-def _draw_animation_exports(layout, context, worklist, local, single):
-    from . import animation_worklist_ui as worklist_ui
+def _draw_quick_export(layout, context):
+    from .animation_original_inputs_ui import original_inputs_live
+    from .unity_animation import active_preview
 
-    if local is not None:
-        layout.operator('character_designer.animation_export', text='Export Composition as FBX…',
-                        icon='EXPORT').composition = True
-    elif worklist.workspace_path:
-        if worklist.items:
-            worklist_ui.draw_worklist_export(layout, context)
-        else:
-            from .unity_animation import active_preview
+    target = _target(context)
+    enabled = (target is not None and context.mode in {'OBJECT', 'POSE'}
+               and not original_inputs_live(context) and not active_preview(target)
+               and 'character_designer_rigging_session_v1' not in target
+               and 'character_designer_composition_session_v1' not in target
+               and not (target.animation_data and target.animation_data.use_tweak_mode)
+               and _link_idle())
+    _draw_local_fbx(layout, target, enabled=enabled)
 
-            target = _target(context)
-            can_export = (target is not None and context.mode in {'OBJECT', 'POSE'}
-                          and not worklist_ui.original_inputs_live(context)
-                          and not active_preview(target)
-                          and 'character_designer_rigging_session_v1' not in target
-                          and 'character_designer_composition_session_v1' not in target
-                          and not (target.animation_data and target.animation_data.use_tweak_mode)
-                          and _link_idle())
-            _draw_local_fbx(layout, target, enabled=can_export)
-    else:
-        target, send_key, action_enabled = single
-        if send_key is not None:
-            send = layout.row()
-            send.enabled = _link_idle()
-            send.context_string_set('cd_single_send_key', send_key)
-            send.operator('character_designer.animation_link_sync', text='Send to Unity', icon='EXPORT')
-        _draw_local_fbx(layout, target, enabled=action_enabled)
+
+def _draw_single_export_review(layout, context):
+    from .animation_link import ACTION_KEY, get_link
+
+    target = _target(context)
+    if target is None:
+        return
+    try:
+        link, bound = get_link(target), target.get(ACTION_KEY)
+        if not _linked_send_ready(context, target, link, bound):
+            return
+    except (ReferenceError, ValueError):
+        return
+    row = layout.row()
+    row.enabled = _link_idle()
+    row.context_string_set('cd_single_send_key', _linked_send_key(target, link, bound))
+    row.operator('character_designer.animation_link_sync', text='Send to Unity for Review', icon='EXPORT')
 
 
 def draw_unity_animation_exports(layout, context):
     from . import animation_worklist_ui as worklist_ui
     from .animation_export import active_job
     from .animation_worklist_collection import running as collection_running
+    from .animation_physics_ui import section
 
     worklist = context.scene.character_designer_animation_worklist
     preview = animation_preview_ui.session.status(context)
@@ -1129,16 +1144,29 @@ def draw_unity_animation_exports(layout, context):
         animation_preview_ui.draw(layout, context, preview)
     else:
         local = animation_composition_local_ui.composition.session(equipment_ui._target(context))
-        single = None
-        if local is None:
-            if worklist.workspace_path:
-                worklist_ui.draw_motion_picker(layout, context, include_edit_controls=False)
-            else:
-                single = _draw_single_action(layout, context)
-        _draw_animation_exports(layout, context, worklist, local, single)
+        animation_export_queue.draw(layout, context, enabled=local is None)
+        library = section(layout, 'character_designer_unity_animation_library', 'Animation Library',
+                          default_closed=True)
+        if library is not None:
+            library.enabled = local is None
+            animation_export_queue.draw_library(library, context)
+            animation_export_queue.draw_add(library, context)
+            if not worklist.workspace_path:
+                _draw_single_export_review(library, context)
+        if local is not None:
+            layout.operator('character_designer.animation_export', text='Export Composition as FBX…',
+                            icon='EXPORT').composition = True
+        _draw_quick_export(layout, context)
+        if worklist.workspace_path and worklist.items:
+            linked = section(layout, 'character_designer_unity_animation_link_review', 'Linked Revisions',
+                             icon='LINKED', default_closed=True)
+            if linked is not None:
+                linked.enabled = local is None
+                worklist_ui.draw_worklist_export(linked, context)
         worklist_ui.draw_worklist_editing_files(layout, context)
     job = active_job()
-    if job and not (job.get('composition_job') or collection_running() or worklist_ui.scan_pending()):
+    if job and not (job.get('composition_job') or collection_running() or worklist_ui.scan_pending()
+                    or animation_export_queue.running()):
         layout.operator('character_designer.animation_export_cancel', icon='CANCEL')
 
 
@@ -1236,9 +1264,6 @@ class CHARACTERDESIGNER_PT_animation(Panel):
         from . import animation_original_inputs_ui as original_inputs
         from .animation_physics_ui import draw as draw_physics, section, wrapped_label
 
-        input_rig = original_inputs._rig(context)
-        retained_inputs = original_inputs.has_original_inputs(input_rig)
-        input_layout = layout if retained_inputs else None
         page = section(layout, "character_designer_animation_animations", "Animations", icon="ACTION")
         if page is not None:
             from . import animation_worklist_ui as worklist_ui
@@ -1247,7 +1272,8 @@ class CHARACTERDESIGNER_PT_animation(Panel):
             from .control_pose_capture import draw as draw_pose_capture
             worklist = context.scene.character_designer_animation_worklist
             preview = animation_preview_ui.session.status(context)
-            local = animation_composition_local_ui.composition.session(equipment_ui._target(context))
+            rig = equipment_ui._target(context)
+            local = animation_composition_local_ui.composition.session(rig)
             motions = page.column()
             motions.enabled = preview is None and local is None
             draw_pose_capture(motions, context)
@@ -1255,18 +1281,26 @@ class CHARACTERDESIGNER_PT_animation(Panel):
             if not worklist.workspace_path:
                 _draw_single_action(motions, context)
             job = active_job()
-            if job and not (job.get('composition_job') or collection_running() or worklist_ui.scan_pending()):
+            if job and not (job.get('composition_job') or collection_running() or worklist_ui.scan_pending()
+                            or animation_export_queue.running()):
                 page.operator('character_designer.animation_export_cancel', icon='CANCEL')
             settings = _settings(context)
             if not worklist.workspace_path and settings.status:
-                if settings.has_error or worklist.show_advanced:
-                    wrapped_label(page, context, settings.status, icon='ERROR' if settings.has_error else 'INFO')
+                if settings.has_error:
+                    wrapped_label(page, context, settings.status, icon='ERROR')
                 elif settings.status.startswith('Synced '):
                     wrapped_label(page, context, 'Last send: preview the candidate in Unity.', icon='CHECKMARK')
                     if '. Omitted: ' in settings.status:
                         wrapped_label(page, context, 'Omitted: ' + settings.status.split('. Omitted: ', 1)[1])
             _draw_pose_resets(motions, context)
             animation_preview_ui.draw(page, context, preview)
+            if rig is not None:
+                upper = section(page, 'character_designer_animation_upper_body', 'Upper-Body Composition',
+                                icon='NLA', default_closed=local is None)
+                if upper is not None:
+                    upper.enabled = preview is None
+                    equipment_ui.draw_equip(upper, rig)
+                    animation_composition_local_ui.draw_composition(upper, context)
             imports = section(page, "character_designer_animation_unity", "Import Animations",
                               icon="IMPORT", default_closed=True)
             if imports is not None:
@@ -1283,23 +1317,16 @@ class CHARACTERDESIGNER_PT_animation(Panel):
                     _draw_local_motion(tools, context)
             elif not worklist.workspace_path and _job is not None:
                 _draw_local_motion(page, context)
-            recovery = page.column()
-            recovery.enabled = preview is None
-            show_original_inputs_entry = (input_rig is not None and not retained_inputs and preview is None
-                                          and bool(worklist.workspace_path))
-            worklist_ui.draw_worklist_recovery(
-                recovery, context, show_original_inputs_entry=show_original_inputs_entry)
-            if show_original_inputs_entry and worklist.show_advanced:
-                input_layout = page
         draw_physics(layout, context)
-        if input_layout is not None:
-            original = section(input_layout, "character_designer_animation_original_inputs",
+        if original_inputs.has_original_inputs(original_inputs._rig(context)):
+            original = section(layout, "character_designer_animation_original_inputs",
                                "Original Rigging Inputs", icon="ARMATURE_DATA", default_closed=True)
             if original is not None:
                 original_inputs.draw_original_inputs(original, context)
 
 
 ANIMATION_CLASSES = (
+    *animation_export_queue.CLASSES,
     *animation_composition_local_ui.LOCAL_COMPOSITION_CLASSES,
     animation_preview_ui.CHARACTERDESIGNER_OT_clean_animation_data,
     animation_preview_ui.CHARACTERDESIGNER_OT_hide_unused_scale,

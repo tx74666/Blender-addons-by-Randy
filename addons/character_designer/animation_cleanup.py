@@ -9,11 +9,17 @@ from .control_pose_offset import _bag, _curve_name
 from .animation_worklist_fingerprint import CLEAN_DEFAULTS as DEFAULTS
 
 
+# Controller matrix decomposition leaves millionth-scale residuals around 1.
+_SCALE_ROUNDING = 3.e-6
+_DEFAULT_PROPS = {'location', 'scale', 'scale.x', 'scale.y', 'scale.z'}
+
+
 def _stored(action):
     record = json.loads(action.get(DEFAULTS, '{}'))
     if not isinstance(record, dict) or any(
             not isinstance(groups, dict) or any(
-                not isinstance(props, list) or not all(p in ('location', 'scale') for p in props)
+                    not isinstance(props, list)
+                    or not all(isinstance(p, str) and p in _DEFAULT_PROPS for p in props)
                 for props in groups.values()) for groups in record.values()):
         raise ValueError('Invalid cleaned transform data on ' + action.name)
     return record
@@ -37,9 +43,10 @@ def missing_defaults(rig, action, handle, curves=None):
         bone = rig.pose.bones.get(name)
         if bone is None:
             continue
-        for prop in props:
+        for entry in props:
+            prop, _, axis = entry.partition('.')
             path = bone.path_from_id(prop)
-            for index in range(3):
+            for index in ('xyz'.index(axis),) if axis else range(3):
                 if (path, index) not in occupied:
                     result[path, index] = 1.0 if prop == 'scale' else 0.0
     return result
@@ -78,6 +85,11 @@ def _flat(curve, default, *, tolerance=0.):
     return True
 
 
+def _scale_tolerance(curve):
+    # A linear extrapolation with even tiny slope can exceed the key envelope.
+    return _SCALE_ROUNDING if curve.extrapolation == 'CONSTANT' else 0.
+
+
 def hide_unused_scale(rig, action, handle, *, bone_names=None):
     """Hide constant, unused scale axes in the Graph Editor. Preserve curve evaluation."""
     names = set(bone_names) if bone_names is not None else None
@@ -95,22 +107,26 @@ def hide_unused_scale(rig, action, handle, *, bone_names=None):
         if (bone is None or not 0 <= axis < 3 or (names is not None and name not in names)
                 or (curve.data_path, axis) in driven or not curve.keyframe_points):
             continue
-        locked = bone.lock_scale[axis]
-        default = curve.keyframe_points[0].co.y if locked else 1.
-        # Ignore tiny export rounding for display only. An unlocked axis with
-        # a non-neutral value or any meaningful motion stays visible.
-        tolerance = 1.e-6 if not locked and curve.extrapolation == 'CONSTANT' else 0.
-        if _flat(curve, default, tolerance=tolerance):
+        tolerance = _scale_tolerance(curve)
+        if (_flat(curve, 1., tolerance=tolerance) or (bone.lock_scale[axis]
+                and _flat(curve, curve.keyframe_points[0].co.y, tolerance=tolerance))):
             curve.hide = True
             hidden += 1
     return hidden
 
 
 def clean(rig, action, handle, *, published=False):
-    """Remove complete neutral XYZ groups only. Keep original clip time bounds."""
+    """Remove neutral Scale axes and connected Location groups. Keep clip time bounds."""
+    from .bone_collections import body_collection
+
     curves = export._curves(action, handle)
     bag = _bag(action, handle)
-    driven = {c.data_path for c in rig.animation_data.drivers} if rig.animation_data else set()
+    # Secondary solver inputs, including Dress, can amplify tiny scale changes.
+    # Only the managed public Body controls get the rounding allowance.
+    body = body_collection(rig)
+    rounded = {bone.name for bone in body.bones if not bone.use_deform} if body else set()
+    driven = {(c.data_path, c.array_index) for c in rig.animation_data.drivers} if rig.animation_data else set()
+    driven_paths = {path for path, _ in driven}
     groups = defaultdict(list)
     for curve in curves:
         info = _curve_name(curve)
@@ -121,10 +137,19 @@ def clean(rig, action, handle, *, published=False):
         pb = rig.pose.bones.get(name)
         if pb is None or (prop == 'location' and not pb.bone.use_connect):
             continue
-        default = 1.0 if prop == 'scale' else 0.0
-        if (sorted(c.array_index for c in group) == [0, 1, 2]
-                and group[0].data_path not in driven and all(v == default for v in getattr(pb, prop))
-                and all(_flat(c, default) for c in group)):
+        if prop == 'scale':
+            removable = []
+            for curve in group:
+                axis = curve.array_index
+                tolerance = _scale_tolerance(curve) if name in rounded else 0.
+                if (0 <= axis < 3 and (curve.data_path, axis) not in driven
+                        and abs(pb.scale[axis] - 1.) <= tolerance and _flat(curve, 1., tolerance=tolerance)):
+                    removable.append(curve)
+            if removable:
+                candidates[name, prop] = removable
+        elif (sorted(c.array_index for c in group) == [0, 1, 2]
+                and group[0].data_path not in driven_paths
+                and all(v == 0. for v in pb.location) and all(_flat(c, 0.) for c in group)):
             candidates[name, prop] = group
     if not candidates:
         return dict(curves=0, keys=0)
@@ -149,11 +174,21 @@ def clean(rig, action, handle, *, published=False):
     for (name, prop), group in candidates.items():
         props = slot_defaults.setdefault(name, [])
         if prop not in props:
-            props.append(prop)
+            if prop == 'scale' and len(group) != 3:
+                for curve in group:
+                    axis_default = 'scale.' + 'xyz'[curve.array_index]
+                    if axis_default not in props:
+                        props.append(axis_default)
+            else:
+                props.append(prop)
         total += sum(len(c.keyframe_points) for c in group)
     encoded = json.dumps(record, sort_keys=True, separators=(',', ':'))
     if published:
-        _clean_published(action, bag, candidates, encoded)
+        ad = rig.animation_data
+        active = ad is not None and ad.action == action and ad.action_slot_handle == handle
+        scales = [(rig.pose.bones[name], c.array_index) for (name, prop), group in candidates.items()
+                  if active and prop == 'scale' for c in group]
+        _clean_published(action, bag, candidates, encoded, scales)
     else:
         # A failed worker discards its entire unpublished Action.
         action[DEFAULTS] = encoded
@@ -164,12 +199,13 @@ def clean(rig, action, handle, *, published=False):
     return dict(curves=len(removed), keys=total)
 
 
-def _clean_published(action, bag, candidates, encoded):
+def _clean_published(action, bag, candidates, encoded, scales):
     """Retain a native copy of each affected curve until the in-place edit commits."""
     import bpy
     old = action.get(DEFAULTS)
     backup = bpy.data.actions.new('.Animation Cleanup Recovery')
     copies = []
+    previous = [(bone, axis, bone.scale[axis]) for bone, axis in scales if bone.scale[axis] != 1.]
     try:
         slot = backup.slots.new('OBJECT', 'Recovery')
         store = backup.layers.new('Recovery').strips.new(type='KEYFRAME').channelbag(slot, ensure=True)
@@ -180,6 +216,8 @@ def _clean_published(action, bag, candidates, encoded):
         for curves in candidates.values():
             for curve in curves:
                 bag.fcurves.remove(curve)
+        for bone, axis, _ in previous:
+            bone.scale[axis] = 1.
         action.update_tag()
     except Exception:
         if old is not None:
@@ -190,6 +228,8 @@ def _clean_published(action, bag, candidates, encoded):
             if bag.fcurves.find(saved.data_path, index=saved.array_index) is None:
                 restored = bag.fcurves.new_from_fcurve(saved)
                 restored.group = group
+        for bone, axis, value in previous:
+            bone.scale[axis] = value
         action.update_tag()
         raise
     finally:

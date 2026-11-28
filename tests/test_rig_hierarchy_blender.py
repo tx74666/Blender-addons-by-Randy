@@ -15,7 +15,6 @@ from character_designer import (character_setup, bone_display, limb_ik, torso_ui
 def rig_children():
     """The reviewed visible organization, independent of tuple/draw internals."""
     return (
-        (character_setup.CHARACTERDESIGNER_PT_character_setup, 'Character & Bone Mapping', 0),
         (limb_ik.CHARACTERDESIGNER_PT_limb_ik, 'Body Controls', 10),
         (torso_ui.CHARACTERDESIGNER_PT_torso_controls, 'Back & Chest', 20),
         (finger_bones.CHARACTERDESIGNER_PT_fingers, 'Finger Controls', 30),
@@ -46,11 +45,15 @@ def test_structure():
     assert setup.bl_parent_id == main.bl_idname and setup.bl_order == 2
     assert setup.bl_label == 'Rig Setup' and 'HIDE_HEADER' not in getattr(setup, 'bl_options', set())
     assert cd.CLASSES.index(setup) == cd.CLASSES.index(main) + 1
+    mapping = character_setup.CHARACTERDESIGNER_PT_character_setup
+    assert mapping.bl_label == 'Character Setup'
+    assert mapping.bl_parent_id == main.bl_idname and mapping.bl_order == 0
+    assert 'DEFAULT_CLOSED' in mapping.bl_options
     assert bone_display.CHARACTERDESIGNER_PT_bone_display.bl_parent_id == main.bl_idname
     assert bone_display.CHARACTERDESIGNER_PT_bone_display.bl_order == 1
-    descendants = (limb_ik.CHARACTERDESIGNER_PT_limb_ik_target_rotation,
-                   limb_ik.CHARACTERDESIGNER_PT_limb_ik_control_visual,
+    descendants = (limb_ik.CHARACTERDESIGNER_PT_limb_ik_control_visual,
                    limb_ik.CHARACTERDESIGNER_PT_limb_ik_direct_preroll)
+    assert not hasattr(bpy.types, 'CHARACTERDESIGNER_PT_limb_ik_target_rotation')
     for panel, label, order in rig_children():
         assert panel.bl_parent_id == setup.bl_idname, panel.__name__
         assert (panel.bl_label, panel.bl_order) == (label, order), panel.__name__
@@ -59,7 +62,7 @@ def test_structure():
         assert panel.bl_parent_id == limb_ik.CHARACTERDESIGNER_PT_limb_ik.bl_idname
         assert cd.CLASSES.index(limb_ik.CHARACTERDESIGNER_PT_limb_ik) < cd.CLASSES.index(panel)
     # Prove native registered ownership too, rather than only class attributes.
-    for panel in (main, setup, *(row[0] for row in rig_children()), *descendants):
+    for panel in (main, mapping, setup, *(row[0] for row in rig_children()), *descendants):
         assert cd.CLASSES.count(panel) == 1
         assert bpy.types.Panel.bl_rna_get_subclass_py(panel.bl_rna.identifier, None) is panel
     assert 'set_rig_section' not in inspect.getsource(cd.CHARACTERDESIGNER_PT_main.draw)
@@ -86,7 +89,7 @@ def test_switches_and_common_scope():
         assert cd.CHARACTERDESIGNER_PT_rig_sections.poll(bpy.context)
         layout = Layout()
         cd.CHARACTERDESIGNER_PT_rig_sections.draw(SimpleNamespace(layout=layout), bpy.context)
-        assert layout.events[0] == ('label', 'Create and adjust character controls.')
+        assert not any(event[0] == 'label' for event in layout.events)
         assert [b.section for _, b in layout.buttons] == ['BODY', 'HAIR', 'SKIRT']
         assert [b.section for _, b in layout.buttons if b.depress] == [section]
     for page in ('MODELING', 'WEIGHT', 'HAIR', 'ANIMATION', 'MISCELLANEOUS'):

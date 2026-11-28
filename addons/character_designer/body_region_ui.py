@@ -3,7 +3,7 @@ import textwrap
 import bpy
 
 from bpy.props import EnumProperty
-from bpy.types import Operator, PropertyGroup
+from bpy.types import Menu, Operator, PropertyGroup
 
 
 REGION_ITEMS = (
@@ -19,6 +19,7 @@ REGION_ITEMS = (
     ('RIGHT_FOOT', 'Right Foot', 'Right foot controls only; keep the leg IK and Pole'),
 )
 _FOOT_SIDES = {'FEET': ('L', 'R'), 'LEFT_FOOT': ('L',), 'RIGHT_FOOT': ('R',)}
+_TAB_ITEMS = {'ARMS': REGION_ITEMS[3:6], 'LEGS': REGION_ITEMS[:3] + REGION_ITEMS[6:]}
 _REGION_LABELS = {item[0]: item[1] for item in REGION_ITEMS}
 _ERRORS = (ValueError, RuntimeError, KeyError, TypeError, ReferenceError)
 _STATUS_LABELS = {
@@ -56,6 +57,15 @@ def _state(rig, region):
 
 def _settings(context):
     return getattr(getattr(context, 'scene', None), 'character_designer_body_region', None)
+
+
+def _region_items(rig):
+    from .body_calibration import selected_part
+    return _TAB_ITEMS.get(selected_part(rig), ())
+
+
+def _visible_region(settings, items):
+    return settings.region if any(item[0] == settings.region for item in items) else items[0][0]
 
 
 def _ui_single_binding(rig, data):
@@ -96,6 +106,19 @@ class CharacterDesignerBodyRegionState(PropertyGroup):
         items=REGION_ITEMS,
         default='LEGS',
     )
+
+
+class CHARACTERDESIGNER_MT_body_regions(Menu):
+    bl_idname = 'CHARACTERDESIGNER_MT_body_regions'
+    bl_label = 'Body Part'
+
+    def draw(self, context):
+        settings = _settings(context)
+        rig = getattr(context, 'object', None)
+        if settings is None or getattr(rig, 'type', None) != 'ARMATURE':
+            return
+        for value, label, _description in _region_items(rig):
+            self.layout.prop_enum(settings, 'region', value, text=label)
 
 
 class CHARACTERDESIGNER_OT_body_region(Operator):
@@ -188,10 +211,12 @@ def draw(layout, context):
     rig = getattr(context, 'object', None)
     if settings is None or rig is None or getattr(rig, 'type', None) != 'ARMATURE':
         return
-    region = settings.region
+    items = _region_items(rig)
+    if not items:
+        return
+    region = _visible_region(settings, items)
     box = layout.box()
-    box.label(text='Body Part', icon='BONE_DATA')
-    box.prop(settings, 'region', text='Part')
+    box.menu(CHARACTERDESIGNER_MT_body_regions.bl_idname, text=_REGION_LABELS[region], icon='BONE_DATA')
     try:
         result = _state(rig, region)
     except _ERRORS as exc:
@@ -219,11 +244,16 @@ def draw_advanced(layout, context):
     """Optional teardown belongs in the existing Body Setup Advanced section."""
     settings = _settings(context)
     rig = getattr(context, 'object', None)
-    if (settings is None or rig is None or getattr(rig, 'type', None) != 'ARMATURE'
-            or settings.region in _FOOT_SIDES):
+    if settings is None or rig is None or getattr(rig, 'type', None) != 'ARMATURE':
+        return
+    items = _region_items(rig)
+    if not items:
+        return
+    region = _visible_region(settings, items)
+    if region in _FOOT_SIDES:
         return
     try:
-        if _state(rig, settings.region).get('status') != 'BOUND':
+        if _state(rig, region).get('status') != 'BOUND':
             return
     except _ERRORS:
         return
@@ -231,10 +261,10 @@ def draw_advanced(layout, context):
     row.enabled = _editable_rig(context)
     operator = row.operator('character_designer.body_region',
                             text='Release to Edit', icon='UNLINKED')
-    operator.region, operator.action = settings.region, 'RELEASE'
+    operator.region, operator.action = region, 'RELEASE'
     # Draw only a cheap saved-state hint. The click authenticates the complete
     # same-ID history and existing graph; this hint grants no editing authority.
-    if (settings.region == 'LEGS'
+    if (region == 'LEGS'
             and rig.get('character_designer_worklist_main_session_v1') is not None
             and 'character_designer_current_leg_rest_acceptance_v1' not in rig.data):
         row = layout.row()
@@ -243,6 +273,7 @@ def draw_advanced(layout, context):
 
 
 BODY_REGION_UI_CLASSES = (
+    CHARACTERDESIGNER_MT_body_regions,
     CharacterDesignerBodyRegionState,
     CHARACTERDESIGNER_OT_body_region,
     CHARACTERDESIGNER_OT_accept_edited_leg_rest,

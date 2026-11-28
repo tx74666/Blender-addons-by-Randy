@@ -27,7 +27,7 @@ package = importlib.import_module('character_designer')
 assert Path(package.__file__).resolve().parent == STAGE, 'Private package was not selected'
 sys.path.insert(0, str(REPOSITORY / 'tests'))
 from character_designer import hair_bones_rig as hair, hair_bones_binding as binding
-from character_designer import hair_strand_registry as registry
+from character_designer import hair_strand_browser as browser, hair_strand_registry as registry
 from character_designer import hair_replace_authority as authority, animation_worklist_target as target
 from character_designer import unity_export as exporter, unity_export_worker as worker
 from test_hair_motion_export_blender import fixture
@@ -107,6 +107,23 @@ def transported(directory):
     assert authority.REFS not in f.authority and target.REFS not in f.authority
 
 
+def current_character_selection(directory):
+    f = fixture(directory)
+    trim(f)
+    del f.authority[target.SESSION]
+    f.authority[target.CURRENT_BASE] = True
+    refused(lambda: browser.strict_snapshot(f.source), 'authority is incomplete')
+    snapshot = unchanged(lambda: browser.selection_snapshot(f.source))
+    assert snapshot['fingerprint']['selection_only'] is True
+    assert [row['bones'] for row in snapshot['rows']] == [
+        tuple(item['bones']) for item in f.registry['strands']]
+    assert unchanged(lambda: registry.read_for_model_export(f.source)) == f.registry
+    assert authority.REFS not in f.authority and target.REFS not in f.authority
+    name = f.registry['strands'][0]['bones'][0]
+    f.authority.data.bones[name][hair.OWNER_KEY] = 'foreign-owner'
+    refused(lambda: browser.selection_snapshot(f.source), 'ownership changed')
+
+
 def wrong_owner(directory):
     f = fixture(directory); trim(f)
     f.authority.data.bones[f.registry['strands'][0]['bones'][0]][hair.OWNER_KEY] = 'foreign-owner'
@@ -124,7 +141,18 @@ def changed_rest(directory):
 
 def changed_topology(directory):
     f = fixture(directory); trim(f)
-    f.source.data.edges.add(1)
+    import bmesh
+    mesh = f.source.data
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        start = next(iter(bm.verts))
+        end = next(vertex for vertex in bm.verts
+                   if vertex != start and bm.edges.get((start, vertex)) is None)
+        bm.edges.new((start, end))
+        bm.to_mesh(mesh)
+    finally:
+        bm.free()
     refused(lambda: registry.read_for_model_export(f.source))
 
 
@@ -173,7 +201,7 @@ def main():
               'pid': os.getpid(), 'blender_version': bpy.app.version_string,
               'stage': str(STAGE), 'cases': [],
               'scope': 'Tiny isolated generated native fixtures. Model export reader + worker snapshot proof only; no artist, Unity, deployment, release, evaluated deformation or recovery authority.'}
-    tests = (normal, transported, wrong_owner, changed_rest, changed_topology,
+    tests = (normal, transported, current_character_selection, wrong_owner, changed_rest, changed_topology,
              missing_group, invalid_mirror, snapshot_recheck, private_save_reopen)
     try:
         with tempfile.TemporaryDirectory(prefix='hair-model-export-reader-') as temporary:

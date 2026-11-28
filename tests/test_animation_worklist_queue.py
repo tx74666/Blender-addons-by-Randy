@@ -79,6 +79,24 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(batch.running.token, second.token)
         self.assertEqual(batch.succeeded_keys, ('walk',))
 
+    def test_explicit_export_mode_advances_after_a_failed_item(self):
+        batch = queue.SerialQueue(queue.SYNC,
+                                  [queue.QueueItem(key) for key in ('walk', 'turn', 'idle')],
+                                  continue_on_failure=True)
+        first = self.launch(batch)
+        batch.record_fingerprint(first.token, 'walk path')
+        batch.complete(first.token, success=True, published=True)
+        failed = self.launch(batch)
+        batch.complete(failed.token, success=False, message='Destination changed')
+        self.assertTrue(batch.busy)
+        self.assertEqual(batch.succeeded_keys, ('walk',))
+        last = self.launch(batch)
+        batch.record_fingerprint(last.token, 'idle path')
+        batch.complete(last.token, success=True, published=True)
+        self.assertEqual(batch.succeeded_keys, ('walk', 'idle'))
+        self.assertEqual([failure.key for failure in batch.failures], ['turn'])
+        self.assertEqual(batch.state, queue.FAILED)
+
     def test_start_proof_and_result_are_frozen_and_recorded_once(self):
         data = {'clip': {'slot': 5}}
         batch = queue.SerialQueue(queue.SYNC, [queue.QueueItem('slot', data)])

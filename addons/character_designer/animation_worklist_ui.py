@@ -705,7 +705,6 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
     model_sha256: StringProperty(options={'HIDDEN'})
     rig: PointerProperty(type=bpy.types.Object, poll=_armature)
     show_catalog: BoolProperty(name='Clip Browser', default=True)
-    show_advanced: BoolProperty(name='Advanced', default=False, options={'SKIP_SAVE'})
     convert_imported_to_controls: BoolProperty(name='Convert to Character Controls', default=True,
         description='Create a controller version when opening a motion, or keep editing its original bone animation when disabled')
     controller_auto_reduce: BoolProperty(name='Automatically Simplify Keys', default=True,
@@ -1577,6 +1576,8 @@ def draw_motion_picker(layout, context, *, include_edit_controls=True):
         layout.template_list('CHARACTERDESIGNER_UL_prepared_motions', 'prepared', settings, 'catalog',
                              settings, 'list_cursor', rows=5, maxrows=5)
     if include_edit_controls:
+        from . import animation_export_queue
+        animation_export_queue.draw_add(layout, context, starred_only=True)
         edit_scene.draw_mapping_options(layout, context)
         if getattr(context, 'mode', '') == 'POSE':
             from . import limb_ik_fk_pose_key
@@ -1795,12 +1796,9 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
     show_status = (settings.has_error or busy) and bool(settings.status)
     if not show_status and settings.status.startswith('Synced '):
         from .animation_physics_ui import wrapped_label
-        if settings.show_advanced:
-            wrapped_label(box, context, settings.status, icon='CHECKMARK')
-        else:
-            wrapped_label(box, context, 'Last send: preview the candidate in Unity.', icon='CHECKMARK')
-            if '. Omitted: ' in settings.status:
-                wrapped_label(box, context, 'Omitted: ' + settings.status.split('. Omitted: ', 1)[1])
+        wrapped_label(box, context, 'Last send: preview the candidate in Unity.', icon='CHECKMARK')
+        if '. Omitted: ' in settings.status:
+            wrapped_label(box, context, 'Omitted: ' + settings.status.split('. Omitted: ', 1)[1])
     if show_status:
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(settings.status, width=width)):
@@ -1816,37 +1814,6 @@ def draw_worklist(layout, context, *, include_original_inputs=True):
         width = max(24, int(getattr(context.region, 'width', 300) / (7 * (context.preferences.system.ui_scale or 1.0))) - 6)
         for index, line in enumerate(textwrap.wrap(selected.scan_reason, width=width)):
             box.label(text=line, icon=('ERROR' if selected.scan_state == 'BLOCKED' else 'INFO') if index == 0 else 'BLANK1')
-
-
-def draw_worklist_recovery(layout, context, *, show_original_inputs_entry=False):
-    settings = _state(context)
-    if settings is None or not settings.workspace_path:
-        return
-    retired = getattr(settings, 'retired_items', ())
-    rig = getattr(settings, 'rig', None)
-    can_restore = (rig is not None and hasattr(rig, 'get')
-                   and rig.get('character_designer_worklist_main_session_v1') is not None)
-    if not (retired or can_restore or show_original_inputs_entry):
-        return
-    layout.prop(settings, 'show_advanced', text='Editing & Recovery', emboss=False,
-                icon='TRIA_DOWN' if settings.show_advanced else 'TRIA_RIGHT')
-    if not settings.show_advanced:
-        return
-    box = layout.column()
-    box.enabled = not original_inputs_live(context)
-    if retired:
-        archive = box.box()
-        archive.label(text='Retired Animations (' + str(len(retired)) + ')', icon='FILE_BACKUP')
-        for item in retired:
-            row = archive.row(align=True)
-            row.label(text=item.name, icon='ACTION')
-            restore = row.operator('character_designer.worklist_restore_retired', text='Restore')
-            restore.item_id = item.item_id
-            discard = row.operator('character_designer.worklist_discard_retired', text='Discard', icon='TRASH')
-            discard.item_id = item.item_id
-    if can_restore:
-        box.operator('character_designer.worklist_restore_main_rig',
-                     text='Restore Main Rig', icon='LOOP_BACK')
 
 
 WORKLIST_CLASSES = (

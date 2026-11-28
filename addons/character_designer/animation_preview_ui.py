@@ -42,10 +42,15 @@ class CHARACTERDESIGNER_OT_clean_animation_data(bpy.types.Operator):
             session._ready(context, rig)
             session._writable_source(rig, action, handle)
             result = cleanup.clean(rig, action, handle, published=True)
+            hidden = cleanup.hide_unused_scale(rig, action, handle)
         except (RuntimeError, ValueError, ReferenceError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
-        self.report({'INFO'}, f"Removed {result['curves']:,} redundant curves and {result['keys']:,} keys")
+        _redraw_editors(context)
+        message = f"Removed {result['curves']:,} redundant curves and {result['keys']:,} keys"
+        if hidden:
+            message += f" · Hid {hidden:,} unused Scale curves"
+        self.report({'INFO'}, message)
         return {'FINISHED'}
 
 

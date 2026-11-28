@@ -623,7 +623,6 @@ class WorklistSyncUI(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
     def test_draw_has_sync_list_and_no_import_button_without_disk_or_backend_access(self):
-        self.state.show_advanced = True
         self.state.retired_items = [SimpleNamespace(item_id='retired-walk', name='Old Walk')]
         before = self.snapshot()
         layout = fixtures.Layout()
@@ -634,29 +633,14 @@ class WorklistSyncUI(unittest.TestCase):
                 patch.object(self.ui, '_reconcile', side_effect=AssertionError('Draw reconciled')):
             self.ui.draw_worklist(layout, self.context)
             self.ui.draw_worklist_unity(layout, self.context)
-            self.ui.draw_worklist_recovery(layout, self.context)
         buttons = [value for kind, value, _enabled in layout.records if kind == 'operator']
         self.assertIn(('character_designer.worklist_sync_list', 'Sync List'),
                       [(value[0], value[1]['text']) for value in buttons])
         self.assertFalse(any(value[0] == 'character_designer.worklist_add_ready'
                              or 'Import' in value[1]['text'] for value in buttons))
-        restore = [value for value in buttons if value[0] == 'character_designer.worklist_restore_retired']
-        self.assertEqual(len(restore), 1)
-        self.assertEqual((restore[0][1]['text'], restore[0][2].item_id), ('Restore', 'retired-walk'))
+        self.assertFalse(any(value[0] in {'character_designer.worklist_restore_retired',
+                                          'character_designer.worklist_discard_retired'} for value in buttons))
         self.assertEqual(self.snapshot(), before)
-
-    def test_retired_section_is_hidden_until_advanced_is_opened(self):
-        self.state.retired_items = [SimpleNamespace(item_id='retired-walk', name='Old Walk')]
-        for expanded in (False, True):
-            with self.subTest(expanded=expanded):
-                self.state.show_advanced = expanded
-                layout = fixtures.Layout()
-                self.ui.draw_worklist_recovery(layout, self.context)
-                labels = [value['text'] for kind, value, _enabled in layout.records if kind == 'label']
-                self.assertEqual('Retired Animations (1)' in labels, expanded)
-                restores = [value for kind, value, _enabled in layout.records
-                            if kind == 'operator' and value[0] == 'character_designer.worklist_restore_retired']
-                self.assertEqual(len(restores), int(expanded))
 
     def test_restore_uses_stable_retired_item_id_without_activation_or_rebind(self):
         operator = self.ui.CHARACTERDESIGNER_OT_worklist_restore_retired()

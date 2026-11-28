@@ -116,7 +116,7 @@ class CHARACTERDESIGNER_OT_open_neutral_motion(Operator):
 
 
 def draw(layout, context, *, list_count):
-    from . import animation_worklist_categories as categories
+    from . import animation_export_queue, animation_worklist_categories as categories
     if (categories.category_for(context.scene, ROW) != categories.current_category(context.scene)
             or not available(context.scene)):
         return False
@@ -136,5 +136,5 @@ def draw(layout, context, *, list_count):
     edit.enabled = context.mode in {'OBJECT', 'POSE'}
     edit.operator('character_designer.open_neutral_motion', text=ROW.name, icon='ACTION',
                   emboss=False, depress=selected)
-    status.label(text='Ready', icon='CHECKMARK')
+    animation_export_queue.draw_managed_star(status, context, ROW)
     return True

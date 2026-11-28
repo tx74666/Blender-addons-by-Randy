@@ -4006,7 +4006,8 @@ class CHARACTERDESIGNER_PT_spline_ik_setup(Panel):
 
     @classmethod
     def poll(cls, context):
-        return rig_page_active(context, "BODY")
+        from .body_calibration_hands import context_part
+        return rig_page_active(context, "BODY") and context_part(context) != 'FINGERS'
 
     def draw(self, context):
         layout = self.layout

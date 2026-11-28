@@ -172,18 +172,16 @@ def draw(layout, context):
     item = items.get(part, {})
     p = item.get('plan')
     issue = service.apply_readiness(context,rig,p['changes']) if not generated and p and not p['errors'] and not p['skipped'] else None
+    fingers = service.finger_setup_status(context, rig)
     names = {'UNSET':'Setup','READY':'Ready','CONFIRMED':'Confirmed','REVIEW':'Review','ERROR':'Check','SKIPPED':'Skipped'}
-    for which in service.PARTS:
-        row = layout.split(factor=.5, align=True)
-        row.prop_enum(s, 'part', which)
-        state = items[which]['state']
-        row.label(text='Pose' if which==part and issue and issue['code']=='POSE' else names[state],
-                  icon='CHECKBOX_HLT' if state=='CONFIRMED' else 'CHECKBOX_DEHLT')
-    row = layout.split(factor=.5, align=True)
-    row.prop_enum(s, 'part', 'FINGERS')
-    fingers = service.finger_setup_status(context,rig)
-    row.label(text=names[fingers['state']],
-              icon='CHECKBOX_HLT' if fingers['state']=='CONFIRMED' else 'CHECKBOX_DEHLT')
+    icons = {'UNSET': 'NONE', 'READY': 'RADIOBUT_ON', 'CONFIRMED': 'CHECKMARK',
+             'REVIEW': 'INFO', 'ERROR': 'ERROR', 'SKIPPED': 'X'}
+    tabs = layout.row(align=True)
+    for which, status in (*items.items(), ('FINGERS', fingers)):
+        tabs.prop_enum(s, 'part', which, icon=icons[status['state']])
+    active_status = (fingers if part == 'FINGERS' else item)['state']
+    layout.label(text='Pose' if issue and issue['code'] == 'POSE' else names[active_status],
+                 icon=icons[active_status])
     body_setup_ui.draw_actions(layout,context,
                               ready=service.generation_ready(context,rig,items=items,fingers=fingers))
     if generated:

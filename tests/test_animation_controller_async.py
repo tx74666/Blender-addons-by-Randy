@@ -112,9 +112,16 @@ class AsyncControllerEdit(unittest.TestCase):
         self.assertEqual(self.complete()['state'], 'READY')
         self.assertIs(self.target.animation_data.action, self.previous_action)
 
-    def test_convert_fk_replaces_the_working_action_without_creating_an_alternate(self):
+    def start_fk_conversion(self):
         self.context.window.scene = self.home
         self.home.render = SimpleNamespace(fps=30, fps_base=1.)
+        self.home.character_designer_animation_worklist.selected_motion_clip = self.row.clip_key
+        self.service._open_context = Mock(side_effect=lambda ctx, target: (ctx.scene.frame_current, target.manual_pose))
+        self.service._require_keyed_inputs = Mock()
+        self.context.screen = SimpleNamespace(is_animation_playing=False)
+        ad = self.target.animation_data
+        ad.use_tweak_mode = False
+        ad.use_nla, ad.action_blend_type, ad.action_influence = False, 'REPLACE', 1.
         fk = fixtures.Action('My edited FK')
         fk.get = {'character_designer_controller_representation': 'FK'}.get
         fk.data['artist'] = 44
@@ -127,7 +134,11 @@ class AsyncControllerEdit(unittest.TestCase):
         self.service._poll_pending()
         self.worker.begin.assert_called_once_with(self.context, self.target, fk, 5, self.target,
                                                  source_fps=30., daily_edit=False)
-        self.assertEqual(self.complete()['message'], 'Motion converted to IK.')
+        return fk, record
+
+    def test_convert_fk_replaces_working_edit_and_opens_verified_ik(self):
+        fk, record = self.start_fk_conversion()
+        self.assertEqual(self.complete()['state'], 'CONTROLLER')
         self.assertIs(record.controller_action, self.built.action)
         self.assertEqual(record.controller_slot, self.built.slot)
         self.assertIsNone(record.alternate_action)
@@ -135,12 +146,29 @@ class AsyncControllerEdit(unittest.TestCase):
         self.assertEqual(fk.data['artist'], 44)
         self.browser.classify_action.assert_called_with(fk, self.target, role='ARCHIVED',
                                                        label=self.row.name, clip_id=self.row.work_item_id)
-        self.assertIs(self.target.animation_data.action, self.previous_action)
+        self.assertIs(self.target.animation_data.action, self.built.action)
         self.assertFalse(self.service._needs_full_ik(record))
+
+    def test_convert_fk_leaves_newly_edited_pose_and_previous_action_open(self):
+        _fk, record = self.start_fk_conversion()
+        self.target.manual_pose = 'New edits while converting'
+        self.assertEqual(self.complete()['state'], 'READY')
+        self.assertIs(record.controller_action, self.built.action)
+        self.assertIs(self.target.animation_data.action, self.previous_action)
+        self.assertEqual(self.target.manual_pose, 'New edits while converting')
+
+    def test_convert_fk_leaves_existing_unkeyed_edits_open(self):
+        _fk, record = self.start_fk_conversion()
+        self.service._require_keyed_inputs.side_effect = ValueError('Unkeyed control change')
+        self.assertEqual(self.complete()['state'], 'READY')
+        self.assertIs(record.controller_action, self.built.action)
+        self.assertIs(self.target.animation_data.action, self.previous_action)
+        self.assertIn('Unkeyed control change', self.home.character_designer_animation_worklist.status)
 
     def test_switching_to_another_draft_before_full_ik_publication_keeps_edits(self):
         self.context.window.scene = self.home
         self.home.render = SimpleNamespace(fps=30, fps_base=1.)
+        self.service._open_context = Mock()
         fk = fixtures.Action('FK')
         fk.get = {'character_designer_controller_representation': 'FK'}.get
         record = self.service._record(self.home, self.row)

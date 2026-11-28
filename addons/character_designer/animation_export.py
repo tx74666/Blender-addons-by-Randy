@@ -64,7 +64,7 @@ def _freeze_rigging_export(rig, action, value, session):
 
 
 def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
-                 export_rig_name=None, rigging_export=None, link_identity=None):
+                 export_rig_name=None, rigging_export=None, link_identity=None, action_slot=None):
     """Export the independent base, alongside explicitly owned Target inputs."""
     session = None
     if rig is not None and 'character_designer_rigging_session_v1' in rig:
@@ -75,6 +75,8 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
     frozen = (_freeze_rigging_export(rig, action, rigging_export, session)
               if rigging_export is not None else None)
     if frozen is not None:
+        if action_slot is not None and action_slot != session['base_slot']:
+            raise AnimationExportError('The requested Action slot differs from the captured Rigging base.')
         from .unity_animation import native_action_frame_rate
         rate = native_action_frame_rate(action)
         capture = session['capture']
@@ -91,7 +93,7 @@ def begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop
     with boundary:
         return _begin_export(context, rig, action, filepath, frame_start=frame_start, frame_end=frame_end,
             loop=loop, sample_rate=sample_rate, export_rig_name=export_rig_name, rigging_export=frozen,
-            link_identity=link_identity)
+            link_identity=link_identity, action_slot=action_slot)
 
 
 def begin_composition_export(context, rig, filepath, *, frame_start, frame_end, loop=False, sample_rate=None):
@@ -286,7 +288,8 @@ it is neither an arbitrary-external-target exception nor a determinism claim.
 
 
 def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loop=False, sample_rate=None,
-                  export_rig_name=None, rigging_export=None, link_identity=None, composition_tracks=None):
+                  export_rig_name=None, rigging_export=None, link_identity=None, composition_tracks=None,
+                  action_slot=None):
     global _ACTIVE_JOB
     from . import unity_export
     target_route = _target_route({} if link_identity is None else link_identity)
@@ -298,7 +301,15 @@ def _begin_export(context, rig, action, filepath, *, frame_start, frame_end, loo
         raise AnimationExportError('Leave Edit Mode and NLA Tweak Mode before exporting an Action.')
     if action is None or action.library:
         raise AnimationExportError('Choose a local editable Action.')
-    slot = _slot(rig, action) if composition_tracks is None else composition_tracks[0][2]
+    if composition_tracks is not None:
+        slot = composition_tracks[0][2]
+    elif action_slot is None:
+        slot = _slot(rig, action)
+    else:
+        if type(action_slot) is not int or not any(
+                slot.handle == action_slot and slot.target_id_type == 'OBJECT' for slot in action.slots):
+            raise AnimationExportError('The queued Object slot is no longer available.')
+        slot = action_slot
     frame_fps, frame_fps_base = (_action_frame_clock(context.scene, action) if composition_tracks is None
                                  else (context.scene.render.fps, context.scene.render.fps_base))
     from . import dress_export_guard

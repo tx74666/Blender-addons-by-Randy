@@ -149,6 +149,10 @@ class WorklistUI(unittest.TestCase):
         pose_capture.draw = Mock()
         limb_pose_key = ModuleType(package_name + '.limb_ik_fk_pose_key')
         limb_pose_key.draw = Mock()
+        self.export_queue = ModuleType(package_name + '.animation_export_queue')
+        self.export_queue.draw_add = Mock()
+        self.export_queue.draw_managed_star = Mock(
+            side_effect=lambda layout, _context, _item: layout.label(text='', icon='CHECKMARK'))
         # Composition has its own renderer/session fixture. Keep these tests
         # on the actual Worklist drawing, operators and callback guards.
         composition_ui = ModuleType(package_name + '.animation_composition_ui')
@@ -162,6 +166,7 @@ class WorklistUI(unittest.TestCase):
             self.collection.__name__: self.collection,
             pose_capture.__name__: pose_capture,
             limb_pose_key.__name__: limb_pose_key,
+            self.export_queue.__name__: self.export_queue,
             composition_ui.__name__: composition_ui, composition.__name__: composition,
         })
         modules.start()
@@ -287,7 +292,6 @@ class WorklistUI(unittest.TestCase):
     def base_pose_buttons(self):
         layout = Layout()
         self.ui.draw_worklist(layout, self.context)
-        self.ui.draw_worklist_recovery(layout, self.context)
         return {value[1]['text']: value[2] for kind, value, _enabled in layout.records
                 if kind == 'operator' and value[0] == 'character_designer.worklist_base_pose'}
 
@@ -705,8 +709,6 @@ class WorklistUI(unittest.TestCase):
                          {'NOT_SCANNED', 'CHANGED', 'UNCHANGED', 'UNKNOWN', 'BLOCKED'})
         for field in ('collection_status', 'scan_completed'):
             self.assertIn('SKIP_SAVE', state[field]['options'])
-        self.assertIn('SKIP_SAVE', state['show_advanced']['options'])
-        self.assertFalse(state['show_advanced']['default'])
 
     def test_collection_operators_are_registered(self):
         for operator in (self.ui.CHARACTERDESIGNER_OT_worklist_add_ready,
@@ -945,7 +947,7 @@ class WorklistUI(unittest.TestCase):
                               if kind == 'prop' and value[0] == 'sync_selected']
                 self.assertEqual(selections, [])
                 self.assertEqual([value for kind, value, _active in layout.records if kind == 'label'],
-                                 [{'text': 'Ready', 'icon': 'CHECKMARK'}])
+                                 [{'text': '', 'icon': 'CHECKMARK'}])
 
     def test_drawing_saved_scan_results_never_rescans_or_reads_fingerprint_inputs(self):
         self.state.items[0].scan_state = 'CHANGED'
@@ -1210,34 +1212,21 @@ class WorklistUI(unittest.TestCase):
                                           if kind == 'operator' and value[0] == 'character_designer.worklist_activate'],
                                          [action is local and not busy and mode in {'OBJECT', 'POSE'}])
 
-    def test_registration_is_searchable_without_a_sidebar_button(self):
-        for opened in (False, True):
-            with self.subTest(opened=opened):
-                self.state.show_advanced = opened
-                layout = Layout()
-                self.ui.draw_worklist(layout, self.context)
-                self.ui.draw_worklist_recovery(layout, self.context, show_original_inputs_entry=True)
-                buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
-                self.assertNotIn('character_designer.worklist_register_new', buttons)
-                self.assertNotIn('character_designer.open_source_motion', buttons)
-                self.assertNotIn('character_designer.worklist_package_dependencies', buttons)
-                self.assertNotIn('character_designer.worklist_locate_dependencies', buttons)
-                self.assertNotIn('character_designer.worklist_scan_changes', buttons)
-                self.assertNotIn('character_designer.worklist_sync', buttons)
-                self.assertNotIn('character_designer.worklist_sync_changed', buttons)
+    def test_registration_operator_remains_registered_without_a_sidebar_button(self):
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+        self.assertNotIn('character_designer.worklist_register_new', buttons)
+        self.assertNotIn('character_designer.open_source_motion', buttons)
+        self.assertNotIn('character_designer.worklist_package_dependencies', buttons)
+        self.assertNotIn('character_designer.worklist_locate_dependencies', buttons)
+        self.assertNotIn('character_designer.worklist_scan_changes', buttons)
+        self.assertNotIn('character_designer.worklist_sync', buttons)
+        self.assertNotIn('character_designer.worklist_sync_changed', buttons)
         registration = self.ui.CHARACTERDESIGNER_OT_worklist_register_new
         self.assertIn(registration, self.ui.WORKLIST_CLASSES)
         self.assertNotIn('INTERNAL', getattr(registration, 'bl_options', ()))
         self.assertEqual(registration.bl_label, 'Register Action in Worklist')
-
-    def test_empty_recovery_fold_is_hidden_but_original_inputs_can_still_use_it(self):
-        layout = Layout()
-        self.ui.draw_worklist_recovery(layout, self.context)
-        self.assertEqual(layout.records, [])
-        self.ui.draw_worklist_recovery(layout, self.context, show_original_inputs_entry=True)
-        [fold] = [value for kind, value, _enabled in layout.records if kind == 'prop']
-        self.assertEqual(fold[0], 'show_advanced')
-        self.assertEqual(fold[1]['text'], 'Editing & Recovery')
 
     def test_editing_files_share_one_closed_export_group_and_preserve_their_guards(self):
         for opened, idle, original in ((False, True, False), (True, True, False),
@@ -1742,7 +1731,7 @@ class WorklistUI(unittest.TestCase):
                          ['Edit Animations'])
         self.assertIn('existing controllers', operator.bl_description)
 
-    def test_adopted_main_rig_exposes_persistent_restore_button_only_in_advanced(self):
+    def test_adopted_main_rig_keeps_scripted_restore_without_a_panel_button(self):
         main = SimpleNamespace(name='CoshaRig', get=lambda key:
                                'saved record' if key == 'character_designer_worklist_main_session_v1' else None)
         self.context.scene.character_designer_setup = SimpleNamespace(rig=main)
@@ -1753,15 +1742,11 @@ class WorklistUI(unittest.TestCase):
         self.assertTrue(operator.poll(self.context))
         self.assertEqual(operator.execute(self.context), {'FINISHED'})
         self.backend.restore_main_rig.assert_called_once_with(self.context)
-        for opened in (False, True):
-            with self.subTest(advanced=opened):
-                self.state.show_advanced = opened
-                layout = Layout()
-                self.ui.draw_worklist(layout, self.context)
-                self.ui.draw_worklist_recovery(layout, self.context)
-                buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
-                self.assertEqual('character_designer.worklist_restore_main_rig' in buttons, opened)
-                self.assertNotIn('character_designer.worklist_use_main_rig', buttons)
+        layout = Layout()
+        self.ui.draw_worklist(layout, self.context)
+        buttons = [value[0] for kind, value, _enabled in layout.records if kind == 'operator']
+        self.assertNotIn('character_designer.worklist_restore_main_rig', buttons)
+        self.assertNotIn('character_designer.worklist_use_main_rig', buttons)
 
     def test_connected_panel_keeps_cancel_and_uses_native_timeline_without_duplicate_controls(self):
         animation = self.load_animation()
@@ -1854,7 +1839,8 @@ class WorklistUI(unittest.TestCase):
                     settings.convert_imported_to_controls = fk
                     layout = Layout()
                     self.ui.edit_scene.draw_mapping_state(layout, self.context, self.state.items[0])
-                    self.assertEqual(layout.records, [('label', {'text': 'Ready', 'icon': 'CHECKMARK'}, True)])
+                    self.assertEqual(layout.records, [('label', {'text': '', 'icon': 'CHECKMARK'}, True)])
+                    self.export_queue.draw_managed_star.assert_called_with(layout, self.context, self.state.items[0])
                     self.assertIs(record.controller_action, action)
         service.prepare_motion.assert_not_called()
 
@@ -1995,7 +1981,7 @@ class WorklistUI(unittest.TestCase):
         with patch.object(self.ui.edit_scene, 'mapping_home', return_value=object()):
             layout = Layout()
             self.ui.edit_scene.draw_mapping_state(layout, self.context, self.state.items[0])
-        self.assertEqual(layout.records, [('label', {'text': 'Ready', 'icon': 'CHECKMARK'}, True)])
+        self.assertEqual(layout.records, [('label', {'text': '', 'icon': 'CHECKMARK'}, True)])
         service.pending.assert_not_called()
 
     def test_catalog_and_imported_rows_share_fixed_action_columns_without_import_label(self):

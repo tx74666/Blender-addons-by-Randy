@@ -166,15 +166,19 @@ def motion_row(layout, item):
     # The native UIList also copies the outer layout context to its row hit target.
     layout.context_string_set('cd_category_motion_key', row_key(item))
     row = layout.split(factor=0.66, align=True)
-    return row.row(align=True), row.row(align=True)
+    name, status = row.row(align=True), row.row(align=True)
+    status.alignment = 'RIGHT'
+    return name, status
 
 
 def draw_mapping_state(layout, context, row):
-    from . import animation_controller_edit
+    from . import animation_controller_edit, animation_export_queue
     home = mapping_home(context.scene)
     if home is None or animation_controller_edit._authored_row(row):
-        available = getattr(row, 'custom_action', None) is not None
-        layout.label(text='Ready' if available else 'Source', icon='CHECKMARK' if available else 'ACTION')
+        if getattr(row, 'custom_action', None) is not None:
+            animation_export_queue.draw_managed_star(layout, context, row)
+        else:
+            layout.label(text='Source', icon='ACTION')
         return
     running = animation_controller_edit.pending(home, row.clip_key)
     if running is not None:
@@ -183,8 +187,10 @@ def draw_mapping_state(layout, context, row):
         return
     record = mapping_record(home, row)
     if record is not None and record.controller_action:
-        ready = record.state == 'READY'
-        layout.label(text='Ready' if ready else 'Review', icon='CHECKMARK' if ready else 'ERROR')
+        if record.state == 'READY':
+            animation_export_queue.draw_managed_star(layout, context, row)
+        else:
+            layout.label(text='Review', icon='ERROR')
         return
     if hasattr(row, 'source_action') and row.source_action is None:
         layout.label(text='Review', icon='ERROR')

@@ -2262,7 +2262,8 @@ class CHARACTERDESIGNER_PT_forearm_twist(Panel):
 
     @classmethod
     def poll(cls, context):
-        return rig_page_active(context, "BODY")
+        from .body_calibration_hands import context_part
+        return rig_page_active(context, "BODY") and context_part(context) == 'ARMS'
 
     def draw(self, context):
         layout = self.layout

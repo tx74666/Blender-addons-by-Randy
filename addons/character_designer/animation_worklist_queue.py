@@ -76,7 +76,7 @@ class SerialQueue:
     belongs to the adapter, which may record an explicit Unknown payload.
     """
 
-    def __init__(self, mode, items):
+    def __init__(self, mode, items, *, continue_on_failure=False):
         if mode not in (ADD, SYNC):
             raise ValueError('Animation queue mode must be ADD or SYNC.')
         copied = []
@@ -96,6 +96,8 @@ class SerialQueue:
         self._running = None
         self._fingerprint = _UNRECORDED
         self._successes = []
+        self._failures = []
+        self._continue_on_failure = continue_on_failure
         self._starting = False
         self._cancel_requested = False
         self.state = QUEUED if self._items else COMPLETED
@@ -122,6 +124,10 @@ class SerialQueue:
     @property
     def succeeded_keys(self):
         return tuple(item.key for item in self._successes)
+
+    @property
+    def failures(self):
+        return tuple(self._failures)
 
     @property
     def remaining_keys(self):
@@ -158,6 +164,7 @@ class SerialQueue:
                 # A synchronous callback may commit success and then raise.
                 # Keep that success, but do not launch more work after the error.
                 self.failure = QueueFailure(attempt.key, attempt.token, message)
+                self._failures.append(self.failure)
                 self.state = FAILED
         finally:
             self._starting = False
@@ -197,13 +204,24 @@ class SerialQueue:
                 self.cancel_message = str(message)
                 self.state = CANCELLED
             else:
-                self.state = COMPLETED if self._next == len(self._items) else RUNNING
+                self._set_progress_state()
         else:
             self.failure = QueueFailure(attempt.key, attempt.token, str(message))
-            self.state = FAILED
+            self._failures.append(self.failure)
+            if self._continue_on_failure:
+                self._next += 1
+                self._set_progress_state()
+            else:
+                self.state = FAILED
         self._running = None
         self._fingerprint = _UNRECORDED
         return True
+
+    def _set_progress_state(self):
+        if self._next < len(self._items):
+            self.state = RUNNING
+        else:
+            self.state = FAILED if self._failures else COMPLETED
 
     def cancel(self, cancel_running=None):
         """Stop further launches, asking the adapter to cancel an active worker.

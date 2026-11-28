@@ -109,7 +109,9 @@ class CHARACTERDESIGNER_PT_torso_controls(Panel):
     @classmethod
     def poll(cls, context):
         from . import body_original_mode, bone_display
-        return rig_page_active(context, 'BODY') and not body_original_mode.active(bone_display.character_rig(context))
+        from .body_calibration_hands import context_part
+        return (rig_page_active(context, 'BODY') and context_part(context) != 'FINGERS'
+                and not body_original_mode.active(bone_display.character_rig(context)))
 
     def draw(self, context):
         layout = self.layout

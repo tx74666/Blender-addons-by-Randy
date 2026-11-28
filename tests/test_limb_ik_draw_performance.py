@@ -19,7 +19,6 @@ FUNCTIONS = {
 }
 CLASSES = {
     'CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation': {'poll', 'execute'},
-    'CHARACTERDESIGNER_PT_limb_ik_target_rotation': {'poll', 'draw'},
 }
 
 
@@ -72,23 +71,17 @@ class PollTests(unittest.TestCase):
         self.context = SimpleNamespace(mode='POSE', body_page=True,
             object=SimpleNamespace(type='ARMATURE', data={'rig_id': 'rig'}),
             active_pose_bone=self.target)
-        self.panel = self.scope['CHARACTERDESIGNER_PT_limb_ik_target_rotation']
         self.operator = self.scope['CHARACTERDESIGNER_OT_limb_ik_reset_target_rotation']
 
-    def test_repeated_polls_do_not_validate_but_draw_and_execute_still_do(self):
+    def test_repeated_polls_do_not_validate_but_execute_still_does(self):
         for _ in range(20):
-            self.assertTrue(self.panel.poll(self.context))
             self.assertTrue(self.operator.poll(self.context))
         audit = self.scope['_validate_inventory']
         audit.assert_not_called()
-        # A corrupt rig can expose the control but cannot draw its editable
-        # fields or pass Reset's strict preflight.
-        self.panel().draw(self.context)
-        self.assertEqual(audit.call_count, 1)
         operator = self.operator()
         operator.report = Mock()
         self.assertEqual(operator.execute(self.context), {'CANCELLED'})
-        self.assertEqual(audit.call_count, 2)
+        self.assertEqual(audit.call_count, 1)
         self.assertFalse(hasattr(self.target, 'rotation_euler'))
 
     def test_polls_follow_current_selection_role_and_ownership(self):
@@ -100,14 +93,11 @@ class PollTests(unittest.TestCase):
         for role, selected, owner, expected in cases:
             self.target.bone.update(role=role, rig_id=owner)
             self.target.select = selected
-            self.assertEqual(self.panel.poll(self.context), expected)
             self.assertEqual(self.operator.poll(self.context), expected)
         self.context.active_pose_bone = None
-        self.assertFalse(self.panel.poll(self.context))
+        self.assertFalse(self.operator.poll(self.context))
         self.context.active_pose_bone = self.target
         self.target.bone.update(role='HAND_IK', rig_id='rig')
-        self.context.body_page = False
-        self.assertFalse(self.panel.poll(self.context))
         self.context.mode = 'OBJECT'
         self.assertFalse(self.operator.poll(self.context))
         self.scope['_validate_inventory'].assert_not_called()
