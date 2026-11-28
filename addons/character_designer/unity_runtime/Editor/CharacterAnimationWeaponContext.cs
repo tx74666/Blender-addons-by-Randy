@@ -15,6 +15,7 @@ namespace CharacterDesigner.Unity.Editor
     public static class CharacterAnimationWeaponContext
     {
         public const string Schema = "cdesigner.weapon-context/1";
+        public const string LibrarySnapshotSchema = "cdesigner.weapon-library-context/1";
 
         [Serializable] public sealed class Document
         {
@@ -76,6 +77,35 @@ namespace CharacterDesigner.Unity.Editor
         {
             RequireIdle();
             var document = Capture(weapon);
+            return Publish(document, outputFolder, () => VerifySources(document));
+        }
+
+        public static string ExportLibrarySnapshot(GameObject weapon, string outputFolder)
+        {
+            RequireIdle();
+            string path = RequirePrefab(weapon);
+            var document = new Document
+            {
+                schema = LibrarySnapshotSchema,
+                prefabGuid = AssetDatabase.AssetPathToGUID(path),
+                prefabAssetPath = path,
+                prefabFileSha256 = FileHash(path),
+                prefabMetaSha256 = FileHash(path + ".meta"),
+                prefabDependencyHash = DependencyHash(path),
+                spawnedPrefabRootMatrix = SpawnMatrix(weapon)
+            };
+            CaptureGeometry(weapon, document, null);
+            return Publish(document, outputFolder, () =>
+            {
+                Require(RequirePrefab(weapon) == path && AssetDatabase.AssetPathToGUID(path) == document.prefabGuid &&
+                    FileHash(path) == document.prefabFileSha256 && FileHash(path + ".meta") == document.prefabMetaSha256 &&
+                    DependencyHash(path) == document.prefabDependencyHash,
+                    "The saved weapon prefab changed while exporting its library geometry.");
+            });
+        }
+
+        static string Publish(Document document, string outputFolder, Action verifySources)
+        {
             Require(!string.IsNullOrWhiteSpace(outputFolder), "Choose an exchange folder for the actual weapon context.");
             string folder = Path.GetFullPath(outputFolder);
             Require(!Within(folder, Path.GetFullPath(Application.dataPath)), "Export weapon context outside Unity Assets.");
@@ -83,7 +113,7 @@ namespace CharacterDesigner.Unity.Editor
             string sha = Hash(bytes);
             // Every published context is immutable, including contexts already referenced by another B.
             string destination = Path.Combine(folder, "weapon-contexts", sha, "weapon_context.json");
-            VerifySources(document);
+            verifySources();
             Directory.CreateDirectory(Path.GetDirectoryName(destination));
             if (File.Exists(destination))
             {
@@ -99,7 +129,7 @@ namespace CharacterDesigner.Unity.Editor
                     ownsTemporary = true;
                     stream.Write(bytes, 0, bytes.Length);
                 }
-                VerifySources(document);
+                verifySources();
                 if (File.Exists(destination)) Require(FileHash(destination) == sha, "The weapon context destination was claimed by different content.");
                 else { File.Move(temporary, destination); ownsTemporary = false; }
                 return destination;
@@ -152,6 +182,13 @@ namespace CharacterDesigner.Unity.Editor
                 spawnedPrefabRootMatrix = SpawnMatrix(weapon)
             };
             ReadDependencies(prefabPath, modelPath, out document.sourceDependencies, out document.excludedDependencies);
+            CaptureGeometry(weapon, document, model);
+            VerifySources(document);
+            return document;
+        }
+
+        static void CaptureGeometry(GameObject weapon, Document document, GameObject model)
+        {
             var rootScale = weapon.transform.localScale;
             Require(MatrixValid(document.spawnedPrefabRootMatrix) && Mathf.Abs(rootScale.x * rootScale.y * rootScale.z) > 1e-12f,
                 "The actual weapon prefab has an invalid or singular root scale.");
@@ -166,15 +203,21 @@ namespace CharacterDesigner.Unity.Editor
                 string rendererPath = AnimationUtility.CalculateTransformPath(renderer.transform, weapon.transform);
                 if (!(renderer is MeshRenderer) && !(renderer is SkinnedMeshRenderer))
                 { nonMesh.Add(rendererPath + "|" + renderer.GetType().Name); continue; }
+                bool active = ActiveWithin(renderer.transform, weapon.transform);
+                if (model == null && (!renderer.enabled || !active)) continue;
                 Require(mesh != null && EditorUtility.IsPersistent(mesh) && !EditorUtility.IsDirty(mesh),
                     "The actual weapon has an unsaved or missing renderer mesh: " + rendererPath);
-                Require(AssetDatabase.TryGetGUIDAndLocalFileIdentifier(mesh, out string meshGuid, out long meshId) &&
-                    !string.IsNullOrEmpty(meshGuid) && meshId != 0 && File.Exists(AssetDatabase.GetAssetPath(mesh)),
-                    "The actual weapon mesh has no persistent source identity: " + rendererPath);
+                bool identified = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(mesh, out string meshGuid, out long meshId);
                 string meshPath = AssetDatabase.GetAssetPath(mesh);
-                string[] modelRendererPaths = ModelRendererPaths(model, mesh);
-                Require(meshGuid == document.modelGuid && meshPath == modelPath && modelRendererPaths.Length > 0,
-                    "Every actual weapon mesh must belong to the exact source FBX and one of its imported renderers: " + rendererPath);
+                string[] modelRendererPaths = Array.Empty<string>();
+                if (model != null)
+                {
+                    Require(identified && !string.IsNullOrEmpty(meshGuid) && meshId != 0 && File.Exists(meshPath),
+                        "The actual weapon mesh has no persistent source identity: " + rendererPath);
+                    modelRendererPaths = ModelRendererPaths(model, mesh);
+                    Require(meshGuid == document.modelGuid && meshPath == document.modelAssetPath && modelRendererPaths.Length > 0,
+                        "Every actual weapon mesh must belong to the exact source FBX and one of its imported renderers: " + rendererPath);
+                }
                 Matrix4x4 relative = weapon.transform.worldToLocalMatrix * renderer.transform.localToWorldMatrix;
                 Mesh readable = null, baked = null;
                 try
@@ -212,7 +255,6 @@ namespace CharacterDesigner.Unity.Editor
                         submeshes.Add(new SubmeshRecord { submesh = submesh, triangleStart = start / 3, triangleCount = (triangles.Count - start) / 3, sourceTopology = topology.ToString() });
                     }
                     Require(triangles.Count > 0, "The actual weapon mesh has no surface triangles.");
-                    bool active = ActiveWithin(renderer.transform, weapon.transform);
                     meshes.Add(new RendererRecord { rendererPath = rendererPath, rendererType = renderer.GetType().Name, meshName = mesh.name,
                         meshGuid = meshGuid, meshLocalId = meshId, meshAssetPath = meshPath, vertexCount = mesh.vertexCount,
                         enabled = renderer.enabled, activeInPrefab = active, meshLocalBounds = BoundsOf(mesh.bounds),
@@ -235,8 +277,6 @@ namespace CharacterDesigner.Unity.Editor
                 "The actual weapon has ambiguous duplicate renderer paths.");
             document.meshes = meshes.ToArray(); document.nonMeshRenderers = nonMesh.ToArray();
             document.prefabBounds = BoundsOf(prefabBounds); document.spawnedBounds = BoundsOf(spawnedBounds);
-            VerifySources(document);
-            return document;
         }
 
         static void VerifySources(Document document)

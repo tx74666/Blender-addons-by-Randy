@@ -71,6 +71,10 @@ class WristRotationUI(unittest.TestCase):
                 self.messages = getattr(self, 'messages', []) + [(kinds, message)]
 
         types.Operator = Operator
+        grab = type('GrabWrist', (Operator,), {'bl_idname': 'character_designer.grab_wrist'})
+        macro = type('NativeWristMove', (Operator,), {'bl_idname': 'character_designer.native_wrist_move'})
+        package.limb_ik_wrist_move = NS(CLASSES=(macro, grab), CHARACTERDESIGNER_OT_grab_wrist=grab,
+            CHARACTERDESIGNER_OT_native_wrist_move=macro, register=Mock(), unregister=Mock())
         self.bpy.types = types
         self.bpy.ops = NS(pose=NS(rot_clear=Mock()))
         self.bpy.utils = NS(register_class=Mock(side_effect=lambda cls: setattr(cls, 'is_registered', True)),
@@ -209,8 +213,10 @@ class WristRotationUI(unittest.TestCase):
         mixed = NS(reset_mixed_rotation=Mock())
         with patch.object(self.package, 'controller_transform_clear', mixed, create=True):
             self.assertTrue(self.operator.poll(self.context))
-            self.assertEqual(self.operator().execute(self.context), {'FINISHED'})
-            mixed.reset_mixed_rotation.assert_called_once_with(self.context, (self.hand,), (companion,))
+            operator = self.operator()
+            operator.reference = 'FOREARM'
+            self.assertEqual(operator.execute(self.context), {'FINISHED'})
+            mixed.reset_mixed_rotation.assert_called_once_with(self.context, (self.hand,), (companion,), follow_forearm=True)
             companion.id_data = ID(type='ARMATURE', data=ID())
             operator = self.operator()
             self.assertEqual(operator.execute(self.context), {'CANCELLED'})
@@ -264,7 +270,9 @@ class WristRotationUI(unittest.TestCase):
         owned = self.ui._KEYMAPS[0][1]
         self.assertEqual((owned.idname, owned.type, owned.value, owned.flags),
                          (self.operator.bl_idname, 'R', 'PRESS', {'alt': True, 'head': True}))
-        self.assertEqual([list(km.keymap_items) for km in maps], [[owned, *before[0]], *before[1:]])
+        grab = self.ui._KEYMAPS[1][1]
+        self.assertEqual((grab.idname, grab.type, grab.flags), ('character_designer.grab_wrist', 'G', {'head': True}))
+        self.assertEqual([list(km.keymap_items) for km in maps], [[grab, owned, *before[0]], *before[1:]])
         self.ui.unregister()
         self.ui.unregister()
         self.assertEqual([list(km.keymap_items) for km in maps], before)
@@ -302,7 +310,7 @@ class WristRotationUI(unittest.TestCase):
         self.ui.register()
         removed = 'character_designer.reset_selected_pose_chains'
         self.assertNotIn(removed, [cls.bl_idname for cls in self.ui.CLASSES])
-        self.assertEqual(self.addon_map.keymap_items.values, [self.ui._KEYMAPS[0][1], self.foreign])
+        self.assertEqual(self.addon_map.keymap_items.values, [self.ui._KEYMAPS[1][1], self.ui._KEYMAPS[0][1], self.foreign])
 
     def test_second_class_registration_fault_rolls_back_only_owned_new_class(self):
         def register(cls):

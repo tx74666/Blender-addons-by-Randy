@@ -70,7 +70,7 @@ def test_legacy_eight_ring_upgrade_rollback_and_idempotence():
     assert rig.data.get(visuals.NATIVE_DISPLAY_KEY) == marker
     assert set(bpy.data.objects.keys()) == objects and set(bpy.data.meshes.keys()) == meshes
     upgraded = visuals.build(bpy.context, rig)
-    assert len(upgraded['bindings']) == 10
+    assert len(upgraded['bindings']) == 12
     assert all(upgraded['bindings'][name] == entry for name, entry in old['bindings'].items())
     assert all(bpy.data.objects[entry['object']].as_pointer() == pointers[name]
                for name, entry in old['bindings'].items())
@@ -124,7 +124,7 @@ def test_rings_all_sides_native_joint_anchor_and_roundtrip():
         original_objects = set(bpy.data.objects.keys())
         original_meshes = set(bpy.data.meshes.keys())
         record = visuals.build(bpy.context, rig)
-        assert len(record['bindings']) == 10
+        assert len(record['bindings']) == 12
         assert visuals.apply(bpy.context, rig) == record
         assert set(rig.data.bones.keys()) == set(rest)
         visuals._verify_pose(rig, before)
@@ -133,28 +133,40 @@ def test_rings_all_sides_native_joint_anchor_and_roundtrip():
             obj = pb.custom_shape
             assert obj.get(visuals.OWNER_KEY) == visuals.OWNER_VALUE
             assert pb.bone.get(visuals.OWNER_KEY) != visuals.OWNER_VALUE
-            assert len(obj.data.vertices) == 32 and len(obj.data.edges) == 32 and not obj.data.polygons
-            assert all(abs(vertex.co.y) < 1e-8 for vertex in obj.data.vertices)
-            assert abs(max(vertex.co.x for vertex in obj.data.vertices) - 1.0) < 1e-6
-            assert abs(max(vertex.co.z for vertex in obj.data.vertices) - .819) < 1e-6
             assert pb.custom_shape_transform is None
-            assert tuple(pb.custom_shape_translation) == (0, 0, 0)
-            assert tuple(pb.custom_shape_rotation_euler) == (0, 0, 0)
-            radius_bone = (rig.pose.bones[entry['chain'][1]].bone
-                           if entry['kind'] == 'ARM' and name == entry['chain'][2] else pb.bone)
-            assert abs(pb.custom_shape_scale_xyz.x - radius_bone.length * visuals.RADIUS_FACTORS[entry['kind']]) < 1e-6
             assert before_displays[name]['custom_shape'] == ''
+            assert not obj.data.polygons
+            shape_kind = entry.get('shape_kind')
+            if shape_kind == 'FOOT':
+                generated, (vertices, edges) = visuals._plan_sole(
+                    rig, inventory['rigs'][entry['kind'], entry['side']])
+                assert entry['generated'] == generated
+                assert len(obj.data.vertices) == len(vertices) and len(obj.data.edges) == len(edges)
+                assert all((vertex.co - Vector(point)).length < 1e-6
+                           for vertex, point in zip(obj.data.vertices, vertices))
+            elif shape_kind == 'HAND':
+                assert len(obj.data.vertices) == 32
+            else:
+                assert len(obj.data.vertices) == 32 and len(obj.data.edges) == 32
+                assert all(abs(vertex.co.y) < 1e-8 for vertex in obj.data.vertices)
+                assert abs(max(vertex.co.x for vertex in obj.data.vertices) - 1.0) < 1e-6
+                assert abs(max(vertex.co.z for vertex in obj.data.vertices) - .819) < 1e-6
+                assert tuple(pb.custom_shape_translation) == (0, 0, 0)
+                assert tuple(pb.custom_shape_rotation_euler) == (0, 0, 0)
+                assert abs(pb.custom_shape_scale_xyz.x - pb.bone.length * visuals.RADIUS_FACTORS[entry['kind']]) < 1e-6
         for key, data in inventory['rigs'].items():
             target = rig.pose.bones[data['target'].name]
             target.location += Vector((.005, -.005, .005))
             target[limb_ik_fk.PROPERTY] = .5
         halfway = poses(rig)
-        for name in record['bindings']:
+        for name, entry in record['bindings'].items():
+            if entry.get('shape_kind'):
+                continue
             pb = rig.pose.bones[name]
             centroid = sum((vertex.co for vertex in pb.custom_shape.data.vertices), Vector()) / 32
             world_anchor = rig.matrix_world @ pb.matrix @ centroid
             assert (world_anchor - rig.matrix_world @ pb.head).length < 2e-6
-        assert visuals.remove(bpy.context, rig) == {'removed': 10}
+        assert visuals.remove(bpy.context, rig) == {'removed': 12}
         visuals._verify_pose(rig, halfway)
         assert displays(rig) == before_displays
         assert set(bpy.data.objects.keys()) == original_objects and set(bpy.data.meshes.keys()) == original_meshes
@@ -177,7 +189,7 @@ def test_artist_shapes_anchors_and_saved_empty_display_are_preserved():
     modified.custom_shape_wire_width = 3.5
     before = displays(rig)
     record = visuals.build(bpy.context, rig)
-    assert len(record['bindings']) == 8 and len(record['skipped']) == 2
+    assert len(record['bindings']) == 10 and len(record['skipped']) == 2
     assert rig.pose.bones[sources[0]].custom_shape == artist
     assert rig.pose.bones[sources[1]].custom_shape_transform.name == 'Hips'
     visuals.remove(bpy.context, rig)
@@ -301,6 +313,8 @@ def test_size_fit_rollback_and_save_reopen():
 
 
 if __name__ == '__main__':
+    import character_designer
+    character_designer.register()
     tests = (test_legacy_eight_ring_upgrade_rollback_and_idempotence,
              test_legacy_native_display_migration_guard_rollback_and_original_snapshot,
              test_rings_all_sides_native_joint_anchor_and_roundtrip,

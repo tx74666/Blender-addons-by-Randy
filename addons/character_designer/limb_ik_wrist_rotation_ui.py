@@ -4,6 +4,8 @@ import bpy
 from bpy.props import EnumProperty
 from bpy.types import Operator
 
+from . import limb_ik_wrist_move
+
 
 _KEYMAPS = []
 
@@ -42,12 +44,12 @@ def _owned_wrist(pose_bone):
 class CHARACTERDESIGNER_OT_limb_ik_clear_wrist_rotation(Operator):
     bl_idname = 'character_designer.limb_ik_clear_wrist_rotation'
     bl_label = 'Reset IK Wrist Rotation'
-    bl_description = 'Restore each IK wrist to its rest orientation in the chosen reference space. Pose Mirror includes both hands.'
+    bl_description = 'Restore managed wrists or foot controls in the chosen reference space'
     bl_options = {'REGISTER', 'UNDO'}
 
     reference: EnumProperty(
         name='Rotation Reference',
-        items=(('ARMATURE', 'Edit Pose', ''), ('FOREARM', 'Posed Limb', 'Use the posed forearm or shin')),
+        items=(('ARMATURE', 'Edit Pose', ''), ('FOREARM', 'Posed Limb', 'Follow the current forearm, shin or calibrated toe space')),
         default='ARMATURE', options={'SKIP_SAVE'})
 
     @classmethod
@@ -116,7 +118,8 @@ class CHARACTERDESIGNER_OT_limb_ik_clear_wrist_rotation(Operator):
             if len(selected) != len(wrists):
                 companions = tuple(pb for pb in selected if pb not in wrists)
                 from . import controller_transform_clear
-                result = controller_transform_clear.reset_mixed_rotation(context, wrists, companions)
+                result = controller_transform_clear.reset_mixed_rotation(
+                    context, wrists, companions, follow_forearm=self.reference == 'FOREARM')
             elif len(wrists) == 1:
                 result = _backend().reset_wrist_neutral(context, target=wrists[0], follow_forearm=self.reference == 'FOREARM')
             else:
@@ -152,7 +155,7 @@ class CHARACTERDESIGNER_OT_clear_body_transform_channel(Operator):
 
 
 CLASSES = (CHARACTERDESIGNER_OT_limb_ik_clear_wrist_rotation,
-           CHARACTERDESIGNER_OT_clear_body_transform_channel)
+           CHARACTERDESIGNER_OT_clear_body_transform_channel, *limb_ik_wrist_move.CLASSES)
 
 
 def _register_keymap():
@@ -170,6 +173,9 @@ def _register_keymap():
     item = km.keymap_items.new(CLASSES[0].bl_idname, 'R', 'PRESS', alt=True, head=True)
     item.properties.reference = 'FOREARM'
     _KEYMAPS.append((km, item))
+    item = km.keymap_items.new(limb_ik_wrist_move.CHARACTERDESIGNER_OT_grab_wrist.bl_idname,
+                              'G', 'PRESS', head=True)
+    _KEYMAPS.append((km, item))
     return True
 
 
@@ -183,20 +189,28 @@ def _remove_keymap():
     _KEYMAPS.clear()
 
 
+def _registered(cls):
+    return getattr(cls, 'is_registered', 'bl_rna' in cls.__dict__)
+
+
 def register():
     from . import natural_bind_mode
     added = []
     keymap_added = False
     try:
         for cls in CLASSES:
-            if not cls.is_registered:
+            if not _registered(cls):
                 bpy.utils.register_class(cls)
                 added.append(cls)
+        if limb_ik_wrist_move.CHARACTERDESIGNER_OT_native_wrist_move in added:
+            limb_ik_wrist_move.register()
         keymap_added = _register_keymap()
         natural_bind_mode.register()
     except Exception:
-        if keymap_added:
+        if keymap_added or added:
             _remove_keymap()
+        if limb_ik_wrist_move.CHARACTERDESIGNER_OT_native_wrist_move in added:
+            limb_ik_wrist_move.unregister()
         for cls in reversed(added):
             bpy.utils.unregister_class(cls)
         raise
@@ -206,6 +220,7 @@ def unregister():
     from . import natural_bind_mode
     natural_bind_mode.unregister()
     _remove_keymap()
+    limb_ik_wrist_move.unregister()
     for cls in reversed(CLASSES):
-        if cls.is_registered:
+        if _registered(cls):
             bpy.utils.unregister_class(cls)

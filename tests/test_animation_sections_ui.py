@@ -101,6 +101,13 @@ class AnimationSectionsTests(unittest.TestCase):
         package = ModuleType("_pose_reset_fixture")
         owned = ModuleType(package.__name__ + ".limb_ik_wrist_rotation_ui")
         owned._owned_wrist = lambda bone: bone.wrist
+        move = ModuleType(package.__name__ + ".limb_ik_wrist_move")
+        move.SETTING = 'character_designer_align_wrist_on_move'
+        move._selection = lambda context: tuple(context.selected_pose_bones)
+        source = ROOT / 'addons/character_designer/limb_ik_wrist_move.py'
+        draw = next(node for node in ast.parse(source.read_text(encoding='utf8')).body
+                    if isinstance(node, ast.FunctionDef) and node.name == 'draw')
+        exec(compile(ast.Module(body=[draw], type_ignores=[]), str(source), 'exec'), move.__dict__)
         package.natural_pose_clear = SimpleNamespace(body_selected=lambda context: context.whole)
         scope = {"__package__": package.__name__}
         panel_draw(scope)
@@ -111,20 +118,23 @@ class AnimationSectionsTests(unittest.TestCase):
         cases = [
             ("OBJECT", [wrist], False, []),
             ("POSE", [], False, []),
-            ("POSE", [wrist], False, ["Match Wrist to Edit Pose"]),
-            ("POSE", [wrist, wrist], False, ["Match Wrists to Edit Pose"]),
+            ("POSE", [wrist], False, ['Auto Align', 'Align Wrist']),
+            ("POSE", [wrist, wrist], False, ['Auto Align', 'Align Wrists']),
             ("POSE", [wrist, pole], False, []),
             ("POSE", [wrist, foreign_wrist], False, []),
             ("POSE", [pole] * 9, False, []),
             ("POSE", [pole] * 9, True, []),
         ]
-        with patch.dict(sys.modules, {package.__name__: package, owned.__name__: owned}):
+        with patch.dict(sys.modules, {package.__name__: package, owned.__name__: owned, move.__name__: move}):
             for mode, selection, whole, expected in cases:
                 with self.subTest(mode=mode, selection=selection, whole=whole):
                     context = SimpleNamespace(mode=mode, object=rig, selected_pose_bones=selection, whole=whole)
-                    layout = PanelLayout()
+                    context.window_manager = SimpleNamespace(**{move.SETTING: True})
+                    layout = NativeActionLayout()
                     scope["_draw_pose_resets"](layout, context)
-                    self.assertEqual([event[1] for event in layout.events], expected)
+                    self.assertEqual([event[3].get('text', event[1]) for event in layout.events], expected)
+                    if expected:
+                        self.assertEqual(layout.events[-1][4].reference, 'FOREARM')
 
     def test_native_folded_physics_does_not_read_backend_state(self):
         layout = PanelLayout(opened={"character_designer_animation_physics": False})
@@ -181,6 +191,11 @@ class AnimationSectionsTests(unittest.TestCase):
         original.draw_original_inputs = Mock()
         original._rig = Mock(return_value=object())
         original.has_original_inputs = Mock(return_value=retained_inputs)
+        original.original_inputs_live = Mock(return_value=False)
+        composition = ModuleType(package + ".animation_composition")
+        composition.active = Mock(return_value=False)
+        composition_ui = ModuleType(package + ".animation_composition_ui")
+        composition_ui.draw_composition = Mock()
         pose = ModuleType(package + ".control_pose_capture")
         pose.draw = Mock()
         worklist = ModuleType(package + ".animation_worklist_ui")
@@ -195,9 +210,11 @@ class AnimationSectionsTests(unittest.TestCase):
         scope = {"__package__": package, "_settings": lambda context: SimpleNamespace(),
                  "_main_rig": Mock(side_effect=AssertionError("Connected worklist entered legacy UI"))}
         panel_draw(scope)
-        self.context.scene = SimpleNamespace(character_designer_animation_worklist=SimpleNamespace(workspace_path="linked"))
+        self.context.scene = SimpleNamespace(character_designer_animation_worklist=SimpleNamespace(
+            workspace_path="linked", rig=None))
         layout = PanelLayout(opened=opened)
-        modules = (ModuleType(package), physics, original, pose, worklist, collection, export)
+        modules = (ModuleType(package), physics, original, pose, worklist, collection, export,
+                   composition, composition_ui)
         with patch.dict(sys.modules, {module.__name__: module for module in modules}):
             scope["draw"](SimpleNamespace(layout=layout), self.context)
         return layout, physics, original, pose, worklist, export
@@ -229,6 +246,15 @@ class AnimationSectionsTests(unittest.TestCase):
         self.assertNotIn("Editing & Recovery", repr(layout.events))
         self.assertNotIn("character_designer_animation_original_inputs", repr(layout.events))
         original.draw_original_inputs.assert_not_called()
+
+    def test_animation_composition_can_open_with_animations_closed(self):
+        layout, _, _, _, worklist, export = self.draw_animation({
+            "character_designer_animation_animations": False,
+            "character_designer_animation_upper_body": True,
+        })
+        self.assertIn("Animation Composition", [event[1] for event in layout.events])
+        worklist.draw_worklist.assert_not_called()
+        export.active_job.assert_not_called()
 
     def draw_unmanaged_animation(self, *, opened=None, has_animation_data=True, has_action=True,
                                  tweak=False, preview=False, generation_job=None, export_job=False, advanced=False):

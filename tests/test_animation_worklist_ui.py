@@ -203,7 +203,7 @@ class WorklistUI(unittest.TestCase):
                                      connection_check_failed=False,
                                      target_name='Cosha', show_catalog=True, status='', has_error=False,
                                      collection_status='', scan_completed=False, show_advanced=False,
-                                     align_loop_period=True, precise_imported_motions=False)
+                                     align_loop_period=True, prepare_full_ik_tracks=False)
         scene = Scene()
         scene.name = 'Animation Worklist · Cosha'
         scene.character_designer_animation_worklist = self.state

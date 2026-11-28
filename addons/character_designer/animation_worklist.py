@@ -93,9 +93,15 @@ def _validate_route(saved, clip, link, item=None):
         raise ValueError('Unity rebuilt or changed this work-item Link. Existing Custom edits are kept; prepare a separate baseline.')
 
 
+CATALOG_LABELS = 'character_designer_local_catalog_labels_v1'
+
+
 def _fill_catalog(saved, record):
     from .animation_catalog_exclusions import keys_for
     omitted = keys_for(record)
+    scene = getattr(saved, 'id_data', None)
+    labels = scene.get(CATALOG_LABELS, {}) if hasattr(scene, 'get') else {}
+    labels = labels.get('names', {}) if labels.get('workspace') == saved.workspace_identity else {}
     previous = saved.catalog[saved.catalog_index].clip_key if 0 <= saved.catalog_index < len(saved.catalog) else ''
     saved.catalog.clear()
     for clip in record['clips']:
@@ -104,8 +110,9 @@ def _fill_catalog(saved, record):
         if _clip_key(clip) in omitted:
             continue
         entry = saved.catalog.add()
-        entry.clip_key, entry.name = _clip_key(clip), clip['clipName']
+        entry.clip_key = _clip_key(clip)
         entry.work_item_id = workspace.work_item_id(clip)
+        entry.name = labels.get(entry.work_item_id, clip['clipName'])
         entry.target_slot_id = workspace.target_slot_id(clip)
         entry.source_name = clip.get('sourceName') or clip.get('sourceAsset') or ''
         entry.link_path = clip.get('linkManifest') or ''

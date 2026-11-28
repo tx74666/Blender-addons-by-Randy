@@ -1343,6 +1343,8 @@ def _restore_bookend(curve, frame, plan):
 
 def _key_switch(context, armature, target, affected, old_value, pose_before, *, keep_previous=False,
                 pole_angles=(), owned_action=None):
+    from .animation_cleanup import NEUTRAL_SCALE_TOLERANCE
+
     # Stage the key changes in a copy so an insertion failure cannot leave a
     # half-keyed switch. Preserve shared Actions by keeping the previous one.
     angle_inputs = [(constraint, float(previous), float(constraint.pole_angle))
@@ -1386,6 +1388,11 @@ def _key_switch(context, armature, target, affected, old_value, pose_before, *, 
                     curve.array_index: _curve_bookend(curve, frame - 1.0)
                     for curve in current_curves if curve.data_path == full_path
                 }
+                if transform_path == "scale" and not plans and all(
+                    abs(value - 1.) <= NEUTRAL_SCALE_TOLERANCE
+                    for value in (*pb.scale, *pose_before[name][1].to_scale())
+                ):
+                    continue
                 existing_previous = {index for index, plan in plans.items() if plan.get("existing")}
                 if len(existing_previous) < len(getattr(pb, transform_path)):
                     # A matching operation establishes the new control pose at

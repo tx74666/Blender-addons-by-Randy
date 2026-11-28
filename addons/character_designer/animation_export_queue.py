@@ -1,6 +1,7 @@
 """Session export queue for explicitly assigned Unity animation FBXs."""
 
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 from pathlib import Path
 import tempfile
@@ -57,6 +58,7 @@ _queues = {}
 _selections = {}
 _feedback = {}
 _batch = None
+_STAR_STORAGE = 'character_designer_export_stars_v1'
 
 
 def running():
@@ -134,14 +136,27 @@ def _selection(scene):
     return _selections.get(scene.session_uid, {})
 
 
-def _library_choice(context, key, clip, local_choices):
+def _star_key(value):
+    return sha256(value.encode('utf-8')).hexdigest()[:48]
+
+
+def _star_scope(scene):
+    settings = scene.character_designer_animation_worklist
+    return _star_key(settings.workspace_identity or settings.workspace_path) if settings.workspace_path else ''
+
+
+def _stars(scene):
+    return scene.get(_STAR_STORAGE, {}).get(_star_scope(scene), {})
+
+
+def _library_choice(context, key, clip, local_choices, *, starred=False):
     managed = bool(context.scene.character_designer_animation_worklist.workspace_path)
     motion = None
     if clip and managed:
         motion = _managed_choice(context, clip)
     elif not clip and not managed:
         motion = local_choices.get(key)
-    if motion is None or motion.key != key or not _usable_binding(motion):
+    if motion is None or (motion.motion_key if starred else motion.key) != key or not _usable_binding(motion):
         raise ValueError('A selected export motion changed. Select it again from the Animation Library.')
     return motion
 
@@ -155,6 +170,26 @@ def _choose(context, key, clip):
         return
     _library_choice(context, key, clip, {} if clip else _local_choices(context))
     selected[token] = key
+
+
+def _toggle_star(context, key, clip):
+    scene = context.scene
+    scope = _star_scope(scene)
+    if not scope or scene.library or scene.override_library:
+        raise ValueError('Open a local connected animation workspace to change export stars.')
+    motion = _library_choice(context, key, clip, {})
+    entry_key = _star_key(clip)
+    store = scene.get(_STAR_STORAGE)
+    if store is None:
+        scene[_STAR_STORAGE] = {}
+        store = scene[_STAR_STORAGE]
+    if scope not in store:
+        store[scope] = {}
+    stars = store[scope]
+    if stars.get(entry_key, {}).get('motion_key') == motion.motion_key:
+        del stars[entry_key]
+    else:
+        stars[entry_key] = {'clip': clip, 'motion_key': motion.motion_key}
 
 
 def _validate_motion(motion):
@@ -193,28 +228,33 @@ def _route(motion):
     return None
 
 
-def add(context):
+def add(context, *, starred=False):
     scene = context.scene
-    selected = _selection(scene)
+    picks = _selection(scene)
+    if starred:
+        selected = [(None, item['clip'], item['motion_key']) for item in _stars(scene).values()]
+        empty = 'Star at least one prepared motion in Animation first.'
+    else:
+        selected = [(token, token[0], key) for token, key in picks.items()]
+        empty = 'Pick at least one existing animation first.'
     if not selected:
-        raise ValueError('Use the selection buttons in the Animation Library first.')
+        raise ValueError(empty)
     local = {} if scene.character_designer_animation_worklist.workspace_path else _local_choices(context)
     entries = _queues.setdefault(scene.session_uid, {})
     errors = []
-    for token, key in tuple(selected.items()):
-        clip, _ = token
+    for token, clip, key in selected:
         try:
-            motion = _library_choice(context, key, clip, local)
+            motion = _library_choice(context, key, clip, local, starred=starred)
             _validate_motion(motion)
         except (ValueError, ReferenceError) as error:
             errors.append(str(error))
-            selected.pop(token)
-            continue
-        entry = entries.get(key)
-        if entry is None or (entry.motion.action, entry.motion.rig, entry.motion.slot) != (
-                motion.action, motion.rig, motion.slot):
-            entries[key] = Entry(motion)
-        selected.pop(token)
+        else:
+            entry = entries.get(motion.key)
+            if entry is None or (entry.motion.action, entry.motion.rig, entry.motion.slot) != (
+                    motion.action, motion.rig, motion.slot):
+                entries[motion.key] = Entry(motion)
+        if token is not None:
+            picks.pop(token)
     _feedback.pop(scene.session_uid, None)
     return tuple(dict.fromkeys(errors))
 
@@ -440,6 +480,7 @@ class CHARACTERDESIGNER_OT_edit_animation_export_queue(Operator):
         ('CLEAR', 'Clear Queue', 'Clear the temporary queue'),
         ('EXPORT', 'Export Queue to Unity', 'Update the assigned Unity animation FBXs'),
         ('CANCEL', 'Cancel', 'Cancel the batch and keep unpublished items'),
+        ('ADD_STARRED', 'Add Starred', 'Queue every starred animation in this workspace'),
     ), options={'HIDDEN'})
     key: StringProperty(options={'HIDDEN'})
     clip: StringProperty(options={'HIDDEN'})
@@ -456,8 +497,8 @@ class CHARACTERDESIGNER_OT_edit_animation_export_queue(Operator):
                 raise ValueError('Wait for the Export Queue to finish or cancel it.')
             elif self.operation == 'SELECT':
                 _choose(context, self.key, self.clip)
-            elif self.operation == 'ADD':
-                errors = add(context)
+            elif self.operation in {'ADD', 'ADD_STARRED'}:
+                errors = add(context, starred=self.operation == 'ADD_STARRED')
                 if errors:
                     self.report({'WARNING'}, '\n'.join(errors))
             elif self.operation == 'REMOVE':
@@ -468,6 +509,27 @@ class CHARACTERDESIGNER_OT_edit_animation_export_queue(Operator):
             elif self.operation == 'EXPORT':
                 begin(context)
         except (ValueError, OSError, RuntimeError, ReferenceError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        _redraw()
+        return {'FINISHED'}
+
+
+class CHARACTERDESIGNER_OT_toggle_animation_export_star(Operator):
+    bl_idname = 'character_designer.toggle_animation_export_star'
+    bl_label = 'Toggle Export Star'
+    bl_description = 'Star or unstar this animation for repeated export selection'
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    key: StringProperty(options={'HIDDEN'})
+    clip: StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            if running():
+                raise ValueError('Wait for the Export Queue to finish or cancel it.')
+            _toggle_star(context, self.key, self.clip)
+        except (ValueError, ReferenceError) as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
         _redraw()
@@ -539,15 +601,15 @@ def _selectable_managed_motion(context, item):
 def draw_managed_star(layout, context, item):
     """Draw the ready mark as a flat export-selection toggle."""
     motion = _selectable_managed_motion(context, item)
-    key = motion.key if motion is not None else ''
-    selected = bool(key) and _selection(context.scene).get((item.clip_key, '')) == key
+    selected = (motion is not None
+                and _stars(context.scene).get(_star_key(item.clip_key), {}).get('motion_key') == motion.motion_key)
     icon = 'SOLO_ON' if selected else 'CHECKMARK'
     if motion is None or running():
         layout.label(text='', icon=icon)
         return
-    button = layout.operator(CHARACTERDESIGNER_OT_edit_animation_export_queue.bl_idname,
+    button = layout.operator(CHARACTERDESIGNER_OT_toggle_animation_export_star.bl_idname,
                              text='', icon=icon, emboss=False)
-    button.operation, button.key, button.clip = 'SELECT', key, item.clip_key
+    button.key, button.clip = motion.key, item.clip_key
 
 
 def _draw_managed_choice(layout, context, item):
@@ -594,7 +656,7 @@ def draw_library(layout, context):
     settings = context.scene.character_designer_animation_worklist
     if not settings.workspace_path:
         layout.popover(panel=CHARACTERDESIGNER_PT_local_export_motions.bl_idname,
-                       text='Choose Actions', icon='RESTRICT_SELECT_OFF')
+                       text='Pick from Existing Animations', icon='RESTRICT_SELECT_OFF')
         return
     categories.draw_toolbar(layout, context)
     neutral_visible = (neutral.available(context.scene)
@@ -613,20 +675,25 @@ def draw_library(layout, context):
 
 def draw(layout, context, *, enabled=True):
     from .animation import _link_idle
-    from .animation_physics_ui import wrapped_label
+    from .animation_physics_ui import section, wrapped_label
 
     entries = _entries(context.scene)
     box = layout.box()
-    title = box.row(align=True)
-    title.label(text='Export Queue', icon='EXPORT')
+    header = box.row(align=True)
+    title = f'Export Queue ({len(entries)})' if entries else 'Export Queue'
+    header.label(text=title)
     if entries and not running():
-        _button(title, 'CLEAR', 'Clear', 'TRASH')
+        clear = header.row(align=True)
+        clear.enabled = enabled
+        _button(clear, 'CLEAR', 'Clear Queue', 'TRASH')
     if _batch is not None and _batch.scene == context.scene:
         queue = _batch.queue
         progress = box.row(align=True)
         done = len(queue.succeeded_keys) + len(queue.failures)
         progress.label(text=f'Exporting {min(done + 1, queue.total)} / {queue.total}')
         _button(progress, 'CANCEL', '', 'X')
+    if not entries:
+        box.label(text='No animations queued')
     for key, entry in entries.items():
         row = box.row(align=True)
         row.enabled = enabled and not running()
@@ -654,27 +721,44 @@ def draw(layout, context, *, enabled=True):
     feedback = _feedback.get(context.scene.session_uid)
     if feedback:
         box.label(text=feedback)
-    elif not entries:
-        box.label(text='Add motions from the Animation Library.')
+
+    if context.scene.character_designer_animation_worklist.workspace_path:
+        controls = box.row()
+        controls.enabled = enabled
+        draw_add(controls, context, starred_only=True, show_empty=True)
+        picker = section(box, 'character_designer_unity_animation_existing_picker', 'Pick from Existing Animations',
+                         default_closed=True)
+        if picker is not None:
+            picker.enabled = enabled and not running()
+            draw_library(picker, context)
+            draw_add(picker, context)
+    else:
+        picker = box.row()
+        picker.enabled = enabled and not running()
+        draw_library(picker, context)
+
     export = box.row()
     export.enabled = enabled and bool(entries) and _link_idle()
     export.scale_y = 1.3
     _button(export, 'EXPORT', 'Export Queue to Unity', 'EXPORT')
 
 
-def draw_add(layout, context, *, starred_only=False):
-    count = len(_selection(context.scene))
-    if starred_only and not count:
+def draw_add(layout, context, *, starred_only=False, show_empty=False):
+    count = len(_stars(context.scene) if starred_only else _selection(context.scene))
+    if starred_only and not count and not show_empty:
         return
     row = layout.row()
     row.enabled = bool(count) and not running()
-    title = f'Add Starred to Queue ({count})' if starred_only else 'Add Selected to Queue'
-    _button(row, 'ADD', title, 'ADD')
+    title = 'Add Starred to Queue' if starred_only else 'Add Selected to Queue'
+    if count:
+        title += f' ({count})'
+    _button(row, 'ADD_STARRED' if starred_only else 'ADD', title, 'ADD')
 
 
 CLASSES = (
     CharacterDesignerAnimationExportRoute,
     CHARACTERDESIGNER_OT_edit_animation_export_queue,
+    CHARACTERDESIGNER_OT_toggle_animation_export_star,
     CHARACTERDESIGNER_OT_set_animation_export_destination,
     CHARACTERDESIGNER_UL_animation_export_motions,
     CHARACTERDESIGNER_PT_local_export_motions,

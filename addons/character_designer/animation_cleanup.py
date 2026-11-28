@@ -3,13 +3,15 @@ import json
 from collections import defaultdict
 
 from . import animation_export_inputs as export
-from .animation_preview_curves import _editable
+from .animation_preview_curves import _editable, _repeat_mode
 from .control_pose_offset import _bag, _curve_name
 
 from .animation_worklist_fingerprint import CLEAN_DEFAULTS as DEFAULTS
 
 
-# Controller matrix decomposition leaves millionth-scale residuals around 1.
+# Solved controller clips can accumulate small matrix-decomposition residuals.
+# 0.005% is the maximum deviation from neutral for removal on prepared clips.
+NEUTRAL_SCALE_TOLERANCE = 5.e-5
 _SCALE_ROUNDING = 3.e-6
 _DEFAULT_PROPS = {'location', 'scale', 'scale.x', 'scale.y', 'scale.z'}
 
@@ -66,8 +68,15 @@ def restore_defaults(rig, action, handle):
         raise
 
 
-def _flat(curve, default, *, tolerance=0.):
-    if not _editable(curve) or not curve.is_valid or curve.modifiers or not curve.keyframe_points:
+def _flat(curve, default, *, tolerance=0., allow_repeat=False):
+    if not _editable(curve) or not curve.is_valid or not curve.keyframe_points:
+        return False
+    if (allow_repeat and len(curve.keyframe_points) == 1 and curve.extrapolation == 'CONSTANT'
+            and all(mod.type == 'CYCLES' for mod in curve.modifiers)):
+        # A single key has no segment, tangent, or nonzero cycle offset.
+        point = curve.keyframe_points[0]
+        return point.type in {'KEYFRAME', 'GENERATED'} and abs(point.co.y - default) <= tolerance
+    if curve.modifiers and (not allow_repeat or _repeat_mode(curve) != 'REPEAT'):
         return False
     previous_bezier = False
     for point in curve.keyframe_points:
@@ -115,22 +124,19 @@ def hide_unused_scale(rig, action, handle, *, bone_names=None):
     return hidden
 
 
-def clean(rig, action, handle, *, published=False):
+def clean(rig, action, handle, *, published=False, scales_only=False):
     """Remove neutral Scale axes and connected Location groups. Keep clip time bounds."""
-    from .bone_collections import body_collection
-
     curves = export._curves(action, handle)
     bag = _bag(action, handle)
-    # Secondary solver inputs, including Dress, can amplify tiny scale changes.
-    # Only the managed public Body controls get the rounding allowance.
-    body = body_collection(rig)
-    rounded = {bone.name for bone in body.bones if not bone.use_deform} if body else set()
-    driven = {(c.data_path, c.array_index) for c in rig.animation_data.drivers} if rig.animation_data else set()
+    ad = rig.animation_data
+    active = ad is not None and ad.action == action and ad.action_slot_handle == handle
+    driven = {(c.data_path, c.array_index) for c in ad.drivers} if ad else set()
     driven_paths = {path for path, _ in driven}
+    properties = {'scale'} if scales_only else {'scale', 'location'}
     groups = defaultdict(list)
     for curve in curves:
         info = _curve_name(curve)
-        if info and info[1] in ('scale', 'location'):
+        if info and info[1] in properties:
             groups[info[:2]].append(curve)
     candidates = {}
     for (name, prop), group in groups.items():
@@ -141,9 +147,11 @@ def clean(rig, action, handle, *, published=False):
             removable = []
             for curve in group:
                 axis = curve.array_index
-                tolerance = _scale_tolerance(curve) if name in rounded else 0.
+                # Linear extrapolation can grow even a tiny initial slope.
+                tolerance = NEUTRAL_SCALE_TOLERANCE if curve.extrapolation == 'CONSTANT' else 0.
                 if (0 <= axis < 3 and (curve.data_path, axis) not in driven
-                        and abs(pb.scale[axis] - 1.) <= tolerance and _flat(curve, 1., tolerance=tolerance)):
+                        and (not active or abs(pb.scale[axis] - 1.) <= tolerance)
+                        and _flat(curve, 1., tolerance=tolerance, allow_repeat=True)):
                     removable.append(curve)
             if removable:
                 candidates[name, prop] = removable
@@ -184,8 +192,6 @@ def clean(rig, action, handle, *, published=False):
         total += sum(len(c.keyframe_points) for c in group)
     encoded = json.dumps(record, sort_keys=True, separators=(',', ':'))
     if published:
-        ad = rig.animation_data
-        active = ad is not None and ad.action == action and ad.action_slot_handle == handle
         scales = [(rig.pose.bones[name], c.array_index) for (name, prop), group in candidates.items()
                   if active and prop == 'scale' for c in group]
         _clean_published(action, bag, candidates, encoded, scales)

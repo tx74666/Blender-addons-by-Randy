@@ -89,6 +89,7 @@ assert tuple(daily.values()) == (72, 51, 27, 6, 21, 45, 0), daily
 assert signature(clone, other.handle) == original_hashes[1]
 
 labels = []
+buttons = []
 
 class Layout:
     def row(self, **_):
@@ -102,15 +103,14 @@ class Layout:
     def prop(self, *_args, **_kw):
         pass
 
-    def operator(self, *_args, **_kw):
+    def operator(self, *_args, text='', **_kw):
+        buttons.append(text)
         return SimpleNamespace()
 
 ui.draw(Layout(), ctx, preview.status(ctx))
-assert labels == ['Key Reduction', 'Selected keys  72 → 51  (−29.2%)'], labels
+assert labels == ['Selected keys  72 → 51  (−29.2%)'], labels
+assert buttons == ['Original', 'Edited', 'Apply Edits', 'Discard'], buttons
 compact_labels = list(labels)
-labels.clear()
-ui.CHARACTERDESIGNER_OT_key_reduction_preview.draw(SimpleNamespace(layout=Layout()), ctx)
-assert 'Same key count  45' in labels and 'Reduced curves  27 → 6  (−77.8%)' in labels, labels
 
 reduced_bag = clone.layers[0].strips[0].channelbag(ad.action_slot)
 new_curve = reduced_bag.fcurves.new(moving.path_from_id('rotation_euler'), index=0)
@@ -131,5 +131,5 @@ assert stats() == changed
 assert op(operation='DISCARD') == {'FINISHED'}
 assert signature(original, handle) == original_hashes[0] and signature(original, other.handle) == original_hashes[1]
 Path(result).write_text(json.dumps(dict(version=character_designer.bl_info['version'], automatic=daily,
-    edited=changed, compact_labels=compact_labels, detail_labels=labels, original_preserved=True), ensure_ascii=False, indent=2), encoding='utf8')
+    edited=changed, compact_labels=compact_labels, buttons=buttons, original_preserved=True), ensure_ascii=False, indent=2), encoding='utf8')
 print('PASS native selected slot counts, saved settings compatibility, edited preview and rendered label text.')

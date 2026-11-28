@@ -118,7 +118,14 @@ def _plans(context, rig, controls, records, *, follow_shin):
                 raise ValueError(f'{target.name} has locked or constrained rotation.')
             if any(c.data_path == target.path_from_id(path) for c in getattr(rig.animation_data, 'drivers', ())):
                 raise ValueError(f'{target.name} has driven rotation.')
-            end = None if field == 'roll' else rig.pose.bones[record['chain'][-1] if field == 'target' else record['toe']]
+            local_clear = field == 'roll' or field == 'toe_control' and follow_shin
+            if field == 'toe_control' and local_clear:
+                # Toe Space follows the calibrated IK/FK foot. Clearing only
+                # the child's bend preserves the posed sole and rest angle.
+                reference = rig.pose.bones.get(record['bones']['TOE_SPACE'])
+                if reference is None or target.parent != reference:
+                    raise ValueError(f'{target.name} has lost its calibrated toe reference.')
+            end = None if local_clear else rig.pose.bones[record['chain'][-1] if field == 'target' else record['toe']]
             shin = rig.pose.bones[record['chain'][1]] if field == 'target' and follow_shin else None
             raw = tuple(getattr(target, path))
             plan = dict(rig=rig, target=target, end=end, shin=shin, rotation_path=path, raw=raw,
@@ -145,9 +152,13 @@ def reset_rotation(context, controls, *, follow_shin=False):
         for plan in plans:
             if plan['end'] is None:
                 target = plan['target']
-                for index, locked in enumerate(target.lock_rotation):
-                    if not locked:
-                        target.rotation_euler[index] = 0.
+                path = plan['rotation_path']
+                if path == 'rotation_euler':
+                    for index, locked in enumerate(target.lock_rotation):
+                        if not locked:
+                            target.rotation_euler[index] = 0.
+                else:
+                    setattr(target, path, tuple(target.bl_rna.properties[path].default_array))
                 match._update(context, rig)
             else:
                 _match_rotation(context, plan)

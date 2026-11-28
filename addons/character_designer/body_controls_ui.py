@@ -53,9 +53,11 @@ class CHARACTERDESIGNER_OT_root_control(Operator):
 class CHARACTERDESIGNER_OT_limb_fk_visuals(Operator):
     bl_idname = 'character_designer.limb_fk_visuals'
     bl_label = 'Limb Control Shapes'
-    bl_description = 'Fit reversible FK rings and IK display sizes without changing bone poses or weights'
+    bl_description = 'Fit FK wrist and foot controls and adjust IK display sizes'
     bl_options = {'REGISTER', 'UNDO'}
-    action: EnumProperty(items=(('BUILD', 'Add FK Rings', ''), ('REMOVE', 'Remove FK Rings', ''),
+    action: EnumProperty(items=(('BUILD', 'Set Up FK Controls', ''),
+                                ('ENDPOINTS', 'Set Up FK Controls', 'Show wrist and sole shapes on the native FK joints'),
+                                ('REMOVE', 'Remove FK Control Shapes', ''),
                                 ('FIT_IK', 'Fit IK Sizes', ''), ('RESTORE_IK', 'Restore IK Sizes', '')))
 
     @classmethod
@@ -63,12 +65,17 @@ class CHARACTERDESIGNER_OT_limb_fk_visuals(Operator):
         return CHARACTERDESIGNER_OT_root_control.poll(context)
 
     def execute(self, context):
-        from . import limb_fk_visuals
+        from . import bone_collections, limb_fk_visuals
         rig = context.object
         try:
-            if self.action == 'BUILD':
-                limb_fk_visuals.build(context, rig)
-                control_colors.sync(rig)
+            if self.action in {'BUILD', 'ENDPOINTS'}:
+                from . import limb_ik, limb_ik_fk_pose_key
+                clip = bool(limb_ik_fk_pose_key.active_record(context, rig) and context.mode == 'POSE')
+                limb_fk_visuals.build(context, rig, clip_endpoints=clip or self.action == 'ENDPOINTS')
+                inventory = limb_ik._validate_inventory(rig, limb_pose_only=True) if clip else None
+                bone_collections.sync_limb_display(rig, inventory)
+                if not clip:
+                    control_colors.sync(rig)
             elif self.action == 'REMOVE':
                 limb_fk_visuals.remove(context, rig)
                 control_colors.cleanup(rig)
@@ -202,11 +209,10 @@ def draw_fk_visuals(layout, context):
     if rig is None or rig.type != 'ARMATURE':
         return
     row = layout.row(align=True)
+    row.operator('character_designer.limb_fk_visuals', text='Set Up FK Controls', icon='MESH_CIRCLE').action = 'BUILD'
     if limb_fk_visuals.get_record(rig):
-        row.operator('character_designer.limb_fk_visuals', text='Remove FK Rings', icon='LOOP_BACK').action = 'REMOVE'
-    else:
-        row.operator('character_designer.limb_fk_visuals', text='Add FK Rings', icon='MESH_CIRCLE').action = 'BUILD'
-    row.operator('character_designer.limb_fk_visuals', text='Fit IK Sizes', icon='FULLSCREEN_EXIT').action = 'FIT_IK'
+        row.operator('character_designer.limb_fk_visuals', text='', icon='LOOP_BACK').action = 'REMOVE'
+    layout.operator('character_designer.limb_fk_visuals', text='Fit IK Sizes', icon='FULLSCREEN_EXIT').action = 'FIT_IK'
     # The fit action is explicit; artist-authored display edits are never overwritten automatically.
     if limb_fk_visuals.has_ik_size_backup(rig):
         layout.operator('character_designer.limb_fk_visuals', text='Restore IK Sizes', icon='LOOP_BACK').action = 'RESTORE_IK'

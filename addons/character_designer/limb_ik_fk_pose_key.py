@@ -83,8 +83,14 @@ def _values(rig, limb, mode, inventory):
 
 def _key_channels(bag, frame, values, mode_key, original, *, preserve_fk_mode, action=None, limb=None):
     """Plan from the displayed pose and the curves as they were before native insertion."""
-    from . import animation_preview_curves
+    from . import animation_cleanup, animation_preview_curves
     existing = {(c.data_path, c.array_index): c for c in bag.fcurves if (c.data_path, c.array_index) in values}
+    values = {
+        key: state for key, state in values.items()
+        if (key in existing or not key[0].endswith('.scale')
+            or abs(state[0] - 1.) > animation_cleanup.NEUTRAL_SCALE_TOLERANCE
+            or abs(original[key][0] - 1.) > animation_cleanup.NEUTRAL_SCALE_TOLERANCE)
+    }
     mode_curve = existing.get(mode_key)
     # Deleting all keys of an IK foot also removes its mode channel. The actual
     # pre-switch pose is the only known previous mode; do not reconstruct a
@@ -348,7 +354,7 @@ def insert_with_switches(context, tokens):
 
 def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk=False):
     """Capture the displayed pose, then switch and/or explicitly key this limb."""
-    from . import bone_display, control_pose_offset, controller_animation
+    from . import bone_display, control_pose_offset, controller_animation, limb_fk_visuals
     record = _editable_record(context, rig, record_key)
     ad = rig.animation_data
     inventory = match._limb()._validate_inventory(rig, limb_pose_only=True)
@@ -359,6 +365,8 @@ def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk
     output_mode = old_mode if mode == 'CURRENT' else mode
     if output_mode not in ('IK', 'FK'):
         raise ValueError('Choose IK or FK before recording a blended limb.')
+    if output_mode == 'FK':
+        limb_fk_visuals.ensure_clip_endpoints(context, rig, inventory, keys=(key,))
     before, mode_key = _values(rig, limb, output_mode, inventory)
     bag = control_pose_offset._bag(ad.action, record.controller_slot)
     # Capture raw inputs before matching so a failed key can also undo the pose switch.
@@ -404,11 +412,13 @@ def edit(context, rig, key, mode, *, record_key, temporary_ik=False, store_as_fk
 
 def edit_group(context, rig, keys, mode):
     """Match a set of limbs before writing any keys on the retained Action."""
-    from . import control_pose_offset, forearm_twist, limb_ik_fk_batch as batch
+    from . import control_pose_offset, forearm_twist, limb_fk_visuals, limb_ik_fk_batch as batch
     keyed = context.scene.tool_settings.use_keyframe_insert_auto
     record = _editable_record(context, rig, keyed)
     inventory = match._limb()._validate_inventory(rig, limb_pose_only=True)
     keys = batch._keys(inventory, keys)
+    if mode == 'FK':
+        limb_fk_visuals.ensure_clip_endpoints(context, rig, inventory, keys=keys)
     action = record.controller_action
     bag = control_pose_offset._bag(action, record.controller_slot)
     frame = context.scene.frame_current + context.scene.frame_subframe
@@ -504,6 +514,12 @@ def draw(layout, context, *, advanced=False):
         for choice in ('FK', 'IK'):
             op = row.operator('character_designer.controller_limb_pose', text=choice, depress=mode == choice)
             op.operation, op.limb_id = choice, limb_id
+        if mode in {'FK', 'MIXED'} and any(
+            rig.pose.bones[inventory['rigs'][key]['chain'][2]].custom_shape is None
+            for key in keys
+        ):
+            layout.operator('character_designer.limb_fk_visuals', text='Set Up FK Controls',
+                            icon='MESH_CIRCLE').action = 'ENDPOINTS'
         return
     if mode == 'IK':
         op = row.operator('character_designer.controller_limb_pose', text='Key as FK')

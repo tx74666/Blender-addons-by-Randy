@@ -7,8 +7,8 @@
 
 
 
-<!-- cd291-equip-action-20261128 -->
-Character Designer **0.77.291** 已安裝至 Blender 5.2 與 X，各 329 檔、0 差異。Animation → Upper-Body Composition 增加一鍵裝備，可由 Weapon Profile 的 Equip Action 自動加入上半身動作。正式 X 未刷新。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.291_equip_action_20261128.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/weapon_equip_20261127/delivery291.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/weapon_equip_20261127/stage291/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/scale_cleanup_20261127/delivery290.json>)
+<!-- cd303-toe-alt-r-20261128 -->
+Character Designer **0.77.303** 已安裝至 Blender 5.2 與 X，各 330 檔、0 差異。Alt+R 令腳尖回到當前 FK/IK 腳部的 Toe Space，混選同樣保留手腕相對小臂的參考。原生與窄啟用副本驗證通過。正式 X 未刷新或保存。[發行記錄](<D:/MyRepository/Blender-addons-by-Randy/docs/releases/CharacterDesigner_0.77.303_toe_alt_r_20261128.md>) · [交付回執](<D:/Blender/Projects/Character/X/validation/toe_alt_r_20261128/delivery303.json>) · [完整投影](<D:/Blender/Projects/Character/X/validation/toe_alt_r_20261128/stage303/projection.json>) · [前版交付](<D:/Blender/Projects/Character/X/validation/ik_default_and_fk_widgets_20261128/delivery302.json>)
 
 <!-- cd114-compact-physics-20261029 -->
 

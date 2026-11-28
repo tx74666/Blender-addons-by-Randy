@@ -1,4 +1,4 @@
-"""Reversible native FK rings; no bones, constraints or pose channels are added."""
+"""Reversible display shapes for native FK joints."""
 from __future__ import annotations
 
 import json
@@ -58,8 +58,8 @@ def _owned(item, record, role):
 
 
 def binding_names(kind, chain):
-    """Native joints with owned rings: arms include the wrist, legs do not."""
-    return chain[:3 if kind == 'ARM' else 2]
+    """Native joints eligible for an FK display shape."""
+    return chain[:3]
 
 
 def ring_radius(armature, kind, chain, name):
@@ -85,6 +85,8 @@ def get_record(armature):
             if (entry['kind'] not in RADIUS_FACTORS or entry['side'] not in {'L', 'R'}
                     or len(entry['chain']) != 3
                     or name not in binding_names(entry['kind'], entry['chain'])
+                    or (entry['kind'] == 'LEG' and name == entry['chain'][2]
+                        and entry.get('shape_kind') != 'FOOT')
                     or not isinstance(entry['object'], str) or not isinstance(entry['mesh'], str)):
                 raise ValueError('invalid binding')
             _limb()._validate_shape_state(entry['original'], 'Saved FK ring display', original=True)
@@ -154,7 +156,7 @@ def restore_native_display(armature, saved):
 
 
 def sync_native_display(armature, inventory, *, keys=None):
-    """Use native FK bones during clip editing, preserving the rig's other display setups.
+    """Show the long FK bones with selectable wrist and sole shapes.
 
     ``inventory`` must already have passed the operator's strict preflight.
     The handoff audits only these bindings, never rescans scene objects.
@@ -184,10 +186,11 @@ def sync_native_display(armature, inventory, *, keys=None):
                 or pb.custom_shape != (None if name in before else widget)
                 or not _same_display(pb, entry['generated'])):
             raise _error(f"The owned FK display on '{name}' changed; preserve that setup first.")
-        # The action editor uses the actual limb bones for FK and the separate
-        # targets for IK. Never reattach an inactive FK widget during a switch.
-        wrist = entry['kind'] == 'ARM' and name == entry['chain'][2]
-        native = editing_clip or (limb_ik_fk.mode_for_rig(armature, rig) == 'FK' and not wrist)
+        # Long FK segments remain easy to distinguish. The end shapes are
+        # drawn on the native joints and share their selection and pivot.
+        endpoint = name == entry['chain'][2]
+        native = detached or (not endpoint and (
+            editing_clip or limb_ik_fk.mode_for_rig(armature, rig) == 'FK'))
         shape = None if native else widget
         if pb.custom_shape != shape:
             if _animated_display(armature, pb):
@@ -212,7 +215,7 @@ def sync_native_display(armature, inventory, *, keys=None):
     return len(pending)
 
 
-def validate(armature, inventory=None):
+def validate(armature, inventory=None, *, allow_detached_missing=False):
     """Validate this visual registry without recursively entering limb inventory."""
     record = get_record(armature)
     native_display = _native_display(armature, record)
@@ -224,13 +227,17 @@ def validate(armature, inventory=None):
             raise _error('FK ring widgets have lost their recovery data.')
         return None
     try:
-        detached = {entry['object'] for name, entry in record['bindings'].items()
-                    if name in native_display and validation_native.missing_pose_asset(
-                        armature, bpy.data.objects.get(entry['object']))}
+        detached = set()
+        for name in native_display:
+            obj = bpy.data.objects.get(record['bindings'][name]['object'])
+            if validation_native.missing_pose_asset(armature, obj) or (allow_detached_missing and obj is None):
+                detached.add(native_display[name])
         if owned_objects != {entry['object'] for entry in record['bindings'].values()} - detached:
             raise _error('FK ring widgets were added, removed or renamed.')
         collection = bpy.data.collections.get(record['collection'])
-        if not validation_native.missing_pose_asset(armature, collection) and not _owned(collection, record, 'COLLECTION'):
+        missing_collection = (validation_native.missing_pose_asset(armature, collection)
+                              or (allow_detached_missing and collection is None and not owned_objects))
+        if not missing_collection and not _owned(collection, record, 'COLLECTION'):
             raise _error('The FK ring widget collection is missing or was replaced.')
         for name, entry in record['bindings'].items():
             pb = armature.pose.bones.get(name)
@@ -266,20 +273,23 @@ def _geometry():
     return vertices, [(i, (i + 1) % RING_SEGMENTS) for i in range(RING_SEGMENTS)]
 
 
-def _create_widget(context, armature, record, name, entry):
+def _create_widget(context, armature, record, name, entry, *, geometry=None, organize=True):
     collection = bpy.data.collections.get(record['collection'])
     if collection is None or not _owned(collection, record, 'COLLECTION'):
         collection = bpy.data.collections.new(record['collection'])
         record['collection'] = collection.name
         context.scene.collection.children.link(collection)
         _tag(collection, record, 'COLLECTION')
-        from . import widget_collections
-        widget_collections.ensure_container(context, collection, armature, 'FK Rings', allow_numbered=True)
-        record['collection'] = collection.name
+        if organize:
+            from . import widget_collections
+            widget_collections.ensure_container(context, collection, armature, 'FK Rings', allow_numbered=True)
+            record['collection'] = collection.name
     mesh = bpy.data.meshes.new(entry['mesh'])
     entry['mesh'] = mesh.name
     _tag(mesh, record, name)
-    if entry.get('shape_kind') == 'HAND':
+    if geometry is not None:
+        vertices, edges = geometry
+    elif entry.get('shape_kind') == 'HAND':
         from . import limb_fk_wrist_visuals
         vertices, edges = limb_fk_wrist_visuals.geometry()
     else:
@@ -297,6 +307,40 @@ def _create_widget(context, armature, record, name, entry):
     # No custom-shape transform or midpoint offset: the ring follows the
     # native FK joint itself, including an existing intermediate IK/FK value.
     _limb()._apply_source_widget_generated_state(pb, entry['generated'])
+
+
+def _plan_sole(armature, rig):
+    """Copy the fitted IK outline into the native ankle's rest frame."""
+    from . import foot_sole_display, limb_fk_wrist_visuals
+    limb = _limb()
+    end = armature.pose.bones[rig['chain'][2]]
+    target = armature.pose.bones[rig['target'].name]
+    shape = target.custom_shape
+    rig_id = armature.data.get(limb.ARMATURE_ID_KEY)
+    donor = target.custom_shape_transform
+    if (not limb_fk_wrist_visuals._plain_mesh_object(shape)
+            or not limb._owned(shape, rig_id, role='WIDGET')
+            or not limb._owned(shape.data, rig_id, role='WIDGET_DATA')
+            or shape.get(limb.KIND_KEY) not in {'FOOT', 'FOOT_L', 'FOOT_R'}
+            or shape.data.get(limb.KIND_KEY) != shape.get(limb.KIND_KEY)
+            or (donor != end and not foot_sole_display.valid_frame(target))
+            or shape.data.polygons or not shape.data.edges
+            or _animated_display(armature, target)):
+        raise limb_fk_wrist_visuals.UnsupportedSource('The IK foot has no supported fitted sole outline.')
+    state = limb._control_visual_state(target)
+    if target.use_custom_shape_bone_size:
+        length = (donor or target).bone.length
+        state['scale'] = [value * length for value in state['scale']]
+    local = (end.bone.matrix_local.inverted() @ (donor or target).bone.matrix_local
+             @ limb._custom_shape_state_matrix(state))
+    vertices = [tuple(local @ vertex.co) for vertex in shape.data.vertices]
+    if not all(math.isfinite(value) for point in vertices for value in point):
+        raise limb_fk_wrist_visuals.UnsupportedSource('The IK sole outline has invalid coordinates.')
+    edges = [tuple(edge.vertices) for edge in shape.data.edges]
+    display = {'custom_shape': '', 'custom_shape_transform': '', 'use_bone_size': False,
+               'scale': [1.0] * 3, 'translation': [0.0] * 3, 'rotation': [0.0] * 3,
+               'wire_width': 1.5 if hasattr(end, 'custom_shape_wire_width') else None}
+    return display, (vertices, edges)
 
 
 def _delete_resources(record, names):
@@ -325,27 +369,45 @@ def _verify_pose(armature, expected):
                     raise _error('FK ring visuals could not preserve the current pose; no changes kept.')
 
 
-def build(context, armature):
-    """Add missing joint rings and standard wrist Hand shapes on explicit setup.
+def build(context, armature, *, keys=None, clip_endpoints=False):
+    """Add missing FK rings, wrist controls and sole outlines on explicit setup.
 
     Existing two-joint arm records stay valid and gain only eligible wrists.
     Artist shapes, animated display and previously generated widgets stay intact.
     Existing wrist circles require the separate explicit Hand-shape migration.
     """
-    _active(context, armature)
-    inventory = _limb()._validate_inventory(armature)
-    previous = validate(armature, inventory)
+    if clip_endpoints:
+        from . import bone_collections, bone_display, limb_ik_fk_pose_key
+        if context.mode != 'POSE' or context.object != armature or not limb_ik_fk_pose_key.active_record(context, armature):
+            raise _error('Open a controller Action in Pose Mode to set up its FK controls.')
+        bone_collections._structural_edit_guard(armature)
+        bone_display._controls_editable(context, armature)
+        inventory = _limb()._validate_inventory(armature, limb_pose_only=True)
+        previous = validate(armature, inventory, allow_detached_missing=True)
+    else:
+        _active(context, armature)
+        inventory = _limb()._validate_inventory(armature)
+        previous = validate(armature, inventory)
     before_raw = armature.data.get(RECORD_KEY)
+    before_marker = armature.data.get(NATIVE_DISPLAY_KEY)
+    marker = _native_display(armature, previous)
+    before_detached = set(marker)
     record = json.loads(before_raw) if previous else {
         'version': VERSION, 'id': uuid.uuid4().hex, 'armature_id': inventory['armature_id'],
         'bindings': {}, 'skipped': {},
     }
     record.setdefault('collection', generated_names.collection_name(armature, 'FK Rings'))
-    pending = []
+    pending = {}
     originals = {}
     for (kind, side), rig in inventory['rigs'].items():
-        for name in binding_names(kind, rig['chain']):
-            if name in record['bindings']:
+        if keys is not None and (kind, side) not in keys:
+            continue
+        candidates = rig['chain'][2:] if clip_endpoints else binding_names(kind, rig['chain'])
+        for name in candidates:
+            old = record['bindings'].get(name)
+            restore_widget = (clip_endpoints and old is not None and name in marker
+                              and bpy.data.objects.get(old['object']) is None)
+            if old is not None and not restore_widget:
                 continue
             pb = armature.pose.bones[name]
             if pb.custom_shape is not None or pb.custom_shape_transform is not None:
@@ -354,11 +416,20 @@ def build(context, armature):
             if _animated_display(armature, pb):
                 record['skipped'][name] = 'Animated custom-shape display'
                 continue
-            wrist = kind == 'ARM' and name == rig['chain'][2]
-            if wrist:
+            geometry = None
+            shape_kind = None
+            if restore_widget and old.get('shape_kind') != 'FOOT':
+                shape_kind = old.get('shape_kind')
+                generated = old['generated']
+            elif name == rig['chain'][2]:
                 from . import limb_fk_wrist_visuals
                 try:
-                    generated = limb_fk_wrist_visuals.plan(armature, rig)
+                    if kind == 'ARM':
+                        shape_kind = 'HAND'
+                        generated = limb_fk_wrist_visuals.plan(armature, rig)
+                    else:
+                        shape_kind = 'FOOT'
+                        generated, geometry = _plan_sole(armature, rig)
                 except limb_fk_wrist_visuals.UnsupportedSource as exc:
                     record['skipped'][name] = str(exc)
                     continue
@@ -367,27 +438,41 @@ def build(context, armature):
                 generated = {'custom_shape': '', 'custom_shape_transform': '', 'use_bone_size': False,
                              'scale': [radius] * 3, 'translation': [0.0] * 3, 'rotation': [0.0] * 3,
                              'wire_width': 2.0 if hasattr(pb, 'custom_shape_wire_width') else None}
-            original = _limb()._pose_shape_json_state(pb)
+            original = old['original'] if restore_widget else _limb()._pose_shape_json_state(pb)
             widget_name = generated_names.widget_name(armature, 'FK_' + name)
             record['bindings'][name] = {'kind': kind, 'side': side, 'chain': list(rig['chain']),
                                          'object': widget_name, 'mesh': widget_name,
                                          'original': original, 'generated': generated}
-            if wrist:
-                record['bindings'][name]['shape_kind'] = 'HAND'
+            if shape_kind:
+                record['bindings'][name]['shape_kind'] = shape_kind
             originals[name] = _limb()._pose_shape_runtime_state(pb)
             record['skipped'].pop(name, None)
-            pending.append(name)
+            if restore_widget:
+                del marker[name]
+            pending[name] = geometry
     if not pending:
         return previous or {'version': VERSION, 'bindings': {}, 'skipped': record['skipped']}
     _update(context, armature)
     expected = {pb.name: pb.matrix.copy() for pb in armature.pose.bones}
     try:
-        for name in pending:
-            _create_widget(context, armature, record, name, record['bindings'][name])
+        for name, geometry in pending.items():
+            if geometry is None and not clip_endpoints:
+                _create_widget(context, armature, record, name, record['bindings'][name])
+            else:
+                _create_widget(context, armature, record, name, record['bindings'][name],
+                               geometry=geometry, organize=not clip_endpoints)
         armature.data[RECORD_KEY] = json.dumps(record)
+        if set(marker) != before_detached:
+            if marker:
+                armature.data[NATIVE_DISPLAY_KEY] = json.dumps(marker, sort_keys=True, separators=(',', ':'))
+            else:
+                armature.data.pop(NATIVE_DISPLAY_KEY, None)
         _update(context, armature)
         _verify_pose(armature, expected)
-        validate(armature, inventory)
+        if clip_endpoints:
+            validate(armature, inventory, allow_detached_missing=True)
+        else:
+            validate(armature, inventory)
     except Exception:
         for name, state in originals.items():
             _limb()._restore_pose_shape_state(armature, armature.pose.bones[name], state, runtime=True)
@@ -396,12 +481,25 @@ def build(context, armature):
             armature.data.pop(RECORD_KEY, None)
         else:
             armature.data[RECORD_KEY] = before_raw
+        if before_marker is None:
+            armature.data.pop(NATIVE_DISPLAY_KEY, None)
+        else:
+            armature.data[NATIVE_DISPLAY_KEY] = before_marker
         _update(context, armature)
         raise
     return record
 
 
 apply = build
+
+
+def ensure_clip_endpoints(context, armature, inventory, *, keys=None):
+    """Fit missing wrist and sole widgets once through the existing display setup."""
+    limbs = inventory['rigs']
+    missing = [key for key in (limbs if keys is None else keys)
+               if armature.pose.bones[limbs[key]['chain'][2]].custom_shape is None]
+    if missing:
+        build(context, armature, keys=missing, clip_endpoints=True)
 
 
 def _refuse_dependencies(armature, record):

@@ -247,6 +247,7 @@ class ControllerEdit(unittest.TestCase):
         self.bpy.context = self.context
         self.bpy.data.scenes = [self.home, self.source]
         self.edit.editing_scene = Mock(return_value=self.source)
+        self.edit.controller_only = Mock(return_value=False)
         self.edit._local_row = Mock(return_value=self.row)
         self.work.add = Mock(return_value=self.row)
         self.built = SimpleNamespace(action=Action('Built Controller'), slot=42,

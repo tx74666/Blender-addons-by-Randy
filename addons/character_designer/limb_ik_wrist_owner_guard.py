@@ -51,7 +51,9 @@ def _context(context, rig, api):
             'Use the default keying policy before resetting wrist rotation with Auto Key.')
 
 
-def _bag(action, slot):
+def _bag(action, slot, *, allow_empty=False):
+    if allow_empty and action.is_action_layered and not action.layers:
+        return None
     _require(action.is_action_layered and len(action.layers) == 1
         and len(action.layers[0].strips) == 1,
         'This wrist edit needs one unambiguous Action layer and strip.')
@@ -59,8 +61,9 @@ def _bag(action, slot):
     _require(strip.type == 'KEYFRAME' and getattr(layer, 'influence', 1.) == 1.
         and not getattr(layer, 'mute', False), 'The active wrist Action layer is unsupported.')
     bags = [bag for bag in strip.channelbags if bag.slot_handle == slot]
-    _require(len(bags) == 1, 'The current Custom slot has no unique keyframe channelbag.')
-    return bags[0]
+    _require(len(bags) == 1 or allow_empty and not bags,
+             'The current Custom slot has no unique keyframe channelbag.')
+    return bags[0] if bags else None
 
 
 def _revision_owner(api, rig, row, action, source):
@@ -156,7 +159,7 @@ def _local_key_owner(rig, action, slot, api):
             strips.extend(getattr(strip, 'strips', ()))
 
 
-def prepare(context, rig):
+def prepare(context, rig, *, allow_empty=False):
     api = _modules()
     _context(context, rig, api)
     ad = rig.animation_data
@@ -179,7 +182,7 @@ def prepare(context, rig):
                      workspace_path=saved.workspace_path)
         if owner['autokey']:
             _local_key_owner(rig, action, slot, api)
-            owner.update(bag=_bag(action, slot), expected_action_users=action.users)
+            owner.update(bag=_bag(action, slot, allow_empty=allow_empty), expected_action_users=action.users)
         return owner
     _require(row is not None and row.rig is rig and row.side == 'CUSTOM'
         and row.custom_action is action and not action.library and not action.asset_data
@@ -201,11 +204,11 @@ def prepare(context, rig):
     return owner
 
 
-def validate(context, owner):
+def validate(context, owner, *, allow_empty=False):
     _require(owner['context'] is context, 'Apply the wrist edit in its original context.')
     _require(owner['autokey'] == bool(context.scene.tool_settings.use_keyframe_insert_auto),
              'The wrist Auto Key policy changed.')
-    fresh = prepare(context, owner['rig'])
+    fresh = prepare(context, owner['rig'], allow_empty=allow_empty)
     fields = ('rig', 'data', 'action', 'frame', 'autokey', 'item_id', 'slot',
               'source', 'source_slot', 'checkpoint', 'token', 'expected_action_users')
     _require(all(fresh[name] == owner[name] for name in fields),
@@ -214,7 +217,7 @@ def validate(context, owner):
              and fresh.get('workspace_path') == owner.get('workspace_path'),
              'The current wrist Action changed editing workflows.')
     if owner.get('local_action') and owner['autokey']:
-        _require(fresh.get('local_action') and fresh['bag'] == owner['bag'],
+        _require(fresh.get('local_action') and (fresh['bag'] == owner['bag'] or allow_empty and owner['bag'] is None),
                  'The local wrist Action or channelbag changed.')
     elif owner['action'] is not None and not owner.get('unkeyed_local'):
         _require(fresh['bag'] == owner['bag'] and fresh['source_library'] is owner['source_library'],

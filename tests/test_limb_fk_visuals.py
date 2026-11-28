@@ -92,6 +92,8 @@ class LimbFKVisualTests(unittest.TestCase):
         self.limb._fcurves_for_action = Mock(side_effect=lambda action: self.curves)
         self.visuals._limb = lambda: self.limb
         self.visuals._active, self.visuals._update = Mock(), Mock()
+        self.sole_display = dict(deepcopy(self.hand_display), wire_width=1.5)
+        self.visuals._plan_sole = Mock(return_value=(self.sole_display, ([], [])))
         self.created = []
         self.visuals._create_widget = self.create_widget
         self.visuals._delete_resources = self.delete_resources
@@ -106,7 +108,7 @@ class LimbFKVisualTests(unittest.TestCase):
                     self.rig.pose.bones[name] = PoseBone(name, .3 if index < 2 else .04)
         self.limb._validate_inventory = Mock(return_value=self.inventory)
 
-    def create_widget(self, context, armature, record, name, entry):
+    def create_widget(self, context, armature, record, name, entry, *, geometry=None, organize=True):
         visuals = self.visuals
         if record['collection'] not in self.collections:
             collection = ID(name=record['collection'])
@@ -152,12 +154,12 @@ class LimbFKVisualTests(unittest.TestCase):
             marker[name] = record['bindings'][name]['object']
         self.rig.data[self.visuals.NATIVE_DISPLAY_KEY] = json.dumps(marker)
 
-    def test_new_build_adds_native_arm_wrist_without_pose_or_existing_id_changes(self):
+    def test_new_build_adds_native_endpoints_without_pose_or_existing_id_changes(self):
         before_bones = dict(self.rig.pose.bones)
         before_pose = {name: deepcopy(pb.matrix) for name, pb in before_bones.items()}
         before_displays = self.displays()
         record = self.build()
-        self.assertEqual(len(record['bindings']), 10)
+        self.assertEqual(len(record['bindings']), 12)
         self.assertEqual(dict(self.rig.pose.bones), before_bones)
         self.assertEqual({name: pb.matrix for name, pb in before_bones.items()}, before_pose)
         for (kind, _side), item in self.inventory['rigs'].items():
@@ -170,18 +172,19 @@ class LimbFKVisualTests(unittest.TestCase):
                 self.assertEqual(list(pb.custom_shape_scale_xyz), self.hand_display['scale'])
                 self.assertEqual(record['bindings'][wrist]['original'], before_displays[wrist])
             else:
-                self.assertNotIn(wrist, record['bindings'])
+                self.assertEqual(record['bindings'][wrist]['shape_kind'], 'FOOT')
+                self.assertEqual(record['bindings'][wrist]['generated'], self.sole_display)
         self.assertEqual(self.visuals.validate(self.rig, self.inventory), record)
 
-    def test_legacy_registry_upgrade_adds_only_two_wrists_and_is_idempotent(self):
+    def test_legacy_registry_upgrade_adds_only_endpoints_and_is_idempotent(self):
         old = self.legacy()
         old_entries, old_widgets = deepcopy(old['bindings']), dict(self.objects)
         self.detach(old, old['bindings'])
         marker = self.rig.data[self.visuals.NATIVE_DISPLAY_KEY]
         self.created.clear()
         upgraded = self.build()
-        wrists = {item['chain'][2] for key, item in self.inventory['rigs'].items() if key[0] == 'ARM'}
-        self.assertEqual(set(self.created), wrists)
+        endpoints = {item['chain'][2] for item in self.inventory['rigs'].values()}
+        self.assertEqual(set(self.created), endpoints)
         self.assertEqual({name: upgraded['bindings'][name] for name in old_entries}, old_entries)
         self.assertTrue(all(self.objects[name] is obj for name, obj in old_widgets.items()))
         self.assertEqual(self.rig.data[self.visuals.NATIVE_DISPLAY_KEY], marker)
@@ -193,7 +196,7 @@ class LimbFKVisualTests(unittest.TestCase):
         self.assertEqual(self.visuals.sync_native_display(self.rig, self.inventory), 0)
         remaining = json.loads(self.rig.data[self.visuals.NATIVE_DISPLAY_KEY])
         self.assertEqual(set(remaining), set(old_entries))
-        for name in wrists:
+        for name in endpoints:
             self.assertIs(self.rig.pose.bones[name].custom_shape,
                           self.objects[upgraded['bindings'][name]['object']])
 
@@ -360,7 +363,7 @@ class LimbFKVisualTests(unittest.TestCase):
                            if key != left for name in item['chain'][:2]}
         self.assertEqual(set(marker), expected_native)
         for key, item in self.inventory['rigs'].items():
-            for name in self.visuals.binding_names(key[0], item['chain']):
+            for name in item['chain']:
                 self.assertIs(self.rig.pose.bones[name].custom_shape,
                               None if name in expected_native else self.objects[record['bindings'][name]['object']])
         # Change one limb's evaluated mode and apply only that limb's display;
@@ -436,7 +439,7 @@ class LimbFKVisualTests(unittest.TestCase):
         self.assertTrue(all(self.rig.pose.bones[name].custom_shape is widget for name, widget in shapes.items()))
         self.visuals.validate(self.rig, self.inventory)
 
-    def test_registry_accepts_old_arm_bindings_but_never_a_leg_end_or_foreign_shape(self):
+    def test_registry_rejects_an_untyped_foot_binding_and_foreign_shape(self):
         record = self.legacy()
         self.assertEqual(self.visuals.get_record(self.rig), record)
         leg = self.inventory['rigs']['LEG', 'L']['chain']

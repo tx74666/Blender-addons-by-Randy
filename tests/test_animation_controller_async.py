@@ -81,13 +81,17 @@ class AsyncControllerEdit(unittest.TestCase):
         self.service._poll_pending()
         return result
 
-    def test_home_click_prepares_daily_then_opens_verified_target(self):
-        self.home.character_designer_animation_worklist.precise_imported_motions = True
+    def test_home_click_prepares_ik_then_opens_verified_target(self):
         self.assertEqual(self.click_home()['state'], 'PENDING')
-        self.assertTrue(self.worker.begin.call_args.kwargs['daily_edit'])
+        self.assertFalse(self.worker.begin.call_args.kwargs['daily_edit'])
         self.assertIs(self.target.animation_data.action, self.previous_action)
         self.assertEqual(self.complete()['state'], 'CONTROLLER')
         self.assertIs(self.target.animation_data.action, self.records[0].controller_action)
+
+    def test_home_click_respects_explicit_fk_preference(self):
+        self.home.character_designer_animation_worklist.prepare_full_ik_tracks = False
+        self.assertEqual(self.click_home()['state'], 'PENDING')
+        self.assertTrue(self.worker.begin.call_args.kwargs['daily_edit'])
 
     def test_edited_pose_while_waiting_restores_no_stale_selection_or_pose(self):
         self.click_home()
@@ -112,7 +116,7 @@ class AsyncControllerEdit(unittest.TestCase):
         self.assertEqual(self.complete()['state'], 'READY')
         self.assertIs(self.target.animation_data.action, self.previous_action)
 
-    def start_fk_conversion(self):
+    def start_fk_conversion(self, *, on_open=False):
         self.context.window.scene = self.home
         self.home.render = SimpleNamespace(fps=30, fps_base=1.)
         self.home.character_designer_animation_worklist.selected_motion_clip = self.row.clip_key
@@ -128,7 +132,10 @@ class AsyncControllerEdit(unittest.TestCase):
         record = self.service._record(self.home, self.row)
         self.service._publish(record, self.row, SimpleNamespace(action=fk, slot=5, source_fingerprint='source'))
         self.built.action.data['character_designer_controller_representation'] = 'IK'
-        result = self.service.prepare_motion(self.context, self.home, self.row.clip_key, from_fk=True)
+        if on_open:
+            result = self.service.open_motion(self.context, self.home, self.row.clip_key, prepare_on_open=True)
+        else:
+            result = self.service.prepare_motion(self.context, self.home, self.row.clip_key, from_fk=True)
         self.key = result['job_id']
         self.service._poll_pending()
         self.service._poll_pending()
@@ -148,6 +155,13 @@ class AsyncControllerEdit(unittest.TestCase):
                                                        label=self.row.name, clip_id=self.row.work_item_id)
         self.assertIs(self.target.animation_data.action, self.built.action)
         self.assertFalse(self.service._needs_full_ik(record))
+
+    def test_clicking_retained_fk_queues_conversion_without_activating_old_action(self):
+        fk, record = self.start_fk_conversion(on_open=True)
+        self.assertIs(self.target.animation_data.action, self.previous_action)
+        self.assertIs(record.controller_action, fk)
+        self.assertEqual(self.complete()['state'], 'CONTROLLER')
+        self.assertIs(self.target.animation_data.action, self.built.action)
 
     def test_convert_fk_leaves_newly_edited_pose_and_previous_action_open(self):
         _fk, record = self.start_fk_conversion()
@@ -187,16 +201,16 @@ class AsyncControllerEdit(unittest.TestCase):
 
     def test_prepare_freezes_character_accuracy_when_the_batch_is_queued(self):
         settings = self.home.character_designer_animation_worklist
-        settings.precise_imported_motions = True
+        settings.prepare_full_ik_tracks = True
         self.start(bulk=True, capture=False)
-        settings.precise_imported_motions = False
+        settings.prepare_full_ik_tracks = False
         self.service._poll_pending()
         self.service._poll_pending()
         self.assertFalse(self.worker.begin.call_args.kwargs['daily_edit'])
 
-    def test_existing_character_defaults_to_daily_edit_accuracy(self):
+    def test_existing_character_defaults_to_full_ik(self):
         self.start(bulk=True)
-        self.assertTrue(self.worker.begin.call_args.kwargs['daily_edit'])
+        self.assertFalse(self.worker.begin.call_args.kwargs['daily_edit'])
         self.assertTrue(self.worker.begin.call_args.kwargs['align_loop_period'])
 
     def test_prepare_preserves_the_loop_timing_selected_for_the_batch(self):

@@ -688,8 +688,8 @@ class CharacterDesignerAnimationWorklistState(PropertyGroup):
                              get=_worklist_cursor, set=_ignore_worklist_cursor)
     catalog_index: IntProperty(default=-1, min=-1)
     selected_motion_clip: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
-    precise_imported_motions: BoolProperty(name='Generate Full IK Tracks', default=False,
-        description='Prepare complete IK trajectories for explicit Prepare commands. Opening a new motion uses FK')
+    prepare_full_ik_tracks: BoolProperty(name='Prepare Full IK Tracks', default=True,
+        description='Prepare and open motions in IK by default. Disable to keep existing FK edits or prepare new clips faster in FK')
     align_loop_period: BoolProperty(name='Fit Loops to Whole Frames', default=True,
         description='Scale a prepared loop to the nearest whole-frame duration. Turn off to keep exact source timing')
     search: StringProperty(name='Search Clips', options={'TEXTEDIT_UPDATE'})
@@ -1661,7 +1661,7 @@ def draw_worklist_unity(layout, context):
     import_settings = home.character_designer_animation_worklist if home is not None else settings
     box.prop(import_settings, 'align_loop_period')
     if home is not None:
-        box.prop(import_settings, 'precise_imported_motions', text='Prepare Full IK Tracks')
+        box.prop(import_settings, 'prepare_full_ik_tracks', text='Prepare Full IK Tracks')
     if settings.workspace_path and _prepared_rigging_target(context):
         prepared = box.row()
         prepared.enabled = _idle(context) and not local_current
@@ -1740,7 +1740,7 @@ def _draw_empty_list(box, context, settings, main):
     if fixed and fixed != len(ready):
         label += ' (' + str(fixed) + ' character slots)'
     editor = edit_scene.editing_scene(context.scene)
-    if not editor:
+    if not editor and not edit_scene.controller_only(context.scene):
         box.label(text=label + ' · 0 local actions', icon='INFO')
     from . import animation_worklist_target as target
     if main is not None and target.is_adopted(main) and target.REFS not in main:

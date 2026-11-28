@@ -77,7 +77,7 @@ class ControllerClearPolicyTests(unittest.TestCase):
             view_layer=NS(update=Mock(), objects=NS(active=h.rig)))
         h.bpy.utils.flip_name = lambda name: name[:-2] + ('.R' if name.endswith('.L') else '.L')
         events = []
-        h.backend.prepare_wrist_neutral.side_effect = lambda context, target: (
+        h.backend.prepare_wrist_neutral.side_effect = lambda context, target, follow_forearm: (
             events.append('prepare') or {'phase': 'prepared', 'target': target})
         h.backend.apply_wrist_neutral.side_effect = lambda *args: events.append('wrist')
 
@@ -111,7 +111,7 @@ class ControllerClearPolicyTests(unittest.TestCase):
         before = list(h.addon_map.keymap_items)
         h.ui.register()
         h.ui.register()
-        self.assertEqual(list(h.addon_map.keymap_items), [h.ui._KEYMAPS[0][1], *before])
+        self.assertEqual(list(h.addon_map.keymap_items), [h.ui._KEYMAPS[1][1], h.ui._KEYMAPS[0][1], *before])
         self.assertFalse(h.ui.CHARACTERDESIGNER_OT_clear_body_transform_channel.poll(h.context))
         self.assertEqual([(item, item.idname, item.type, item.value, item.active, item.flags.copy())
                           for item, *_ in items], items)
@@ -138,7 +138,7 @@ class ControllerClearPolicyTests(unittest.TestCase):
                 self.assertEqual(h.operator().execute(h.context), {'FINISHED'})
                 self.assertEqual(events, ['prepare', ('native', (foot.name, pole.name)), 'wrist'])
                 h.bpy.ops.pose.rot_clear.assert_called_once_with('EXEC_DEFAULT', False)
-                h.backend.prepare_wrist_neutral.assert_called_once_with(h.context, target=hand)
+                h.backend.prepare_wrist_neutral.assert_called_once_with(h.context, target=hand, follow_forearm=False)
                 h.backend.reset_wrist_neutral.assert_not_called()
                 self.assertEqual(tuple(h.context.selected_pose_bones), selection)
                 self.assertIs(h.context.active_pose_bone, foot)

@@ -1,4 +1,4 @@
-"""Compare selected controls before and after key reduction in one viewport."""
+"""Compare an original Action with a copy edited using Blender's native tools."""
 import bpy
 from bpy.props import EnumProperty, FloatProperty
 
@@ -7,12 +7,12 @@ from . import animation_preview_session as session
 
 
 OPERATIONS = (
-    ('START', 'Preview Key Reduction', 'Simplify selected controls on a temporary copy'),
+    ('START', 'Compare Key Edits', 'Create an editable copy for Graph Editor tools such as Decimate'),
     ('ORIGINAL', 'Original', 'Show the original motion at the current frame'),
-    ('REDUCED', 'Reduced', 'Edit the reduced copy or compare it with Original at the current frame'),
-    ('UPDATE', 'Adjust Reduction', 'Rebuild Reduced from Original, replacing edits made to the preview'),
-    ('APPLY', 'Apply', 'Apply Reduced to the current animation, including your curve edits'),
-    ('DISCARD', 'Discard', 'End the comparison and discard the preview'),
+    ('REDUCED', 'Edited', 'Show the editable copy at the current frame'),
+    ('UPDATE', 'Rebuild Preview', 'Rebuild the temporary Action from the original'),
+    ('APPLY', 'Apply Edits', 'Apply the edited copy to the original Action'),
+    ('DISCARD', 'Discard', 'Keep Original and discard the edited copy'),
 )
 
 
@@ -85,14 +85,12 @@ class CHARACTERDESIGNER_OT_hide_unused_scale(bpy.types.Operator):
 
 class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
     bl_idname = 'character_designer.key_reduction_preview'
-    bl_label = 'Key Reduction Preview'
+    bl_label = 'Compare Key Edits'
     bl_options = {'UNDO'}
 
     operation: EnumProperty(items=OPERATIONS, options={'HIDDEN'})
-    position_mm: FloatProperty(name='Position (mm)', default=2.0, min=0.0, precision=2,
-                               description='Allowed local position error, in millimeters')
-    rotation_degrees: FloatProperty(name='Rotation (degrees)', default=1.0, min=0.0, precision=2,
-                                    description='Allowed rotation error, in degrees')
+    position_mm: FloatProperty(default=2.0, min=0.0, options={'HIDDEN', 'SKIP_SAVE'})
+    rotation_degrees: FloatProperty(default=1.0, min=0.0, options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
     def description(cls, _context, properties):
@@ -103,45 +101,23 @@ class CHARACTERDESIGNER_OT_key_reduction_preview(bpy.types.Operator):
             state = session.status(context)
             if state is None:
                 return {'CANCELLED'}
-            message = 'Apply the current Reduced preview.'
-            if 'before' in state:
-                message = f"Selected keys  {state['before']:,} → {state['after']:,}"
+            message = _key_summary(state) or 'Apply the edited copy to the original Action.'
+            changed_cycles = session.changed_cycle_ranges(context)
+            if changed_cycles == 1:
+                message += '\nA repeating curve changed its frame range. Check the loop seam.'
+            elif changed_cycles > 1:
+                message += f'\n{changed_cycles} repeating curves changed frame range. Check the loop seam.'
             return context.window_manager.invoke_confirm(
-                self, event, title='Apply Key Reduction?', confirm_text='Apply Reduction', message=message)
-        if self.operation == 'UPDATE':
-            state = session.status(context)
-            if state is None:
-                return {'CANCELLED'}
-            self.position_mm = state['position_mm']
-            self.rotation_degrees = state['rotation_degrees']
-            return context.window_manager.invoke_props_dialog(self, width=285, title='Adjust Reduction')
+                self, event, title='Apply Key Edits?', confirm_text='Apply Edits', message=message)
         return self.execute(context)
-
-    def draw(self, context):
-        self.layout.prop(self, 'position_mm')
-        self.layout.prop(self, 'rotation_degrees')
-        self.layout.label(text='Rebuilding from Original replaces edits in Reduced.')
-        state = session.status(context)
-        if state and 'before' in state:
-            if state['removed']:
-                fraction = state['removed'] / state['reduced_before']
-                self.layout.label(
-                    text=f"Reduced curves  {state['reduced_before']:,} → {state['reduced_after']:,}  (−{fraction:.1%})")
-            if state['same_count']:
-                self.layout.label(text=f"Same key count  {state['same_count']:,}")
-            if state['added']:
-                self.layout.label(text=f"Added keys  {state['added']:,}")
-        if state and state['skipped']:
-            self.layout.label(text='Curves skipped when building preview')
-            for reason, count in sorted(state['skipped'].items()):
-                self.layout.label(text=f'{count:,} curves · {reason}')
 
     def execute(self, context):
         try:
-            if self.operation == 'START':
-                session.start(context, self.position_mm, self.rotation_degrees)
-            elif self.operation == 'UPDATE':
-                session.regenerate(context, self.position_mm, self.rotation_degrees)
+            if self.operation in {'START', 'UPDATE'}:
+                position = self.position_mm if self.properties.is_property_set('position_mm') else None
+                rotation = self.rotation_degrees if self.properties.is_property_set('rotation_degrees') else None
+                action = session.start if self.operation == 'START' else session.regenerate
+                action(context, position, rotation)
             elif self.operation in {'ORIGINAL', 'REDUCED'}:
                 session.switch(context, self.operation)
             elif self.operation == 'APPLY':
@@ -160,36 +136,49 @@ def _button(row, operation, label, **kwargs):
                  text=label, **kwargs).operation = operation
 
 
+def _key_summary(state):
+    if 'before' not in state:
+        return None
+    before, after = state['before'], state['after']
+    label = 'Selected keys'
+    if state.get('edit_only'):
+        if not (state['removed'] or state['added']):
+            return None
+        before, after = before - state['same_count'], after - state['same_count']
+        label = 'Keys on changed curves'
+    summary = f'{label}  {before:,} → {after:,}'
+    if before:
+        delta = after - before
+        sign = '−' if delta < 0 else '+' if delta > 0 else ''
+        summary += f'  ({sign}{abs(delta) / before:.1%})'
+    return summary
+
+
 def draw(layout, context, state):
     if state is None:
         if cleanup.prepared_binding(context):
             layout.operator(CHARACTERDESIGNER_OT_clean_animation_data.bl_idname, icon='BRUSH_DATA')
         rig = context.object
         if (context.mode == 'POSE' and rig is not None and rig.animation_data
-                and rig.animation_data.action and context.selected_pose_bones):
+                and rig.animation_data.action):
             row = layout.row(align=True)
-            _button(row, 'START', 'Preview Key Reduction', icon='KEYFRAME_HLT')
-            row.operator(CHARACTERDESIGNER_OT_hide_unused_scale.bl_idname, text='', icon='HIDE_ON')
+            _button(row, 'START', 'Compare Key Edits', icon='KEYFRAME_HLT')
+            if context.selected_pose_bones:
+                row.operator(CHARACTERDESIGNER_OT_hide_unused_scale.bl_idname, text='', icon='HIDE_ON')
         return
 
     box = layout.box()
-    title = box.row(align=True)
-    title.label(text='Key Reduction')
-    _button(title, 'UPDATE', '', icon='PREFERENCES')
-    if 'before' not in state:
-        box.label(text='Key counts unavailable', icon='INFO')
-    else:
-        before, after = state['before'], state['after']
-        summary = f"Selected keys  {before:,} → {after:,}"
-        if before:
-            delta = after - before
-            sign = '−' if delta < 0 else '+' if delta > 0 else ''
-            summary += f"  ({sign}{abs(delta) / before:.1%})"
+    if summary := _key_summary(state):
         box.label(text=summary)
     row = box.row(align=True)
-    for view, label in (('ORIGINAL', 'Original'), ('REDUCED', 'Reduced')):
+    for view, label in (('ORIGINAL', 'Original'), ('REDUCED', 'Edited')):
         _button(row, view, label, depress=state['view'] == view)
     row = box.row(align=True)
     row.operator_context = 'INVOKE_DEFAULT'
-    _button(row, 'APPLY', 'Apply Reduction', icon='CHECKMARK')
-    _button(row, 'DISCARD', 'Discard', icon='X')
+    if state['view'] == 'ORIGINAL':
+        _button(row, 'DISCARD', 'Keep Original', icon='CHECKMARK')
+    elif state['view'] == 'REDUCED':
+        _button(row, 'APPLY', 'Apply Edits', icon='CHECKMARK')
+        _button(row, 'DISCARD', 'Discard', icon='X')
+    else:
+        _button(row, 'DISCARD', 'Discard', icon='X')

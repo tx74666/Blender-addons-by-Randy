@@ -1,4 +1,4 @@
-"""A reversible, selected-control reduction on an isolated Action and its original slot."""
+"""Compare native edits on a temporary Action against the original slot."""
 import json
 import math
 import re
@@ -33,11 +33,10 @@ def _binding(rig):
 
 def _view(rig, record):
     action, handle = _binding(rig)
-    if handle == record['slot']:
-        if action == record.get('source'):
-            return 'ORIGINAL'
-        if action == record.get('preview'):
-            return 'REDUCED'
+    if (action, handle) == (record.get('source'), record['slot']):
+        return 'ORIGINAL'
+    if (action, handle) == (record.get('preview'), record.get('preview_slot', record['slot'])):
+        return 'REDUCED'
     return 'OTHER'
 
 
@@ -46,19 +45,46 @@ def status(context):
     record = rig.get(SESSION) if rig and rig.type == 'ARMATURE' else None
     if record is None:
         return None
+    if record.get('kind') == 'FBX':
+        return dict(view=_view(rig, record), kind='FBX', filename=record['filename'])
     data = json.loads(record['settings'])
+    edit_only = data.get('edit_only', False)
     original, reduced = record.get('source'), record.get('preview')
     counts = {}
     if original is not None and reduced is not None:
-        # Compare every channel owned by the original control selection.
-        # Only F-Curve headers and point collection lengths are read during redraw.
-        bone_paths = {f'pose.bones["{bpy.utils.escape_identifier(name)}"]' for name in data['bone_names']}
+        # Native edits may change channels outside the initial bone selection.
+        bone_paths = None if edit_only else {
+            f'pose.bones["{bpy.utils.escape_identifier(name)}"]' for name in data['bone_names']
+        }
         try:
             counts = curves.key_counts(original, reduced, record['slot'], bone_paths)
         except (ValueError, RuntimeError, ReferenceError):
             pass  # A changed or missing channelbag makes comparison unavailable.
-    return dict(view=_view(rig, record), skipped=data.get('skipped', {}), **counts, **{
+    return dict(view=_view(rig, record), edit_only=edit_only, skipped=data.get('skipped', {}), **counts, **{
         key: data[key] for key in ('bone_names', 'position_mm', 'rotation_degrees')})
+
+
+def changed_cycle_ranges(context):
+    """Check the key bounds Blender uses for Repeat Motion before Apply."""
+    rig = context.active_object
+    record = rig.get(SESSION) if rig and rig.type == 'ARMATURE' else None
+    if not record or not record.get('source') or not record.get('preview'):
+        return 0
+    try:
+        original = curves._indexed(record['source'], record['slot'])
+        edited = curves._indexed(record['preview'], record['slot'])
+    except (ValueError, RuntimeError, ReferenceError):
+        return 0  # Apply already validates the slot and binding.
+    count = 0
+    for key, after in edited.items():
+        before = original.get(key)
+        if (before is None or len(before.keyframe_points) < 2 or len(after.keyframe_points) < 2
+                or curves._repeat_mode(before) != 'REPEAT' or curves._repeat_mode(after) != 'REPEAT'):
+            continue
+        if any(not math.isclose(before.keyframe_points[i].co.x, after.keyframe_points[i].co.x,
+                                rel_tol=0., abs_tol=.0001) for i in (0, -1)):
+            count += 1
+    return count
 
 
 def _ready(context, rig):
@@ -115,8 +141,9 @@ def _record(context):
     if (record is None or record.get('scene') != context.scene or not record.get('source')
             or not record.get('preview') or record['preview'].get(TEMP) != rig):
         raise ValueError('The preview binding changed. Discard the preview from its original character and scene.')
-    for action in (record['source'], record['preview']):
-        if action.library or action.override_library or not _has_slot(action, record['slot']):
+    for action, handle in ((record['source'], record['slot']),
+                           (record['preview'], record.get('preview_slot', record['slot']))):
+        if action.library or action.override_library or not _has_slot(action, handle):
             raise ValueError('The preview Action or slot changed. Discard this comparison.')
     return rig, record
 
@@ -294,15 +321,19 @@ def _loop(context, rig, action, handle):
 
 
 def _make(context, rig, source, handle, names, position_mm, rotation_degrees):
-    if (not math.isfinite(position_mm) or not math.isfinite(rotation_degrees)
-            or min(position_mm, rotation_degrees) < 0):
-        raise ValueError('Reduction tolerances must be finite and nonnegative.')
-    units = context.scene.unit_settings.scale_length * max(map(abs, rig.matrix_world.to_scale()))
-    if not math.isfinite(units) or units <= 0.:
-        raise ValueError('The character needs a usable scene scale.')
+    edit_only = position_mm is None and rotation_degrees is None
+    if not edit_only:
+        position_mm = 2. if position_mm is None else position_mm
+        rotation_degrees = 1. if rotation_degrees is None else rotation_degrees
+        if (not math.isfinite(position_mm) or not math.isfinite(rotation_degrees)
+                or min(position_mm, rotation_degrees) < 0):
+            raise ValueError('Reduction tolerances must be finite and nonnegative.')
+        units = context.scene.unit_settings.scale_length * max(map(abs, rig.matrix_world.to_scale()))
+        if not math.isfinite(units) or units <= 0.:
+            raise ValueError('The character needs a usable scene scale.')
     action = source.copy()
     try:
-        action.name = '.Reduced Preview'
+        action.name = '.Edited Preview' if edit_only else '.Reduced Preview'
         if action.asset_data:
             action.asset_clear()
         action.use_fake_user = False
@@ -313,14 +344,17 @@ def _make(context, rig, source, handle, names, position_mm, rotation_degrees):
                 del action[key]
         action[TEMP] = rig
         loop = _loop(context, rig, source, handle)
-        result = curves.simplify(action, handle, names, position_mm * .001 / units,
-                                 math.radians(rotation_degrees), loop=loop)
+        result = dict(paths=[], skipped={})
+        if not edit_only:
+            result = curves.simplify(action, handle, names, position_mm * .001 / units,
+                                     math.radians(rotation_degrees), loop=loop)
+            hide_unused_scale(rig, action, handle, bone_names=names)
         scope = curves.selected_paths(source, handle, names)
-        if not scope:
+        if not edit_only and not scope:
             raise ValueError('The selected controls have no animated transforms in this Action slot.')
-        hide_unused_scale(rig, action, handle, bone_names=names)
-        settings = dict(bone_names=list(names), position_mm=position_mm, rotation_degrees=rotation_degrees,
-                        paths=list(result['paths']), before=result['before'], after=result['after'],
+        settings = dict(bone_names=list(names), edit_only=edit_only,
+                        position_mm=position_mm, rotation_degrees=rotation_degrees,
+                        paths=list(result['paths']),
                         skipped=result['skipped'], loop=loop,
                         scope=scope, source_hash=curves.signature(source, handle, scope),
                         original_view_hash=_signature(source), preview_hash=_signature(action))
@@ -331,7 +365,7 @@ def _make(context, rig, source, handle, names, position_mm, rotation_degrees):
         raise
 
 
-def start(context, position_mm=2., rotation_degrees=1.):
+def start(context, position_mm=None, rotation_degrees=None):
     rig = _rig(context)
     if SESSION in rig:
         raise ValueError('Finish the open reduction preview first.')
@@ -339,7 +373,7 @@ def start(context, position_mm=2., rotation_degrees=1.):
     source, handle = _binding(rig)
     _writable_source(rig, source, handle)
     names = sorted(bone.name for bone in (context.selected_pose_bones or ()))
-    if not names:
+    if not names and (position_mm is not None or rotation_degrees is not None):
         raise ValueError('Select the controls whose keys you want to simplify.')
     action, settings = _make(context, rig, source, handle, names, position_mm, rotation_degrees)
     try:
@@ -354,6 +388,55 @@ def start(context, position_mm=2., rotation_degrees=1.):
     return status(context)
 
 
+def _version_motion(context, rig, action, slot):
+    rows = [row for row in context.scene.character_designer_controller_motions
+            if row.target == rig and (action, slot) in (
+                (row.controller_action, row.controller_slot), (row.alternate_action, row.alternate_slot))]
+    if rows and (len(rows) != 1 or rows[0].controller_action != action or rows[0].controller_slot != slot):
+        raise ValueError('Open the main working animation for this clip before comparing versions.')
+    return rows[0] if rows else None
+
+
+def start_version(context, filepath, skip_reference=True):
+    from pathlib import Path
+    from . import animation_playback_range as playback, animation_version_fbx, unity_animation
+    from .animation_export_queue import _idle as export_idle
+
+    rig = _rig(context)
+    if SESSION in rig:
+        raise ValueError('Finish the open comparison first.')
+    export_idle(context, rig)
+    _ready(context, rig)
+    original, handle = _binding(rig)
+    _writable_source(rig, original, handle)
+    motion = _version_motion(context, rig, original, handle)
+    signature = _signature(original)
+    loop = _loop(context, rig, original, handle)
+    packet = animation_version_fbx.read(context, rig, filepath, skip_reference)
+    action, slot = animation_version_fbx.bake(context, rig, packet, float(original.frame_range[0]), loop)
+    try:
+        action.name = '.Incoming Version'
+        action[TEMP] = rig
+        scene = context.scene
+        rig[SESSION] = dict(source=original, preview=action, scene=scene, slot=handle,
+                            preview_slot=slot, kind='FBX', filename=Path(filepath).name,
+                            settings=json.dumps(dict(original_view_hash=signature, loop=loop)),
+                            clip_key=motion.clip_key if motion else '',
+                            initial_inputs=_initial_inputs(rig),
+                            range=[scene.frame_start, scene.frame_end, scene.frame_preview_start,
+                                   scene.frame_preview_end, scene.use_preview_range])
+        unity_animation._set_playing(context, False)
+        _bind(context, rig, action, slot)
+        playback.set_ranges(scene, min(original.frame_range[0], action.frame_range[0]),
+                            max(original.frame_range[1], action.frame_range[1]), False)
+    except Exception:
+        if SESSION in rig:
+            discard(context)
+        else:
+            _release(action, rig)
+        raise
+
+
 def switch(context, view):
     rig, record = _record(context)
     _ready(context, rig)
@@ -361,8 +444,10 @@ def switch(context, view):
         raise ValueError('The active Action or slot changed. Discard this preview to start again.')
     if view == 'REDUCED' and _view(rig, record) != view:
         if _signature(record['source']) != json.loads(record['settings'])['original_view_hash']:
-            raise ValueError('The original motion was edited. Update or restart the reduction preview.')
-    _bind(context, rig, record['source' if view == 'ORIGINAL' else 'preview'], record['slot'])
+            raise ValueError('The original motion was edited. Restart the comparison from those edits.')
+    preview = view == 'REDUCED'
+    handle = record.get('preview_slot', record['slot']) if preview else record['slot']
+    _bind(context, rig, record['preview' if preview else 'source'], handle)
     return status(context)
 
 
@@ -371,6 +456,8 @@ def _checked(context):
     _ready(context, rig)
     if _view(rig, record) == 'OTHER':
         raise ValueError('The active Action or slot changed. Discard this preview to start again.')
+    if record.get('kind') == 'FBX':
+        raise ValueError('Finish comparing versions before editing keys.')
     source, preview, slot = record['source'], record['preview'], record['slot']
     data = json.loads(record['settings'])
     if 'loop' in data and data['loop'] != _loop(context, rig, source, slot):
@@ -415,12 +502,63 @@ def discard(context):
         # preview as an ordinary Action, including when it is not assigned.
         preview.use_fake_user = True
         preview.name = 'Recovered Key Preview'
+    if record.get('kind') == 'FBX':
+        scene = context.scene
+        first, last, preview_first, preview_last, use_preview = record['range']
+        scene.frame_end, scene.frame_start, scene.frame_end = max(scene.frame_end, last), first, last
+        scene.frame_preview_end, scene.frame_preview_start, scene.frame_preview_end = (
+            max(scene.frame_preview_end, preview_last), preview_first, preview_last)
+        scene.use_preview_range = bool(use_preview)
     del rig[SESSION]
     if preview:
         _release(preview, rig)
 
 
+def _apply_version(context, rig, record):
+    from . import animation_action_browser as browser, animation_playback_range as playback
+    from .animation_loop_timing import set_loop
+
+    _ready(context, rig)
+    if _view(rig, record) != 'REDUCED':
+        raise ValueError('Switch to Incoming before applying the version.')
+    source, incoming, slot = record['source'], record['preview'], record['slot']
+    _writable_source(rig, source, slot)
+    data = json.loads(record['settings'])
+    if _signature(source) != data['original_view_hash']:
+        raise ValueError('The original motion changed during the comparison.')
+    motion = _version_motion(context, rig, source, slot)
+    if (motion.clip_key if motion else '') != record['clip_key']:
+        raise ValueError('The working motion changed during comparison.')
+    name, handle = source.name, record['preview_slot']
+    label, clip_id = source.get(browser.LABEL_KEY) or name, source.get(browser.CLIP_KEY)
+    classify = bool(clip_id and source.get(browser.ROLE_KEY) == 'WORK' and len(source.slots) == 1)
+    if classify:
+        browser.classify_action(incoming, rig, role='WORK', label=label, clip_id=clip_id)
+        browser.classify_action(source, rig, role='ARCHIVED', label=label, clip_id=clip_id)
+    set_loop(incoming, data['loop'])
+    incoming['character_designer_controller_representation'] = 'FK'
+    source.use_fake_user = incoming.use_fake_user = True
+    if len(source.slots) == 1:
+        source.name = name + ' · Previous'
+    incoming.name = name
+    if motion:
+        motion.controller_action, motion.controller_slot = incoming, handle
+    for scene in bpy.data.scenes:
+        for pin in scene.character_designer_local_motion_pins:
+            if (pin.rig, pin.action, pin.slot_handle) == (rig, source, slot):
+                pin.action, pin.slot_handle = incoming, handle
+        for route in scene.character_designer_animation_export_routes:
+            if (route.rig, route.action, route.slot) == (rig, source, slot):
+                route.action, route.slot = incoming, handle
+    playback.set_ranges(context.scene, *incoming.frame_range, data['loop'])
+    del incoming[TEMP]
+    del rig[SESSION]
+
+
 def apply(context):
+    rig, record = _record(context)
+    if record.get('kind') == 'FBX':
+        return _apply_version(context, rig, record)
     rig, record, data = _checked(context)
     source, preview, slot = record['source'], record['preview'], record['slot']
     _writable_source(rig, source, slot)

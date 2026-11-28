@@ -1145,17 +1145,8 @@ def draw_unity_animation_exports(layout, context):
     else:
         local = animation_composition_local_ui.composition.session(equipment_ui._target(context))
         animation_export_queue.draw(layout, context, enabled=local is None)
-        library = section(layout, 'character_designer_unity_animation_library', 'Animation Library',
-                          default_closed=True)
-        if library is not None:
-            library.enabled = local is None
-            animation_export_queue.draw_library(library, context)
-            animation_export_queue.draw_add(library, context)
-            if not worklist.workspace_path:
-                _draw_single_export_review(library, context)
-        if local is not None:
-            layout.operator('character_designer.animation_export', text='Export Composition as FBX…',
-                            icon='EXPORT').composition = True
+        if not worklist.workspace_path and local is None:
+            _draw_single_export_review(layout, context)
         _draw_quick_export(layout, context)
         if worklist.workspace_path and worklist.items:
             linked = section(layout, 'character_designer_unity_animation_link_review', 'Linked Revisions',
@@ -1244,8 +1235,8 @@ def _draw_pose_resets(layout, context):
     if len(selected) <= 2:
         from .limb_ik_wrist_rotation_ui import _owned_wrist
         if all(bone.id_data == context.object and _owned_wrist(bone) for bone in selected):
-            label = 'Match Wrist to Edit Pose' if len(selected) == 1 else 'Match Wrists to Edit Pose'
-            layout.operator('character_designer.limb_ik_clear_wrist_rotation', text=label, icon='LOOP_BACK')
+            from . import limb_ik_wrist_move
+            limb_ik_wrist_move.draw(layout, context)
 
 
 class CHARACTERDESIGNER_PT_animation(Panel):
@@ -1262,18 +1253,18 @@ class CHARACTERDESIGNER_PT_animation(Panel):
     def draw(self, context):
         layout = self.layout
         from . import animation_original_inputs_ui as original_inputs
+        from .animation_export import active_job
         from .animation_physics_ui import draw as draw_physics, section, wrapped_label
 
+        worklist = context.scene.character_designer_animation_worklist
+        preview = animation_preview_ui.session.status(context)
+        rig = equipment_ui._target(context)
+        local = animation_composition_local_ui.composition.session(rig)
         page = section(layout, "character_designer_animation_animations", "Animations", icon="ACTION")
         if page is not None:
             from . import animation_worklist_ui as worklist_ui
             from .animation_worklist_collection import running as collection_running
-            from .animation_export import active_job
             from .control_pose_capture import draw as draw_pose_capture
-            worklist = context.scene.character_designer_animation_worklist
-            preview = animation_preview_ui.session.status(context)
-            rig = equipment_ui._target(context)
-            local = animation_composition_local_ui.composition.session(rig)
             motions = page.column()
             motions.enabled = preview is None and local is None
             draw_pose_capture(motions, context)
@@ -1281,8 +1272,8 @@ class CHARACTERDESIGNER_PT_animation(Panel):
             if not worklist.workspace_path:
                 _draw_single_action(motions, context)
             job = active_job()
-            if job and not (job.get('composition_job') or collection_running() or worklist_ui.scan_pending()
-                            or animation_export_queue.running()):
+            if job and not (job.get('composition_job') or job.get('composition_tracks')
+                            or collection_running() or worklist_ui.scan_pending() or animation_export_queue.running()):
                 page.operator('character_designer.animation_export_cancel', icon='CANCEL')
             settings = _settings(context)
             if not worklist.workspace_path and settings.status:
@@ -1294,13 +1285,6 @@ class CHARACTERDESIGNER_PT_animation(Panel):
                         wrapped_label(page, context, 'Omitted: ' + settings.status.split('. Omitted: ', 1)[1])
             _draw_pose_resets(motions, context)
             animation_preview_ui.draw(page, context, preview)
-            if rig is not None:
-                upper = section(page, 'character_designer_animation_upper_body', 'Upper-Body Composition',
-                                icon='NLA', default_closed=local is None)
-                if upper is not None:
-                    upper.enabled = preview is None
-                    equipment_ui.draw_equip(upper, rig)
-                    animation_composition_local_ui.draw_composition(upper, context)
             imports = section(page, "character_designer_animation_unity", "Import Animations",
                               icon="IMPORT", default_closed=True)
             if imports is not None:
@@ -1317,6 +1301,30 @@ class CHARACTERDESIGNER_PT_animation(Panel):
                     _draw_local_motion(tools, context)
             elif not worklist.workspace_path and _job is not None:
                 _draw_local_motion(page, context)
+        if rig is not None or worklist.workspace_path:
+            from . import animation_composition, animation_composition_ui
+
+            linked = bool(worklist.workspace_path and animation_composition.active(worklist.rig))
+            composition = section(layout, 'character_designer_animation_upper_body', 'Animation Composition',
+                                  icon='NLA', default_closed=local is None and not linked)
+            if composition is not None:
+                composition.enabled = preview is None and not original_inputs.original_inputs_live(context)
+                if rig is not None:
+                    controls = composition.column()
+                    controls.enabled = not linked
+                    equipment_ui.draw_equip(controls, rig)
+                    animation_composition_local_ui.draw_composition(controls, context)
+                    if local is not None:
+                        job = active_job()
+                        if job and job.get('composition_tracks'):
+                            controls.operator('character_designer.animation_export_cancel', icon='CANCEL')
+                        else:
+                            controls.operator('character_designer.animation_export', text='Export Composition as FBX…',
+                                              icon='EXPORT').composition = True
+                if worklist.workspace_path:
+                    overlay = composition.column()
+                    overlay.enabled = local is None
+                    animation_composition_ui.draw_composition(overlay, context)
         draw_physics(layout, context)
         if original_inputs.has_original_inputs(original_inputs._rig(context)):
             original = section(layout, "character_designer_animation_original_inputs",

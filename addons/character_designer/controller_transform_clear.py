@@ -155,14 +155,14 @@ def _restore_keys(_rig, snapshot):
             bag.groups.remove(group)
 
 
-def reset_mixed_rotation(context, wrists, companions):
+def reset_mixed_rotation(context, wrists, companions, *, follow_forearm=False):
     rig = context.object
     if any(obj != rig for obj in context.objects_in_mode):
         raise ValueError('Use Pose Mode on one armature for a mixed wrist and control reset.')
     snapshot = _native_rotation_snapshot(rig, companions)
     from . import limb_ik_wrist_rotation as backend
     request = {'target': wrists[0]} if len(wrists) == 1 else {'targets': wrists}
-    plan = backend.prepare_wrist_neutral(context, **request)
+    plan = backend.prepare_wrist_neutral(context, follow_forearm=follow_forearm, **request)
     keys = _key_snapshot(context, plan, snapshot) if context.scene.tool_settings.use_keyframe_insert_auto else None
     other_keys = _key_snapshot(context, plan, snapshot, nonrotation=True) if keys is not None else None
     selected = [pb for pb, _ in snapshot]

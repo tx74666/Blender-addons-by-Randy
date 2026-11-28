@@ -79,7 +79,7 @@ if expected == 'baseline':
     check_source()
     result = {'expected_original_error': True, 'rollback_preserved': True}
 else:
-    assert op(operation='START') == {'FINISHED'}
+    assert op(operation='START', position_mm=2.0) == {'FINISHED'}
     report = preview.status(bpy.context)
     assert report['view'] == 'REDUCED' and report['before'] > report['after']
     inputs = json.loads(rig[preview.SESSION]['initial_inputs'])

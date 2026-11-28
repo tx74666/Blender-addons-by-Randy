@@ -85,8 +85,8 @@ class StandardWristTests(unittest.TestCase):
             target.bone.name = target.name
             self.sources[key] = target
         original_create = self.V._create_widget
-        def create(*args):
-            original_create(*args)
+        def create(*args, **kwargs):
+            original_create(*args, **kwargs)
             _context, _rig, record, name, entry = args
             obj = model.objects[entry['object']]
             old_mesh = obj.data

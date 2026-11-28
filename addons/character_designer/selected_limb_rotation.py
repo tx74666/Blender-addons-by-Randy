@@ -42,7 +42,7 @@ def reset(context, wrists, feet, *, follow_shin=False):
     rows = [*pole_rows, *map(_rotation_row, _foot_targets(rig, feet))]
     wrist_plan = None
     if wrists:
-        wrist_plan = wrist.prepare_wrist_neutral(context, targets=wrists)
+        wrist_plan = wrist.prepare_wrist_neutral(context, targets=wrists, follow_forearm=follow_shin)
         rows.extend(_rotation_row(side['target']) for side in wrist_plan.get('sides', (wrist_plan,)))
 
     auto = context.scene.tool_settings.use_keyframe_insert_auto

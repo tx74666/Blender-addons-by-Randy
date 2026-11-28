@@ -825,35 +825,7 @@ def _finish_edit_region(rig, key, entry, inventory):
 
 
 def _build_selected_rings(context, rig, keys):
-    """Use the visual builder's owned leaves with an explicit region filter."""
-    import uuid
-    from . import generated_names
-    inventory = limb_ik._validate_inventory(rig)
-    previous = limb_fk_visuals.validate(rig, inventory)
-    record = previous or {'version': limb_fk_visuals.VERSION, 'id': uuid.uuid4().hex,
-                          'armature_id': inventory['armature_id'], 'bindings': {}, 'skipped': {},
-                          'collection': generated_names.collection_name(rig, 'FK Rings')}
-    for key in sorted(keys):
-        chain = inventory['rigs'][key]['chain']
-        for name in limb_fk_visuals.binding_names(key[0], chain):
-            if name in record['bindings']:
-                continue
-            pb = rig.pose.bones[name]
-            if pb.custom_shape is not None or pb.custom_shape_transform is not None:
-                continue
-            if limb_fk_visuals._animated_display(rig, pb):
-                continue
-            radius = limb_fk_visuals.ring_radius(rig, key[0], chain, name)
-            widget_name = generated_names.widget_name(rig, 'FK_' + name)
-            record['bindings'][name] = {'kind': key[0], 'side': key[1],
-                'chain': list(inventory['rigs'][key]['chain']), 'object': widget_name, 'mesh': widget_name,
-                'original': limb_ik._pose_shape_json_state(pb),
-                'generated': {'custom_shape': '', 'custom_shape_transform': '', 'use_bone_size': False,
-                              'scale': [radius] * 3, 'translation': [0., 0., 0.], 'rotation': [0., 0., 0.],
-                              'wire_width': 2.0 if hasattr(pb, 'custom_shape_wire_width') else None}}
-            limb_fk_visuals._create_widget(context, rig, record, name, record['bindings'][name])
-    if record['bindings']:
-        rig.data[limb_fk_visuals.RECORD_KEY] = json.dumps(record)
+    limb_fk_visuals.build(context, rig, keys=keys)
 
 
 def _build_selected_source_shapes(context, rig, keys):

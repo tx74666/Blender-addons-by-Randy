@@ -60,7 +60,7 @@ class LimbDisplayTests(unittest.TestCase):
     def bindings(self, rig):
         record = visuals.validate(rig, limb_ik._validate_inventory(rig))
         self.assertIsNotNone(record)
-        self.assertEqual(len(record['bindings']), 10)
+        self.assertEqual(len(record['bindings']), 12)
         return record['bindings']
 
     def assert_limb_display(self, rig, inventory, key, mode):
@@ -77,7 +77,7 @@ class LimbDisplayTests(unittest.TestCase):
             else:
                 self.assertNotIn(name, body_members)
             if name in bindings:
-                native = mode == 'FK' and not (key[0] == 'ARM' and name == item['chain'][2])
+                native = mode == 'FK' and name != item['chain'][2]
                 expected = (None if native
                             else bpy.data.objects[bindings[name]['object']])
                 self.assertEqual(rig.pose.bones[name].custom_shape, expected, name)
@@ -114,7 +114,7 @@ class LimbDisplayTests(unittest.TestCase):
             if mode == 'FK':
                 self.assertEqual(json.loads(rig.data[visuals.NATIVE_DISPLAY_KEY]),
                                  {name: entry['object'] for name, entry in bindings.items()
-                                  if not (entry['kind'] == 'ARM' and name == entry['chain'][2])})
+                                  if name != entry['chain'][2]})
             else:
                 self.assertNotIn(visuals.NATIVE_DISPLAY_KEY, rig.data)
 

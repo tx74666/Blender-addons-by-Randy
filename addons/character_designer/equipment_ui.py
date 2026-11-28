@@ -32,6 +32,12 @@ def _selected(context):
     return profile or (record[profiles.LOCAL] if record is not None else None)
 
 
+def _unity_library_path(context):
+    from .animation import unity_exchange_folder
+
+    return unity_exchange_folder(context) / 'Weapons' / 'weapon_library.json'
+
+
 class CHARACTERDESIGNER_OT_weapon_import(Operator):
     bl_idname = 'character_designer.weapon_import'
     bl_label = 'Import Weapon'
@@ -64,6 +70,8 @@ class CHARACTERDESIGNER_OT_weapon_import_unity_library(Operator):
     filter_glob: StringProperty(default='*.json', options={'HIDDEN'})
 
     def invoke(self, context, _event):
+        if not self.filepath:
+            self.filepath = str(_unity_library_path(context))
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -71,7 +79,8 @@ class CHARACTERDESIGNER_OT_weapon_import_unity_library(Operator):
         from . import animation_weapon_library
 
         try:
-            imported, reused, issues = animation_weapon_library.import_library(context, self.filepath)
+            path = self.filepath or str(_unity_library_path(context))
+            imported, reused, issues = animation_weapon_library.import_library(context, path)
         except (OSError, RuntimeError, ValueError) as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
@@ -185,13 +194,15 @@ class CHARACTERDESIGNER_MT_weapon_equip(Menu):
     def draw(self, _context):
         choices = sorted((p for p in bpy.data.collections if profiles.is_profile(p)),
                          key=lambda p: p.name.casefold())
-        if not choices:
-            self.layout.label(text='Import a Weapon Profile in Miscellaneous → Weapon.')
         self.layout.operator_context = 'EXEC_DEFAULT'
         for profile in choices:
             action = profile.get(profiles.EQUIP_ACTION)
             text = f'{profile.name} · {action.name}' if action is not None else profile.name
             self.layout.operator('character_designer.weapon_equip', text=text).profile_name = profile.name
+        if choices:
+            self.layout.separator()
+        self.layout.operator('character_designer.weapon_import_unity_library',
+                             text='Sync Unity Library', icon='FILE_REFRESH').filepath = ''
 
 
 class CHARACTERDESIGNER_OT_weapon_calibrate(Operator):
@@ -343,21 +354,7 @@ class CHARACTERDESIGNER_PT_equipment(Panel):
         return active_ui_page(context) == UI_PAGE_MISC
 
     def draw(self, context):
-        from . import animation_composition_local_ui, animation_composition_ui, animation_preview_ui
-        from .animation_original_inputs_ui import original_inputs_live
-
-        layout = self.layout
-        draw_weapons(layout, context)
-        rig, preview = _target(context), animation_preview_ui.session.status(context)
-        local = None
-        if rig is not None and rig.animation_data is not None:
-            local = animation_composition_local_ui.composition.session(rig)
-
-        worklist = getattr(context.scene, 'character_designer_animation_worklist', None)
-        if worklist is not None and worklist.workspace_path:
-            overlay = layout.column()
-            overlay.enabled = preview is None and local is None and not original_inputs_live(context)
-            animation_composition_ui.draw_composition(overlay, context)
+        draw_weapons(self.layout, context)
 
 
 EQUIPMENT_CLASSES = (

@@ -606,7 +606,8 @@ def _import_sample_frames(data, start_frame, scene_fps, *, native_timebase=False
     return [start_frame + frame["time"] * fps for frame in samples]
 
 
-def _import_package_action(context, target, data, *, start_frame=1, native_timebase=False, align_loop_period=False):
+def _import_package_action(context, target, data, *, start_frame=1, native_timebase=False, align_loop_period=False,
+                           attach=True):
     """Apply this operation's validated packet without parsing a second copy.
 
     Internal callers must pass load_package's result. Link import retains its
@@ -686,13 +687,17 @@ def _import_package_action(context, target, data, *, start_frame=1, native_timeb
                         channels.setdefault((prefix + "." + prop, component), []).append(value)
     action, preview_data = None, None
     original_data = target.data
+    if not attach and needs_joint_translation:
+        raise UnityAnimationError('This take needs translation on a connected bone. Use the matching rig export to compare versions.')
     try:
         clip = str(data.get("clipName") or "Animation").strip()
         action = bpy.data.actions.new("Unity Test · " + clip)
-        action.use_fake_user = True
+        action.use_fake_user = attach
         slot, bag = _new_channelbag(action, target)
         for (path, component), values in channels.items():
             _write_curve(bag, path, component, frames, values)
+        if not attach:
+            return PreviewResult(action, frames[0], frames[-1], len(frames), mapping.error_metres)
         action[VERSION_KEY], action[TARGET_KEY] = (2 if mapping.controls else 1), target
         if mapping.controls:
             action[CONTROL_KEYS_KEY] = json.dumps(sorted(
@@ -748,6 +753,10 @@ def _import_package_action(context, target, data, *, start_frame=1, native_timeb
         _set_frame(scene, frames[0])
         context.view_layer.update()
     except Exception:
+        if not attach:
+            if action is not None:
+                bpy.data.actions.remove(action, do_unlink=False)
+            raise
         if target.get(ACTIVE_KEY) is action:
             del target[ACTIVE_KEY]
         if target.data is not original_data:

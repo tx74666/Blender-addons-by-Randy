@@ -1,0 +1,7 @@
+# Character Designer 0.77.302 · IK by default and FK endpoint controls
+
+The Animation library opens ready IK clips directly. First-time preparation defaults to IK, and opening a retained FK edit queues the existing verified FK-to-IK conversion. The current motion stays open while preparation runs. The verified IK result becomes the working Action, and the prior FK Action is retained for recovery. The **Prepare Full IK Tracks** setting now applies to both library opens and explicit preparation, with a fresh default for existing files.
+
+Pose-mode motion opens and explicit FK switches restore missing wrist and sole widgets through the existing display setup. FK rotation still uses the original joint pivot. IK targets retain translation. X was refreshed in place and saved with all four FK shapes. The active Slide Start Action was preserved and the saved bindings were read back.
+
+An isolated Walk Forward test converted all four limbs to IK in 378.4 seconds, retained the FK curve data and reopened the result without another conversion. The final projection passed native default, queue admission, FK/IK control, and saved-file checks. Blender 5.2 and X both matched the 330-file projection. The broader Worklist UI fixture had the same 16 errors on the previous and current projections. [Delivery receipt](<D:/Blender/Projects/Character/X/validation/ik_default_and_fk_widgets_20261128/delivery302.json>)

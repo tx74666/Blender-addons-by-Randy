@@ -275,26 +275,31 @@ def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance,
         return None, 'Locked, muted or sampled'
     if all(len(curve.keyframe_points) <= 2 for curve in curves):
         return None, 'Two or fewer keys per axis'
-    modes = {_repeat_mode(curve) for curve in curves}
-    if 'UNSUPPORTED' in modes or len(modes) != 1:
-        return None, 'Unsupported or mixed modifiers'
-    preserve_seam = loop or 'REPEAT' in modes
+    axis_modes = [_repeat_mode(curve) for curve in curves]
+    modes = set(axis_modes)
+    if 'UNSUPPORTED' in modes:
+        return None, 'Unsupported modifiers'
+    mixed_cycles = len(modes) > 1
+    independent_axes = prop in {'location', 'rotation_euler'}
+    if mixed_cycles and not independent_axes:
+        return None, 'Different cycle modes across axes'
     coords = [_column(curve.keyframe_points, 'co', 'f', 2) for curve in curves]
     clocks = [axis[::2] for axis in coords]
     if any(any(b <= a for a, b in zip(clock, clock[1:])) for clock in clocks):
         return None, 'Duplicate or unordered key times'
-    if any(clock != clocks[0] for clock in clocks[1:]):
-        if prop not in {'location', 'rotation_euler'}:
+    if mixed_cycles or any(clock != clocks[0] for clock in clocks[1:]):
+        if not independent_axes:
             return None, 'Different key times across axes'
-        # Position errors combine by Euclidean norm. Differences in the
-        # individual Euler rotations add at most their absolute angles.
+        # Axes can evaluate at different times when only some of them wrap.
+        # Independent error bounds still compose by norm for position and
+        # by the sum of absolute angles for Euler rotation.
         tolerance = (position_tolerance / math.sqrt(len(curves)) if prop == 'location'
                      else rotation_tolerance / len(curves))
         retained = []
-        for curve, clock, axis in zip(curves, clocks, coords):
+        for curve, clock, axis, mode in zip(curves, clocks, coords, axis_modes):
             rows = [(value,) for value in axis[1::2]]
             keep, reason = _retained_rows((curve,), clock, rows, guard_times, tolerance,
-                                          preserve_seam=preserve_seam)
+                                          preserve_seam=loop or mode == 'REPEAT')
             if keep is None:
                 return None, reason
             retained.append(keep)
@@ -314,7 +319,7 @@ def _retained(curves, prop, guard_times, position_tolerance, rotation_tolerance,
     else:
         return None, 'Unsupported transform or varying scale'
     keep, reason = _retained_rows(curves, clocks[0], rows, guard_times, tolerance,
-                                  preserve_seam=preserve_seam)
+                                  preserve_seam=loop or 'REPEAT' in modes)
     return ([keep] * len(curves) if keep is not None else None), reason
 
 

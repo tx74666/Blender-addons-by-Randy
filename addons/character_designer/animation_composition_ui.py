@@ -331,7 +331,7 @@ def draw_composition(layout, context):
     backend, selected = _backend(), _selected(context)
     box = layout.box()
     header = box.row(align=True)
-    header.label(text='Overlay Composition', icon='NLA')
+    header.label(text='Unity Overlay', icon='NLA')
     header.operator_context = 'INVOKE_DEFAULT'
     header.operator('character_designer.composition_connect', text='', icon='FILE_FOLDER')
     session = None

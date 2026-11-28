@@ -5,6 +5,7 @@ from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntPropert
 from bpy.types import Operator, PropertyGroup, UIList
 
 EDIT_SCENE = 'character_designer_prepared_edit_scene_v1'
+CONTROLLER_ONLY = 'character_designer_controller_only_workspace_v1'
 
 
 class CharacterDesignerControllerMotion(PropertyGroup):
@@ -57,8 +58,18 @@ def _local_row(scene, key):
     return next((row for row in scene.character_designer_animation_worklist.items if row.clip_key == key), None)
 
 
+def controller_only(home):
+    """Recognize a workspace whose prepared motions are owned by its character scene."""
+    if not hasattr(home, 'get') or not home.get(CONTROLLER_ONLY) or home.get(EDIT_SCENE) is not None:
+        return False
+    setup = home.character_designer_setup
+    state = home.character_designer_animation_worklist
+    return bool(not home.library and not home.override_library and state.workspace_identity
+                and setup.rig and home.objects.get(setup.rig.name) == setup.rig)
+
+
 def mapping_home(scene):
-    if editing_scene(scene) is not None:
+    if controller_only(scene) or editing_scene(scene) is not None:
         return scene
     homes = home_scenes(scene)
     return homes[0] if len(homes) == 1 else None
@@ -192,6 +203,9 @@ def draw_mapping_state(layout, context, row):
         else:
             layout.label(text='Review', icon='ERROR')
         return
+    if controller_only(home):
+        layout.label(text='Not Prepared', icon='INFO')
+        return
     if hasattr(row, 'source_action') and row.source_action is None:
         layout.label(text='Review', icon='ERROR')
         return
@@ -245,7 +259,7 @@ def draw_mapping_options(layout, context):
                 sample += ' · Pass %d' % detail['round']
             box.label(text=sample)
     else:
-        precise = getattr(settings, 'precise_imported_motions', False)
+        precise = getattr(settings, 'prepare_full_ik_tracks', True)
         count = len(animation_controller_edit.missing_motions(home))
         if precise:
             count += len(animation_controller_edit._missing_full_ik(home))
@@ -350,7 +364,7 @@ class CHARACTERDESIGNER_OT_prepare_missing_controller_motions(Operator):
 class CHARACTERDESIGNER_OT_edit_prepared_motion(Operator):
     bl_idname = 'character_designer.edit_prepared_motion'
     bl_label = 'Open Motion for Editing'
-    bl_description = 'Open this motion on the character; create an independent FK edit on first use'
+    bl_description = 'Open this motion on the character using the selected IK or FK preparation setting'
     bl_options = {'REGISTER', 'UNDO'}
 
     clip_key: StringProperty(options={'HIDDEN'})
@@ -358,8 +372,7 @@ class CHARACTERDESIGNER_OT_edit_prepared_motion(Operator):
     def execute(self, context):
         from . import animation_controller_edit
         home = context.scene
-        scene = editing_scene(home)
-        if scene is None or context.window is None:
+        if mapping_home(home) != home or context.window is None:
             self.report({'ERROR'}, 'The editing scene for this workspace is unavailable.')
             return {'CANCELLED'}
         try:
@@ -472,7 +485,8 @@ class CHARACTERDESIGNER_UL_prepared_motions(UIList):
         local = _local_row(scene, item.clip_key) if scene else None
         label = local.name if local else item.name
         name_column, status = motion_row(layout, item)
-        if scene and (local or item.ready):
+        record = mapping_record(context.scene, item) if controller_only(context.scene) else None
+        if (scene and (local or item.ready)) or (record and record.state == 'READY' and record.controller_action):
             active = controller_motion_active(context.scene, local or item)
             button = name_column.operator('character_designer.edit_prepared_motion', text=label,
                                           icon='ACTION', emboss=False, depress=active)

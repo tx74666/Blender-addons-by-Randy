@@ -179,6 +179,16 @@ def _activate(context, home, record):
         settings = home.character_designer_animation_worklist
         settings.status, settings.has_error = message, True
         return dict(state='CONTROLLER_RECOVERY', message=message)
+    if getattr(context, 'mode', None) == 'POSE' and context.object == rig:
+        from . import limb_fk_visuals, limb_ik_ui_state
+        try:
+            inventory = limb_ik_ui_state.inventory(rig)
+            limb_fk_visuals.ensure_clip_endpoints(context, rig, inventory)
+        except (ValueError, RuntimeError, ReferenceError) as exc:
+            message = 'The motion is open. FK control shapes need attention. ' + str(exc)
+            settings = home.character_designer_animation_worklist
+            settings.status, settings.has_error = message, True
+            return dict(state='CONTROLLER_RECOVERY', message=message)
     return result
 
 
@@ -330,7 +340,7 @@ def _remember_open_request(context, result, rig, clip_key, before):
 
 
 def open_motion(context, home, clip_key, *, asynchronous=False, prepare_on_open=False):
-    """Open an existing edit or, on a home-scene click, prepare the missing FK edit."""
+    """Open a prepared edit or queue the preferred representation on a home-scene click."""
     global _OPENING
     from . import animation_worklist_edit_scene as edit_scene
     if _OPENING:
@@ -355,13 +365,22 @@ def open_motion(context, home, clip_key, *, asynchronous=False, prepare_on_open=
         _, queue = _queue_for_home(home)
         if queue is not None:
             queue.pop('open_request', None)  # A later click supersedes the old intended edit.
+        settings = home.character_designer_animation_worklist
+        prepare = prepare_on_open and context.scene == home and not _authored_row(row)
+        full_ik = getattr(settings, 'prepare_full_ik_tracks', True)
         if record is not None and record.controller_action is not None:
+            if prepare and full_ik and _needs_full_ik(record) and (scene is not None or edit_scene.controller_only(home)):
+                rig = _target(home, record.target)
+                before = _open_context(context, rig)
+                result = _enqueue(context, home, [row], retry=True, daily_edit=False, from_fk=True)
+                _remember_open_request(context, result, rig, clip_key, before)
+                return result
             return _activate(context, home, record)
-        if (prepare_on_open and context.scene == home and not _authored_row(row)
+        if (scene is not None and prepare
                 and (record is None or record.state != 'MAPPING_NEEDED')):
             rig = _target(home, home.character_designer_setup.rig)
             before = _open_context(context, rig)
-            result = _enqueue(context, home, [row], daily_edit=True)
+            result = _enqueue(context, home, [row], daily_edit=not full_ik)
             _remember_open_request(context, result, rig, clip_key, before)
             return result
         message = 'Click Prepare to use this motion on the character.'
@@ -369,7 +388,6 @@ def open_motion(context, home, clip_key, *, asynchronous=False, prepare_on_open=
             message = 'This motion needs controller mapping. Click Prepare to retry.'
             if record.error:
                 message += ' ' + record.error
-        settings = home.character_designer_animation_worklist
         settings.status, settings.has_error = message, False
         return dict(state='PREPARE_REQUIRED', message=message)
     finally:
@@ -396,7 +414,15 @@ def _eligible_rows(home):
     from . import animation_worklist_edit_scene as edit_scene
     scene = edit_scene.editing_scene(home)
     if scene is None:
-        return ()
+        if not edit_scene.controller_only(home):
+            return ()
+        rows = []
+        for row in home.character_designer_animation_worklist.catalog:
+            if row.ready and not _authored_row(row):
+                record = edit_scene.mapping_record(home, row)
+                if record and record.state == 'READY' and record.controller_action:
+                    rows.append(row)
+        return tuple(rows)
     rows = []
     source_rows = scene.character_designer_animation_worklist.items
     counts = {}
@@ -496,7 +522,7 @@ def _enqueue(context, home, rows, *, retry=False, daily_edit=None, from_fk=False
         raise ValueError('Prepare controls from an active Blender window.')
     target = _target(home, home.character_designer_setup.rig)
     if daily_edit is None:
-        daily_edit = not getattr(home.character_designer_animation_worklist, 'precise_imported_motions', False)
+        daily_edit = not getattr(home.character_designer_animation_worklist, 'prepare_full_ik_tracks', True)
     align_loop_period = getattr(home.character_designer_animation_worklist, 'align_loop_period', True)
     entries = [dict(clip_key=row.clip_key, work_item_id=getattr(row, 'work_item_id', ''), daily_edit=daily_edit, from_fk=from_fk,
                     align_loop_period=align_loop_period,
@@ -604,7 +630,7 @@ def prepare_missing(context, home):
     selected = choices[index].clip_key if 0 <= index < len(choices) else None
     rows.sort(key=lambda row: row.clip_key != selected)
     result = _enqueue(context, home, rows)
-    if getattr(home.character_designer_animation_worklist, 'precise_imported_motions', False):
+    if getattr(home.character_designer_animation_worklist, 'prepare_full_ik_tracks', True):
         fk_rows = _missing_full_ik(home)
         if fk_rows:
             result = _enqueue(context, home, fk_rows, daily_edit=False, from_fk=True)
@@ -621,14 +647,15 @@ def _row_for_pending(item):
                if row.clip_key == item['clip_key']] if scene is not None else []
     if len(matches) > 1:
         raise ValueError('This motion has multiple source work items. Resolve their identity before preparing it again.')
-    row = matches[0] if matches else None
-    if row is None or (row.work_item_id or row.clip_key) != item['work_item_id']:
-        raise ValueError('The source work item changed during preparation. Its disk result was retained.')
-    source_rig, source_action, source_slot = row.rig, row.custom_action, row.custom_slot
-    timing = scene.render
     entry = item['entry']
     pole_alignment = entry.get('pole_alignment', '')
-    if entry.get('from_fk') or pole_alignment:
+    retained = entry.get('from_fk') or pole_alignment
+    row = matches[0] if matches else None
+    if retained and scene is None and edit_scene.controller_only(home):
+        row = edit_scene._motion_row(home, item['clip_key'])
+    if row is None or (row.work_item_id or row.clip_key) != item['work_item_id']:
+        raise ValueError('The source work item changed during preparation. Its disk result was retained.')
+    if retained:
         record = _record(home, row, create=False)
         eligible = (_needs_pole_alignment(record, pole_alignment) if pole_alignment
                     else _needs_full_ik(record))
@@ -636,6 +663,9 @@ def _row_for_pending(item):
             raise ValueError('The chosen controller edit changed during preparation.')
         source_rig, source_action, source_slot = record.target, record.controller_action, record.controller_slot
         timing = home.render
+    else:
+        source_rig, source_action, source_slot = row.rig, row.custom_action, row.custom_slot
+        timing = scene.render
     if (source_rig, source_action, source_slot) != (item['source_rig'], item['source_action'], item['source_slot']):
         raise ValueError('The source work item changed during preparation. Its disk result was retained.')
     if (timing.fps, timing.fps_base) != item['source_timing']:
@@ -646,6 +676,7 @@ def _row_for_pending(item):
 
 def _start_next(context, key):
     from . import animation_controller_worker as worker
+    from . import animation_worklist_edit_scene as edit_scene
     item = _PENDING[key]
     home = item['home']
     if home.character_designer_animation_worklist.workspace_identity != item['workspace']:
@@ -657,16 +688,21 @@ def _start_next(context, key):
                     outcome=None)
         return  # Let the queued name/progress draw before import or native capture.
     entry = item['entry']
-    item['phase'] = 'Importing motion'
-    scene, row = _resolve_row(context, home, entry['clip_key'])
+    from_fk = entry.get('from_fk', False)
+    pole_alignment = entry.get('pole_alignment', '')
+    retained = from_fk or bool(pole_alignment)
+    if retained and edit_scene.controller_only(home):
+        scene, row = None, edit_scene._motion_row(home, entry['clip_key'])
+        if row is None:
+            raise ValueError('The retained controller edit is no longer available.')
+    else:
+        item['phase'] = 'Importing motion'
+        scene, row = _resolve_row(context, home, entry['clip_key'])
     expected_identity = entry['work_item_id'] or ('' if entry['catalog_only'] else entry['clip_key'])
     if expected_identity and (row.work_item_id or row.clip_key) != expected_identity:
         raise ValueError('The queued motion identity changed. Prepare its current entry again.')
     record = _record(home, row, create=False)
-    from_fk = entry.get('from_fk', False)
-    pole_alignment = entry.get('pole_alignment', '')
     already_prepared = _already_prepared(record)
-    retained = from_fk or bool(pole_alignment)
     eligible = (_needs_pole_alignment(record, pole_alignment) if pole_alignment
                 else from_fk and _needs_full_ik(record))
     if already_prepared and not eligible:
